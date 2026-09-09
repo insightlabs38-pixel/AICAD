@@ -1,0 +1,125 @@
+/* AICAD-016: native/occt_bridge C ABI boundary.
+ *
+ * This header is the ONLY contract crossing the native<->Rust boundary.
+ * It is deliberately kernel-neutral at the type level: no OCCT class or
+ * enum name appears here, only plain C types (per RFC-0002 §3 / Stage-1
+ * kernel policy #2-3). `crates/cad-occt-bridge` is the only Rust crate
+ * that may declare bindings against this header.
+ *
+ * Every function returns an `aicad_occt_status_t`. No C++ or OCCT
+ * exception is ever allowed to propagate out of a function declared here
+ * -- each is caught internally and converted into a status code (Stage-1
+ * kernel policy #6-7). No STL container, std::string, or OCCT-owned
+ * object crosses this boundary directly (policy #8); only plain-old-data
+ * structs and opaque pointers do.
+ */
+
+#ifndef AICAD_OCCT_BRIDGE_H
+#define AICAD_OCCT_BRIDGE_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Status codes returned by every aicad_occt_* function. */
+typedef enum aicad_occt_status {
+  AICAD_OCCT_OK = 0,
+  /* A pointer/argument the caller passed is null or out of range. */
+  AICAD_OCCT_ERR_INVALID_ARGUMENT = 1,
+  /* The handle's slot never existed in this context's shape table. */
+  AICAD_OCCT_ERR_INVALID_HANDLE = 2,
+  /* The handle's slot existed but has since been released, or its
+   * generation no longer matches the slot's current occupant -- i.e. the
+   * handle is from a prior geometry epoch (Stage-1 kernel policy #5/#10). */
+  AICAD_OCCT_ERR_STALE_HANDLE = 3,
+  /* The handle's context_id does not match the context it was passed to. */
+  AICAD_OCCT_ERR_FOREIGN_CONTEXT = 4,
+  /* The calling thread is not the thread that created this context
+   * (Stage-1 kernel policy #9: contexts are single-thread-affine). */
+  AICAD_OCCT_ERR_WRONG_THREAD = 5,
+  /* OCCT reported the requested geometric operation could not be
+   * completed (e.g. a degenerate input) -- a normal, expected outcome for
+   * some inputs, not a bridge defect. */
+  AICAD_OCCT_ERR_OPERATION_FAILED = 6,
+  /* An unexpected C++/OCCT exception was caught at the ABI boundary.
+   * Always a bridge or OCCT defect, never an expected outcome. */
+  AICAD_OCCT_ERR_INTERNAL = 7,
+} aicad_occt_status_t;
+
+/* Opaque, context-scoped shape handle -- never a raw OCCT/C++ pointer
+ * (Stage-1 kernel policy #3). `context_id` and `generation` let the
+ * bridge reject stale and foreign-context handles by value comparison
+ * alone, without ever dereferencing caller-supplied data as a pointer.
+ * Kernel topology handles are build/epoch-local (Stage-1 kernel policy
+ * #10) and must never be treated as persistent AICAD semantic references
+ * (RFC-0002 §4) -- that is `cad-references`' job, not this bridge's. */
+typedef struct aicad_shape_handle {
+  uint64_t context_id;
+  uint32_t slot;
+  uint32_t generation;
+} aicad_shape_handle_t;
+
+/* An all-zero handle is never a handle this bridge ever hands out
+ * (context_id 0 is never assigned to a real context); it is provided
+ * only as a caller-side "no handle yet" sentinel and receives no special
+ * treatment beyond ordinary validation. */
+#define AICAD_NULL_SHAPE_HANDLE \
+  { 0, 0, 0 }
+
+/* Opaque kernel context. Owns a shape table and is conservatively
+ * single-thread-affine (Stage-1 kernel policy #9): every function that
+ * takes a context must be called from the thread that created it, or
+ * fails with AICAD_OCCT_ERR_WRONG_THREAD. */
+typedef struct aicad_occt_context aicad_occt_context_t;
+
+/* Creates a new kernel context. `*out_context` is set on success only. */
+aicad_occt_status_t aicad_occt_context_create(aicad_occt_context_t** out_context);
+
+/* Destroys a context and every shape it still owns. Using any handle
+ * from this context afterward is undefined at the process level (the
+ * context itself, not just a slot, is gone) -- callers must not retain
+ * handles past context destruction. */
+aicad_occt_status_t aicad_occt_context_destroy(aicad_occt_context_t* context);
+
+/* Releases one shape handle. After this call the handle is stale: any
+ * further use of it (with this or any other still-valid handle that
+ * happens to share its slot after reuse) is rejected with
+ * AICAD_OCCT_ERR_STALE_HANDLE, never silently aliased onto a later
+ * shape inserted into the same slot (Stage-1 kernel policy #5). */
+aicad_occt_status_t aicad_occt_release_shape(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t handle);
+
+/* --- Stage-1 starting operation set (native/occt_bridge/README.md) ---
+ * Only create_box is implemented by AICAD-016; the remaining operations
+ * in the README's list are added incrementally by later Stage-1 tasks,
+ * per RFC-0002 §3's capability-driven minimal-surface rule -- this is not
+ * a comprehensive up-front OCCT wrapper. */
+
+/* Constructs an axis-aligned box of the given dimensions (in the
+ * kernel's internal linear unit; unit semantics belong to `cad-units`
+ * above this bridge, not here) and returns a handle to it. */
+aicad_occt_status_t aicad_occt_create_box(aicad_occt_context_t* context,
+                                           double dx,
+                                           double dy,
+                                           double dz,
+                                           aicad_shape_handle_t* out_handle);
+
+/* --- Query helpers used to prove create_box produced a real, valid
+ * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
+ * geometry API yet; `cad-geometry-api` owns that surface later. --- */
+
+aicad_occt_status_t aicad_occt_shape_is_valid(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               int* out_is_valid);
+
+aicad_occt_status_t aicad_occt_shape_volume(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             double* out_volume);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* AICAD_OCCT_BRIDGE_H */

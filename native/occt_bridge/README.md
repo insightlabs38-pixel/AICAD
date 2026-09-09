@@ -22,8 +22,8 @@ Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §4;
 
 ## OCCT discovery/probe (AICAD-015)
 
-`CMakeLists.txt` currently builds only a discovery/probe target, not the
-C ABI bridge (AICAD-016 onward). It:
+`CMakeLists.txt` builds a discovery/probe target, independent of the C ABI
+bridge described below. It:
 
 - calls `find_package(OpenCASCADE REQUIRED CONFIG)` and fails with a
   specific, actionable message if OCCT is not discoverable, rather than
@@ -54,3 +54,50 @@ libocct-modeling-algorithms-dev`, matching `CMakeLists.txt`'s
 
 Exact environment this probe was verified against is recorded in
 `project/reports/AICAD-015.md`.
+
+## C ABI boundary (AICAD-016)
+
+`include/aicad_occt_bridge.h` is the entire public surface of this
+bridge, and the only file `crates/cad-occt-bridge` (AICAD-018) may bind
+against. It is kernel-neutral at the type level — no OCCT class/enum name
+appears in it — per RFC-0002 §3. `src/aicad_occt_bridge.cpp` is the only
+translation unit permitted to include OCCT headers or hold OCCT-typed
+state.
+
+Boundary guarantees (see `project/reports/AICAD-016.md` for the exact
+tests proving each one):
+
+- **No OCCT/C++ exception crosses the boundary.** Every function catches
+  `Standard_Failure` and `...` internally and returns a status code
+  (`aicad_occt_status_t`) instead.
+- **No raw OCCT/C++ pointer is exposed as resource identity.** Shapes are
+  addressed by `aicad_shape_handle_t { context_id, slot, generation }`, a
+  plain-old-data value, not a pointer.
+- **Stale and foreign-context handles are rejected, never silently
+  aliased.** A released slot's generation is bumped before reuse, so a
+  handle minted before release can never resolve to a later shape reusing
+  the same slot; a handle whose `context_id` does not match the context
+  it is passed to is rejected outright.
+- **Contexts are single-thread-affine** (conservatively, per Stage-1
+  kernel policy): every context-taking function checks the calling thread
+  against the context's creating thread and fails explicitly if they
+  differ, rather than risking a data race.
+
+Build and test (same commands as the discovery probe above; both targets
+build together):
+
+```sh
+cmake -S native/occt_bridge -B native/occt_bridge/build
+cmake --build native/occt_bridge/build
+ctest --test-dir native/occt_bridge/build --output-on-failure
+```
+
+`tests/abi_boundary_test.cpp` includes only the public header (as
+`crates/cad-occt-bridge` will) and exercises the happy path plus every
+rejection case above.
+
+Only `create_box` (plus the `shape_is_valid`/`shape_volume` query helpers
+needed to prove it produced a real, valid B-rep) is implemented so far.
+The rest of the operation list at the top of this file is added
+incrementally by later Stage-1 tasks, per RFC-0002 §3's capability-driven
+minimal-surface rule — this is not a comprehensive up-front OCCT wrapper.

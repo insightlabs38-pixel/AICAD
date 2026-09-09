@@ -68,6 +68,26 @@ target_include_directories(occt_probe SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 target_link_directories(occt_probe PRIVATE ${OpenCASCADE_LIBRARY_DIR})
 target_link_libraries(occt_probe PRIVATE ${OCCT_PROBE_LIBS})
 
+# --- AICAD-016: C ABI boundary library ---
+#
+# aicad_occt_bridge is the shared library crates/cad-occt-bridge (AICAD-018)
+# links against. include/aicad_occt_bridge.h is its entire public surface;
+# src/aicad_occt_bridge.cpp is the only translation unit permitted to
+# include OCCT headers or reference OCCT types.
+find_package(Threads REQUIRED)
+
+add_library(aicad_occt_bridge SHARED src/aicad_occt_bridge.cpp)
+target_include_directories(aicad_occt_bridge PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(aicad_occt_bridge SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})
+target_link_directories(aicad_occt_bridge PRIVATE ${OpenCASCADE_LIBRARY_DIR})
+target_link_libraries(aicad_occt_bridge PRIVATE ${OCCT_PROBE_LIBS} Threads::Threads)
+
+add_executable(abi_boundary_test tests/abi_boundary_test.cpp)
+target_include_directories(abi_boundary_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(abi_boundary_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
+add_test(NAME abi_boundary_test COMMAND abi_boundary_test)
+set_tests_properties(abi_boundary_test PROPERTIES TIMEOUT 60)
