@@ -64,6 +64,12 @@ unsafe extern "C" {
         height: f64,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_transform_shape(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        matrix: *const f64, // [f64; 12], row-major 3x4
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_area(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,

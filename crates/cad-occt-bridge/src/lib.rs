@@ -14,7 +14,7 @@
 
 mod ffi;
 
-use cad_kernel_api::{KernelError, KernelId, KernelResult, KernelShape, Point3};
+use cad_kernel_api::{KernelError, KernelId, KernelResult, KernelShape, Point3, Transform};
 use std::os::raw::c_int;
 
 /// Converts one native `aicad_occt_status_t` value into a
@@ -229,6 +229,34 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Applies a rigid transform, producing a new [`Shape`] in the same
+    /// context (AICAD-021). Never mutates `self` -- functional/
+    /// value-oriented semantics, `project/DECISION_LOG.md#DL-2`.
+    pub fn transform(&self, t: &Transform) -> KernelResult<Shape<'ctx>> {
+        let matrix = t.to_row_major_3x4();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `matrix` is a valid, live `[f64; 12]` for the duration
+        // of this call; `self.context.raw`/`self.raw_handle()` as in
+        // `is_valid`; `&mut handle` as in `create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_transform_shape(
+                self.context.raw,
+                self.raw_handle(),
+                matrix.as_ptr(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -410,6 +438,52 @@ mod tests {
         assert_eq!(
             context.create_cylinder(2.0, -1.0).unwrap_err(),
             KernelError::InvalidArgument
+        );
+    }
+
+    // --- AICAD-021: transform ---
+
+    #[test]
+    fn transform_identity_is_a_no_op_and_produces_a_new_handle() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let moved = box_shape.transform(&Transform::identity()).unwrap();
+        assert!((moved.volume().unwrap() - 24.0).abs() < 1e-9);
+        assert_ne!(box_shape.handle(), moved.handle());
+    }
+
+    #[test]
+    fn transform_translation_shifts_the_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let t = Transform::translation(cad_kernel_api::Vector3::new(10.0, 0.0, 0.0));
+        let moved = box_shape.transform(&t).unwrap();
+        let bbox = moved.bounding_box().unwrap();
+        assert!((bbox.min.x - 10.0).abs() < 1e-6);
+        assert!((bbox.max.x - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn transform_does_not_mutate_the_source_shape() {
+        // The stale/foreign/invalid-handle rejection paths themselves are
+        // exhaustively covered natively
+        // (native/occt_bridge/tests/transform_test.cpp) and cannot even be
+        // expressed against this crate's safe API in the first place: a
+        // `Shape`'s borrow checker-enforced lifetime means there is no way
+        // to call `.transform()` on an already-released shape without a
+        // compile error, which is the point of the RAII wrapper
+        // (AICAD-018). This test instead proves the *value* semantics
+        // (DL-2): transforming a shape must leave the original untouched.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let original_bbox = box_shape.bounding_box().unwrap();
+        let _moved = box_shape.transform(&Transform::translation(cad_kernel_api::Vector3::new(
+            100.0, 0.0, 0.0,
+        )));
+        let bbox_after = box_shape.bounding_box().unwrap();
+        assert_eq!(
+            original_bbox, bbox_after,
+            "transform must not mutate the source shape"
         );
     }
 }

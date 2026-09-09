@@ -116,9 +116,28 @@ aicad_occt_status_t aicad_occt_create_cylinder(aicad_occt_context_t* context,
                                                 double height,
                                                 aicad_shape_handle_t* out_handle);
 
-/* --- Query helpers used to prove create_box/create_cylinder produced a
- * real, valid B-rep, per AGENTS.md's evidence rule -- not exposed as
- * end-user geometry API yet; `cad-geometry-api` owns that surface later. --- */
+/* --- AICAD-021: rigid/affine transforms (points/vectors/axes/frames are
+ * pure Rust value types in `cad-kernel-api`; this is the one bridge
+ * operation needed to actually move kernel-resident geometry, per
+ * `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s `transform` feature). ---
+ *
+ * `matrix` is a row-major 3x4 affine matrix:
+ *   [ m[0]  m[1]  m[2]  m[3]  ]   [x]   [x']
+ *   [ m[4]  m[5]  m[6]  m[7]  ] * [y] = [y']
+ *   [ m[8]  m[9]  m[10] m[11] ]   [z]   [z']
+ *                                 [1]
+ * i.e. the leading 3x3 block is the linear (rotation/scale) part and the
+ * last column is the translation. Always produces a NEW shape handle,
+ * never mutates the input in place (DL-2's functional/value-oriented
+ * semantics). */
+aicad_occt_status_t aicad_occt_transform_shape(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                const double matrix[12],
+                                                aicad_shape_handle_t* out_handle);
+
+/* --- Query helpers used to prove these operations produced a real, valid
+ * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
+ * geometry API yet; `cad-geometry-api` owns that surface later. --- */
 
 aicad_occt_status_t aicad_occt_shape_is_valid(aicad_occt_context_t* context,
                                                aicad_shape_handle_t handle,

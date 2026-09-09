@@ -8,6 +8,7 @@
 #include "aicad_occt_bridge.h"
 
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -16,6 +17,7 @@
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Trsf.hxx>
 
 #include <atomic>
 #include <cmath>
@@ -121,6 +123,12 @@ aicad_occt_status_t CheckHandleContext(aicad_occt_context_t* context, aicad_shap
     return AICAD_OCCT_ERR_FOREIGN_CONTEXT;
   }
   return AICAD_OCCT_OK;
+}
+
+// --- AICAD-021 helper ---
+
+double Norm3(const double v[3]) {
+  return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 }
 
 }  // namespace
@@ -229,6 +237,78 @@ aicad_occt_status_t aicad_occt_create_cylinder(aicad_occt_context_t* context,
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, make_cylinder.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_transform_shape(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                const double matrix[12],
+                                                aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (matrix == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  for (int i = 0; i < 12; ++i) {
+    if (!std::isfinite(matrix[i])) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+  }
+  // Defensively re-validate rigidity here even though the only current
+  // caller (`cad-occt-bridge`'s `Transform`) always constructs an
+  // orthonormal, proper-rotation linear part: a bug in that pure-Rust
+  // math layer must never silently corrupt kernel geometry (AGENTS.md
+  // evidence rule) -- it must be rejected at this boundary instead.
+  const double col0[3] = {matrix[0], matrix[4], matrix[8]};
+  const double col1[3] = {matrix[1], matrix[5], matrix[9]};
+  const double col2[3] = {matrix[2], matrix[6], matrix[10]};
+  const double n0 = Norm3(col0);
+  const double n1 = Norm3(col1);
+  const double n2 = Norm3(col2);
+  const double kTol = 1e-6;
+  if (std::fabs(n0 - 1.0) > kTol || std::fabs(n1 - 1.0) > kTol || std::fabs(n2 - 1.0) > kTol) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  auto dot3 = [](const double a[3], const double b[3]) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  };
+  if (std::fabs(dot3(col0, col1)) > kTol || std::fabs(dot3(col0, col2)) > kTol ||
+      std::fabs(dot3(col1, col2)) > kTol) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  // determinant of the 3x3 linear part must be +1 (proper rotation, not
+  // a reflection) for gp_Trsf to represent it as a rigid displacement.
+  const double det = matrix[0] * (matrix[5] * matrix[10] - matrix[6] * matrix[9]) -
+                      matrix[1] * (matrix[4] * matrix[10] - matrix[6] * matrix[8]) +
+                      matrix[2] * (matrix[4] * matrix[9] - matrix[5] * matrix[8]);
+  if (std::fabs(det - 1.0) > kTol) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    gp_Trsf trsf;
+    trsf.SetValues(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5], matrix[6],
+                    matrix[7], matrix[8], matrix[9], matrix[10], matrix[11]);
+    BRepBuilderAPI_Transform transform(*shape, trsf, /*Copy=*/Standard_True);
+    if (!transform.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, transform.Shape());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;
