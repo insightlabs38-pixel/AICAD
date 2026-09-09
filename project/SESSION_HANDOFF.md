@@ -1,6 +1,26 @@
 # Session Handoff
 
-## Latest: Independent Stage-0 review complete — recommendation: PASS
+## Latest: Stage 0 approved by owner; Stage 1 active, AICAD-015 in progress
+
+The owner has recorded Stage-0 approval: `project/DECISION_LOG.md#DL-10`,
+citing `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md` (commit
+`aad7267`) and the implementation team's own `project/gates/stage-0-gate.md`
+(AICAD-014). `project/CURRENT_STAGE.md` has been updated to `stage: 1,
+status: active`. This closes out the prior handoff entry below (kept for
+history) and starts Stage 1 per the authorized roadmap window
+(`AICAD-015` through `AICAD-037`, in batches 1A-1E; `AICAD-038`/Stage 2
+remain forbidden without further owner approval).
+
+**Current state:** beginning Batch 1A (kernel boundary), starting with
+`AICAD-015` (OCCT discovery/probe CMake target). See the task loop in
+`AGENTS.md`/`project/TASKS.yaml` for the per-task procedure. Per the
+active per-invocation work budget, at most one batch (1A: AICAD-015..019)
+is authorized this invocation, followed by the `STAGE1-A_KERNEL_BOUNDARY.md`
+checkpoint before Batch 1B may begin.
+
+---
+
+## Prior entry: Independent Stage-0 review complete — recommendation: PASS
 
 An independent, adversarial Stage-0 review (not part of the original
 AICAD-007..014 authoring batch) was performed against commit
