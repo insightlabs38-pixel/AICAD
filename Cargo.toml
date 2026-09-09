@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cad-lexer",
+    "crates/cad-parser",
+    "crates/cad-ast",
+    "crates/cad-hir",
+    "crates/cad-types",
+    "crates/cad-units",
+    "crates/cad-runtime",
+    "crates/cad-compiler",
+    "crates/cad-diagnostics",
+    "crates/cad-feature-graph",
+    "crates/cad-constraints",
+    "crates/cad-references",
+    "crates/cad-query",
+    "crates/cad-geometry-api",
+    "crates/cad-geometry-runtime",
+    "crates/cad-kernel-api",
+    "crates/cad-occt-bridge",
+    "crates/cad-validation",
+    "crates/cad-assemblies",
+    "crates/cad-configurations",
+    "crates/cad-requirements",
+    "crates/cad-artifact",
+    "crates/cad-interchange",
+    "crates/cad-packages",
+    "crates/cad-provenance",
+    "crates/cad-cli",
+    "crates/cad-lsp",
+    "crates/cad-agent-tools",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+
+# Crate list mirrors docs/plan/22_REPOSITORY_WORK_PACKAGES.md §1. Each
+# crate is currently an empty placeholder (see its own Cargo.toml and
+# src/lib.rs, and its README.md for owning work package/plan references);
+# AICAD-002/AICAD-003 only establish the workspace and toolchain policy,
+# not implementation. Do not add a crate here without a corresponding
+# entry in docs/plan/22_REPOSITORY_WORK_PACKAGES.md's work-package list.

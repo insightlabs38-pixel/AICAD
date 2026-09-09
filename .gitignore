@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Generated/cached state (docs/plan/01_SYSTEM_ARCHITECTURE.md §6): source +
+# lockfile + immutable external assets are canonical; everything under a
+# .aicad-cache/ directory is a disposable, content-addressed cache and must
+# never be committed.
+.aicad-cache/
+**/.aicad-cache/
+
+# Native build directories (native/occt_bridge and any future bridge)
+native/**/build/
+native/**/cmake-build*/
+
+# Editor/OS artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+*.iml
+
+# Local environment overrides — never commit secrets/local config
+.env
+.env.local
