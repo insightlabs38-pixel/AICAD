@@ -94,6 +94,21 @@ unsafe extern "C" {
         wire_handle: aicad_shape_handle_t,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_extrude(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        direction: *const f64, // [f64; 3]
+        distance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_revolve(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        axis_origin: *const f64,    // [f64; 3]
+        axis_direction: *const f64, // [f64; 3]
+        angle_radians: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_area(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,

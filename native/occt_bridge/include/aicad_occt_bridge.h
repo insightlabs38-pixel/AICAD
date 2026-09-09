@@ -176,6 +176,27 @@ aicad_occt_status_t aicad_occt_make_face_from_wire(aicad_occt_context_t* context
                                                     aicad_shape_handle_t wire_handle,
                                                     aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-024: extrude and revolve, face -> solid. --- */
+
+/* Linearly extrudes a planar face by `distance` along `direction`
+ * (need not be unit-length; magnitude is ignored, only direction is
+ * used) into a solid. */
+aicad_occt_status_t aicad_occt_extrude(aicad_occt_context_t* context,
+                                        aicad_shape_handle_t face_handle,
+                                        const double direction[3],
+                                        double distance,
+                                        aicad_shape_handle_t* out_handle);
+
+/* Revolves a planar face about an axis by `angle_radians` (0 < angle <=
+ * 2*pi) into a solid. The face must not straddle the axis (OCCT rejects
+ * a self-intersecting result with AICAD_OCCT_ERR_OPERATION_FAILED). */
+aicad_occt_status_t aicad_occt_revolve(aicad_occt_context_t* context,
+                                        aicad_shape_handle_t face_handle,
+                                        const double axis_origin[3],
+                                        const double axis_direction[3],
+                                        double angle_radians,
+                                        aicad_shape_handle_t* out_handle);
+
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
  * geometry API yet; `cad-geometry-api` owns that surface later. --- */

@@ -16,6 +16,8 @@
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
@@ -25,11 +27,13 @@
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Wire.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
 
 #include <atomic>
 #include <cmath>
@@ -501,6 +505,94 @@ aicad_occt_status_t aicad_occt_make_face_from_wire(aicad_occt_context_t* context
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, make_face.Face());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_extrude(aicad_occt_context_t* context,
+                                        aicad_shape_handle_t face_handle,
+                                        const double direction[3],
+                                        double distance,
+                                        aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (direction == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!(distance > 0.0) || !std::isfinite(distance)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir dir;
+  if (!TryToDir(direction, &dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* face_shape = nullptr;
+  status = LookupTyped(context, face_handle, TopAbs_FACE, &face_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    gp_Vec vec(dir);
+    vec *= distance;
+    BRepPrimAPI_MakePrism make_prism(*face_shape, vec);
+    if (!make_prism.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_prism.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_revolve(aicad_occt_context_t* context,
+                                        aicad_shape_handle_t face_handle,
+                                        const double axis_origin[3],
+                                        const double axis_direction[3],
+                                        double angle_radians,
+                                        aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (axis_origin == nullptr || axis_direction == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!IsFinite3(axis_origin)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  constexpr double kTwoPi = 6.283185307179586476925286766559;
+  if (!std::isfinite(angle_radians) || !(angle_radians > 0.0) || angle_radians > kTwoPi + 1e-9) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir dir;
+  if (!TryToDir(axis_direction, &dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* face_shape = nullptr;
+  status = LookupTyped(context, face_handle, TopAbs_FACE, &face_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    gp_Ax1 axis(ToPnt(axis_origin), dir);
+    // Clamp to exactly 2*pi when within tolerance so OCCT treats it as a
+    // full revolution rather than rejecting a value that overshoots
+    // 2*pi by floating-point noise.
+    const double angle = std::min(angle_radians, kTwoPi);
+    BRepPrimAPI_MakeRevol make_revol(*face_shape, axis, angle, /*Copy=*/Standard_True);
+    if (!make_revol.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_revol.Shape());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

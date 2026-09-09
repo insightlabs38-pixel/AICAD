@@ -15,7 +15,7 @@
 mod ffi;
 
 use cad_kernel_api::{
-    Direction3, KernelError, KernelId, KernelResult, KernelShape, Point3, Transform,
+    Axis3, Direction3, KernelError, KernelId, KernelResult, KernelShape, Point3, Transform,
 };
 use std::os::raw::c_int;
 
@@ -369,6 +369,65 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Linearly extrudes this planar face by `distance` along `direction`
+    /// into a solid (AICAD-024).
+    pub fn extrude(&self, direction: Direction3, distance: f64) -> KernelResult<Shape<'ctx>> {
+        let d = direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `direction` is a valid, live `[f64; 3]` for the
+        // duration of this call; other arguments as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_extrude(
+                self.context.raw,
+                self.raw_handle(),
+                direction.as_ptr(),
+                distance,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Revolves this planar face about `axis` by `angle_radians` (0 <
+    /// angle <= 2*pi) into a solid (AICAD-024).
+    pub fn revolve(&self, axis: Axis3, angle_radians: f64) -> KernelResult<Shape<'ctx>> {
+        let origin = [axis.origin.x, axis.origin.y, axis.origin.z];
+        let d = axis.direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `origin`/`direction` are valid, live `[f64; 3]` arrays
+        // for the duration of this call; other arguments as in
+        // `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_revolve(
+                self.context.raw,
+                self.raw_handle(),
+                origin.as_ptr(),
+                direction.as_ptr(),
+                angle_radians,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -713,5 +772,92 @@ mod tests {
             .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
             .unwrap();
         assert_eq!(edge.make_face().unwrap_err(), KernelError::InvalidArgument);
+    }
+
+    // --- AICAD-024: extrude and revolve ---
+
+    #[test]
+    fn build_square_profile_and_extrude_to_the_expected_volume() {
+        let context = OcctContext::new().unwrap();
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(1.0, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(1.0, 0.0), p(1.0, 1.0)).unwrap();
+        let e2 = context.make_line_edge(p(1.0, 1.0), p(0.0, 1.0)).unwrap();
+        let e3 = context.make_line_edge(p(0.0, 1.0), p(0.0, 0.0)).unwrap();
+        let wire = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        assert!(wire.is_valid().unwrap());
+        let face = wire.make_face().unwrap();
+        assert!(face.is_valid().unwrap());
+        assert!((face.area().unwrap() - 1.0).abs() < 1e-9);
+
+        let solid = face
+            .extrude(Direction3::Z, 5.0)
+            .expect("extrude should succeed");
+        assert!(solid.is_valid().unwrap());
+        assert!((solid.volume().unwrap() - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn build_circle_profile_and_revolve_to_the_expected_volume() {
+        let context = OcctContext::new().unwrap();
+        // A rectangle offset from the Z axis in the Y=0 half-plane,
+        // revolved a full turn about Z, produces a tube of known volume
+        // pi*(R^2-r^2)*h -- mirrors native/occt_bridge/tests/extrude_revolve_test.cpp.
+        let p = |x: f64, z: f64| Point3::new(x, 0.0, z);
+        let (inner, outer, height) = (1.0, 3.0, 5.0);
+        let e0 = context
+            .make_line_edge(p(inner, 0.0), p(outer, 0.0))
+            .unwrap();
+        let e1 = context
+            .make_line_edge(p(outer, 0.0), p(outer, height))
+            .unwrap();
+        let e2 = context
+            .make_line_edge(p(outer, height), p(inner, height))
+            .unwrap();
+        let e3 = context
+            .make_line_edge(p(inner, height), p(inner, 0.0))
+            .unwrap();
+        let wire = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        let face = wire.make_face().unwrap();
+
+        let axis = Axis3::new(Point3::ORIGIN, Direction3::Z);
+        let tube = face
+            .revolve(axis, std::f64::consts::TAU)
+            .expect("revolve should succeed");
+        assert!(tube.is_valid().unwrap());
+        let expected = std::f64::consts::PI * (outer * outer - inner * inner) * height;
+        assert!((tube.volume().unwrap() - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn extrude_rejects_a_handle_that_is_not_a_face() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        assert_eq!(
+            edge.extrude(Direction3::Z, 1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn extrude_rejects_a_non_positive_distance() {
+        let context = OcctContext::new().unwrap();
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(1.0, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(1.0, 0.0), p(1.0, 1.0)).unwrap();
+        let e2 = context.make_line_edge(p(1.0, 1.0), p(0.0, 1.0)).unwrap();
+        let e3 = context.make_line_edge(p(0.0, 1.0), p(0.0, 0.0)).unwrap();
+        let wire = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        let face = wire.make_face().unwrap();
+        assert_eq!(
+            face.extrude(Direction3::Z, 0.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            face.extrude(Direction3::Z, -1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
     }
 }
