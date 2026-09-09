@@ -1,17 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
 project(occt_bridge LANGUAGES CXX)
 
-# Stage 1 (AICAD-015): OCCT discovery/probe target only.
-#
-# This CMakeLists.txt does not yet build the C ABI bridge (AICAD-016) or
-# any AICAD-facing library -- it exists to prove that OCCT can be reliably
-# discovered and linked against on the host toolchain, and to fail loudly
-# and specifically (missing package vs. missing module vs. build failure)
-# rather than silently, before any later Stage-1 task depends on it.
+# Stage 1: builds (a) an OCCT discovery/probe target (AICAD-015) that
+# proves OCCT can be reliably discovered and linked against on the host
+# toolchain, failing loudly and specifically (missing package vs. missing
+# module vs. build failure) rather than silently; and (b) the
+# aicad_occt_bridge C ABI library (AICAD-016), the only AICAD-facing
+# artifact this project produces -- crates/cad-occt-bridge's build.rs
+# (AICAD-018) configures, builds, and installs this project to obtain it.
 #
 # README.md and docs/plan/01_SYSTEM_ARCHITECTURE.md §4 describe the
-# eventual bridge operation surface (create_box, boolean_union, ...); this
-# target intentionally stays narrower than that until AICAD-016.
+# eventual bridge operation surface (create_box, boolean_union, ...); the
+# implemented operation set intentionally stays narrower than that list
+# per RFC-0002 §3's capability-driven minimal-surface rule.
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,3 +92,18 @@ add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
 add_test(NAME abi_boundary_test COMMAND abi_boundary_test)
 set_tests_properties(abi_boundary_test PROPERTIES TIMEOUT 60)
+
+# --- AICAD-018: install rules ---
+#
+# crates/cad-occt-bridge's build.rs installs this project into a
+# Cargo-managed OUT_DIR (via -DCMAKE_INSTALL_PREFIX=<out_dir>) rather than
+# reaching into this build tree's raw layout, which is not guaranteed
+# stable across CMake generators/versions. Only the library and its one
+# public header are installed -- occt_probe and abi_boundary_test are
+# dev-only executables, not part of the installable artifact.
+include(GNUInstallDirs)
+install(TARGETS aicad_occt_bridge
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES include/aicad_occt_bridge.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
