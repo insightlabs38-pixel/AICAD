@@ -406,6 +406,71 @@ aicad_occt_status_t aicad_occt_shape_bounding_box(aicad_occt_context_t* context,
                                                    double out_min[3],
                                                    double out_max[3]);
 
+/* --- AICAD-029: topology exploration.
+ *
+ * `topology_faces`/`topology_edges` (docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+ * §3) are already implemented by AICAD-027/028's
+ * `aicad_occt_shape_edge_count`/`_get_edge` and
+ * `aicad_occt_shape_face_count`/`_get_face` -- both accept any shape kind
+ * (`LookupAnyKind`, not just Solid), so calling them with a Face handle
+ * already enumerates that face's own boundary edges (`face_edges` in the
+ * plan doc), and no separate function is added for it (native/occt_bridge's
+ * own test suite, topology_test.cpp, is the evidence this actually holds).
+ * This task adds the two primitives the plan doc's exploration surface
+ * still lacked: vertex enumeration (`topology_vertices`) and edge-to-face
+ * adjacency (`adjacent_faces`). Both reuse the same raw/indexed,
+ * ephemeral, epoch-bound access pattern AICAD-027/028 established (ordinary
+ * TopExp::MapShapes de-duplication, 0-based indices) -- not a new
+ * architecture alternative. --- */
+
+/* Number of unique vertices in `handle`'s shape (via TopExp::MapShapes,
+ * matching aicad_occt_shape_edge_count/_face_count's own
+ * de-duplication rationale). */
+aicad_occt_status_t aicad_occt_shape_vertex_count(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t handle,
+                                                   size_t* out_count);
+
+/* Returns a handle to the vertex at `index` (0-based, `< vertex_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_edge/_get_face's
+ * own contract. */
+aicad_occt_status_t aicad_occt_shape_get_vertex(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t index,
+                                                 aicad_shape_handle_t* out_vertex_handle);
+
+/* Returns `edge_handle`'s two endpoint vertices in the edge's own
+ * orientation order (OCCT's TopExp::Vertices' "first"/"last" sense; for a
+ * closed edge, e.g. a full circle, both are the same vertex -- callers
+ * must not assume distinctness). `edge_handle` must address a shape of
+ * exactly kind Edge (a caller-contract violation otherwise, matching
+ * aicad_occt_fillet's own edge-typed-argument rejection). */
+aicad_occt_status_t aicad_occt_edge_vertices(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t edge_handle,
+                                              aicad_shape_handle_t* out_v0,
+                                              aicad_shape_handle_t* out_v1);
+
+/* Number of faces of `shape_handle` adjacent to (bounded by) the edge at
+ * `edge_index` (0-based, `< aicad_occt_shape_edge_count(shape_handle)`,
+ * per that same function's own enumeration order over `shape_handle`).
+ * An edge shared by N faces (N=2 for an ordinary manifold solid edge, N=1
+ * for a free/boundary edge, N>2 possible for a non-manifold compound)
+ * reports N here. */
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_count(aicad_occt_context_t* context,
+                                                               aicad_shape_handle_t shape_handle,
+                                                               size_t edge_index,
+                                                               size_t* out_count);
+
+/* Returns a handle to the `adjacent_index`-th (0-based, `<
+ * edge_adjacent_face_count`) face of `shape_handle` adjacent to the edge
+ * at `edge_index`, in that adjacency query's own current raw enumeration
+ * order -- ephemeral and epoch-bound, never a durable semantic reference. */
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_get(aicad_occt_context_t* context,
+                                                             aicad_shape_handle_t shape_handle,
+                                                             size_t edge_index,
+                                                             size_t adjacent_index,
+                                                             aicad_shape_handle_t* out_face_handle);
+
 #ifdef __cplusplus
 }
 #endif

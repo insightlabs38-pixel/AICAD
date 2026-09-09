@@ -179,6 +179,11 @@ add_executable(shell_offset_test tests/shell_offset_test.cpp)
 target_include_directories(shell_offset_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(shell_offset_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+# --- Batch 1D: inspection/validation/interchange (AICAD-029..033) ---
+add_executable(topology_test tests/topology_test.cpp)
+target_include_directories(topology_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(topology_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -204,6 +209,8 @@ add_test(NAME fillet_chamfer_test COMMAND fillet_chamfer_test)
 set_tests_properties(fillet_chamfer_test PROPERTIES TIMEOUT 60)
 add_test(NAME shell_offset_test COMMAND shell_offset_test)
 set_tests_properties(shell_offset_test PROPERTIES TIMEOUT 60)
+add_test(NAME topology_test COMMAND topology_test)
+set_tests_properties(topology_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #

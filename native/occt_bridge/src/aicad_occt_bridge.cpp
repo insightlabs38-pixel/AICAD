@@ -32,12 +32,14 @@
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
@@ -1232,6 +1234,217 @@ aicad_occt_status_t aicad_occt_shape_bounding_box(aicad_occt_context_t* context,
     out_max[0] = xmax;
     out_max[1] = ymax;
     out_max[2] = zmax;
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
+
+// --- AICAD-029: topology exploration helpers ---
+
+namespace {
+
+// Rebuilds `shape_handle`'s unique-edge map exactly as
+// aicad_occt_shape_edge_count/_get_edge do, and returns the specific edge
+// at `edge_index` (0-based) -- the shared basis both
+// aicad_occt_shape_edge_adjacent_face_count and _get build on, so their
+// own `edge_index` contract stays anchored to shape_edge_count's own
+// enumeration order.
+aicad_occt_status_t LookupIndexedEdge(const TopoDS_Shape& shape, size_t edge_index, TopoDS_Edge* out_edge) {
+  TopTools_IndexedMapOfShape edges;
+  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+  if (edge_index >= static_cast<size_t>(edges.Extent())) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  *out_edge = TopoDS::Edge(edges.FindKey(static_cast<Standard_Integer>(edge_index) + 1));
+  return AICAD_OCCT_OK;
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_shape_vertex_count(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t handle,
+                                                    size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    // TopExp::MapShapes de-duplicates, matching
+    // aicad_occt_shape_edge_count/_face_count's own rationale: a shared
+    // vertex is visited once per incident edge by a raw explorer.
+    TopTools_IndexedMapOfShape vertices;
+    TopExp::MapShapes(*shape, TopAbs_VERTEX, vertices);
+    *out_count = static_cast<size_t>(vertices.Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_get_vertex(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t index,
+                                                 aicad_shape_handle_t* out_vertex_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_vertex_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape vertices;
+    TopExp::MapShapes(*shape, TopAbs_VERTEX, vertices);
+    // 0-based (matching aicad_occt_shape_get_edge/_get_face's own
+    // convention); TopTools_IndexedMapOfShape itself is 1-indexed.
+    if (index >= static_cast<size_t>(vertices.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopoDS_Shape& vertex = vertices.FindKey(static_cast<Standard_Integer>(index) + 1);
+    *out_vertex_handle = context->shapes.Insert(context->id, vertex);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_edge_vertices(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t edge_handle,
+                                              aicad_shape_handle_t* out_v0,
+                                              aicad_shape_handle_t* out_v1) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_v0 == nullptr || out_v1 == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* edge_shape = nullptr;
+  status = LookupTyped(context, edge_handle, TopAbs_EDGE, &edge_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopoDS_Vertex v0, v1;
+    // TopExp::Vertices' 3-argument form (no CumOri) returns the edge's
+    // vertices in its own orientation sense: v0 = "first", v1 = "last".
+    // For a closed edge (e.g. a full circle) both are the same vertex --
+    // documented in the header, not treated as an error here.
+    TopExp::Vertices(TopoDS::Edge(*edge_shape), v0, v1);
+    if (v0.IsNull() || v1.IsNull()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_v0 = context->shapes.Insert(context->id, v0);
+    *out_v1 = context->shapes.Insert(context->id, v1);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_count(aicad_occt_context_t* context,
+                                                                aicad_shape_handle_t shape_handle,
+                                                                size_t edge_index,
+                                                                size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopoDS_Edge edge;
+    status = LookupIndexedEdge(*shape, edge_index, &edge);
+    if (status != AICAD_OCCT_OK) {
+      return status;
+    }
+    TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+    TopExp::MapShapesAndAncestors(*shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+    if (!edge_face_map.Contains(edge)) {
+      // Can happen if `shape` itself is a bare Edge/Wire with no
+      // containing Face at all (e.g. a standalone spine wire) --
+      // zero adjacent faces, not an error.
+      *out_count = 0;
+      return AICAD_OCCT_OK;
+    }
+    *out_count = static_cast<size_t>(edge_face_map.FindFromKey(edge).Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_get(aicad_occt_context_t* context,
+                                                              aicad_shape_handle_t shape_handle,
+                                                              size_t edge_index,
+                                                              size_t adjacent_index,
+                                                              aicad_shape_handle_t* out_face_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_face_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopoDS_Edge edge;
+    status = LookupIndexedEdge(*shape, edge_index, &edge);
+    if (status != AICAD_OCCT_OK) {
+      return status;
+    }
+    TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+    TopExp::MapShapesAndAncestors(*shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+    if (!edge_face_map.Contains(edge)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopTools_ListOfShape& faces = edge_face_map.FindFromKey(edge);
+    if (adjacent_index >= static_cast<size_t>(faces.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    TopTools_ListIteratorOfListOfShape it(faces);
+    for (size_t i = 0; i < adjacent_index; ++i) {
+      it.Next();
+    }
+    *out_face_handle = context->shapes.Insert(context->id, it.Value());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

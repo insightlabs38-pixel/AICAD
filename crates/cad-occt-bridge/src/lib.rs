@@ -776,6 +776,128 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// The number of unique vertices in this shape (AICAD-029), via OCCT's
+    /// own de-duplicated `TopExp::MapShapes` -- matching
+    /// [`Shape::edge_count`]/[`Shape::face_count`]'s own rationale.
+    pub fn vertex_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_vertex_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the vertex at `index` (0-based, `< self.vertex_count()`) in
+    /// this shape's own current raw enumeration order (AICAD-029) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_edge`]/[`Shape::get_face`].
+    pub fn get_vertex(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_vertex(
+                self.context.raw,
+                self.raw_handle(),
+                index,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// This edge's two endpoint vertices, in the edge's own orientation
+    /// order (AICAD-029). `self` must address a shape of exactly kind
+    /// Edge. For a closed edge (e.g. a full circle) both returned vertices
+    /// coincide -- callers must not assume distinctness.
+    pub fn edge_vertices(&self) -> KernelResult<(Shape<'ctx>, Shape<'ctx>)> {
+        let mut v0 = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut v1 = v0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut v0`/`&mut v1` are valid out-params per the header's
+        // contract.
+        let status = unsafe {
+            ffi::aicad_occt_edge_vertices(self.context.raw, self.raw_handle(), &mut v0, &mut v1)
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(v0),
+            },
+            Shape {
+                context: self.context,
+                id: handle_to_id(v1),
+            },
+        ))
+    }
+
+    /// The number of faces of this shape adjacent to (bounded by) the edge
+    /// at `edge_index` (0-based, `< self.edge_count()`, per that same
+    /// function's own enumeration order) (AICAD-029).
+    pub fn edge_adjacent_face_count(&self, edge_index: usize) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_adjacent_face_count(
+                self.context.raw,
+                self.raw_handle(),
+                edge_index,
+                &mut count,
+            )
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the `adjacent_index`-th (0-based, `<
+    /// self.edge_adjacent_face_count(edge_index)`) face adjacent to the
+    /// edge at `edge_index` (AICAD-029) -- ephemeral and epoch-bound,
+    /// never a durable semantic reference.
+    pub fn edge_adjacent_face(
+        &self,
+        edge_index: usize,
+        adjacent_index: usize,
+    ) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_adjacent_face_get(
+                self.context.raw,
+                self.raw_handle(),
+                edge_index,
+                adjacent_index,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -1662,5 +1784,129 @@ mod tests {
             24,
             "two disjoint boxes' union has 12+12=24 edges"
         );
+    }
+
+    // --- AICAD-029: topology exploration ---
+
+    #[test]
+    fn a_box_has_exactly_eight_unique_vertices() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        assert_eq!(box_shape.vertex_count().unwrap(), 8);
+    }
+
+    #[test]
+    fn get_vertex_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_vertex(8).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn every_box_edge_is_adjacent_to_exactly_two_faces() {
+        // A closed manifold solid's every edge is shared by exactly 2
+        // faces -- Euler-formula-consistent for a box (V=8, E=12, F=6).
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let edge_count = box_shape.edge_count().unwrap();
+        for i in 0..edge_count {
+            assert_eq!(
+                box_shape.edge_adjacent_face_count(i).unwrap(),
+                2,
+                "edge {i} should be adjacent to exactly 2 faces"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_adjacent_face_get_rejects_an_out_of_range_adjacent_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.edge_adjacent_face(0, 2).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn edge_adjacent_face_count_rejects_an_out_of_range_edge_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge_count = box_shape.edge_count().unwrap();
+        assert_eq!(
+            box_shape.edge_adjacent_face_count(edge_count).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn face_edges_is_covered_by_edge_count_applied_to_a_face_handle() {
+        // docs/plan/05 §3's face_edges: no new function was added for it --
+        // shape_edge_count/_get_edge (AICAD-027) already accept any shape
+        // kind, so applying them to a Face handle enumerates that face's
+        // own boundary edges. This test is the evidence that holds, not
+        // just an assumption.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        assert_eq!(
+            face.edge_count().unwrap(),
+            4,
+            "a box face is a quad: 4 edges"
+        );
+    }
+
+    #[test]
+    fn edge_vertices_of_an_open_line_edge_match_its_endpoints() {
+        let context = OcctContext::new().unwrap();
+        let p0 = Point3::new(1.0, 2.0, 3.0);
+        let p1 = Point3::new(4.0, 5.0, 6.0);
+        let edge = context.make_line_edge(p0, p1).unwrap();
+        let (v0, v1) = edge.edge_vertices().unwrap();
+        // Bnd_Box enlarges by the vertex's own confusion tolerance (~1e-7
+        // per side) even for a single-point shape; 1e-5 is comfortably
+        // above that gap.
+        let v0_box = v0.bounding_box().unwrap();
+        let v1_box = v1.bounding_box().unwrap();
+        assert!((v0_box.min.x - p0.x).abs() < 1e-5 && (v0_box.min.y - p0.y).abs() < 1e-5);
+        assert!((v1_box.min.x - p1.x).abs() < 1e-5 && (v1_box.min.y - p1.y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn edge_vertices_of_a_closed_circle_edge_coincide() {
+        let context = OcctContext::new().unwrap();
+        let circle_wire = context
+            .make_circle_wire(Point3::ORIGIN, Direction3::Z, 2.0)
+            .unwrap();
+        assert_eq!(circle_wire.edge_count().unwrap(), 1);
+        let edge = circle_wire.get_edge(0).unwrap();
+        let (v0, v1) = edge.edge_vertices().unwrap();
+        let v0_box = v0.bounding_box().unwrap();
+        let v1_box = v1.bounding_box().unwrap();
+        assert!((v0_box.min.x - v1_box.min.x).abs() < 1e-5);
+        assert!((v0_box.min.y - v1_box.min.y).abs() < 1e-5);
+        assert!((v0_box.min.z - v1_box.min.z).abs() < 1e-5);
+    }
+
+    #[test]
+    fn edge_vertices_rejects_a_handle_that_is_not_an_edge() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.edge_vertices().unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn a_standalone_edge_has_zero_adjacent_faces() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        assert_eq!(edge.edge_adjacent_face_count(0).unwrap(), 0);
     }
 }

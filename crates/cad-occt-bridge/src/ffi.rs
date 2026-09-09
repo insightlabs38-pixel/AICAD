@@ -202,4 +202,34 @@ unsafe extern "C" {
         out_min: *mut f64, // [f64; 3]
         out_max: *mut f64, // [f64; 3]
     ) -> c_int;
+    pub fn aicad_occt_shape_vertex_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_vertex(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_vertex_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_edge_vertices(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_v0: *mut aicad_shape_handle_t,
+        out_v1: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_adjacent_face_count(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edge_index: usize,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_adjacent_face_get(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edge_index: usize,
+        adjacent_index: usize,
+        out_face_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
 }
