@@ -260,6 +260,11 @@ unsafe extern "C" {
         out_vertices: *mut f64,
         out_normals: *mut f64,
     ) -> c_int;
+    pub fn aicad_occt_export_step(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        file_path: *const std::os::raw::c_char,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t

@@ -579,6 +579,36 @@ aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
                                                  double* out_vertices,
                                                  double* out_normals);
 
+/* --- AICAD-033: STEP export.
+ *
+ * docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md §9's `export_step()`
+ * (paired with `import_step()`, not implemented by this bridge -- no
+ * Stage-1 task needs import). Writes `handle`'s shape to `file_path` as
+ * an AP214 STEP file via OCCT's own `STEPControl_Writer`. See
+ * project/reports/AICAD-033.md for exactly how this task's export was
+ * independently verified (a genuinely OCCT-independent Python STEP-21
+ * parser, not merely re-importing through this same bridge). --- */
+
+/* `file_path` is a caller-owned, null-terminated path (a raw C string,
+ * not an STL std::string, per Stage-1 kernel policy #8); this bridge
+ * neither retains nor frees it beyond the call. Fails with
+ * AICAD_OCCT_ERR_OPERATION_FAILED if OCCT's own writer could not
+ * transfer the shape or could not write the file (e.g. an unwritable
+ * path).
+ *
+ * UNLIKE every other function in this bridge, this one is internally
+ * serialized process-wide (a single mutex, not per-context) across ALL
+ * contexts: OCCT's own STEP translator holds process-global,
+ * non-thread-safe state, and concurrent calls from independent contexts
+ * on independent threads were empirically found to segfault the process
+ * (see project/reports/AICAD-033.md). Callers do not need to add their
+ * own external synchronization for this specific function, but should
+ * expect concurrent aicad_occt_export_step calls from different threads
+ * to block on each other rather than run in parallel. */
+aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t handle,
+                                            const char* file_path);
+
 #ifdef __cplusplus
 }
 #endif

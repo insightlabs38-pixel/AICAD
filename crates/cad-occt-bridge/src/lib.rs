@@ -1013,6 +1013,23 @@ impl<'ctx> Shape<'ctx> {
         Ok(TriangleMesh { vertices, normals })
     }
 
+    /// Exports this shape to `path` as an AP214 STEP file via OCCT's own
+    /// `STEPControl_Writer` (AICAD-033). Returns
+    /// [`KernelError::InvalidArgument`] if `path` cannot be represented
+    /// as a null-terminated C string (e.g. it contains an embedded NUL
+    /// byte, or is not valid UTF-8/OS-string-representable as such).
+    pub fn export_step(&self, path: &std::path::Path) -> KernelResult<()> {
+        let path_str = path.to_str().ok_or(KernelError::InvalidArgument)?;
+        let c_path = std::ffi::CString::new(path_str).map_err(|_| KernelError::InvalidArgument)?;
+        // SAFETY: `c_path` is a valid, live, null-terminated C string for
+        // the duration of this call; `self.context.raw`/`self.raw_handle()`
+        // as in `is_valid`.
+        let status = unsafe {
+            ffi::aicad_occt_export_step(self.context.raw, self.raw_handle(), c_path.as_ptr())
+        };
+        status_result(status)
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -2257,6 +2274,83 @@ mod tests {
         assert!(
             (max_x - 1.0).abs() < 1e-9,
             "box_a's mesh must still reflect its own dimensions"
+        );
+    }
+
+    // --- AICAD-033: STEP export ---
+
+    #[test]
+    fn export_step_writes_a_syntactically_valid_step_file() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let path = std::env::temp_dir().join("aicad_rust_step_export_test.step");
+        box_shape.export_step(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with("ISO-10303-21;"));
+        assert!(contents.contains("FILE_SCHEMA("));
+        assert!(contents.contains("MANIFOLD_SOLID_BREP("));
+        assert_eq!(
+            contents.matches("ADVANCED_FACE(").count(),
+            6,
+            "a box has 6 unique faces (AICAD-028)"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn export_step_fails_cleanly_for_an_unwritable_path() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let path = std::path::Path::new("/nonexistent_directory_aicad/x.step");
+        assert_eq!(
+            box_shape.export_step(path).unwrap_err(),
+            KernelError::OperationFailed
+        );
+    }
+
+    #[test]
+    fn concurrent_export_step_from_independent_contexts_does_not_crash() {
+        // Regression test for a genuine native defect found while writing
+        // this task's own tests: OCCT's STEP translator holds
+        // process-global, non-thread-safe state, and calling
+        // aicad_occt_export_step concurrently from independent contexts
+        // on independent threads intermittently segfaulted the process
+        // before native/occt_bridge/src/aicad_occt_bridge.cpp's
+        // StepExportMutex fix (project/reports/AICAD-033.md). This test
+        // reproduces the exact concurrency pattern that crashed and
+        // confirms it no longer does, matching AGENTS.md's native
+        // crash/hang policy ("add a permanent regression case").
+        const THREAD_COUNT: usize = 8;
+        const EXPORTS_PER_THREAD: usize = 20;
+
+        let results: Vec<bool> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREAD_COUNT)
+                .map(|t| {
+                    scope.spawn(move || {
+                        let context = OcctContext::new()
+                            .expect("context creation should succeed on a worker thread");
+                        let path = std::env::temp_dir()
+                            .join(format!("aicad_step_concurrency_test_{t}.step"));
+                        for i in 0..EXPORTS_PER_THREAD {
+                            let side = 1.0 + (i as f64) * 0.01;
+                            let shape = context
+                                .create_box(side, side, side)
+                                .expect("create_box should succeed on a worker thread");
+                            if shape.export_step(&path).is_err() {
+                                return false;
+                            }
+                        }
+                        std::fs::remove_file(&path).ok();
+                        true
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        assert!(
+            results.iter().all(|&ok| ok),
+            "every thread's every export_step call should succeed without crashing the process"
         );
     }
 }

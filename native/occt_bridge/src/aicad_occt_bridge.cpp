@@ -31,7 +31,10 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
+#include <STEPControl_StepModelType.hxx>
+#include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
@@ -57,6 +60,7 @@
 #include <atomic>
 #include <cmath>
 #include <exception>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -1813,6 +1817,64 @@ aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
   try {
     std::copy(cache->vertices.begin(), cache->vertices.end(), out_vertices);
     std::copy(cache->normals.begin(), cache->normals.end(), out_normals);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+namespace {
+
+// AICAD-033 key finding: OCCT's STEP translator (STEPControl_Writer and
+// the XSTEP/Interface_Static machinery it drives) holds process-global,
+// non-thread-safe state -- confirmed empirically, not assumed: calling
+// aicad_occt_export_step concurrently from independent contexts on
+// independent threads (each thread otherwise fully respecting Stage-1
+// kernel policy #9's single-thread-affine-per-context contract)
+// intermittently segfaulted the process (see project/reports/AICAD-033.md
+// for the exact reproduction). This is a defect in the underlying kernel
+// library's own global state, not a per-context bridge bug, so a
+// per-context lock cannot fix it -- only a single process-wide mutex
+// serializing every STEP export call can, which is what this does.
+std::mutex& StepExportMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+}  // namespace
+
+aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t handle,
+                                            const char* file_path) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (file_path == nullptr || file_path[0] == '\0') {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(StepExportMutex());
+    STEPControl_Writer writer;
+    const IFSelect_ReturnStatus transfer_status = writer.Transfer(*shape, STEPControl_AsIs);
+    if (transfer_status != IFSelect_RetDone) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    const IFSelect_ReturnStatus write_status = writer.Write(file_path);
+    if (write_status != IFSelect_RetDone) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;
