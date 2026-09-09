@@ -10,5 +10,5 @@
 mod context;
 mod ffi;
 
-pub use cad_kernel_api::{KernelError, KernelResult, KernelSolid};
+pub use cad_kernel_api::{KernelError, KernelResult, KernelSolid, RawHandle};
 pub use context::KernelContext;
