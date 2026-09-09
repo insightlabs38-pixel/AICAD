@@ -320,3 +320,52 @@ them; do not add entries here unilaterally.
   prototype-driven and not yet decided — track experiments under
   `project/experiments/` before committing `crates/cad-occt-bridge` or
   `crates/cad-references` to a specific internal persistence mechanism.
+
+---
+
+## DL-10: Stage 0 passed — Stage 1 approved
+
+- Date: 2026-09-09
+- Resolves: Stage-0 exit gate (`project/CURRENT_STAGE.md`)
+- Decision: Stage 0 is approved as passed. Two independent gate
+  recommendations were available: the implementation team's own
+  `project/gates/stage-0-gate.md` (AICAD-014) and a second, independent
+  adversarial review, `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`
+  (commit `aad72671b64e2471ca31c8fa332aeb098d486210`). The independent
+  review found two MAJOR completeness gaps (F1: `if`/`match` never defined
+  in expression position despite the paper example and `docs/plan/07`
+  requiring it; F2: RFC-0004's quantity shape had no `affine_kind`
+  discriminant or absolute-minus-absolute rule despite the affine-unit
+  invariant requiring one) and one MINOR documentation gap (F3: two
+  open-decision-dependent constructs in the paper example lacked inline
+  caveats), patched all three without selecting among any open
+  `project/OWNER_DECISIONS.md` alternative, and re-reviewed the patched
+  state clean. Both recommendations are PASS. The owner accepts the PASS
+  recommendation after the applied patches. Stage 1 is now active per
+  `project/CURRENT_STAGE.md`.
+- Rationale: Owner ruling. The independent review's patches operationalize
+  already-approved rulings (DL-1/DL-2 for F1, DL-3 for F2) rather than
+  making a new architecture choice, and its own re-review (§7) and
+  unresolved-decisions cross-check (§8) confirm no open `OWNER_DECISIONS.md`
+  item (D3, D5, D10, D11, D12, D15, plus the residual sub-items of D7, D8,
+  D13) was silently touched or resolved. This satisfies
+  `project/CURRENT_STAGE.md`'s exit gate (a paper/spec example spanning
+  parameters, function, loop, conditional, sketch, extrusion, semantic
+  query, low-level geometry, assembly, constraint, and test without
+  semantic contradiction) and the evidence standard in `AGENTS.md`
+  ("Stage gates ... Stage progression is an owner decision").
+- Alternatives considered: Passing on the implementation team's own gate
+  packet alone without an independent check (rejected — a second,
+  adversarial review that does not merely trust the authoring batch's own
+  conclusions is stronger evidence, and it found real gaps the first
+  review missed); holding Stage 1 pending a new owner decision (rejected —
+  neither patch required selecting among an open architecture alternative,
+  so no new `OWNER_DECISIONS.md` entry was needed before ruling).
+- Affected RFCs/tasks: Unblocks `AICAD-015` through `AICAD-037` (Stage 1,
+  Batches 1A-1E), authorized through `AICAD-037` inclusive.
+  `AICAD-038` and all Stage-2 work remain forbidden pending a future,
+  separate owner approval.
+- Supersedes: none (first Stage-0 pass ruling). Does not resolve, and does
+  not supersede, any entry in `project/OWNER_DECISIONS.md` — D3, D5, D10,
+  D11, D12, D15, and the residual sub-items of D7, D8, D13 remain open
+  exactly as before.
