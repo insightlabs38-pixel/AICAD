@@ -101,3 +101,28 @@ needed to prove it produced a real, valid B-rep) is implemented so far.
 The rest of the operation list at the top of this file is added
 incrementally by later Stage-1 tasks, per RFC-0002 §3's capability-driven
 minimal-surface rule — this is not a comprehensive up-front OCCT wrapper.
+
+## Lifecycle / shape-handle table stress tests (AICAD-019)
+
+`tests/lifecycle_test.cpp` extends `abi_boundary_test.cpp`'s single-shot
+handle-safety cases with scale and concurrency evidence: free-list reuse
+stays bounded (not unbounded growth) across 1000 create/release cycles;
+generation numbers stay strictly monotonic and never repeat across those
+same 1000 cycles; and 8 threads, each owning its own kernel context,
+create/query/release 100 shapes concurrently with zero cross-thread
+failures. Registered as the `lifecycle_test` CTest test alongside
+`occt_probe` and `abi_boundary_test`.
+
+Recommended leak/error check (not wired into default CI — valgrind on a
+heavy OCCT/Tcl-linked binary is slow; run manually or in a dedicated
+hardening pass):
+
+```sh
+valgrind --leak-check=full --error-exitcode=99 native/occt_bridge/build/abi_boundary_test
+valgrind --leak-check=full --error-exitcode=99 native/occt_bridge/build/lifecycle_test
+```
+
+Both report 0 errors and 0 leaked bytes attributable to this bridge's own
+code (a small "still reachable" allocation from OCCT/Tcl's own one-time
+static initialization is expected and not part of this project's
+allocations) — see `project/reports/AICAD-019.md` for full output.

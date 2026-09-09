@@ -284,4 +284,48 @@ mod tests {
         assert!((shape_a.volume().unwrap() - 27.0).abs() < 1e-9);
         assert!((shape_b.volume().unwrap() - 64.0).abs() < 1e-9);
     }
+
+    /// AICAD-019: proves `OcctContext` is safe to use concurrently across
+    /// real OS threads as long as each thread owns its own context (the
+    /// pattern the single-thread-affine design is meant to support).
+    /// Each `OcctContext` is created *inside* its owning thread's closure
+    /// -- `OcctContext` is neither `Send` nor `Sync`, so the type system
+    /// would reject any attempt to create one thread-side and move or
+    /// share it into another, which is exactly the property under test.
+    #[test]
+    fn many_contexts_are_safe_across_real_threads() {
+        const THREAD_COUNT: usize = 8;
+        const SHAPES_PER_THREAD: usize = 50;
+
+        let results: Vec<bool> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREAD_COUNT)
+                .map(|t| {
+                    scope.spawn(move || {
+                        let context = OcctContext::new()
+                            .expect("context creation should succeed on a worker thread");
+                        for i in 0..SHAPES_PER_THREAD {
+                            let side = 1.0 + (t as f64) * 0.01 + (i as f64) * 0.0001;
+                            let shape = context
+                                .create_box(side, side, side)
+                                .expect("create_box should succeed on a worker thread");
+                            let expected = side * side * side;
+                            let volume = shape
+                                .volume()
+                                .expect("volume should succeed on a worker thread");
+                            if (volume - expected).abs() >= 1e-6 {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        assert!(
+            results.iter().all(|&ok| ok),
+            "every worker thread's independently-owned context must produce correct, non-aliased results"
+        );
+    }
 }
