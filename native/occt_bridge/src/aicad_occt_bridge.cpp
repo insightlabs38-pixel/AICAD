@@ -7,14 +7,18 @@
 
 #include "aicad_occt_bridge.h"
 
+#include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS_Shape.hxx>
 
 #include <atomic>
+#include <cmath>
 #include <exception>
 #include <thread>
 #include <vector>
@@ -180,9 +184,11 @@ aicad_occt_status_t aicad_occt_create_box(aicad_occt_context_t* context,
   if (out_handle == nullptr) {
     return AICAD_OCCT_ERR_INVALID_ARGUMENT;
   }
-  if (!(dx > 0.0) || !(dy > 0.0) || !(dz > 0.0)) {
-    // Also rejects NaN (every comparison with NaN is false), not just
-    // non-positive values.
+  if (!(dx > 0.0) || !(dy > 0.0) || !(dz > 0.0) || !std::isfinite(dx) || !std::isfinite(dy) ||
+      !std::isfinite(dz)) {
+    // The `> 0.0` comparisons also reject NaN (every comparison with NaN
+    // is false); the explicit `isfinite` checks additionally reject
+    // +infinity, which passes `> 0.0` but is not a valid dimension.
     return AICAD_OCCT_ERR_INVALID_ARGUMENT;
   }
   try {
@@ -192,6 +198,37 @@ aicad_occt_status_t aicad_occt_create_box(aicad_occt_context_t* context,
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, make_box.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_create_cylinder(aicad_occt_context_t* context,
+                                                double radius,
+                                                double height,
+                                                aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!(radius > 0.0) || !(height > 0.0) || !std::isfinite(radius) || !std::isfinite(height)) {
+    // The `> 0.0` comparisons also reject NaN; `isfinite` additionally
+    // rejects +infinity, which passes `> 0.0` but is not a valid dimension.
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    BRepPrimAPI_MakeCylinder make_cylinder(radius, height);
+    make_cylinder.Build();
+    if (!make_cylinder.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_cylinder.Shape());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;
@@ -253,6 +290,79 @@ aicad_occt_status_t aicad_occt_shape_volume(aicad_occt_context_t* context,
     GProp_GProps props;
     BRepGProp::VolumeProperties(*shape, props);
     *out_volume = props.Mass();
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_area(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           double* out_area) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_area == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(*shape, props);
+    *out_area = props.Mass();
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_bounding_box(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t handle,
+                                                   double out_min[3],
+                                                   double out_max[3]) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_min == nullptr || out_max == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    Bnd_Box box;
+    BRepBndLib::Add(*shape, box);
+    if (box.IsVoid()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    double xmin, ymin, zmin, xmax, ymax, zmax;
+    box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    out_min[0] = xmin;
+    out_min[1] = ymin;
+    out_min[2] = zmin;
+    out_max[0] = xmax;
+    out_max[1] = ymax;
+    out_max[2] = zmax;
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

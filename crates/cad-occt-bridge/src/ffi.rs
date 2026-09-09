@@ -58,4 +58,21 @@ unsafe extern "C" {
         handle: aicad_shape_handle_t,
         out_volume: *mut f64,
     ) -> c_int;
+    pub fn aicad_occt_create_cylinder(
+        context: *mut aicad_occt_context_t,
+        radius: f64,
+        height: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_area(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_area: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_shape_bounding_box(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_min: *mut f64, // [f64; 3]
+        out_max: *mut f64, // [f64; 3]
+    ) -> c_int;
 }

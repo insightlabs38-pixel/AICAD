@@ -14,7 +14,7 @@
 
 mod ffi;
 
-use cad_kernel_api::{KernelError, KernelId, KernelResult, KernelShape};
+use cad_kernel_api::{KernelError, KernelId, KernelResult, KernelShape, Point3};
 use std::os::raw::c_int;
 
 /// Converts one native `aicad_occt_status_t` value into a
@@ -114,6 +114,26 @@ impl OcctContext {
             id: handle_to_id(handle),
         })
     }
+
+    /// Constructs a capped cylindrical solid centered on the origin with
+    /// its axis along +Z (AICAD-020). A future rigid-transform operation
+    /// places it elsewhere, per RFC-0002 §3's capability-driven
+    /// minimal-surface rule -- this constructor stays origin/+Z-only.
+    pub fn create_cylinder(&self, radius: f64, height: f64) -> KernelResult<Shape<'_>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: same argument as `create_box` above.
+        let status =
+            unsafe { ffi::aicad_occt_create_cylinder(self.raw, radius, height, &mut handle) };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
 }
 
 impl Drop for OcctContext {
@@ -178,9 +198,47 @@ impl<'ctx> Shape<'ctx> {
         Ok(volume)
     }
 
+    /// Total surface area of every face in this shape.
+    pub fn area(&self) -> KernelResult<f64> {
+        let mut area: f64 = 0.0;
+        // SAFETY: see `is_valid`'s SAFETY comment; identical argument.
+        let status =
+            unsafe { ffi::aicad_occt_shape_area(self.context.raw, self.raw_handle(), &mut area) };
+        status_result(status)?;
+        Ok(area)
+    }
+
+    /// This shape's axis-aligned bounding box.
+    pub fn bounding_box(&self) -> KernelResult<BoundingBox> {
+        let mut min = [0.0; 3];
+        let mut max = [0.0; 3];
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut min`/`&mut max`
+        // are valid 3-element out-params per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_bounding_box(
+                self.context.raw,
+                self.raw_handle(),
+                min.as_mut_ptr(),
+                max.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        Ok(BoundingBox {
+            min: Point3::new(min[0], min[1], min[2]),
+            max: Point3::new(max[0], max[1], max[2]),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
+}
+
+/// An axis-aligned bounding box, as reported by [`Shape::bounding_box`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoundingBox {
+    pub min: Point3,
+    pub max: Point3,
 }
 
 impl<'ctx> Drop for Shape<'ctx> {
@@ -326,6 +384,32 @@ mod tests {
         assert!(
             results.iter().all(|&ok| ok),
             "every worker thread's independently-owned context must produce correct, non-aliased results"
+        );
+    }
+
+    // --- AICAD-020: cylinder ---
+
+    #[test]
+    fn create_cylinder_is_valid_and_has_the_expected_volume() {
+        let context = OcctContext::new().unwrap();
+        let shape = context
+            .create_cylinder(2.0, 5.0)
+            .expect("create_cylinder should succeed");
+        assert!(shape.is_valid().unwrap());
+        let expected = std::f64::consts::PI * 2.0 * 2.0 * 5.0;
+        assert!((shape.volume().unwrap() - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn create_cylinder_rejects_invalid_dimensions() {
+        let context = OcctContext::new().unwrap();
+        assert_eq!(
+            context.create_cylinder(0.0, 5.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            context.create_cylinder(2.0, -1.0).unwrap_err(),
+            KernelError::InvalidArgument
         );
     }
 }

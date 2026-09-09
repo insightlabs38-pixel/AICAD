@@ -92,6 +92,11 @@ add_executable(lifecycle_test tests/lifecycle_test.cpp)
 target_include_directories(lifecycle_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lifecycle_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+# --- Batch 1B: constructive geometry (AICAD-020..024) ---
+add_executable(box_cylinder_test tests/box_cylinder_test.cpp)
+target_include_directories(box_cylinder_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(box_cylinder_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -99,6 +104,8 @@ add_test(NAME abi_boundary_test COMMAND abi_boundary_test)
 set_tests_properties(abi_boundary_test PROPERTIES TIMEOUT 60)
 add_test(NAME lifecycle_test COMMAND lifecycle_test)
 set_tests_properties(lifecycle_test PROPERTIES TIMEOUT 120)
+add_test(NAME box_cylinder_test COMMAND box_cylinder_test)
+set_tests_properties(box_cylinder_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #

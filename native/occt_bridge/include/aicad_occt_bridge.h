@@ -106,9 +106,19 @@ aicad_occt_status_t aicad_occt_create_box(aicad_occt_context_t* context,
                                            double dz,
                                            aicad_shape_handle_t* out_handle);
 
-/* --- Query helpers used to prove create_box produced a real, valid
- * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
- * geometry API yet; `cad-geometry-api` owns that surface later. --- */
+/* Constructs a capped cylindrical solid of the given radius/height,
+ * centered on the origin with its axis along +Z (placement/orientation is
+ * applied afterward via aicad_occt_transform_shape, per RFC-0002 §3's
+ * capability-driven minimal-surface rule -- this bridge does not grow a
+ * second, placement-aware constructor per primitive). */
+aicad_occt_status_t aicad_occt_create_cylinder(aicad_occt_context_t* context,
+                                                double radius,
+                                                double height,
+                                                aicad_shape_handle_t* out_handle);
+
+/* --- Query helpers used to prove create_box/create_cylinder produced a
+ * real, valid B-rep, per AGENTS.md's evidence rule -- not exposed as
+ * end-user geometry API yet; `cad-geometry-api` owns that surface later. --- */
 
 aicad_occt_status_t aicad_occt_shape_is_valid(aicad_occt_context_t* context,
                                                aicad_shape_handle_t handle,
@@ -117,6 +127,19 @@ aicad_occt_status_t aicad_occt_shape_is_valid(aicad_occt_context_t* context,
 aicad_occt_status_t aicad_occt_shape_volume(aicad_occt_context_t* context,
                                              aicad_shape_handle_t handle,
                                              double* out_volume);
+
+/* Total surface area of every face in the shape (for a solid: its full
+ * boundary area; for a single face: that face's own area). */
+aicad_occt_status_t aicad_occt_shape_area(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           double* out_area);
+
+/* Axis-aligned bounding box, in the kernel's internal linear unit.
+ * `out_min`/`out_max` each receive 3 doubles (x, y, z). */
+aicad_occt_status_t aicad_occt_shape_bounding_box(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t handle,
+                                                   double out_min[3],
+                                                   double out_max[3]);
 
 #ifdef __cplusplus
 }
