@@ -247,6 +247,27 @@ unsafe extern "C" {
         handle: aicad_shape_handle_t,
         out_report: *mut aicad_validation_report_t,
     ) -> c_int;
+    pub fn aicad_occt_tessellate(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        linear_deflection: f64,
+        angular_deflection: f64,
+        out_counts: *mut aicad_tessellation_counts_t,
+    ) -> c_int;
+    pub fn aicad_occt_tessellation_get(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_vertices: *mut f64,
+        out_normals: *mut f64,
+    ) -> c_int;
+}
+
+/// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t
+/// triangle_count;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_tessellation_counts_t {
+    pub triangle_count: usize,
 }
 
 /// Mirrors `aicad_validation_report_t` field-for-field: `int is_valid;

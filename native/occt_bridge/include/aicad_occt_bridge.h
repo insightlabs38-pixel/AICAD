@@ -530,6 +530,55 @@ aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
                                                aicad_shape_handle_t handle,
                                                aicad_validation_report_t* out_report);
 
+/* --- AICAD-032: display tessellation output.
+ *
+ * A two-call protocol, matching aicad_occt_shape_edge_count/_get_edge's
+ * own count-then-fetch convention: aicad_occt_tessellate performs the
+ * actual meshing and caches the result keyed to `handle`'s own slot (not
+ * a single shared "last tessellation" -- multiple handles may each hold
+ * their own cached result simultaneously); aicad_occt_tessellation_get
+ * copies that cached result into caller-owned buffers. The cache is
+ * cleared whenever `handle`'s slot is released or reused by a new shape
+ * (Stage-1 kernel policy #10: epoch-bound, ephemeral) -- a stale
+ * tessellation can never be returned for a different shape occupying the
+ * same slot.
+ *
+ * Output is flat-shaded triangle-soup: each triangle owns 3 private
+ * vertex positions and one flat geometric normal (not shared/averaged
+ * with neighboring triangles), not a vertex-shared, smooth-normal mesh --
+ * see project/reports/AICAD-032.md for why this simplification was made
+ * for Stage-1's own scope. --- */
+
+typedef struct aicad_tessellation_counts {
+  size_t triangle_count;
+} aicad_tessellation_counts_t;
+
+/* Runs BRepMesh_IncrementalMesh on `handle`'s shape at the given
+ * (absolute, not relative) linear/angular deflections and caches a
+ * flat-shaded triangle-soup tessellation for it. `linear_deflection`/
+ * `angular_deflection` must both be finite and > 0. Reports
+ * `out_counts->triangle_count`; call aicad_occt_tessellation_get next
+ * (with the SAME handle) to fetch the actual buffers. */
+aicad_occt_status_t aicad_occt_tessellate(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           double linear_deflection,
+                                           double angular_deflection,
+                                           aicad_tessellation_counts_t* out_counts);
+
+/* Fills caller-owned buffers with `handle`'s own most recently cached
+ * tessellation (from a prior aicad_occt_tessellate call against this
+ * SAME handle). `out_vertices` and `out_normals` each receive
+ * `9 * triangle_count` doubles (3 vertices per triangle * 3 coordinates;
+ * `out_normals` holds each triangle's one flat normal, duplicated across
+ * its 3 vertices, at the same offsets as `out_vertices`). Fails with
+ * AICAD_OCCT_ERR_INVALID_ARGUMENT if no tessellation is cached for
+ * `handle` (aicad_occt_tessellate was never called for it, or its cache
+ * was invalidated by a slot release/reuse). */
+aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 double* out_vertices,
+                                                 double* out_normals);
+
 #ifdef __cplusplus
 }
 #endif

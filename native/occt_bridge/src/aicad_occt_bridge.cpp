@@ -19,6 +19,7 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -27,11 +28,14 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <Poly_Triangulation.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
@@ -49,6 +53,7 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <exception>
@@ -57,6 +62,19 @@
 
 namespace {
 
+// AICAD-032: a cached flat-shaded triangle-soup tessellation for one
+// shape slot. `vertices`/`normals` are each `9 * triangle_count` doubles
+// (3 vertices per triangle * 3 coordinates, not shared across triangles;
+// `normals` holds each triangle's one flat normal duplicated across its
+// 3 vertices). `present` distinguishes "never tessellated" from "an
+// empty (zero-triangle) tessellation was cached".
+struct TessellationCache {
+  std::vector<double> vertices;
+  std::vector<double> normals;
+  size_t triangle_count = 0;
+  bool present = false;
+};
+
 // One slot in a context's shape table. `generation` is bumped every time
 // the slot is released, so a handle minted before release never matches
 // a shape later inserted into the same slot (Stage-1 kernel policy #5).
@@ -64,6 +82,7 @@ struct ShapeSlot {
   TopoDS_Shape shape;
   uint32_t generation = 0;
   bool occupied = false;
+  TessellationCache tessellation;
 };
 
 // Context-owned table of shapes, addressed by (slot, generation). Not
@@ -83,6 +102,9 @@ class ShapeTable {
     ShapeSlot& slot = slots_[slot_index];
     slot.shape = std::move(shape);
     slot.occupied = true;
+    // A new occupant never inherits a stale tessellation cache left by
+    // whatever previously occupied this slot (Stage-1 kernel policy #10).
+    slot.tessellation = TessellationCache();
     // generation starts at 1 for a slot's first-ever occupant (not 0, so
     // a value-initialized/zeroed handle can never validate).
     if (slot.generation == 0) {
@@ -112,9 +134,42 @@ class ShapeTable {
       return AICAD_OCCT_ERR_STALE_HANDLE;
     }
     slot.shape = TopoDS_Shape();
+    slot.tessellation = TessellationCache();
     slot.occupied = false;
     slot.generation += 1;
     free_slots_.push_back(handle.slot);
+    return AICAD_OCCT_OK;
+  }
+
+  // AICAD-032: stores a freshly computed tessellation for `handle`'s own
+  // slot (overwriting any previous cache for it).
+  aicad_occt_status_t SetTessellation(aicad_shape_handle_t handle, TessellationCache cache) {
+    if (handle.slot >= slots_.size()) {
+      return AICAD_OCCT_ERR_INVALID_HANDLE;
+    }
+    ShapeSlot& slot = slots_[handle.slot];
+    if (!slot.occupied || slot.generation != handle.generation) {
+      return AICAD_OCCT_ERR_STALE_HANDLE;
+    }
+    slot.tessellation = std::move(cache);
+    return AICAD_OCCT_OK;
+  }
+
+  // AICAD-032: retrieves `handle`'s own cached tessellation, if any.
+  // AICAD_OCCT_ERR_INVALID_ARGUMENT (not a handle-validity error) means
+  // the handle is valid but no tessellation is cached for it yet.
+  aicad_occt_status_t GetTessellation(aicad_shape_handle_t handle, const TessellationCache** out) const {
+    if (handle.slot >= slots_.size()) {
+      return AICAD_OCCT_ERR_INVALID_HANDLE;
+    }
+    const ShapeSlot& slot = slots_[handle.slot];
+    if (!slot.occupied || slot.generation != handle.generation) {
+      return AICAD_OCCT_ERR_STALE_HANDLE;
+    }
+    if (!slot.tessellation.present) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    *out = &slot.tessellation;
     return AICAD_OCCT_OK;
   }
 
@@ -1602,6 +1657,162 @@ aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
     out_report->invalid_edge_count = CountInvalid(analyzer, edges);
     out_report->invalid_wire_count = CountInvalid(analyzer, wires);
     out_report->invalid_face_count = CountInvalid(analyzer, faces);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
+
+namespace {
+
+// AICAD-032: builds a flat-shaded triangle-soup TessellationCache for
+// `shape` at the given deflections. Returns false (leaving `out`
+// untouched) if BRepMesh_IncrementalMesh itself did not complete.
+bool ExtractTessellation(const TopoDS_Shape& shape,
+                          double linear_deflection,
+                          double angular_deflection,
+                          TessellationCache* out) {
+  BRepMesh_IncrementalMesh mesher(shape, linear_deflection, Standard_False, angular_deflection,
+                                   Standard_False);
+  if (!mesher.IsDone()) {
+    return false;
+  }
+
+  std::vector<double> vertices;
+  std::vector<double> normals;
+  size_t triangle_count = 0;
+
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(shape, TopAbs_FACE, faces);
+  for (Standard_Integer fi = 1; fi <= faces.Extent(); ++fi) {
+    const TopoDS_Face& face = TopoDS::Face(faces.FindKey(fi));
+    TopLoc_Location location;
+    const Handle(Poly_Triangulation)& triangulation = BRep_Tool::Triangulation(face, location);
+    if (triangulation.IsNull()) {
+      // BRepMesh_IncrementalMesh reported IsDone() overall but this
+      // particular face still has no triangulation -- contribute no
+      // triangles from it rather than failing the whole operation.
+      continue;
+    }
+    const gp_Trsf& trsf = location.Transformation();
+    const bool reversed = (face.Orientation() == TopAbs_REVERSED);
+    for (Standard_Integer ti = 1; ti <= triangulation->NbTriangles(); ++ti) {
+      Standard_Integer n1, n2, n3;
+      triangulation->Triangle(ti).Get(n1, n2, n3);
+      if (reversed) {
+        // A REVERSED face's triangle node order is defined relative to
+        // its underlying surface's natural (non-reversed) parametrization
+        // -- swapping two nodes flips the winding to match the face's
+        // own actual (outward) orientation.
+        std::swap(n2, n3);
+      }
+      const gp_Pnt p1 = triangulation->Node(n1).Transformed(trsf);
+      const gp_Pnt p2 = triangulation->Node(n2).Transformed(trsf);
+      const gp_Pnt p3 = triangulation->Node(n3).Transformed(trsf);
+      const gp_Vec edge1(p1, p2);
+      const gp_Vec edge2(p1, p3);
+      const gp_Vec raw_normal = edge1.Crossed(edge2);
+      const double normal_length = raw_normal.Magnitude();
+      double nx = 0.0, ny = 0.0, nz = 0.0;
+      if (normal_length > 1e-12) {
+        nx = raw_normal.X() / normal_length;
+        ny = raw_normal.Y() / normal_length;
+        nz = raw_normal.Z() / normal_length;
+      }
+      const gp_Pnt* corners[3] = {&p1, &p2, &p3};
+      for (const gp_Pnt* corner : corners) {
+        vertices.push_back(corner->X());
+        vertices.push_back(corner->Y());
+        vertices.push_back(corner->Z());
+        normals.push_back(nx);
+        normals.push_back(ny);
+        normals.push_back(nz);
+      }
+      triangle_count += 1;
+    }
+  }
+
+  out->vertices = std::move(vertices);
+  out->normals = std::move(normals);
+  out->triangle_count = triangle_count;
+  out->present = true;
+  return true;
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_tessellate(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           double linear_deflection,
+                                           double angular_deflection,
+                                           aicad_tessellation_counts_t* out_counts) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_counts == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!(linear_deflection > 0.0) || !std::isfinite(linear_deflection) ||
+      !(angular_deflection > 0.0) || !std::isfinite(angular_deflection)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TessellationCache cache;
+    if (!ExtractTessellation(*shape, linear_deflection, angular_deflection, &cache)) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    out_counts->triangle_count = cache.triangle_count;
+    status = context->shapes.SetTessellation(handle, std::move(cache));
+    if (status != AICAD_OCCT_OK) {
+      return status;
+    }
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 double* out_vertices,
+                                                 double* out_normals) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_vertices == nullptr || out_normals == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TessellationCache* cache = nullptr;
+  status = context->shapes.GetTessellation(handle, &cache);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    std::copy(cache->vertices.begin(), cache->vertices.end(), out_vertices);
+    std::copy(cache->normals.begin(), cache->normals.end(), out_normals);
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

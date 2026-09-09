@@ -958,6 +958,61 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Tessellates this shape into a flat-shaded triangle-soup mesh
+    /// (AICAD-032), via `BRepMesh_IncrementalMesh` at the given
+    /// (absolute) linear/angular deflections. Hides the native two-call
+    /// count-then-fetch protocol behind one Rust call; each call
+    /// re-tessellates from scratch (no caching is exposed at this level).
+    pub fn tessellate(
+        &self,
+        linear_deflection: f64,
+        angular_deflection: f64,
+    ) -> KernelResult<TriangleMesh> {
+        let mut counts = ffi::aicad_tessellation_counts_t::default();
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut counts` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_tessellate(
+                self.context.raw,
+                self.raw_handle(),
+                linear_deflection,
+                angular_deflection,
+                &mut counts,
+            )
+        };
+        status_result(status)?;
+        let triangle_count = counts.triangle_count;
+        let mut raw_vertices = vec![0.0_f64; 9 * triangle_count];
+        let mut raw_normals = vec![0.0_f64; 9 * triangle_count];
+        // SAFETY: `raw_vertices`/`raw_normals` are each a valid, live,
+        // `9 * triangle_count`-element `f64` buffer for the duration of
+        // this call, matching aicad_occt_tessellation_get's documented
+        // buffer-size contract for the SAME handle's just-cached
+        // tessellation; `self.context.raw`/`self.raw_handle()` as above.
+        let status = unsafe {
+            ffi::aicad_occt_tessellation_get(
+                self.context.raw,
+                self.raw_handle(),
+                raw_vertices.as_mut_ptr(),
+                raw_normals.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        let vertices = raw_vertices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+        let normals = raw_normals
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|c| cad_kernel_api::Vector3::new(c[0], c[1], c[2]))
+            .collect();
+        Ok(TriangleMesh { vertices, normals })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -986,6 +1041,27 @@ pub struct ValidationReport {
     pub invalid_edge_count: usize,
     pub invalid_wire_count: usize,
     pub invalid_face_count: usize,
+}
+
+/// A flat-shaded triangle-soup mesh, as returned by [`Shape::tessellate`]
+/// (AICAD-032). `vertices.len() == normals.len() == 3 *
+/// triangle_count()`; vertices are **not** shared/deduplicated across
+/// triangles -- triangle `i` owns `vertices[3*i..3*i+3]`, each paired 1:1
+/// with `normals[3*i..3*i+3]`: that triangle's own flat geometric normal,
+/// duplicated across its 3 vertices (not an averaged/smooth per-vertex
+/// normal). See `project/reports/AICAD-032.md` for why this
+/// simplification was made for Stage-1's own scope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriangleMesh {
+    pub vertices: Vec<Point3>,
+    pub normals: Vec<cad_kernel_api::Vector3>,
+}
+
+impl TriangleMesh {
+    /// The number of triangles in this mesh (`vertices.len() / 3`).
+    pub fn triangle_count(&self) -> usize {
+        self.vertices.len() / 3
+    }
 }
 
 impl<'ctx> Drop for Shape<'ctx> {
@@ -2095,5 +2171,92 @@ mod tests {
         assert_eq!(report.invalid_vertex_count, 0);
         assert_eq!(report.invalid_edge_count, 0);
         assert_eq!(report.invalid_wire_count, 0);
+    }
+
+    // --- AICAD-032: display tessellation output ---
+
+    #[test]
+    fn a_box_tessellates_into_exactly_twelve_triangles() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let mesh = box_shape.tessellate(0.1, 0.5).unwrap();
+        assert_eq!(mesh.triangle_count(), 12);
+        assert_eq!(mesh.vertices.len(), 36);
+        assert_eq!(mesh.normals.len(), 36);
+    }
+
+    #[test]
+    fn tessellated_box_vertices_span_its_analytic_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz) = (2.0, 3.0, 4.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let mesh = box_shape.tessellate(0.1, 0.5).unwrap();
+        let (mut min, mut max) = (
+            Point3::new(1e300, 1e300, 1e300),
+            Point3::new(-1e300, -1e300, -1e300),
+        );
+        for v in &mesh.vertices {
+            min = Point3::new(min.x.min(v.x), min.y.min(v.y), min.z.min(v.z));
+            max = Point3::new(max.x.max(v.x), max.y.max(v.y), max.z.max(v.z));
+        }
+        assert!((min.x - 0.0).abs() < 1e-9 && (max.x - dx).abs() < 1e-9);
+        assert!((min.y - 0.0).abs() < 1e-9 && (max.y - dy).abs() < 1e-9);
+        assert!((min.z - 0.0).abs() < 1e-9 && (max.z - dz).abs() < 1e-9);
+    }
+
+    #[test]
+    fn every_tessellated_box_normal_is_a_unit_axis_aligned_vector() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let mesh = box_shape.tessellate(0.1, 0.5).unwrap();
+        for n in &mesh.normals {
+            let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
+            assert!((len - 1.0).abs() < 1e-6);
+            let axis_aligned_count = [n.x, n.y, n.z]
+                .iter()
+                .filter(|c| (c.abs() - 1.0).abs() < 1e-6)
+                .count();
+            assert_eq!(axis_aligned_count, 1);
+        }
+    }
+
+    #[test]
+    fn a_cylinder_tessellates_into_more_than_a_trivial_handful_of_triangles() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(1.0, 2.0).unwrap();
+        let mesh = cylinder.tessellate(0.05, 0.2).unwrap();
+        assert!(mesh.triangle_count() > 8);
+    }
+
+    #[test]
+    fn tessellate_rejects_non_positive_deflections() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.tessellate(0.0, 0.5).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.tessellate(0.1, 0.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.tessellate(-0.1, 0.5).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn two_shapes_tessellate_independently() {
+        let context = OcctContext::new().unwrap();
+        let box_a = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let box_b = context.create_box(5.0, 5.0, 5.0).unwrap();
+        let mesh_a = box_a.tessellate(0.1, 0.5).unwrap();
+        let _mesh_b = box_b.tessellate(0.1, 0.5).unwrap();
+        let max_x = mesh_a.vertices.iter().fold(f64::MIN, |acc, v| acc.max(v.x));
+        assert!(
+            (max_x - 1.0).abs() < 1e-9,
+            "box_a's mesh must still reflect its own dimensions"
+        );
     }
 }
