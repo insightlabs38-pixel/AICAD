@@ -12,6 +12,25 @@ several prior sessions recorded in git history that had to reconcile
 divergent sibling branches). This session's own work is `git log`-visible
 starting at commit `182850f`.
 
+**Canonical-publishing status — NOT YET CANONICAL.** This session's
+commits (`182850f` through `1f4fa19`, listed below) are pushed to
+`origin/branch/pensive-hopper-5cbjby` but **not yet merged into
+`origin/main`**. `origin/main` remains at `179afd8` (confirmed via a
+fresh `git fetch origin main` immediately before this note was written —
+unchanged since this session's own base, so no reconciliation is needed
+whenever the merge happens). Per this session's own operating
+instructions, PR creation is gated on explicit user request and was not
+authorized this session, so no PR was opened. **A future invocation must
+not treat Batch 1C as complete-on-main until it verifies these commits
+(or their equivalent) are actually present in `origin/main`'s ancestry**
+— check `git log origin/main` for commit `61a9520` (AICAD-028) or later
+before assuming this work is canonical, exactly as this file's own
+"CANONICAL PUBLISHING" operating instructions require. If a PR for
+`branch/pensive-hopper-5cbjby` does not yet exist, one should be opened
+(by a human, or by a future invocation explicitly authorized to do so) to
+merge this branch the same way `branch/loving-feynman-qde9m3` (Batch 1A+
+1B) was merged via PR #2.
+
 This session completed **all of Batch 1C** (`AICAD-025` through
 `AICAD-028`, the last batch before Batch 1D):
 
