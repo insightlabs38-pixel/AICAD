@@ -492,6 +492,86 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Union (fuse) of `self` and `other` (AICAD-026). Neither operand is
+    /// mutated; the result is a new [`Shape`] in the same context (DL-2).
+    /// Unlike `extrude`/`revolve`/`sweep`, this does not require a
+    /// specific topological input kind: OCCT's own boolean algorithms
+    /// always produce a Compound result (verified empirically, not
+    /// assumed -- see `project/reports/AICAD-026.md`), so restricting
+    /// operands to Solid would make a boolean result un-chainable into a
+    /// further boolean operation.
+    pub fn union(&self, other: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`; `other.raw_handle()` addresses a
+        // slot `other` owns in the same context (enforced by `'ctx`).
+        let status = unsafe {
+            ffi::aicad_occt_boolean_union(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Subtraction: `self` minus `other` (AICAD-026). See [`Shape::union`]
+    /// for the operand-kind rationale.
+    pub fn cut(&self, other: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `union` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_boolean_cut(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Intersection (common material) of `self` and `other` (AICAD-026).
+    /// See [`Shape::union`] for the operand-kind rationale.
+    pub fn intersect(&self, other: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `union` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_boolean_intersect(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -1052,5 +1132,115 @@ mod tests {
             context.loft(&[&not_a_wire, &b]).unwrap_err(),
             KernelError::InvalidArgument
         );
+    }
+
+    // --- AICAD-026: boolean union/cut/intersect ---
+
+    fn overlapping_boxes(context: &OcctContext) -> (Shape<'_>, Shape<'_>) {
+        let a = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b_raw = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b = b_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                1.0, 1.0, 1.0,
+            )))
+            .unwrap();
+        (a, b)
+    }
+
+    #[test]
+    fn boolean_union_matches_inclusion_exclusion_volume() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let fused = a.union(&b).expect("union should succeed");
+        assert!(fused.is_valid().unwrap());
+        assert!((fused.volume().unwrap() - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_cut_matches_inclusion_exclusion_volume() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let cut = a.cut(&b).expect("cut should succeed");
+        assert!(cut.is_valid().unwrap());
+        assert!((cut.volume().unwrap() - 7.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_intersect_matches_inclusion_exclusion_volume() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let common = a.intersect(&b).expect("intersect should succeed");
+        assert!(common.is_valid().unwrap());
+        assert!((common.volume().unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_result_is_chainable_into_a_further_boolean() {
+        // Boolean results are Compounds, not Solids (verified empirically
+        // -- see project/reports/AICAD-026.md); this proves the Rust
+        // wrapper's operand-kind-unrestricted contract actually allows
+        // chaining, not just that the native ABI does.
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let fused = a.union(&b).unwrap(); // volume 15
+        let third = context.create_box(3.0, 3.0, 3.0).unwrap(); // volume 27
+        let third_far = third
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                100.0, 100.0, 100.0,
+            )))
+            .unwrap();
+        let chained = fused
+            .union(&third_far)
+            .expect("chained union should succeed");
+        assert!((chained.volume().unwrap() - 42.0).abs() < 1e-6);
+    }
+
+    /// AICAD-026/SESSION_HANDOFF: the Rust-level counterpart of
+    /// `native/occt_bridge/tests/boolean_test.cpp`'s "epoch bump on
+    /// mutation" case, but expressed through the borrow checker instead
+    /// of the raw ABI: dropping one boolean-union input must release
+    /// exactly that shape's native handle without disturbing the other
+    /// input or the union result, both of which remain independently
+    /// usable `Shape<'ctx>` values for the rest of the context's
+    /// lifetime.
+    #[test]
+    fn dropping_one_boolean_input_does_not_disturb_the_other_input_or_the_result() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let fused = a.union(&b).expect("union should succeed");
+        drop(a); // releases only `a`'s native handle
+        assert!(
+            (b.volume().unwrap() - 8.0).abs() < 1e-9,
+            "the other, undropped boolean-union input must remain valid after its sibling is dropped"
+        );
+        assert!(
+            (fused.volume().unwrap() - 15.0).abs() < 1e-6,
+            "the union result must remain valid and unchanged after one of its two original inputs is dropped"
+        );
+    }
+
+    #[test]
+    fn boolean_disjoint_intersect_is_empty() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let b_raw = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let b = b_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                10.0, 10.0, 10.0,
+            )))
+            .unwrap();
+        let common = a
+            .intersect(&b)
+            .expect("intersect should succeed (construct an empty result)");
+        assert!((common.volume().unwrap() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn boolean_union_rejects_a_handle_from_a_foreign_context() {
+        let context_a = OcctContext::new().unwrap();
+        let context_b = OcctContext::new().unwrap();
+        let a = context_a.create_box(1.0, 1.0, 1.0).unwrap();
+        let foreign = context_b.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(a.union(&foreign).unwrap_err(), KernelError::ForeignContext);
     }
 }

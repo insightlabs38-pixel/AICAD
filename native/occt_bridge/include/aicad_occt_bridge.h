@@ -237,6 +237,38 @@ aicad_occt_status_t aicad_occt_loft(aicad_occt_context_t* context,
                                      size_t section_count,
                                      aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-026: boolean union/cut/intersect.
+ *
+ * Unlike extrude/revolve/sweep (which each require one specific
+ * topological input kind, per RFC-0002 §3's minimal-surface rule), these
+ * accept any non-null shape handle for both operands: OCCT's own
+ * BRepAlgoAPI_Fuse/Cut/Common always produce a TopAbs_COMPOUND result
+ * (verified empirically, not assumed -- even fusing two TopAbs_SOLID
+ * boxes yields a COMPOUND, never a bare SOLID), so restricting these
+ * operations' own inputs to TopAbs_SOLID would make boolean results
+ * un-chainable into a second boolean operation. See
+ * project/reports/AICAD-026.md. Both operands must already belong to
+ * `context`; a stale, invalid, or foreign-context handle for either is
+ * rejected exactly as every other operation in this bridge rejects one. --- */
+
+/* Union (fuse) of `a` and `b`. */
+aicad_occt_status_t aicad_occt_boolean_union(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t a,
+                                              aicad_shape_handle_t b,
+                                              aicad_shape_handle_t* out_handle);
+
+/* Subtraction: `a` minus `b`. */
+aicad_occt_status_t aicad_occt_boolean_cut(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t a,
+                                            aicad_shape_handle_t b,
+                                            aicad_shape_handle_t* out_handle);
+
+/* Intersection (common material) of `a` and `b`. */
+aicad_occt_status_t aicad_occt_boolean_intersect(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t a,
+                                                  aicad_shape_handle_t b,
+                                                  aicad_shape_handle_t* out_handle);
+
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
  * geometry API yet; `cad-geometry-api` owns that surface later. --- */

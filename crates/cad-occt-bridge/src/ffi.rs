@@ -121,6 +121,24 @@ unsafe extern "C" {
         section_count: usize,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_boolean_union(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_boolean_cut(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_boolean_intersect(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_area(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,

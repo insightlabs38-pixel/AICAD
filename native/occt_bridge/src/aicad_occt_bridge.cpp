@@ -14,6 +14,9 @@
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -672,6 +675,128 @@ aicad_occt_status_t aicad_occt_loft(aicad_occt_context_t* context,
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, thru_sections.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+namespace {
+
+// Shared lookup for both boolean operands: unlike LookupTyped, no
+// topological-kind restriction is imposed (see this function's callers'
+// header doc comment for why).
+aicad_occt_status_t LookupBooleanOperand(aicad_occt_context_t* context,
+                                          aicad_shape_handle_t handle,
+                                          const TopoDS_Shape** out) {
+  aicad_occt_status_t status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  return context->shapes.Lookup(handle, out);
+}
+
+}  // namespace
+
+aicad_occt_status_t aicad_occt_boolean_union(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t a,
+                                              aicad_shape_handle_t b,
+                                              aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape_a = nullptr;
+  status = LookupBooleanOperand(context, a, &shape_a);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* shape_b = nullptr;
+  status = LookupBooleanOperand(context, b, &shape_b);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepAlgoAPI_Fuse fuse(*shape_a, *shape_b);
+    if (!fuse.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, fuse.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_boolean_cut(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t a,
+                                            aicad_shape_handle_t b,
+                                            aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape_a = nullptr;
+  status = LookupBooleanOperand(context, a, &shape_a);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* shape_b = nullptr;
+  status = LookupBooleanOperand(context, b, &shape_b);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepAlgoAPI_Cut cut(*shape_a, *shape_b);
+    if (!cut.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, cut.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_boolean_intersect(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t a,
+                                                  aicad_shape_handle_t b,
+                                                  aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape_a = nullptr;
+  status = LookupBooleanOperand(context, a, &shape_a);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* shape_b = nullptr;
+  status = LookupBooleanOperand(context, b, &shape_b);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepAlgoAPI_Common common(*shape_a, *shape_b);
+    if (!common.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, common.Shape());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;
