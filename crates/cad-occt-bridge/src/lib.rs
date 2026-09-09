@@ -222,6 +222,37 @@ impl OcctContext {
             id: handle_to_id(handle),
         })
     }
+
+    /// Lofts a solid through an ordered list of closed planar wire
+    /// cross-sections (`sections.len() >= 2`), each owned by this
+    /// context, using straight (ruled) generatrices between consecutive
+    /// sections -- the minimal, analytically-predictable loft form
+    /// (AICAD-025). All sections must share the same number of
+    /// edges/vertices for OCCT to establish a correspondence between
+    /// them.
+    pub fn loft<'ctx>(&'ctx self, sections: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> = sections
+            .iter()
+            .map(|section| id_to_handle(section.id))
+            .collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `handles` is a valid, live, contiguous array of
+        // `handles.len()` elements for the duration of this call (no STL
+        // container crosses the boundary), matching
+        // `aicad_occt_make_wire_from_edges`' convention; `self.raw`/
+        // `&mut handle` as in `create_box`.
+        let status =
+            unsafe { ffi::aicad_occt_loft(self.raw, handles.as_ptr(), handles.len(), &mut handle) };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
 }
 
 impl Drop for OcctContext {
@@ -418,6 +449,39 @@ impl<'ctx> Shape<'ctx> {
                 origin.as_ptr(),
                 direction.as_ptr(),
                 angle_radians,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Sweeps this planar profile face along `spine` (a path wire owned by
+    /// the same context), producing a solid (AICAD-025). The spine may be
+    /// open or closed but must be G1-continuous; a sharp-cornered spine
+    /// may construct a shape that reports invalid rather than being
+    /// rejected outright -- construction success and topological validity
+    /// are distinct here, matching [`Shape::make_face`]'s own documented
+    /// contract (Stage-1 kernel policy #14). See
+    /// `project/reports/AICAD-025.md` for exactly which spines are
+    /// supported.
+    pub fn sweep(&self, spine: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`; `spine.raw_handle()` addresses a
+        // slot `spine` owns in the same context (enforced by `'ctx`).
+        let status = unsafe {
+            ffi::aicad_occt_sweep(
+                self.context.raw,
+                self.raw_handle(),
+                spine.raw_handle(),
                 &mut handle,
             )
         };
@@ -857,6 +921,135 @@ mod tests {
         );
         assert_eq!(
             face.extrude(Direction3::Z, -1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    // --- AICAD-025: sweep and loft ---
+
+    fn square_wire<'ctx>(context: &'ctx OcctContext, side: f64, z: f64) -> Shape<'ctx> {
+        let p = |x: f64, y: f64| Point3::new(x, y, z);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(side, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(side, 0.0), p(side, side)).unwrap();
+        let e2 = context.make_line_edge(p(side, side), p(0.0, side)).unwrap();
+        let e3 = context.make_line_edge(p(0.0, side), p(0.0, 0.0)).unwrap();
+        context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap()
+    }
+
+    fn centered_square_wire<'ctx>(context: &'ctx OcctContext, side: f64, z: f64) -> Shape<'ctx> {
+        let h = side / 2.0;
+        let p = |x: f64, y: f64| Point3::new(x, y, z);
+        let e0 = context.make_line_edge(p(-h, -h), p(h, -h)).unwrap();
+        let e1 = context.make_line_edge(p(h, -h), p(h, h)).unwrap();
+        let e2 = context.make_line_edge(p(h, h), p(-h, h)).unwrap();
+        let e3 = context.make_line_edge(p(-h, h), p(-h, -h)).unwrap();
+        context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap()
+    }
+
+    fn straight_spine<'ctx>(context: &'ctx OcctContext, p0: Point3, p1: Point3) -> Shape<'ctx> {
+        let edge = context.make_line_edge(p0, p1).unwrap();
+        context.make_wire_from_edges(&[&edge]).unwrap()
+    }
+
+    #[test]
+    fn sweep_square_profile_along_straight_spine_matches_extrude() {
+        let context = OcctContext::new().unwrap();
+        let profile = square_wire(&context, 1.0, 0.0).make_face().unwrap();
+        let spine = straight_spine(&context, Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0));
+        let swept = profile.sweep(&spine).expect("sweep should succeed");
+        assert!(swept.is_valid().unwrap());
+        assert!(
+            (swept.volume().unwrap() - 5.0).abs() < 1e-6,
+            "straight-spine sweep of a unit square must match extrude's volume 1*1*5=5.0"
+        );
+    }
+
+    #[test]
+    fn sweep_circle_profile_along_straight_spine_matches_cylinder_volume() {
+        let context = OcctContext::new().unwrap();
+        let profile = context
+            .make_circle_wire(Point3::ORIGIN, Direction3::Z, 2.0)
+            .unwrap()
+            .make_face()
+            .unwrap();
+        let spine = straight_spine(&context, Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0));
+        let swept = profile.sweep(&spine).expect("sweep should succeed");
+        let expected = std::f64::consts::PI * 2.0 * 2.0 * 5.0;
+        assert!((swept.volume().unwrap() - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn sweep_rejects_a_profile_that_is_not_a_face() {
+        let context = OcctContext::new().unwrap();
+        let wire_profile = square_wire(&context, 1.0, 0.0);
+        let spine = straight_spine(&context, Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0));
+        assert_eq!(
+            wire_profile.sweep(&spine).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn sweep_rejects_a_spine_that_is_not_a_wire() {
+        let context = OcctContext::new().unwrap();
+        let profile = square_wire(&context, 1.0, 0.0).make_face().unwrap();
+        let not_a_wire = context
+            .make_line_edge(Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0))
+            .unwrap();
+        assert_eq!(
+            profile.sweep(&not_a_wire).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn loft_between_two_identical_squares_matches_prism_volume() {
+        let context = OcctContext::new().unwrap();
+        let a = centered_square_wire(&context, 1.0, 0.0);
+        let b = centered_square_wire(&context, 1.0, 5.0);
+        let lofted = context.loft(&[&a, &b]).expect("loft should succeed");
+        assert!(lofted.is_valid().unwrap());
+        assert!(
+            (lofted.volume().unwrap() - 5.0).abs() < 1e-6,
+            "loft between two identical square sections must match prism volume 1*1*5=5.0"
+        );
+    }
+
+    #[test]
+    fn loft_square_frustum_matches_analytic_volume() {
+        // side 2 at z=0, side 4 at z=3: an exact frustum of a pyramid
+        // (ruled ThruSections between two concentric, axis-aligned
+        // squares produces planar trapezoid side faces), analytic volume
+        // h/3*(A1+A2+sqrt(A1*A2)).
+        let context = OcctContext::new().unwrap();
+        let a = centered_square_wire(&context, 2.0, 0.0);
+        let b = centered_square_wire(&context, 4.0, 3.0);
+        let lofted = context.loft(&[&a, &b]).expect("loft should succeed");
+        assert!(lofted.is_valid().unwrap());
+        let (a1, a2, h): (f64, f64, f64) = (2.0 * 2.0, 4.0 * 4.0, 3.0);
+        let expected = (h / 3.0) * (a1 + a2 + (a1 * a2).sqrt());
+        assert!((lofted.volume().unwrap() - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn loft_rejects_fewer_than_two_sections() {
+        let context = OcctContext::new().unwrap();
+        let a = centered_square_wire(&context, 1.0, 0.0);
+        assert_eq!(
+            context.loft(&[&a]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn loft_rejects_a_section_that_is_not_a_wire() {
+        let context = OcctContext::new().unwrap();
+        let not_a_wire = context
+            .make_line_edge(Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0))
+            .unwrap();
+        let b = centered_square_wire(&context, 1.0, 5.0);
+        assert_eq!(
+            context.loft(&[&not_a_wire, &b]).unwrap_err(),
             KernelError::InvalidArgument
         );
     }

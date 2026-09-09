@@ -197,6 +197,46 @@ aicad_occt_status_t aicad_occt_revolve(aicad_occt_context_t* context,
                                         double angle_radians,
                                         aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-025: sweep and loft, minimal supported forms.
+ *
+ * These are the first two Batch-1C "hard geometry operations": more
+ * general than extrude/revolve's constant linear/rotational sweep, but
+ * still deliberately narrow (RFC-0002 §3's capability-driven
+ * minimal-surface rule) -- no variable-section sweep, no explicit
+ * trihedron/up-vector control, and no ruled-vs-smoothed loft selection is
+ * exposed yet. See `project/reports/AICAD-025.md` for exactly which
+ * spine/section shapes are and are not supported -- per AGENTS.md, a
+ * kernel-level limitation here is recorded honestly rather than forced to
+ * appear universally successful. --- */
+
+/* Sweeps a planar profile face along a path wire (the "spine"), producing
+ * a solid. The spine may be open or closed and need not be planar or
+ * straight, but OCCT requires it to be G1-continuous (no sharp tangent
+ * discontinuity between consecutive edges) -- a polygonal spine with
+ * sharp corners is rejected with AICAD_OCCT_ERR_OPERATION_FAILED rather
+ * than silently healed or approximated. The profile is swept starting at
+ * the spine's first vertex, oriented by OCCT's own corrected-Frenet
+ * trihedron computation. */
+aicad_occt_status_t aicad_occt_sweep(aicad_occt_context_t* context,
+                                      aicad_shape_handle_t profile_face_handle,
+                                      aicad_shape_handle_t spine_wire_handle,
+                                      aicad_shape_handle_t* out_handle);
+
+/* Lofts a solid through an ordered list of closed planar wire
+ * cross-sections (`section_count` >= 2), producing a solid whose boundary
+ * connects consecutive sections with ruled (straight-line generatrix)
+ * surfaces -- the minimal, most geometrically predictable loft form, not
+ * OCCT's smoothed/spline-fitted default. `sections`/`section_count` is a
+ * caller-owned array (no STL container crosses this boundary), matching
+ * aicad_occt_make_wire_from_edges' convention. All sections must share
+ * the same number of edges/vertices for OCCT to establish a
+ * correspondence between them; a mismatched section list is rejected
+ * with AICAD_OCCT_ERR_OPERATION_FAILED. */
+aicad_occt_status_t aicad_occt_loft(aicad_occt_context_t* context,
+                                     const aicad_shape_handle_t* sections,
+                                     size_t section_count,
+                                     aicad_shape_handle_t* out_handle);
+
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
  * geometry API yet; `cad-geometry-api` owns that surface later. --- */

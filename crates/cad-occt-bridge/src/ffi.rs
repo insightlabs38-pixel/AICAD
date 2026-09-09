@@ -109,6 +109,18 @@ unsafe extern "C" {
         angle_radians: f64,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_sweep(
+        context: *mut aicad_occt_context_t,
+        profile_face_handle: aicad_shape_handle_t,
+        spine_wire_handle: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_loft(
+        context: *mut aicad_occt_context_t,
+        sections: *const aicad_shape_handle_t,
+        section_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_area(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,
