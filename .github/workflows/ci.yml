@@ -48,6 +48,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Show toolchain
         run: rustup show
+      - name: Install OCCT development packages
+        # cad-occt-bridge/build.rs (AICAD-018) runs CMake against
+        # native/occt_bridge, which requires OpenCASCADE to be
+        # discoverable; cargo build --workspace has needed this ever
+        # since cad-occt-bridge joined the workspace. See
+        # native-build-smoke's own install step below for the package
+        # list rationale (kept identical to avoid the two jobs drifting).
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libocct-foundation-dev \
+            libocct-modeling-data-dev \
+            libocct-modeling-algorithms-dev \
+            libocct-visualization-dev
       - name: cargo build --workspace
         run: cargo build --workspace --all-targets
       - name: cargo test --workspace
@@ -61,15 +76,25 @@ jobs:
       - name: Install OCCT development packages
         # Module set matches native/occt_bridge/CMakeLists.txt's
         # OCCT_PROBE_LIBS (FoundationClasses, ModelingData,
-        # ModelingAlgorithms only, as of AICAD-015). Extend this list only
-        # alongside a corresponding CMakeLists.txt module addition.
+        # ModelingAlgorithms only, as of AICAD-015): extend the first three
+        # packages below only alongside a corresponding CMakeLists.txt
+        # module addition. libocct-visualization-dev is a separate,
+        # narrower case: on Ubuntu's OCCT packaging, foundation/modeling's
+        # own Poly_ArrayOfNodes.hxx (pulled in transitively by
+        # BRepPrimAPI_MakeBox.hxx) includes NCollection_AliasedArray.hxx,
+        # which that packaging places under libocct-visualization-dev
+        # rather than libocct-foundation-dev -- confirmed via `dpkg -S
+        # NCollection_AliasedArray.hxx` on a working dev environment, not
+        # assumed. No OCCT visualization module is actually linked or
+        # used; only that one header's package placement requires this.
         run: |
           set -eu
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libocct-foundation-dev \
             libocct-modeling-data-dev \
-            libocct-modeling-algorithms-dev
+            libocct-modeling-algorithms-dev \
+            libocct-visualization-dev
       - name: cmake --version
         run: cmake --version
       - name: Native bridge smoke build
