@@ -1,69 +1,112 @@
 # Session Handoff
 
-## Latest: Independent Stage-0 review complete — recommendation: PASS
+## Current stage
 
-An independent, adversarial Stage-0 review (not part of the original
-AICAD-007..014 authoring batch) was performed against commit
-`02b89c89074ab4dee47b3a0171eafe44f531d210` (tip of merged PR #1). Full
-findings, adversarial paper-example probes, and the post-patch re-review
-are recorded in `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`.
+Stage 1 ("Geometry kernel spike"), active. Stage 0 passed; see
+`project/DECISION_LOG.md#DL-10` for the owner's ruling and
+`project/CURRENT_STAGE.md` for the current stage description. Stage 1 is
+authorized through `AICAD-037` inclusive (per DL-10).
+`AICAD-038`/Stage 2 remain forbidden pending a future, separate owner
+approval.
 
-**Result: Stage 0 independently passed review, after three patches:**
+## Last completed task
 
-- F1 (MAJOR): the frozen grammar sketch never defined `if`/`match` as
-  expressions, even though the paper example's required "conditional"
-  concept and `docs/plan/07`'s own precedent both need it. Patched into
-  `rfcs/0001-language-principles.md` §7 and `specs/language/grammar.ebnf`.
-- F2 (MAJOR): RFC-0004's own frozen quantity shape (§5) had no field for
-  the absolute/delta affine distinction its own affine-unit rule (§7)
-  required, and no rule for what `absolute - absolute` produces. Patched
-  into `rfcs/0004-units-type-system.md` §5 and §7 (`affine_kind`
-  discriminant + subtraction rule).
-- F3 (MINOR): two open-decision-dependent constructs in the paper example
-  (`r.left_edge`/`r.right_edge`, pending D3; the `Datum`-to-axis coercion
-  in `mate concentric`) carried their caveat only in the companion `.md`,
-  not inline in the `.aicad` source most likely to be copy-pasted as a
-  worked reference. Patched with inline comments in
-  `examples/assemblies/stage0_paper_example.aicad`.
+**AICAD-019** ("Implement kernel context lifecycle and shape-handle
+table") — complete, see `project/reports/AICAD-019.md`. This closes
+**Batch 1A** (AICAD-015 through AICAD-019, "kernel boundary").
 
-All three patches operationalize already-approved owner rulings (DL-1,
-DL-2, DL-3) or are documentation-only; none required a new
-`project/OWNER_DECISIONS.md` entry, and none touched an open decision's
-status. No BLOCKER-level finding was made. `project/OWNER_DECISIONS.md`'s
-open items (D3, D5, D10, D11, D12, D15, plus the residual sub-items of D7,
-D8, D13) remain open exactly as before — this review did not silently
-resolve any of them; see the review document §8 for confirmation that none
-blocks Stage 1.
+## Batch 1A checkpoint
 
-**This is still a recommendation, not an approval.** Per `AGENTS.md`
-("The agent may prepare gate evidence and recommend pass/do-not-pass. The
-agent may not approve a roadmap stage. Stage progression is an owner
-decision.") and `project/CURRENT_STAGE.md` ("Owner approval required to
-advance: Yes"), Stage 0 is not actually passed until the owner records that
-decision in `project/DECISION_LOG.md`. Two independent recommendations now
-exist for the owner to weigh: the implementation team's own
-`project/gates/stage-0-gate.md` (AICAD-014), and this session's independent
-`project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`.
+`project/gates/STAGE1-A_KERNEL_BOUNDARY.md` was written and recommends
+"ready to proceed to Batch 1B." This is the implementation agent's own
+batch-readiness self-certification, not an owner approval or a roadmap
+stage-exit gate (that remains AICAD-037's job at the end of Stage 1).
+
+## Active partial task
+
+None. No task is in progress; the working tree is clean at commit
+`3f5222cda4b71fcf49804676c113ad1536fae341` plus this handoff-update
+commit.
+
+## What exists now (Batch 1A summary)
+
+- `native/occt_bridge/`: CMake project building `aicad_occt_bridge`
+  (static lib; opaque `AicadKernelContext`, POD `AicadShapeHandle`,
+  structured `AicadStatus` results; two real operations — `create_box`,
+  `shape_volume` — plus `destroy`), `occt_discovery_probe`, and
+  `bridge_abi_tests` (21 native checks).
+- `crates/cad-kernel-api`: kernel-neutral handle newtypes
+  (`KernelShape/Vertex/Edge/Wire/Face/Shell/Solid/Curve/Surface`) and
+  `KernelError`/`KernelResult`. No dependency on the native bridge or
+  OCCT.
+- `crates/cad-occt-bridge`: `build.rs` drives the native CMake build;
+  `KernelContext` (RAII, neither `Send` nor `Sync`) implements
+  `create_box`/`shape_volume`/`destroy_solid` against
+  `cad-kernel-api`'s types. `tests/smoke.rs` (2 tests) and
+  `tests/lifecycle.rs` (6 tests) prove the stack end to end with no
+  `unsafe` in the tests themselves.
+- `.github/workflows/ci.yml`: `build-and-test` and `native-build-smoke`
+  both install the OCCT dev packages and actually build/test the native
+  bridge now (previously a no-op before AICAD-015 existed).
 
 ## Next task
 
-**AICAD-015** ("Add OCCT discovery/probe CMake target", Stage 1) is next in
-`project/TASKS.yaml`, once the owner records Stage-0 approval.
+**AICAD-020** ("Batch 1B — constructive geometry", first task), per
+`project/TASKS.yaml`, once picked up by a future invocation. Batch 1B
+covers AICAD-020 through AICAD-024; its own checkpoint
+(`project/gates/STAGE1-B_CONSTRUCTIVE_GEOMETRY.md`) is due after
+AICAD-024, before Batch 1C begins.
 
-**AICAD-015 was NOT started or executed in this session.** This session's
-scope was the independent Stage-0 review and its three in-scope patches
-only, per its own instructions.
+## Last relevant checks run
 
-## For the next session
+```
+cargo fmt --all -- --check                                            # exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings  # exit 0
+cargo build --workspace --all-targets                                 # exit 0
+cargo test --workspace                                                # exit 0, all suites ok
+(cd native/occt_bridge && cmake -S . -B build && cmake --build build && \
+ cd build && ctest --output-on-failure)                               # 2/2 passed
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"  # YAML OK
+```
 
-- If the owner has recorded a Stage-0 pass decision in
-  `project/DECISION_LOG.md` since this handoff was written: proceed to
-  AICAD-015 per `project/TASKS.yaml`'s normal work loop
-  (`AGENTS.md` §"Work loop").
-- If not: do not begin AICAD-015. Either wait for the owner decision, or
-  continue Stage-0-scoped work only (e.g. addressing any further owner
-  feedback on either gate packet).
-- Two gate-packet documents both currently recommend PASS
-  (`project/gates/stage-0-gate.md` and
-  `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`); neither
-  supersedes the other, and neither is self-executing.
+All native `build/` directories were deleted after verification (git-
+ignored; nothing from them is committed).
+
+## Failures / regressions
+
+None open. Every check above passes; no known failing test, no known
+regression.
+
+## Owner blockers
+
+None new. `project/OWNER_DECISIONS.md`'s existing open items (D3, D5,
+D10, D11, D12, D15, and the residual sub-items of D7, D8, D13) remain
+open exactly as before — none was touched by Batch 1A.
+
+## Important recent decisions
+
+- `project/DECISION_LOG.md#DL-10`: owner approved Stage 0 (after the
+  independent adversarial review's patches) and advanced to Stage 1,
+  authorized through AICAD-037.
+- Implementation decisions specific to Batch 1A (monotonic context-id
+  counter rather than a pointer/address; generation bump at free time;
+  manual FFI declarations instead of bindgen; `build.rs` shells out to
+  `cmake` directly instead of adding the `cmake` crate) are recorded in
+  each task's own report (`project/reports/AICAD-01[5-9].md`), not
+  repeated here.
+
+## Current batch/checkpoint state
+
+Batch 1A: **complete**, checkpoint written
+(`project/gates/STAGE1-A_KERNEL_BOUNDARY.md`, recommends proceeding).
+Batch 1B: not started.
+
+## Recommended next action
+
+Begin AICAD-020 (first task of Batch 1B, constructive geometry) per
+`project/TASKS.yaml`, reading `docs/plan/04_HIGH_LEVEL_MODELING_API.md`
+and `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md` for the relevant
+operation signatures before extending `native/occt_bridge` further.
+Remember the per-invocation work budget: complete at most one batch per
+invocation, and prefer a clean handoff over starting a task that cannot
+be finished with full evidence in the same invocation.
