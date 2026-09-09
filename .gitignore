@@ -9,7 +9,11 @@
 .aicad-cache/
 **/.aicad-cache/
 
-# Native build directories (native/occt_bridge and any future bridge)
+# Native build directories (native/occt_bridge and any future bridge),
+# plus the root CMake build directory (root CMakeLists.txt, AICAD-015,
+# only wires up native/occt_bridge — its default out-of-tree build dir
+# lands at the repo root, not under native/)
+/build/
 native/**/build/
 native/**/cmake-build*/
 
