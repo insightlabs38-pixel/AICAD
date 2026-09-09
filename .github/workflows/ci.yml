@@ -1,11 +1,11 @@
 name: CI
 
 # Baseline Stage-0 CI (AICAD-004): fmt, clippy, build/test, and a native
-# build smoke check. Per docs/plan/22_REPOSITORY_WORK_PACKAGES.md and
-# project/CURRENT_STAGE.md, Stage 0 does not implement the OCCT bridge yet
-# (that begins at Stage 1, AICAD-015), so the native-build-smoke job
-# verifies the toolchain and reports "nothing to build yet" rather than
-# failing, until native/occt_bridge gains a real CMakeLists.txt.
+# build smoke check. The native-build-smoke job builds and runs
+# native/occt_bridge's CMake project against a system-installed OCCT
+# (Stage 1, AICAD-015 onward); if native/occt_bridge ever has no
+# CMakeLists.txt again it reports "nothing to build yet" rather than
+# failing.
 
 on:
   push:
@@ -58,22 +58,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install OCCT development packages
+        # Module set matches native/occt_bridge/CMakeLists.txt's
+        # OCCT_PROBE_LIBS (FoundationClasses, ModelingData,
+        # ModelingAlgorithms only, as of AICAD-015). Extend this list only
+        # alongside a corresponding CMakeLists.txt module addition.
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libocct-foundation-dev \
+            libocct-modeling-data-dev \
+            libocct-modeling-algorithms-dev
       - name: cmake --version
         run: cmake --version
       - name: Native bridge smoke build
-        # native/occt_bridge has no CMakeLists.txt yet (Stage 1, AICAD-015+
-        # adds the OCCT discovery/probe CMake target). Report status
-        # explicitly rather than silently passing or failing, so this job
-        # starts doing real work the moment a CMakeLists.txt lands without
-        # any CI file changes required.
+        # Report status explicitly rather than silently passing or
+        # failing if native/occt_bridge ever loses its CMakeLists.txt
+        # again, instead of assuming it is always present.
         run: |
           set -eu
           found=$(find native -mindepth 1 -iname 'CMakeLists.txt' 2>/dev/null | head -n1 || true)
           if [ -z "$found" ]; then
-            echo "No native/**/CMakeLists.txt present yet (expected before Stage 1, AICAD-015). Smoke check is a no-op."
+            echo "No native/**/CMakeLists.txt present (unexpected as of Stage 1, AICAD-015). Smoke check is a no-op."
             exit 0
           fi
           dir=$(dirname "$found")
           echo "Found $found — configuring and building $dir"
           cmake -S "$dir" -B "$dir/build"
           cmake --build "$dir/build"
+      - name: Native bridge probe test (ctest)
+        run: |
+          set -eu
+          cd native/occt_bridge/build
+          ctest --output-on-failure

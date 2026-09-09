@@ -320,3 +320,61 @@ them; do not add entries here unilaterally.
   prototype-driven and not yet decided — track experiments under
   `project/experiments/` before committing `crates/cad-occt-bridge` or
   `crates/cad-references` to a specific internal persistence mechanism.
+
+---
+
+## DL-10: Stage 0 passed — owner approval after independent review
+
+- Date: 2026-09-09
+- Resolves: Stage-0 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: **Stage 0 has passed.** The owner has reviewed the independent
+  Stage-0 adversarial review, `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`
+  (commit `aad7267`, branch `claude/aicad-stage-0-review-9leull`, merged
+  into `branch/loving-feynman-qcrzen`), and accepts its final PASS
+  recommendation after the applied patches. This decision supersedes the
+  "recommendation only" status both `project/gates/stage-0-gate.md`
+  (AICAD-014) and the independent review document carried, and is the
+  owner-recorded pass decision `AGENTS.md`/`project/CURRENT_STAGE.md`
+  require before Stage 1 may begin.
+- Rationale: The independent review identified and corrected three
+  concrete gaps in the Stage-0 RFCs/paper example, none of which required
+  selecting among an open `OWNER_DECISIONS.md` alternative:
+  - F1 (MAJOR): RFC-0001's frozen grammar sketch never defined `if`/`match`
+    in expression position, even though the paper example's required
+    "conditional" concept and `docs/plan/07`'s own precedent both need a
+    value-producing `if`/`match`. Patched by adding `if_expr`/`match_expr`/
+    `block_expr` productions to `rfcs/0001-language-principles.md` §7 and
+    `specs/language/grammar.ebnf`, operationalizing DL-1/DL-2 rather than
+    creating new syntax.
+  - F2 (MAJOR): RFC-0004's frozen quantity shape (§5) had no field for the
+    absolute-vs-delta affine distinction its own affine-unit rule (§7)
+    required, and no rule for what `absolute - absolute` produces. Patched
+    by adding an `affine_kind: absolute | delta` discriminant and a
+    subtraction rule, operationalizing DL-3's already-approved invariant.
+  - F3 (MINOR): two D3/coercion-dependent constructs in the paper example
+    carried their caveat only in the companion `.md`, not inline in the
+    `.aicad` source most likely to be reused as a worked reference. Patched
+    with inline caveats; resolves nothing, clarifies only.
+  All three patches operationalized already-approved rulings or were
+  documentation-only; none touched an open `OWNER_DECISIONS.md` item's
+  status, and no BLOCKER-level finding was made. The independent review's
+  post-patch re-review (§7 of the review document) re-ran all eleven
+  adversarial probes and confirmed the patched RFCs/example are internally
+  consistent.
+- Alternatives considered: Deferring Stage-0 approval pending further
+  review rounds (rejected — two independent reviews, `project/reports/AICAD-013.md`
+  and the independent review, both concluded PASS with no BLOCKER, and the
+  three gaps found were fixed in place rather than left as reasons to
+  withhold approval); treating F1/F2 as requiring new
+  `OWNER_DECISIONS.md` entries (rejected — both patches operationalize
+  rulings already recorded as DL-1/DL-2/DL-3, they do not select among an
+  unresolved alternative).
+- Affected RFCs/tasks: Closes out Stage 0 (AICAD-001 through AICAD-014 plus
+  the independent review). Unblocks Stage 1 (`project/CURRENT_STAGE.md`
+  advanced to Stage 1; `AICAD-015` onward, per `project/TASKS.yaml`, subject
+  to the Stage-1 authorized roadmap window and per-batch checkpoints).
+- Supersedes: none (first Stage-0 pass ruling). Does not reopen or alter
+  any `OWNER_DECISIONS.md` item — D3, D5, D10, D11, D12, D15 and the
+  residual sub-items of D7/D8/D13 remain open exactly as before, and none
+  was found by either Stage-0 review to block Stage 1.
