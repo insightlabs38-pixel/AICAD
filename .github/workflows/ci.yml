@@ -60,6 +60,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: cmake --version
         run: cmake --version
+      - name: Install OCCT development packages
+        # AICAD-015/AICAD-016 added a real CMakeLists.txt under
+        # native/occt_bridge that requires OpenCASCADE (find_package
+        # REQUIRED); ubuntu-latest does not ship it by default.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libocct-foundation-dev libocct-modeling-data-dev \
+            libocct-modeling-algorithms-dev libocct-data-exchange-dev
       - name: Native bridge smoke build
         # native/occt_bridge has no CMakeLists.txt yet (Stage 1, AICAD-015+
         # adds the OCCT discovery/probe CMake target). Report status
@@ -77,3 +86,4 @@ jobs:
           echo "Found $found — configuring and building $dir"
           cmake -S "$dir" -B "$dir/build"
           cmake --build "$dir/build"
+          ctest --test-dir "$dir/build" --output-on-failure

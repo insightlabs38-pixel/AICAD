@@ -41,3 +41,25 @@ add_test(NAME occt_discovery_probe COMMAND occt_discovery_probe)
 set_tests_properties(occt_discovery_probe PROPERTIES
   PASS_REGULAR_EXPRESSION "OCCT_PROBE_OK version=[0-9]+\\.[0-9]+\\.[0-9]+"
 )
+
+# AICAD-016: the C ABI boundary itself. A static library so the Rust
+# side (crates/cad-occt-bridge, AICAD-018) can link it directly with no
+# separately-installed shared object to manage. Public surface is
+# include/aicad_occt_bridge.h only -- no OCCT header is installed or
+# re-exported alongside it.
+add_library(aicad_occt_bridge STATIC src/aicad_occt_bridge.cpp)
+target_include_directories(aicad_occt_bridge
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE ${OpenCASCADE_INCLUDE_DIR}
+)
+target_link_libraries(aicad_occt_bridge PUBLIC
+  TKBRep TKPrim TKGeomAlgo TKTopAlgo TKG3d TKG2d TKGeomBase TKMath TKernel
+)
+
+add_executable(bridge_abi_tests tests/bridge_abi_tests.cpp)
+target_link_libraries(bridge_abi_tests PRIVATE aicad_occt_bridge)
+
+add_test(NAME bridge_abi_tests COMMAND bridge_abi_tests)
+set_tests_properties(bridge_abi_tests PROPERTIES
+  PASS_REGULAR_EXPRESSION "AICAD_BRIDGE_ABI_TESTS_OK"
+)
