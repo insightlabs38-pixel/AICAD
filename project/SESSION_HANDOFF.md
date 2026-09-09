@@ -1,178 +1,162 @@
 # Session Handoff
 
-## IMPORTANT — CI on `main` was red since the PR #2 merge (`179afd8`); fix pushed this session, verify it landed
+## Latest: Batch 1D (inspection/validation/interchange) complete — AICAD-029 through AICAD-033 done
 
-PR #3's CI (all three of `cargo build/test --workspace`, `native bridge
-build smoke`, `cargo clippy -D warnings`) failed on push. Root-caused and
-confirmed via GitHub Actions run history that **`main` itself has been
-red since commit `179afd8`** (the PR #2 merge introducing Batch 1A/1B) —
-not something this session's Batch 1C work caused:
-
-1. `cad-occt-bridge/build.rs` (AICAD-018) runs CMake against
-   `native/occt_bridge`, requiring OpenCASCADE — but the
-   `build-and-test` CI job never had an OCCT install step added for it.
-2. `native-build-smoke` does install OCCT, but a header
-   (`NCollection_AliasedArray.hxx`, pulled in transitively by
-   `BRepPrimAPI_MakeBox.hxx`) lives under `libocct-visualization-dev` in
-   Ubuntu's OCCT packaging, not `libocct-foundation-dev` — that package
-   was never in the install list.
-
-Fixed in `.github/workflows/ci.yml` (commit `3e4d4a9`, pushed to
-`branch/pensive-hopper-5cbjby`/PR #3): added the missing OCCT install step
-to `build-and-test`, added `libocct-visualization-dev` to both jobs'
-package lists. Validated by tracing every OCCT header transitively
-included by `occt_probe.cpp`/`aicad_occt_bridge.cpp` (403 unique headers)
-and confirming each is owned by exactly one of the four now-installed
-packages — not just patching the one header named in the error message.
-Full diagnosis posted as a PR #3 comment.
-
-**If you are a future invocation reading this: check whether PR #3's CI
-is now green on commit `3e4d4a9` or later before doing anything else.**
-If it's still red, that takes priority over starting a new roadmap task —
-this fix has not yet been confirmed by an actual passing CI run as of
-this note being written (this session pushed the fix and is
-watching/waiting for the next `check_run.completed` event, but a
-container/session boundary may have intervened before that arrived). If
-CI is green, this note can be pruned on the next handoff rewrite.
-
-## Latest: Batch 1C (hard geometry operations) complete — AICAD-025 through AICAD-028 done
-
-This session started from `main`/`origin/main` at commit `179afd8`
-(PR #2 merge), which already contained Stage-0 owner approval (DL-10),
-Batch 1A (AICAD-015..019), and Batch 1B (AICAD-020..024), all
-checkpointed and passing. The designated working branch
-(`branch/pensive-hopper-5cbjby`) started exactly at that commit (a clean
-fast-forward continuation, no reconciliation needed this time — unlike
-several prior sessions recorded in git history that had to reconcile
-divergent sibling branches). This session's own work is `git log`-visible
-starting at commit `182850f`.
+This session started from `main`/`origin/main` at commit `903dceb`
+(PR #3 merge), which already contained Stage-0 owner approval (DL-10)
+and Batches 1A/1B/1C (AICAD-015 through AICAD-028), all checkpointed and
+passing. The designated working branch (`branch/compassionate-wright-lbvrc1`)
+started exactly at that commit (confirmed via `git fetch origin main`
+immediately before this note was written — `origin/main` is still at
+`903dceb`, unchanged since this session's own base). This session's own
+work is `git log`-visible starting at commit `dd823dd`.
 
 **Canonical-publishing status — NOT YET CANONICAL.** This session's
-commits (`182850f` through `1f4fa19`, listed below) are pushed to
-`origin/branch/pensive-hopper-5cbjby` but **not yet merged into
-`origin/main`**. `origin/main` remains at `179afd8` (confirmed via a
-fresh `git fetch origin main` immediately before this note was written —
-unchanged since this session's own base, so no reconciliation is needed
-whenever the merge happens). This session did not open a PR itself (PR
-creation is gated on explicit request), but **PR #3**
-(`https://github.com/insightlabs38-pixel/AICAD/pull/3`) was created for
-this branch from the Claude Code UI shortly after this session's work
-landed, and this session subscribed to its activity. **A future
-invocation must not treat Batch 1C as complete-on-main until it verifies
-these commits (or their equivalent) are actually present in
+commits (`dd823dd` through `4eac108`, listed below) are pushed to
+`origin/branch/compassionate-wright-lbvrc1` and **PR #4**
+(`https://github.com/insightlabs38-pixel/AICAD/pull/4`) was opened for
+them (not merged). This session subscribed to PR #4's activity. **A
+future invocation must not treat Batch 1D as complete-on-main until it
+verifies these commits (or their equivalent) are actually present in
 `origin/main`'s ancestry** — check `git log origin/main` for commit
-`61a9520` (AICAD-028) or later, or check PR #3's merge status, before
-assuming this work is canonical, exactly as this file's own "CANONICAL
-PUBLISHING" operating instructions require. Any further commits pushed to
-`branch/pensive-hopper-5cbjby` update PR #3 automatically.
+`c21e4dd` (AICAD-033) or later, or check PR #4's merge status, before
+assuming this work is canonical.
 
-This session completed **all of Batch 1C** (`AICAD-025` through
-`AICAD-028`, the last batch before Batch 1D):
+This session completed **all of Batch 1D** (`AICAD-029` through
+`AICAD-033`, the last batch before Batch 1E):
 
 | Task | Summary | Report |
 |---|---|---|
-| AICAD-025 | `sweep`/`loft` minimal supported forms (`BRepOffsetAPI_MakePipe`/`ThruSections`); straight-spine sweep matches extrude's own volume; loft matches an analytic frustum-of-a-pyramid formula; two degenerate-spine cases probed and their actual validity outcomes recorded | `project/reports/AICAD-025.md` |
-| AICAD-026 | Boolean `union`/`cut`/`intersect` (`BRepAlgoAPI_Fuse`/`Cut`/`Common`); volumes checked against inclusion-exclusion identities; resolved the "epoch-bump-on-mutation" test `project/SESSION_HANDOFF.md` had deferred since AICAD-016/018/019 | `project/reports/AICAD-026.md` |
-| AICAD-027 | `fillet`/`chamfer` (`BRepFilletAPI_MakeFillet`/`MakeChamfer`) plus the raw indexed edge-selection primitives (`shape_edge_count`/`get_edge`) they need; fillet-all-edges matches the analytic "rounded box" (Minkowski-sum-with-a-ball) volume formula; single-edge chamfer matches an exact triangular-prism formula | `project/reports/AICAD-027.md` |
-| AICAD-028 | `shell`/`offset` spike (`BRepOffsetAPI_MakeThickSolid`/`MakeOffsetShape`) plus `shape_face_count`/`get_face`; shell volume matches an analytic hollow-cavity formula; offset volume matches the *same* Minkowski-sum formula as AICAD-027's fillet-all-edges (an unplanned, independent cross-check) | `project/reports/AICAD-028.md` |
+| AICAD-029 | Topology exploration: vertex enumeration (`shape_vertex_count`/`_get_vertex`), edge endpoints (`edge_vertices`), edge-to-face adjacency (`shape_edge_adjacent_face_count`/`_get`). `topology_faces`/`topology_edges`/`face_edges` (docs/plan/05 §3) needed no new function — proven already covered by AICAD-027/028's existing edge/face enumeration applied to any shape kind. | `project/reports/AICAD-029.md` |
+| AICAD-030 | Length (`shape_length`) and center-of-mass (`shape_center_of_mass`) queries; volume/area/bounding_box already existed. Found and fixed a real bug: `BRepGProp::LinearProperties` without `SkipShared=true` double-counts shared edges (a box reported length 72 instead of 36). | `project/reports/AICAD-030.md` |
+| AICAD-031 | Normalized B-rep validation report (`shape_validate`): a per-topological-kind breakdown (invalid vertex/edge/wire/face counts) on top of the existing single-bool `shape_is_valid`. | `project/reports/AICAD-031.md` |
+| AICAD-032 | Display tessellation (`tessellate`/`tessellation_get`): flat-shaded triangle-soup mesh via `BRepMesh_IncrementalMesh`, with a per-handle server-side cache (keyed to each shape's own slot+generation, not a single shared "last result") and `TopAbs_REVERSED`-face winding correction. | `project/reports/AICAD-032.md` |
+| AICAD-033 | STEP export (`export_step`) via `STEPControl_Writer`. Verified with an OCCT-independent text/entity-count scan (permanent tests) plus a one-time deeper check via the independent pure-Python `steputils` parser (documented, not a CI dependency). **Found and fixed a genuine native concurrency defect: OCCT's STEP translator has process-global non-thread-safe state that segfaulted the process under concurrent export from independent contexts/threads** — fixed with a process-wide mutex (`StepExportMutex`) and a permanent regression test. | `project/reports/AICAD-033.md` |
 
-**Batch 1C checkpoint:** `project/gates/STAGE1-C_HARD_OPS.md` —
-**PASS**, all four tasks implemented and re-verified fresh together (12/12
-native `ctest`, 53/53 `cad-occt-bridge` tests, full workspace
-`fmt`/`clippy`/`build`/`test`). Carries forward Batch 1A/1B's two open
-gaps (G1: exception containment still unproven against a genuine OCCT
-throw; G2: no fresh valgrind run this batch) plus new, explicitly
-non-blocking Batch-1C notes (sweep spine G1-continuity limits, fillet/
-shell failure-boundary mapping left unsystematic per AICAD-028's own
-"spike" charter, and the raw/index-based — not persistent-reference —
-nature of edge/face selection).
+**Batch 1D checkpoint:** `project/gates/STAGE1-D_INTERCHANGE.md` —
+**PASS**, all five tasks implemented and re-verified fresh together from
+a clean native build (17/17 `ctest`) plus full workspace
+`fmt`/`clippy`/`build`/`test` (23/23 `cad-kernel-api`, 80/80
+`cad-occt-bridge`), including a 10x-repeated parallel
+`cargo test -p cad-occt-bridge --lib` run specifically re-confirming the
+AICAD-033 concurrency fix holds. Carries forward Batch 1A/1B/1C's two
+open gaps (G1: exception containment still unproven against a genuine
+OCCT throw; G2: no fresh valgrind run this batch) plus new,
+explicitly non-blocking Batch-1D notes (tessellation's flat-shaded/
+non-vertex-shared simplification, no STEP import yet, STEP verification
+depth disclosure, the STEP-export concurrency finding itself as a
+safety-relevant note for Stage-1 hardening mode's own follow-up).
 
-**The one genuine architectural question this batch raised** (how to
-select *which* edges/faces to fillet/chamfer/shell without a persistent
-semantic-reference system, which does not exist until Stage 3/4) was
-resolved by implementing `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`
-§5-6's own already-approved raw/indexed topology-access design
-(`raw_edge(f, 2)`), not by selecting among unresolved
-`OWNER_DECISIONS.md` alternatives — so no owner escalation was needed,
-and none was recorded in this session's own git history search of
-`project/OWNER_DECISIONS.md`/`project/DECISION_LOG.md` (both remain
-exactly as they were at Stage-0 approval, DL-10; no new entry this
-session).
+**The one genuine defect this batch found** (the STEP-export
+concurrency SIGSEGV, AICAD-033) was root-caused and fixed with a
+minimal, scope-appropriate internal change (a process-wide mutex around
+one specific operation) — not a workaround, not a weakened test, and not
+an owner-level decision (no `OWNER_DECISIONS.md`/`DECISION_LOG.md` entry
+was required; this is squarely an "internal refactor/correctness fix"
+per AGENTS.md's autonomously-allowed list). No new owner decisions were
+recorded this session.
 
 **Per-invocation work budget:** this invocation completed exactly one
-batch (1C) and is stopping here for a clean handoff, per `AGENTS.md`/the
+batch (1D) and is stopping here for a clean handoff, per `AGENTS.md`/the
 active scheduled-task brief.
 
 ## Current state / next action
 
-- **Active stage:** Stage 1 (`project/CURRENT_STAGE.md`), Batch 1A, 1B,
-  and 1C all complete and checkpointed (PASS).
-- **Next task:** `AICAD-029`, the first task in **Batch 1D — Inspection /
-  validation / interchange** (`AICAD-029` through `AICAD-033`), per
-  `project/TASKS.yaml` and the scheduled-task brief's batch list. Read
-  `AICAD-029`'s full `project/TASKS.yaml` entry and its `plan_references`
-  before starting (not yet read this session).
-- **After Batch 1D (AICAD-033):** create/update
-  `project/gates/STAGE1-D_INTERCHANGE.md` before Batch 1E
-  (`AICAD-034..037`, the Stage-1 proof + owner gate packet).
-- **A likely early Batch-1D need:** a proper `explore_topology`-style
-  query surface (per `docs/plan/05` §6, "prefer queries") may want to
-  reconcile with AICAD-027/028's raw `shape_edge_count`/`get_edge`/
-  `shape_face_count`/`get_face` additions from this session — read those
-  two reports' "Limitations" sections first; Batch 1D is where a more
-  general topology-exploration API is expected to land, and it should
-  most likely be built as an *addition* alongside the existing raw
-  edge/face accessors (which fillet/chamfer/shell already depend on),
-  not a replacement, unless AICAD-029's own task ticket says otherwise.
+- **Active stage:** Stage 1 (`project/CURRENT_STAGE.md`, unchanged this
+  session — still says Stage 1 active), Batch 1A, 1B, 1C, and 1D all
+  complete and checkpointed (PASS). Batch 1A/1B/1C are canonical on
+  `origin/main` (via PR #2/#3); **Batch 1D is NOT yet canonical** — see
+  above.
+- **Next task:** `AICAD-034`, the first task in **Batch 1E — Stage-1
+  proof** (`AICAD-034` through `AICAD-037`), per `project/TASKS.yaml` and
+  the scheduled-task brief's batch list. Read `AICAD-034`'s full
+  `project/TASKS.yaml` entry and its `plan_references` before starting
+  (not yet read this session). Per the scheduled-task brief, Batch 1E's
+  proof should build a meaningfully nontrivial bracket-like part
+  (base geometry, holes, booleans, transforms, fillet/chamfer) through
+  the full pipeline: kernel API -> multiple geometry operations -> valid
+  exact B-rep -> analytical/topological verification -> STEP export ->
+  independent import/check -> preserved regression/fuzz evidence.
+- **A likely early Batch-1E need: STEP import.** This bridge can export
+  STEP (AICAD-033) but has no import capability yet — the Stage-1 proof
+  pipeline's own "STEP export -> independent import/check" step needs
+  *some* independent-of-this-bridge's-own-export verification. Options
+  worth considering when AICAD-034..037's own tickets are read: (a) add
+  a minimal `aicad_occt_import_step` to this bridge and compare
+  round-trip properties (volume/bbox/solid-count) — honestly disclosed
+  as NOT fully independent (same OCCT installation performs both export
+  and import, even if via a technically separate reader/writer code
+  path), matching AICAD-033's own STEP VERIFICATION disclosure
+  discipline; and/or (b) reuse AICAD-033's own `steputils`-based
+  approach (a genuinely independent, non-OCCT parser) for at least a
+  structural/entity-count check of the final proof part's STEP export,
+  same caveats as AICAD-033's report already documents (not a CI
+  dependency, one-time evidence). Read AICAD-034..037's own tickets
+  first rather than assuming either approach.
+- **After Batch 1E (AICAD-037):** the Stage-1 owner gate packet should be
+  complete and roadmap advancement STOPS — do not begin AICAD-038 or any
+  Stage-2 work under any circumstance until explicit owner approval is
+  recorded in `project/DECISION_LOG.md`. Future invocations after
+  AICAD-037 completes should switch into Stage-1 hardening mode per the
+  active scheduled-task brief (no new roadmap functionality; reproduce
+  Stage-1 claims from clean state, expand regressions, bounded fuzzing,
+  sanitizers, FFI/lifetime auditing, leak investigation, STEP
+  interoperability testing, determinism/performance baselining).
 - No owner blockers. No regressions. All required workspace checks
   (`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
   --all-features -- -D warnings`, `cargo build --workspace --all-targets`,
   `cargo test --workspace`) and the native `ctest` suite
-  (`native/occt_bridge/build`, 12 tests) pass as of the AICAD-028 commit
+  (`native/occt_bridge/build`, 17 tests) pass as of the AICAD-033 commit
   and this checkpoint's own fresh re-run.
 - Environment (Stage-1 kernel policy #15, unchanged across
-  AICAD-015..028, reconfirm at the start of Batch 1D rather than
+  AICAD-015..033, reconfirm at the start of Batch 1E rather than
   assuming): Ubuntu 24.04.4 LTS, x86_64, GCC/G++ 13.3.0, Rust 1.98.1
   (`rust-toolchain.toml`), CMake 3.28.3, OCCT 7.6.3 (`libocct-*-dev`
-  7.6.3+dfsg1-7.1build1; this session additionally confirmed `TKOffset`,
-  `TKBO`, and `TKFillet` are all present in this same installed OCCT
-  version).
+  7.6.3+dfsg1-7.1build1; this session additionally confirmed `TKMesh`
+  (tessellation) and `TKXSBase`/`TKSTEPBase`/`TKSTEP` (STEP export) are
+  all present in this same installed OCCT version, alongside the
+  previously-confirmed `TKOffset`/`TKBO`/`TKFillet`).
+- **Verification tooling note (not a project dependency):** this
+  session ran `pip3 install steputils` in its own environment to
+  independently verify AICAD-033's STEP export (see that task's report).
+  This is not vendored, declared in any manifest, or required for any
+  build/test in this repository — a future session should not assume it
+  is present unless it re-installs it for its own one-time verification
+  purposes.
 
 ## Important decisions this session
 
 - No new `project/DECISION_LOG.md` or `project/OWNER_DECISIONS.md`
-  entries were required. All four AICAD-025..028 tasks stayed within the
+  entries were required. All five AICAD-029..033 tasks stayed within the
   approved Stage-1 kernel architecture (RFC-0002, DL-5, DL-10) and made
   only the kind of autonomous implementation decisions AGENTS.md's
   "Autonomously allowed" section permits (documented individually in each
   task report's "Implementation decisions" section) — most notably:
-  - Sweep/loft/booleans/fillet/chamfer/shell/offset's target-shape
-    arguments are **not** restricted to `TopAbs_SOLID` (unlike
-    extrude/revolve, which require a `Face`): an empirical probe
-    (AICAD-026) proved OCCT's own boolean operations always produce a
-    `TopAbs_COMPOUND`, never a bare `TopAbs_SOLID`, so a Solid-only
-    restriction on any operation that must remain chainable after a
-    boolean would break ordinary usage. This same reasoning was reapplied
-    consistently in AICAD-027 (fillet/chamfer) and AICAD-028
-    (shell/offset).
-  - Edge/face selection for fillet/chamfer/shell is raw and index-based
-    (`shape_edge_count`/`get_edge`, `shape_face_count`/`get_face`),
-    implementing `docs/plan/05`'s own already-frozen raw-topology-access
-    design rather than inventing a new one.
-  - Loft uses `ruled=true` (straight generatrices) rather than OCCT's
-    smoothed/spline-fitted default, specifically so its volume could be
-    checked against an exact closed-form formula (AGENTS.md's evidence
-    rule) rather than merely asserting validity.
+  - Topology exploration (AICAD-029) reused the existing raw/indexed
+    edge/face enumeration pattern rather than inventing a query
+    language, per `docs/plan/05` §6's own explicit permission for
+    index-based access "when an algorithm intentionally depends on the
+    current transient topology enumeration."
+  - Tessellation (AICAD-032) outputs flat-shaded, non-vertex-shared
+    triangle soup rather than a smooth-shaded, vertex-deduplicated mesh
+    — a deliberate, disclosed Stage-1 simplification trading mesh
+    compactness for exact analytic verifiability (triangle count,
+    bounding box, per-triangle normal direction all checked exactly).
+  - STEP export (AICAD-033) exposes no caller-selectable schema/tuning
+    parameters — OCCT's own AP214 default was used as-is.
+  - The STEP-export concurrency fix (a process-wide mutex scoped to only
+    that one operation) is an internal correctness fix, not an
+    architecture change — it does not alter the ABI, any public
+    semantics, or any test/gate criterion.
 
 ## Git identity
 
 All commits this session used `insightlabs38-pixel
-<insightlabs38@gmail.com>` (verified via the repository's
-`commit-msg`/`prepare-commit-msg` hooks at `core.hooksPath`, which reject
-any other identity or AI-attribution text). No hook was bypassed or
-modified. This session's own local git config (`user.name`/`user.email`)
-had to be explicitly set at session start — the environment's default/
-global git config did not match the required identity — before any commit
-in this session would pass the `prepare-commit-msg` hook; this is worth a
-future session checking again early, since it is not guaranteed to
-persist across container/environment resets.
+<insightlabs38@gmail.com>` (this session had to explicitly run
+`git config user.name`/`user.email` at session start — the environment's
+default git identity was `Claude <noreply@anthropic.com>`, which the
+repository's `commit-msg`/`prepare-commit-msg` hooks correctly rejected
+before this was fixed; consistent with the previous session's own note
+that this does not persist across container/environment resets and must
+be checked at the start of every future session too). No hook was
+bypassed or modified.
