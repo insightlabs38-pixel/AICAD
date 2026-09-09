@@ -1,14 +1,14 @@
-// AICAD-016: C ABI boundary smoke test.
+// AICAD-016/AICAD-019: C ABI boundary smoke test.
 //
 // Exercises the ABI end-to-end (create/query/release), and specifically
 // the adversarial/safety cases the Stage-1A gate
-// (project/gates/STAGE1-A_KERNEL_BOUNDARY.md) will require evidence for:
+// (project/gates/STAGE1-A_KERNEL_BOUNDARY.md) requires evidence for:
 // invalid handles rejected, stale (released) handles rejected,
-// foreign-context handles rejected, and an OCCT-side exception
-// (degenerate zero-dimension box) contained rather than escaping/crashing.
-// The deeper epoch/generation semantics behind these same properties are
-// AICAD-019's job; this test only proves AICAD-016's minimal registry
-// already gets the observable behavior right.
+// foreign-context handles rejected, a stale/destroyed *context* pointer
+// rejected rather than dereferenced (AICAD-019), a double-destroy of the
+// same context being a safe no-op rather than a double-free (AICAD-019),
+// and an OCCT-side exception (degenerate zero-dimension box) contained
+// rather than escaping/crashing.
 
 #include <cmath>
 #include <cstdio>
@@ -59,6 +59,11 @@ int main() {
   expect(std::fabs(diagonal - expected_diagonal) < 1e-9,
          "bbox_diagonal matches the analytic expectation");
 
+  uint64_t live_count = 999;
+  status = aicad_kernel_context_live_shape_count(ctx_a, &live_count);
+  expect_status(status, AICAD_STATUS_OK, "live_shape_count on context A succeeds");
+  expect(live_count == 1, "live_shape_count is 1 after one create_box");
+
   // 2. Invalid handle: never issued (id 0 is never valid).
   AicadShapeHandle never_issued{0};
   double unused = 0.0;
@@ -75,6 +80,10 @@ int main() {
   status = aicad_shape_release(ctx_a, box_handle);
   expect_status(status, AICAD_STATUS_INVALID_HANDLE,
                 "double-release of the same handle is rejected");
+
+  status = aicad_kernel_context_live_shape_count(ctx_a, &live_count);
+  expect_status(status, AICAD_STATUS_OK, "live_shape_count on context A still succeeds");
+  expect(live_count == 0, "live_shape_count is 0 after releasing the only shape");
 
   // 4. A freshly created shape never reuses a just-released handle id
   //    (process-wide monotonic counter, not a per-context free list).
@@ -128,6 +137,48 @@ int main() {
   aicad_kernel_context_destroy(ctx_b);
   aicad_kernel_context_destroy(nullptr); // must be a safe no-op.
   std::printf("PASS: destroying contexts with outstanding shapes did not crash\n");
+
+  // 9. AICAD-019: a stale (already-destroyed) context pointer is rejected
+  //    as AICAD_STATUS_INVALID_CONTEXT by every function, never
+  //    dereferenced. ctx_a was just destroyed above; it is now a
+  //    dangling pointer we deliberately keep using here, exactly the
+  //    misuse this task's hardening targets.
+  status = aicad_create_box(ctx_a, 1.0, 1.0, 1.0, &second_handle);
+  expect_status(status, AICAD_STATUS_INVALID_CONTEXT,
+                "create_box against a destroyed context is rejected, not a crash");
+  status = aicad_shape_bbox_diagonal(ctx_a, box_handle, &unused);
+  expect_status(status, AICAD_STATUS_INVALID_CONTEXT,
+                "bbox_diagonal against a destroyed context is rejected, not a crash");
+  status = aicad_shape_release(ctx_a, box_handle);
+  expect_status(status, AICAD_STATUS_INVALID_CONTEXT,
+                "release against a destroyed context is rejected, not a crash");
+  status = aicad_kernel_context_live_shape_count(ctx_a, &live_count);
+  expect_status(status, AICAD_STATUS_INVALID_CONTEXT,
+                "live_shape_count against a destroyed context is rejected, not a crash");
+  const char *stale_error_text = aicad_kernel_context_last_error(ctx_a);
+  expect(stale_error_text != nullptr && stale_error_text[0] == '\0',
+         "last_error on a destroyed context returns an empty string, not a crash");
+
+  // 10. AICAD-019: destroying an already-destroyed context a second time
+  //     is a safe no-op, not a double-free.
+  aicad_kernel_context_destroy(ctx_a);
+  std::printf("PASS: double-destroying the same context did not crash\n");
+
+  // 11. A freshly created context's pointer is, in general, unrelated to
+  //     whether some *other*, unrelated stale pointer happens to look
+  //     live — create a new context and confirm the destroyed ctx_a
+  //     pointer is still correctly rejected (guards against a
+  //     pointer-reuse false positive: if the allocator happens to reuse
+  //     ctx_a's exact address for a new context, ctx_a-as-a-variable
+  //     would legitimately start passing again, which is correct
+  //     behavior, not a bug — this step exists to make that reasoning
+  //     explicit rather than leave it as an unstated assumption).
+  AicadKernelContext *ctx_c = aicad_kernel_context_create();
+  expect(ctx_c != nullptr, "context C created after ctx_a/ctx_b destruction");
+  status = aicad_kernel_context_live_shape_count(ctx_c, &live_count);
+  expect_status(status, AICAD_STATUS_OK, "live_shape_count on the fresh context C succeeds");
+  expect(live_count == 0, "a freshly created context owns no shapes");
+  aicad_kernel_context_destroy(ctx_c);
 
   if (g_failures == 0) {
     std::printf("ABI_SMOKE_TEST_RESULT=PASS\n");

@@ -76,11 +76,19 @@ mod ffi {
         InvalidHandle = 3,
         KernelInternalError = 4,
         UnknownError = 5,
+        /// `context` was non-null but not a live context (AICAD-019).
+        /// Appended rather than reordered next to `NullContext`, mirroring
+        /// `AicadStatus` in `aicad_occt_bridge.h` exactly.
+        InvalidContext = 6,
     }
 
     unsafe extern "C" {
         pub fn aicad_kernel_context_create() -> *mut AicadKernelContext;
         pub fn aicad_kernel_context_destroy(context: *mut AicadKernelContext);
+        pub fn aicad_kernel_context_live_shape_count(
+            context: *mut AicadKernelContext,
+            out_count: *mut u64,
+        ) -> AicadStatus;
         pub fn aicad_kernel_context_last_error(context: *mut AicadKernelContext) -> *const c_char;
         pub fn aicad_create_box(
             context: *mut AicadKernelContext,
@@ -156,11 +164,25 @@ impl Context {
                 unreachable!("error_for must only be called with a non-OK status")
             }
             ffi::AicadStatus::NullContext => KernelError::NullContext,
+            ffi::AicadStatus::InvalidContext => KernelError::InvalidContext,
             ffi::AicadStatus::InvalidArgument => KernelError::InvalidArgument(self.last_error()),
             ffi::AicadStatus::InvalidHandle => KernelError::InvalidHandle,
             ffi::AicadStatus::KernelInternalError => KernelError::Internal(self.last_error()),
             ffi::AicadStatus::UnknownError => KernelError::Unknown(self.last_error()),
         }
+    }
+
+    /// Number of shapes this context currently owns (created but not yet
+    /// released). Mainly useful for tests/diagnostics confirming a
+    /// create/release cycle leaves nothing behind.
+    pub fn live_shape_count(&mut self) -> KernelResult<u64> {
+        let mut out = 0_u64;
+        // SAFETY: see `create_box`'s safety comment.
+        let status = unsafe { ffi::aicad_kernel_context_live_shape_count(self.raw, &mut out) };
+        if status != ffi::AicadStatus::Ok {
+            return Err(self.error_for(status));
+        }
+        Ok(out)
     }
 
     /// Construct an axis-aligned box of size `dx * dy * dz` millimeters at
@@ -237,9 +259,11 @@ mod tests {
     #[test]
     fn create_query_release_round_trip() {
         let mut context = Context::new().expect("context creation should succeed");
+        assert_eq!(context.live_shape_count(), Ok(0));
         let shape = context
             .create_box(10.0, 20.0, 30.0)
             .expect("create_box(10,20,30) should succeed");
+        assert_eq!(context.live_shape_count(), Ok(1));
         let diagonal = context
             .shape_bbox_diagonal(shape)
             .expect("bbox_diagonal on a live shape should succeed");
@@ -251,6 +275,36 @@ mod tests {
         context
             .release_shape(shape)
             .expect("releasing a live shape should succeed");
+        assert_eq!(context.live_shape_count(), Ok(0));
+    }
+
+    #[test]
+    fn stale_context_pointer_is_rejected_at_the_ffi_layer_not_dereferenced() {
+        // Exercises AICAD-019's context-liveness check directly through
+        // this crate's own raw FFI bindings (not just the native C++
+        // test, native/occt_bridge/tests/abi_smoke_test.cpp, which
+        // proves the same property natively and clean under ASan/UBSan)
+        // — this additionally proves `ffi::AicadStatus::InvalidContext`'s
+        // discriminant (6) round-trips correctly across the FFI call
+        // from the Rust side.
+        //
+        // The safe `Context` API cannot express this scenario at all
+        // (Rust's ownership model makes calling a method on an
+        // already-dropped `Context` a compile error) — this is exactly
+        // why `KernelError::InvalidContext` is documented as
+        // unreachable through ordinary safe usage.
+        let context = Context::new().unwrap();
+        let raw = context.raw;
+        drop(context); // the native context is now destroyed; `raw` dangles.
+
+        let mut out_handle = ffi::AicadShapeHandle { id: 0 };
+        // SAFETY: deliberately calling the raw FFI with a pointer known
+        // to be dangling, to prove the native side's liveness check
+        // rejects it without dereferencing it (verified independently,
+        // under AddressSanitizer, in
+        // native/occt_bridge/tests/abi_smoke_test.cpp).
+        let status = unsafe { ffi::aicad_create_box(raw, 1.0, 1.0, 1.0, &mut out_handle) };
+        assert_eq!(status, ffi::AicadStatus::InvalidContext);
     }
 
     #[test]

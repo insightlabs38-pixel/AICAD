@@ -163,6 +163,17 @@ pub enum KernelError {
     /// The operation required a live kernel context and none was
     /// supplied. Corresponds to `AICAD_STATUS_NULL_CONTEXT`.
     NullContext,
+    /// A context pointer was supplied but is not (or is no longer) a
+    /// live context — e.g. it was already destroyed. Distinct from
+    /// `NullContext` (which means no context was supplied at all).
+    /// Corresponds to `AICAD_STATUS_INVALID_CONTEXT`
+    /// (`native/occt_bridge`, `AICAD-019`); in ordinary safe Rust usage
+    /// through `cad-occt-bridge::Context` this variant should be
+    /// unreachable, since Rust's ownership model makes calling a method
+    /// on an already-dropped `Context` a compile error — it exists for
+    /// the underlying ABI's own misuse-safety guarantee, which protects
+    /// callers below the safe Rust layer (e.g. a future non-Rust binding).
+    InvalidContext,
     /// An argument was invalid independent of any kernel context state
     /// (e.g. a required output pointer was null at the ABI layer, or a
     /// higher layer rejected a value before ever reaching the backend).
@@ -193,6 +204,9 @@ impl fmt::Display for KernelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             KernelError::NullContext => write!(f, "kernel error: no context supplied"),
+            KernelError::InvalidContext => {
+                write!(f, "kernel error: context is not live (already destroyed?)")
+            }
             KernelError::InvalidArgument(message) => {
                 write!(f, "kernel error: invalid argument: {message}")
             }
@@ -284,6 +298,7 @@ mod tests {
         fn category_name(error: &KernelError) -> &'static str {
             match error {
                 KernelError::NullContext => "null_context",
+                KernelError::InvalidContext => "invalid_context",
                 KernelError::InvalidArgument(_) => "invalid_argument",
                 KernelError::InvalidHandle => "invalid_handle",
                 KernelError::Internal(_) => "internal",
@@ -291,6 +306,10 @@ mod tests {
             }
         }
         assert_eq!(category_name(&KernelError::InvalidHandle), "invalid_handle");
+        assert_eq!(
+            category_name(&KernelError::InvalidContext),
+            "invalid_context"
+        );
         assert_eq!(
             category_name(&KernelError::Internal("x".to_string())),
             "internal"
