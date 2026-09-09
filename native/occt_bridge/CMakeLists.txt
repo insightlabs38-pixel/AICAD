@@ -101,6 +101,10 @@ add_executable(transform_test tests/transform_test.cpp)
 target_include_directories(transform_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(transform_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+add_executable(curve_edge_wire_test tests/curve_edge_wire_test.cpp)
+target_include_directories(curve_edge_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(curve_edge_wire_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -112,6 +116,8 @@ add_test(NAME box_cylinder_test COMMAND box_cylinder_test)
 set_tests_properties(box_cylinder_test PROPERTIES TIMEOUT 60)
 add_test(NAME transform_test COMMAND transform_test)
 set_tests_properties(transform_test PROPERTIES TIMEOUT 60)
+add_test(NAME curve_edge_wire_test COMMAND curve_edge_wire_test)
+set_tests_properties(curve_edge_wire_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #

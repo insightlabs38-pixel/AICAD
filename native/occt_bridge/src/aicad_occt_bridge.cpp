@@ -8,6 +8,8 @@
 #include "aicad_occt_bridge.h"
 
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
@@ -16,7 +18,15 @@
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
+#include <TopAbs_ShapeEnum.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Wire.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
 
 #include <atomic>
@@ -129,6 +139,47 @@ aicad_occt_status_t CheckHandleContext(aicad_occt_context_t* context, aicad_shap
 
 double Norm3(const double v[3]) {
   return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+// --- AICAD-022 helpers (shared by later Batch 1B tasks too) ---
+
+bool IsFinite3(const double v[3]) {
+  return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
+}
+
+gp_Pnt ToPnt(const double v[3]) { return gp_Pnt(v[0], v[1], v[2]); }
+
+// Returns false (leaving `out` untouched) if `v` is not finite or is too
+// close to the zero vector to normalize reliably.
+bool TryToDir(const double v[3], gp_Dir* out) {
+  if (!IsFinite3(v) || Norm3(v) < 1e-12) {
+    return false;
+  }
+  *out = gp_Dir(v[0], v[1], v[2]);
+  return true;
+}
+
+// Looks up a handle and additionally requires its shape to be exactly
+// `kind` (e.g. TopAbs_EDGE) -- a caller-contract violation (wrong handle
+// kind passed to an operation that only makes sense for one topological
+// kind), so this rejects with INVALID_ARGUMENT rather than relying on an
+// OCCT-level TopoDS:: cast exception to be caught and mapped later.
+aicad_occt_status_t LookupTyped(aicad_occt_context_t* context,
+                                 aicad_shape_handle_t handle,
+                                 TopAbs_ShapeEnum kind,
+                                 const TopoDS_Shape** out) {
+  aicad_occt_status_t status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = context->shapes.Lookup(handle, out);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if ((*out)->ShapeType() != kind) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  return AICAD_OCCT_OK;
 }
 
 }  // namespace
@@ -309,6 +360,115 @@ aicad_occt_status_t aicad_occt_transform_shape(aicad_occt_context_t* context,
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, transform.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_line_edge(aicad_occt_context_t* context,
+                                               const double p0[3],
+                                               const double p1[3],
+                                               aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (p0 == nullptr || p1 == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!IsFinite3(p0) || !IsFinite3(p1)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const double diff[3] = {p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]};
+  if (Norm3(diff) < 1e-12) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;  // coincident endpoints
+  }
+  try {
+    BRepBuilderAPI_MakeEdge make_edge(ToPnt(p0), ToPnt(p1));
+    if (!make_edge.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_edge.Edge());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_circle_wire(aicad_occt_context_t* context,
+                                                 const double center[3],
+                                                 const double normal[3],
+                                                 double radius,
+                                                 aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (center == nullptr || normal == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!IsFinite3(center) || !(radius > 0.0) || !std::isfinite(radius)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir normal_dir;
+  if (!TryToDir(normal, &normal_dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    gp_Ax2 axes(ToPnt(center), normal_dir);
+    gp_Circ circle(axes, radius);
+    BRepBuilderAPI_MakeEdge make_edge(circle);
+    if (!make_edge.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    BRepBuilderAPI_MakeWire make_wire(make_edge.Edge());
+    if (!make_wire.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_wire.Wire());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_wire_from_edges(aicad_occt_context_t* context,
+                                                     const aicad_shape_handle_t* edges,
+                                                     size_t edge_count,
+                                                     aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (edges == nullptr || out_handle == nullptr || edge_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    BRepBuilderAPI_MakeWire make_wire;
+    for (size_t i = 0; i < edge_count; ++i) {
+      const TopoDS_Shape* edge_shape = nullptr;
+      status = LookupTyped(context, edges[i], TopAbs_EDGE, &edge_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      make_wire.Add(TopoDS::Edge(*edge_shape));
+      if (!make_wire.IsDone()) {
+        // BRepBuilderAPI_MakeWire's own error enum (Error()) distinguishes
+        // disconnected/non-manifold input from a generic failure, but all
+        // of it is "this edge sequence cannot form a wire" from the
+        // caller's point of view -- an operation failure, not an adapter
+        // defect.
+        return AICAD_OCCT_ERR_OPERATION_FAILED;
+      }
+    }
+    *out_handle = context->shapes.Insert(context->id, make_wire.Wire());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

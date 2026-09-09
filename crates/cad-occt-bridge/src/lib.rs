@@ -14,7 +14,9 @@
 
 mod ffi;
 
-use cad_kernel_api::{KernelError, KernelId, KernelResult, KernelShape, Point3, Transform};
+use cad_kernel_api::{
+    Direction3, KernelError, KernelId, KernelResult, KernelShape, Point3, Transform,
+};
 use std::os::raw::c_int;
 
 /// Converts one native `aicad_occt_status_t` value into a
@@ -128,6 +130,92 @@ impl OcctContext {
         // SAFETY: same argument as `create_box` above.
         let status =
             unsafe { ffi::aicad_occt_create_cylinder(self.raw, radius, height, &mut handle) };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Constructs a straight edge between two points (AICAD-022).
+    pub fn make_line_edge(&self, p0: Point3, p1: Point3) -> KernelResult<Shape<'_>> {
+        let p0 = [p0.x, p0.y, p0.z];
+        let p1 = [p1.x, p1.y, p1.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `p0`/`p1` are valid, live `[f64; 3]` arrays for the
+        // duration of this call; `self.raw`/`&mut handle` as in `create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_line_edge(self.raw, p0.as_ptr(), p1.as_ptr(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Constructs a closed circular wire (AICAD-022).
+    pub fn make_circle_wire(
+        &self,
+        center: Point3,
+        normal: Direction3,
+        radius: f64,
+    ) -> KernelResult<Shape<'_>> {
+        let center = [center.x, center.y, center.z];
+        let normal_v = normal.as_vector3();
+        let normal = [normal_v.x, normal_v.y, normal_v.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_line_edge` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_circle_wire(
+                self.raw,
+                center.as_ptr(),
+                normal.as_ptr(),
+                radius,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Joins an ordered list of edges (each owned by this context) into
+    /// one wire (AICAD-022).
+    pub fn make_wire_from_edges<'ctx>(
+        &'ctx self,
+        edges: &[&Shape<'ctx>],
+    ) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `handles` is a valid, live, contiguous array of
+        // `handles.len()` elements for the duration of this call (no STL
+        // container crosses the boundary -- this is a plain pointer +
+        // length, per the header's contract); `self.raw`/`&mut handle` as
+        // in `create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_wire_from_edges(
+                self.raw,
+                handles.as_ptr(),
+                handles.len(),
+                &mut handle,
+            )
+        };
         status_result(status)?;
         Ok(Shape {
             context: self,
@@ -484,6 +572,67 @@ mod tests {
         assert_eq!(
             original_bbox, bbox_after,
             "transform must not mutate the source shape"
+        );
+    }
+
+    // --- AICAD-022: curves/edges/wires ---
+
+    #[test]
+    fn make_line_edge_is_valid_with_the_expected_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(3.0, 4.0, 0.0))
+            .unwrap();
+        assert!(edge.is_valid().unwrap());
+        let bbox = edge.bounding_box().unwrap();
+        assert!((bbox.max.x - bbox.min.x - 3.0).abs() < 1e-6);
+        assert!((bbox.max.y - bbox.min.y - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn make_line_edge_rejects_coincident_points() {
+        let context = OcctContext::new().unwrap();
+        let p = Point3::new(1.0, 1.0, 1.0);
+        assert_eq!(
+            context.make_line_edge(p, p).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_circle_wire_is_valid_with_the_expected_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let wire = context
+            .make_circle_wire(Point3::ORIGIN, Direction3::Z, 3.0)
+            .unwrap();
+        assert!(wire.is_valid().unwrap());
+        let bbox = wire.bounding_box().unwrap();
+        assert!((bbox.max.x - bbox.min.x - 6.0).abs() < 1e-6);
+        assert!((bbox.max.y - bbox.min.y - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn make_wire_from_edges_joins_a_square_and_is_valid() {
+        let context = OcctContext::new().unwrap();
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(1.0, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(1.0, 0.0), p(1.0, 1.0)).unwrap();
+        let e2 = context.make_line_edge(p(1.0, 1.0), p(0.0, 1.0)).unwrap();
+        let e3 = context.make_line_edge(p(0.0, 1.0), p(0.0, 0.0)).unwrap();
+        let wire = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        assert!(wire.is_valid().unwrap());
+        let bbox = wire.bounding_box().unwrap();
+        assert!((bbox.max.x - bbox.min.x - 1.0).abs() < 1e-6);
+        assert!((bbox.max.y - bbox.min.y - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn make_wire_from_edges_rejects_an_empty_list() {
+        let context = OcctContext::new().unwrap();
+        let edges: [&Shape<'_>; 0] = [];
+        assert_eq!(
+            context.make_wire_from_edges(&edges).unwrap_err(),
+            KernelError::InvalidArgument
         );
     }
 }

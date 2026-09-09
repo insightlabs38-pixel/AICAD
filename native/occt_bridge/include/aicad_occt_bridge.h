@@ -17,6 +17,7 @@
 #ifndef AICAD_OCCT_BRIDGE_H
 #define AICAD_OCCT_BRIDGE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -134,6 +135,36 @@ aicad_occt_status_t aicad_occt_transform_shape(aicad_occt_context_t* context,
                                                 aicad_shape_handle_t handle,
                                                 const double matrix[12],
                                                 aicad_shape_handle_t* out_handle);
+
+/* --- AICAD-022: minimal curve/edge/wire construction. A raw
+ * `Geom_Curve` is not exposed as its own handle kind yet (no Stage-1 task
+ * needs curve evaluation independent of an edge) -- curves are
+ * constructed directly into an edge, per the capability-driven
+ * minimal-surface rule; a dedicated Curve handle can be added later
+ * without breaking this surface. --- */
+
+/* Constructs a straight edge between two points. */
+aicad_occt_status_t aicad_occt_make_line_edge(aicad_occt_context_t* context,
+                                               const double p0[3],
+                                               const double p1[3],
+                                               aicad_shape_handle_t* out_handle);
+
+/* Constructs a closed circular wire (not just an edge -- a full circle is
+ * always closed, and every Stage-1 consumer of a circle needs a Wire
+ * directly usable by aicad_occt_make_face_from_wire). */
+aicad_occt_status_t aicad_occt_make_circle_wire(aicad_occt_context_t* context,
+                                                 const double center[3],
+                                                 const double normal[3],
+                                                 double radius,
+                                                 aicad_shape_handle_t* out_handle);
+
+/* Joins an ordered list of edges into one wire. `edges`/`edge_count` is a
+ * caller-owned array (no STL container crosses this boundary); edges must
+ * form a single connected chain (open or closed) in the given order. */
+aicad_occt_status_t aicad_occt_make_wire_from_edges(aicad_occt_context_t* context,
+                                                     const aicad_shape_handle_t* edges,
+                                                     size_t edge_count,
+                                                     aicad_shape_handle_t* out_handle);
 
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
