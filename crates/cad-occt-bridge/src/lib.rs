@@ -572,6 +572,108 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// The number of unique edges in this shape (AICAD-027), via OCCT's
+    /// own de-duplicated `TopExp::MapShapes` (a raw `TopExp_Explorer`
+    /// traversal instead revisits each edge once per adjacent face,
+    /// verified empirically -- see `project/reports/AICAD-027.md`).
+    pub fn edge_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the edge at `index` (0-based, `< self.edge_count()`) in
+    /// this shape's own current raw enumeration order (AICAD-027) --
+    /// ephemeral and epoch-bound, never a durable semantic reference
+    /// (Stage-1 kernel policies #10-12). Intended for immediate use as a
+    /// [`Shape::fillet`]/[`Shape::chamfer`] edge selector, not for
+    /// storage.
+    pub fn get_edge(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_edge(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Fillets (rounds) `edges` (each obtained from this shape's own
+    /// [`Shape::get_edge`]) with a single constant `radius` (AICAD-027).
+    /// Accepts any shape kind (not restricted to Solid) -- see
+    /// [`Shape::union`] for the same rationale applied here.
+    pub fn fillet(&self, edges: &[&Shape<'ctx>], radius: f64) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `handles` is a valid, live, contiguous array of
+        // `handles.len()` elements for the duration of this call (no STL
+        // container crosses the boundary), matching
+        // `aicad_occt_make_wire_from_edges`' convention; `self.context.raw`/
+        // `self.raw_handle()`/`&mut handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_fillet(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                radius,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Chamfers `edges` (each obtained from this shape's own
+    /// [`Shape::get_edge`]) with a single constant symmetric `distance`
+    /// (AICAD-027). See [`Shape::fillet`] for the operand-kind rationale.
+    pub fn chamfer(&self, edges: &[&Shape<'ctx>], distance: f64) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `fillet` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_chamfer(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                distance,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -1242,5 +1344,137 @@ mod tests {
         let a = context_a.create_box(1.0, 1.0, 1.0).unwrap();
         let foreign = context_b.create_box(1.0, 1.0, 1.0).unwrap();
         assert_eq!(a.union(&foreign).unwrap_err(), KernelError::ForeignContext);
+    }
+
+    // --- AICAD-027: fillet and chamfer ---
+
+    #[test]
+    fn a_box_has_exactly_twelve_unique_edges() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(4.0, 5.0, 6.0).unwrap();
+        assert_eq!(box_shape.edge_count().unwrap(), 12);
+    }
+
+    #[test]
+    fn get_edge_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_edge(12).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn fillet_all_edges_matches_rounded_box_analytic_volume() {
+        // Filleting every edge of a box with radius r produces a "rounded
+        // box" whose volume is the closed-form Minkowski-sum-with-a-ball
+        // formula: V = Lx*Ly*Lz + 2r(Lx*Ly+Ly*Lz+Lz*Lx) + pi*r^2*(Lx+Ly+Lz)
+        // + (4/3)*pi*r^3, where Lx/Ly/Lz are the box dimensions inset by r
+        // on every side.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, r) = (4.0, 5.0, 6.0, 1.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let count = box_shape.edge_count().unwrap();
+        let edges: Vec<Shape<'_>> = (0..count).map(|i| box_shape.get_edge(i).unwrap()).collect();
+        let edge_refs: Vec<&Shape<'_>> = edges.iter().collect();
+        let rounded = box_shape
+            .fillet(&edge_refs, r)
+            .expect("fillet should succeed for all 12 edges");
+        assert!(rounded.is_valid().unwrap());
+        let (lx, ly, lz) = (dx - 2.0 * r, dy - 2.0 * r, dz - 2.0 * r);
+        let pi = std::f64::consts::PI;
+        let expected = lx * ly * lz
+            + 2.0 * r * (lx * ly + ly * lz + lz * lx)
+            + pi * r * r * (lx + ly + lz)
+            + (4.0 / 3.0) * pi * r * r * r;
+        let volume = rounded.volume().unwrap();
+        assert!(
+            (volume - expected).abs() < expected * 1e-4,
+            "rounded-box volume {volume} did not match analytic {expected}"
+        );
+    }
+
+    #[test]
+    fn chamfer_single_edge_matches_analytic_volume() {
+        // Chamfering exactly one edge (and only one -- neither adjacent
+        // edge is also modified) removes a clean triangular prism of
+        // cross-section legs (d,d) along the full edge length, so
+        // volume = box_volume - (d^2/2)*edge_length.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, d) = (4.0, 5.0, 6.0, 0.5);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let count = box_shape.edge_count().unwrap();
+        // Find the edge from (0,0,dz) to (dx,0,dz): the intersection of
+        // the y=0 face and the z=dz (top) face, length dx.
+        let target = (0..count)
+            .map(|i| box_shape.get_edge(i).unwrap())
+            .find(|edge| {
+                let bbox = edge.bounding_box().unwrap();
+                (bbox.min.x - 0.0).abs() < 1e-6
+                    && (bbox.max.x - dx).abs() < 1e-6
+                    && (bbox.min.y - 0.0).abs() < 1e-6
+                    && (bbox.max.y - 0.0).abs() < 1e-6
+                    && (bbox.min.z - dz).abs() < 1e-6
+                    && (bbox.max.z - dz).abs() < 1e-6
+            })
+            .expect("the specific top-front edge must be found among the box's 12 edges");
+        let chamfered = box_shape
+            .chamfer(&[&target], d)
+            .expect("chamfer should succeed for a single identified edge");
+        assert!(chamfered.is_valid().unwrap());
+        let expected = dx * dy * dz - (d * d / 2.0) * dx;
+        let volume = chamfered.volume().unwrap();
+        assert!((volume - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn fillet_and_chamfer_reject_a_handle_that_is_not_an_edge() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.fillet(&[&box_shape], 1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.chamfer(&[&box_shape], 0.1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn fillet_rejects_a_non_positive_radius() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge = box_shape.get_edge(0).unwrap();
+        assert_eq!(
+            box_shape.fillet(&[&edge], 0.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.fillet(&[&edge], -1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn fillet_and_chamfer_accept_a_compound_shape() {
+        // Matches the boolean-result-is-chainable rationale: fillet a
+        // Compound (a boolean-union result of two disjoint boxes) to
+        // prove operand-kind is not restricted to Solid here either.
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b_raw = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b = b_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                20.0, 0.0, 0.0,
+            )))
+            .unwrap();
+        let compound = a.union(&b).unwrap();
+        assert_eq!(
+            compound.edge_count().unwrap(),
+            24,
+            "two disjoint boxes' union has 12+12=24 edges"
+        );
     }
 }

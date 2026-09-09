@@ -269,6 +269,62 @@ aicad_occt_status_t aicad_occt_boolean_intersect(aicad_occt_context_t* context,
                                                   aicad_shape_handle_t b,
                                                   aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-027: fillet and chamfer.
+ *
+ * Selecting WHICH edges to round/chamfer requires raw, index-based edge
+ * access -- there is no persistent semantic edge-reference system yet
+ * (that is Stage 4's job; `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`
+ * §5-6 already specifies exactly this raw/indexed access pattern --
+ * `raw_edge(f, 2)` -- for cases like this one, so this is implementing an
+ * already-approved design, not selecting a new architecture
+ * alternative). `aicad_occt_shape_edge_count`/`_get_edge` expose the
+ * minimum needed to select edges now: a strictly ephemeral, epoch-bound
+ * enumeration of a shape's UNIQUE edges (via OCCT's `TopExp::MapShapes`,
+ * NOT a raw `TopExp_Explorer` traversal, which revisits each edge once
+ * per adjacent face -- verified empirically, e.g. 24 vs. the correct 12
+ * for a box; see project/reports/AICAD-027.md). Callers must never treat
+ * the resulting index or edge handle as a durable semantic reference
+ * (Stage-1 kernel policies #10-12) -- it is valid only within the current
+ * geometry epoch, like every other handle this bridge hands out. --- */
+
+/* Number of unique edges in `handle`'s shape. */
+aicad_occt_status_t aicad_occt_shape_edge_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count);
+
+/* Returns a handle to the edge at `index` (0-based, `< edge_count` from
+ * aicad_occt_shape_edge_count against the same handle) in `handle`'s
+ * shape, per its own current raw enumeration order -- ephemeral and
+ * epoch-bound, not a durable reference. */
+aicad_occt_status_t aicad_occt_shape_get_edge(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_edge_handle);
+
+/* Fillets (rounds) the given edges of `shape_handle` with a single
+ * constant radius. `edges`/`edge_count` (>= 1) is a caller-owned array of
+ * edge handles previously obtained from aicad_occt_shape_get_edge against
+ * this same shape_handle. Accepts any non-null shape_handle (not
+ * restricted to Solid) -- matching aicad_occt_boolean_union's own
+ * rationale: a boolean result is a Compound and must remain fillet-able
+ * without first being re-wrapped. */
+aicad_occt_status_t aicad_occt_fillet(aicad_occt_context_t* context,
+                                       aicad_shape_handle_t shape_handle,
+                                       const aicad_shape_handle_t* edges,
+                                       size_t edge_count,
+                                       double radius,
+                                       aicad_shape_handle_t* out_handle);
+
+/* Chamfers the given edges of `shape_handle` with a single constant
+ * symmetric distance (equal setback on both faces adjacent to each
+ * edge). See aicad_occt_fillet for the edges/edge_count contract. */
+aicad_occt_status_t aicad_occt_chamfer(aicad_occt_context_t* context,
+                                        aicad_shape_handle_t shape_handle,
+                                        const aicad_shape_handle_t* edges,
+                                        size_t edge_count,
+                                        double distance,
+                                        aicad_shape_handle_t* out_handle);
+
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
  * geometry API yet; `cad-geometry-api` owns that surface later. --- */
