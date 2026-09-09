@@ -320,3 +320,56 @@ them; do not add entries here unilaterally.
   prototype-driven and not yet decided — track experiments under
   `project/experiments/` before committing `crates/cad-occt-bridge` or
   `crates/cad-references` to a specific internal persistence mechanism.
+
+---
+
+## DL-10: Stage 0 passed — owner approval to advance to Stage 1
+
+- Date: 2026-09-09
+- Resolves: Stage-0 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: Stage 0 is APPROVED. The owner has reviewed the independent,
+  adversarial Stage-0 review in
+  `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md` (branch
+  `claude/aicad-stage-0-review-9leull`, commit `aad7267`, merged into
+  `branch/loving-feynman-zhf196` at `8c8c486`) alongside the
+  implementation team's own gate packet (`project/gates/stage-0-gate.md`,
+  AICAD-014) and accepts the independent review's final **PASS**
+  recommendation, given after its three patches were applied:
+  - F1 (MAJOR): added `if_expr`/`match_expr`/`block_expr` grammar
+    productions so `if`/`match` can appear in expression position, in
+    `rfcs/0001-language-principles.md` §7 and `specs/language/grammar.ebnf`.
+  - F2 (MAJOR): added the `affine_kind: absolute | delta` discriminant
+    and an `absolute - absolute -> delta` subtraction rule to
+    `rfcs/0004-units-type-system.md` §5/§7, so the affine-unit invariant
+    DL-3 already approved is actually representable and constructible.
+  - F3 (MINOR): added inline caveats in
+    `examples/assemblies/stage0_paper_example.aicad` at the two
+    D3-dependent/undocumented-coercion constructs, so the paper example
+    itself (not only its companion `.md`) signals they are not frozen API.
+  All three patches operationalize already-approved rulings (DL-1, DL-2,
+  DL-3) or are documentation-only; none resolved an open
+  `OWNER_DECISIONS.md` item, and none is superseded or altered by this
+  entry. `project/OWNER_DECISIONS.md`'s open items (D3, D5, D10, D11, D12,
+  D15, and the residual sub-items of D7/D8/D13) remain open and unaffected;
+  none of them blocks Stage 1 per their own recorded blocking-impact notes.
+- Rationale: Owner ruling, per `AGENTS.md` ("Stage progression is an owner
+  decision") and `project/CURRENT_STAGE.md` ("Owner approval required to
+  advance: Yes"). Two independent recommendations (the implementation
+  team's own gate packet and a separate adversarial review with no prior
+  session context) both concluded PASS after mechanically deriving the
+  paper example against the RFCs' own grammar/type rules rather than
+  reading them charitably, which is the standard of evidence this decision
+  relies on.
+- Alternatives considered: Waiting for a further review round (rejected —
+  the independent review found no BLOCKER, and its two MAJOR findings were
+  gaps in already-approved rulings' internal completeness, not open
+  architecture questions, so a further round would not change the
+  outcome); deferring approval until D3/D5/D10/D11/D12/D15 are resolved
+  (rejected — none of those items blocks any Stage-0 deliverable or any
+  task in the authorized Stage-1 window, per `OWNER_DECISIONS.md`'s own
+  blocking-impact notes, independently re-confirmed by the review's §8).
+- Affected RFCs/tasks: Unblocks Stage 1 (`AICAD-015` through `AICAD-037`,
+  per the authorized roadmap window); `project/CURRENT_STAGE.md` updated
+  to Stage 1 active.
+- Supersedes: none.

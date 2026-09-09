@@ -1,28 +1,46 @@
 # Current AICAD Stage
 
-stage: 0
-name: Architecture constitution and RFC
+stage: 1
+name: Kernel boundary, constructive/hard geometry, inspection/interchange
 status: active
 
-## Goal
-Freeze only the foundational contracts required to begin implementation without accidentally hard-coding unresolved CAD semantics.
+## Stage 0 — closed
 
-## Exit gate
-A realistic paper/spec example containing parameters, function, loop, conditional, sketch, extrusion, semantic query, low-level geometry, assembly, constraint, and test can be written without semantic contradiction.
+Stage 0 (architecture constitution and RFC) passed owner review. See
+`project/DECISION_LOG.md#DL-10` for the owner-recorded approval, which
+cites both `project/gates/stage-0-gate.md` (AICAD-014) and the independent
+adversarial review `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`.
+
+## Goal
+Implement the AICAD kernel boundary and enough constructive/hard geometry
+operations and inspection/interchange support to produce, validate, and
+export a nontrivial exact B-rep part through the AICAD kernel API, while
+keeping the kernel-neutral, exception-free, epoch-bound contracts from
+`AGENTS.md` intact.
+
+## Authorized window
+Stage 1 is authorized through AICAD-037 inclusive (see
+`project/OWNER_DECISIONS.md`/task-brief batch structure: 1A kernel
+boundary AICAD-015..019, 1B constructive geometry AICAD-020..024, 1C hard
+geometry ops AICAD-025..028, 1D inspection/validation/interchange
+AICAD-029..033, 1E Stage-1 proof AICAD-034..037). AICAD-038 and all Stage-2
+work require explicit owner approval before starting.
 
 ## Allowed work
-- plan ingestion and traceability;
-- repository/toolchain scaffolding;
-- RFC-0001 through RFC-0005;
-- paper/spec examples;
-- tests/benchmark design needed to prove later gates.
+- kernel-neutral C ABI / native OCCT bridge (Batch 1A);
+- constructive geometry operations (Batch 1B);
+- hard geometry operations, with honestly recorded capability limits
+  (Batch 1C);
+- inspection/validation/interchange support (Batch 1D);
+- the Stage-1 proof part and owner gate packet preparation (Batch 1E);
+- tests/benchmarks/adversarial cases needed to prove each batch checkpoint.
 
 ## Not allowed yet
-- production geometry feature breadth;
-- final parser implementation;
-- GUI/IDE implementation;
-- broad AI tool layer;
-- silently resolving owner decisions.
+- AICAD-038 or any Stage-2 work;
+- broadening product scope beyond the authorized task window;
+- silently resolving open `project/OWNER_DECISIONS.md` items;
+- weakening a stage gate, benchmark, or reference/validation check to
+  force a pass.
 
 ## Owner approval required to advance
-Yes.
+Yes — required again before Stage 2 (AICAD-038+).
