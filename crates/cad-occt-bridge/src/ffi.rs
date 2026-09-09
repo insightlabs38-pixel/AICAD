@@ -202,4 +202,88 @@ unsafe extern "C" {
         out_min: *mut f64, // [f64; 3]
         out_max: *mut f64, // [f64; 3]
     ) -> c_int;
+    pub fn aicad_occt_shape_vertex_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_vertex(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_vertex_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_edge_vertices(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_v0: *mut aicad_shape_handle_t,
+        out_v1: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_adjacent_face_count(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edge_index: usize,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_adjacent_face_get(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edge_index: usize,
+        adjacent_index: usize,
+        out_face_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_length(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_length: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_shape_center_of_mass(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_center: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_validate(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_report: *mut aicad_validation_report_t,
+    ) -> c_int;
+    pub fn aicad_occt_tessellate(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        linear_deflection: f64,
+        angular_deflection: f64,
+        out_counts: *mut aicad_tessellation_counts_t,
+    ) -> c_int;
+    pub fn aicad_occt_tessellation_get(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_vertices: *mut f64,
+        out_normals: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_export_step(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        file_path: *const std::os::raw::c_char,
+    ) -> c_int;
+}
+
+/// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t
+/// triangle_count;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_tessellation_counts_t {
+    pub triangle_count: usize,
+}
+
+/// Mirrors `aicad_validation_report_t` field-for-field: `int is_valid;
+/// size_t invalid_vertex_count; size_t invalid_edge_count; size_t
+/// invalid_wire_count; size_t invalid_face_count;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_validation_report_t {
+    pub is_valid: c_int,
+    pub invalid_vertex_count: usize,
+    pub invalid_edge_count: usize,
+    pub invalid_wire_count: usize,
+    pub invalid_face_count: usize,
 }

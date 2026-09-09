@@ -103,6 +103,39 @@ foreach(_lib IN LISTS OCCT_FILLET_LIBS)
   endif()
 endforeach()
 
+# TKMesh provides BRepMesh_IncrementalMesh (AICAD-032: display
+# tessellation output).
+set(OCCT_MESH_LIBS
+  TKMesh
+)
+
+foreach(_lib IN LISTS OCCT_MESH_LIBS)
+  if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
+    message(FATAL_ERROR
+      "OCCT discovery: required module library '${_lib}' (for display "
+      "tessellation, AICAD-032) is not among OpenCASCADE_LIBRARIES "
+      "reported by the discovered installation (${OpenCASCADE_LIBRARIES}).")
+  endif()
+endforeach()
+
+# TKSTEP (plus its own TKSTEPBase/TKXSBase dependencies, found empirically
+# via undefined-symbol link errors, not guessed) provides
+# STEPControl_Writer (AICAD-033: STEP export).
+set(OCCT_STEP_LIBS
+  TKXSBase
+  TKSTEPBase
+  TKSTEP
+)
+
+foreach(_lib IN LISTS OCCT_STEP_LIBS)
+  if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
+    message(FATAL_ERROR
+      "OCCT discovery: required module library '${_lib}' (for STEP "
+      "export, AICAD-033) is not among OpenCASCADE_LIBRARIES reported by "
+      "the discovered installation (${OpenCASCADE_LIBRARIES}).")
+  endif()
+endforeach()
+
 foreach(_lib IN LISTS OCCT_PROBE_LIBS)
   if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
     message(FATAL_ERROR
@@ -130,7 +163,7 @@ add_library(aicad_occt_bridge SHARED src/aicad_occt_bridge.cpp)
 target_include_directories(aicad_occt_bridge PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(aicad_occt_bridge SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 target_link_directories(aicad_occt_bridge PRIVATE ${OpenCASCADE_LIBRARY_DIR})
-target_link_libraries(aicad_occt_bridge PRIVATE ${OCCT_PROBE_LIBS} ${OCCT_SWEEP_LOFT_LIBS} ${OCCT_BOOLEAN_LIBS} ${OCCT_FILLET_LIBS} Threads::Threads)
+target_link_libraries(aicad_occt_bridge PRIVATE ${OCCT_PROBE_LIBS} ${OCCT_SWEEP_LOFT_LIBS} ${OCCT_BOOLEAN_LIBS} ${OCCT_FILLET_LIBS} ${OCCT_MESH_LIBS} ${OCCT_STEP_LIBS} Threads::Threads)
 
 add_executable(abi_boundary_test tests/abi_boundary_test.cpp)
 target_include_directories(abi_boundary_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -179,6 +212,27 @@ add_executable(shell_offset_test tests/shell_offset_test.cpp)
 target_include_directories(shell_offset_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(shell_offset_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+# --- Batch 1D: inspection/validation/interchange (AICAD-029..033) ---
+add_executable(topology_test tests/topology_test.cpp)
+target_include_directories(topology_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(topology_test PRIVATE aicad_occt_bridge Threads::Threads)
+
+add_executable(measurement_test tests/measurement_test.cpp)
+target_include_directories(measurement_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(measurement_test PRIVATE aicad_occt_bridge Threads::Threads)
+
+add_executable(validation_test tests/validation_test.cpp)
+target_include_directories(validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(validation_test PRIVATE aicad_occt_bridge Threads::Threads)
+
+add_executable(tessellation_test tests/tessellation_test.cpp)
+target_include_directories(tessellation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(tessellation_test PRIVATE aicad_occt_bridge Threads::Threads)
+
+add_executable(step_export_test tests/step_export_test.cpp)
+target_include_directories(step_export_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(step_export_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -204,6 +258,16 @@ add_test(NAME fillet_chamfer_test COMMAND fillet_chamfer_test)
 set_tests_properties(fillet_chamfer_test PROPERTIES TIMEOUT 60)
 add_test(NAME shell_offset_test COMMAND shell_offset_test)
 set_tests_properties(shell_offset_test PROPERTIES TIMEOUT 60)
+add_test(NAME topology_test COMMAND topology_test)
+set_tests_properties(topology_test PROPERTIES TIMEOUT 60)
+add_test(NAME measurement_test COMMAND measurement_test)
+set_tests_properties(measurement_test PROPERTIES TIMEOUT 60)
+add_test(NAME validation_test COMMAND validation_test)
+set_tests_properties(validation_test PROPERTIES TIMEOUT 60)
+add_test(NAME tessellation_test COMMAND tessellation_test)
+set_tests_properties(tessellation_test PROPERTIES TIMEOUT 60)
+add_test(NAME step_export_test COMMAND step_export_test)
+set_tests_properties(step_export_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #

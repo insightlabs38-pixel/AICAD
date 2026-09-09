@@ -406,6 +406,209 @@ aicad_occt_status_t aicad_occt_shape_bounding_box(aicad_occt_context_t* context,
                                                    double out_min[3],
                                                    double out_max[3]);
 
+/* --- AICAD-029: topology exploration.
+ *
+ * `topology_faces`/`topology_edges` (docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+ * §3) are already implemented by AICAD-027/028's
+ * `aicad_occt_shape_edge_count`/`_get_edge` and
+ * `aicad_occt_shape_face_count`/`_get_face` -- both accept any shape kind
+ * (`LookupAnyKind`, not just Solid), so calling them with a Face handle
+ * already enumerates that face's own boundary edges (`face_edges` in the
+ * plan doc), and no separate function is added for it (native/occt_bridge's
+ * own test suite, topology_test.cpp, is the evidence this actually holds).
+ * This task adds the two primitives the plan doc's exploration surface
+ * still lacked: vertex enumeration (`topology_vertices`) and edge-to-face
+ * adjacency (`adjacent_faces`). Both reuse the same raw/indexed,
+ * ephemeral, epoch-bound access pattern AICAD-027/028 established (ordinary
+ * TopExp::MapShapes de-duplication, 0-based indices) -- not a new
+ * architecture alternative. --- */
+
+/* Number of unique vertices in `handle`'s shape (via TopExp::MapShapes,
+ * matching aicad_occt_shape_edge_count/_face_count's own
+ * de-duplication rationale). */
+aicad_occt_status_t aicad_occt_shape_vertex_count(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t handle,
+                                                   size_t* out_count);
+
+/* Returns a handle to the vertex at `index` (0-based, `< vertex_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_edge/_get_face's
+ * own contract. */
+aicad_occt_status_t aicad_occt_shape_get_vertex(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t index,
+                                                 aicad_shape_handle_t* out_vertex_handle);
+
+/* Returns `edge_handle`'s two endpoint vertices in the edge's own
+ * orientation order (OCCT's TopExp::Vertices' "first"/"last" sense; for a
+ * closed edge, e.g. a full circle, both are the same vertex -- callers
+ * must not assume distinctness). `edge_handle` must address a shape of
+ * exactly kind Edge (a caller-contract violation otherwise, matching
+ * aicad_occt_fillet's own edge-typed-argument rejection). */
+aicad_occt_status_t aicad_occt_edge_vertices(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t edge_handle,
+                                              aicad_shape_handle_t* out_v0,
+                                              aicad_shape_handle_t* out_v1);
+
+/* Number of faces of `shape_handle` adjacent to (bounded by) the edge at
+ * `edge_index` (0-based, `< aicad_occt_shape_edge_count(shape_handle)`,
+ * per that same function's own enumeration order over `shape_handle`).
+ * An edge shared by N faces (N=2 for an ordinary manifold solid edge, N=1
+ * for a free/boundary edge, N>2 possible for a non-manifold compound)
+ * reports N here. */
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_count(aicad_occt_context_t* context,
+                                                               aicad_shape_handle_t shape_handle,
+                                                               size_t edge_index,
+                                                               size_t* out_count);
+
+/* Returns a handle to the `adjacent_index`-th (0-based, `<
+ * edge_adjacent_face_count`) face of `shape_handle` adjacent to the edge
+ * at `edge_index`, in that adjacency query's own current raw enumeration
+ * order -- ephemeral and epoch-bound, never a durable semantic reference. */
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_get(aicad_occt_context_t* context,
+                                                             aicad_shape_handle_t shape_handle,
+                                                             size_t edge_index,
+                                                             size_t adjacent_index,
+                                                             aicad_shape_handle_t* out_face_handle);
+
+/* --- AICAD-030: length and center-of-mass queries (volume/area/
+ * bounding_box already exist from AICAD-016..028's own construction/
+ * validation evidence work). --- */
+
+/* Total length of every unique edge in the shape (via
+ * BRepGProp::LinearProperties with SkipShared=true -- without it, an edge
+ * shared by 2 faces is counted twice, verified empirically: a box
+ * reports 72 instead of the true 36 = 4*(dx+dy+dz) with SkipShared
+ * false), matching aicad_occt_shape_edge_count's own "unique edges"
+ * scope -- not restricted to Edge/Wire-kind handles, any shape's own
+ * edges contribute (e.g. a solid's total edge length). */
+aicad_occt_status_t aicad_occt_shape_length(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             double* out_length);
+
+/* Center of mass of the shape's own highest-dimensional content: a
+ * volume-weighted centroid if the shape contains any Solid, else an
+ * area-weighted centroid if it contains any Face, else a length-weighted
+ * centroid over its Edges. Fails with AICAD_OCCT_ERR_OPERATION_FAILED if
+ * the shape has none of these (e.g. a bare Vertex). `out_center` receives
+ * 3 doubles (x, y, z). */
+aicad_occt_status_t aicad_occt_shape_center_of_mass(aicad_occt_context_t* context,
+                                                     aicad_shape_handle_t handle,
+                                                     double out_center[3]);
+
+/* --- AICAD-031: normalized B-rep validation report.
+ *
+ * docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md §3's `validate()` and
+ * docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md §7's fuller
+ * `validate(target, level?, checks?, tolerance?, healing_allowed?)`
+ * signature. Stage-1 implements the `target`-only, single-level subset:
+ * no caller-selectable `level`/`checks`/`tolerance`, and
+ * `healing_allowed` is not offered at all (Stage-1 kernel policy #14:
+ * validation and repair/healing are distinct concepts, and no `heal`
+ * operation exists yet for this to opt into). This normalizes
+ * aicad_occt_shape_is_valid's single bool into a per-topological-kind
+ * breakdown -- still not a full diagnostic (no per-subshape identity or
+ * failure-reason enum crosses this ABI; see project/reports/AICAD-031.md
+ * for why). --- */
+
+/* Normalized validation report: overall validity plus a count of
+ * invalid subshapes broken down by topological kind, via
+ * BRepCheck_Analyzer::IsValid() queried per unique vertex/edge/wire/face
+ * (TopExp::MapShapes-deduplicated, matching this bridge's own established
+ * "unique subshapes" convention). A shape with `is_valid == 0` always has
+ * at least one nonzero count among the four; a shape with `is_valid == 1`
+ * always has all four at zero. */
+typedef struct aicad_validation_report {
+  int is_valid;
+  size_t invalid_vertex_count;
+  size_t invalid_edge_count;
+  size_t invalid_wire_count;
+  size_t invalid_face_count;
+} aicad_validation_report_t;
+
+aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               aicad_validation_report_t* out_report);
+
+/* --- AICAD-032: display tessellation output.
+ *
+ * A two-call protocol, matching aicad_occt_shape_edge_count/_get_edge's
+ * own count-then-fetch convention: aicad_occt_tessellate performs the
+ * actual meshing and caches the result keyed to `handle`'s own slot (not
+ * a single shared "last tessellation" -- multiple handles may each hold
+ * their own cached result simultaneously); aicad_occt_tessellation_get
+ * copies that cached result into caller-owned buffers. The cache is
+ * cleared whenever `handle`'s slot is released or reused by a new shape
+ * (Stage-1 kernel policy #10: epoch-bound, ephemeral) -- a stale
+ * tessellation can never be returned for a different shape occupying the
+ * same slot.
+ *
+ * Output is flat-shaded triangle-soup: each triangle owns 3 private
+ * vertex positions and one flat geometric normal (not shared/averaged
+ * with neighboring triangles), not a vertex-shared, smooth-normal mesh --
+ * see project/reports/AICAD-032.md for why this simplification was made
+ * for Stage-1's own scope. --- */
+
+typedef struct aicad_tessellation_counts {
+  size_t triangle_count;
+} aicad_tessellation_counts_t;
+
+/* Runs BRepMesh_IncrementalMesh on `handle`'s shape at the given
+ * (absolute, not relative) linear/angular deflections and caches a
+ * flat-shaded triangle-soup tessellation for it. `linear_deflection`/
+ * `angular_deflection` must both be finite and > 0. Reports
+ * `out_counts->triangle_count`; call aicad_occt_tessellation_get next
+ * (with the SAME handle) to fetch the actual buffers. */
+aicad_occt_status_t aicad_occt_tessellate(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           double linear_deflection,
+                                           double angular_deflection,
+                                           aicad_tessellation_counts_t* out_counts);
+
+/* Fills caller-owned buffers with `handle`'s own most recently cached
+ * tessellation (from a prior aicad_occt_tessellate call against this
+ * SAME handle). `out_vertices` and `out_normals` each receive
+ * `9 * triangle_count` doubles (3 vertices per triangle * 3 coordinates;
+ * `out_normals` holds each triangle's one flat normal, duplicated across
+ * its 3 vertices, at the same offsets as `out_vertices`). Fails with
+ * AICAD_OCCT_ERR_INVALID_ARGUMENT if no tessellation is cached for
+ * `handle` (aicad_occt_tessellate was never called for it, or its cache
+ * was invalidated by a slot release/reuse). */
+aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 double* out_vertices,
+                                                 double* out_normals);
+
+/* --- AICAD-033: STEP export.
+ *
+ * docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md §9's `export_step()`
+ * (paired with `import_step()`, not implemented by this bridge -- no
+ * Stage-1 task needs import). Writes `handle`'s shape to `file_path` as
+ * an AP214 STEP file via OCCT's own `STEPControl_Writer`. See
+ * project/reports/AICAD-033.md for exactly how this task's export was
+ * independently verified (a genuinely OCCT-independent Python STEP-21
+ * parser, not merely re-importing through this same bridge). --- */
+
+/* `file_path` is a caller-owned, null-terminated path (a raw C string,
+ * not an STL std::string, per Stage-1 kernel policy #8); this bridge
+ * neither retains nor frees it beyond the call. Fails with
+ * AICAD_OCCT_ERR_OPERATION_FAILED if OCCT's own writer could not
+ * transfer the shape or could not write the file (e.g. an unwritable
+ * path).
+ *
+ * UNLIKE every other function in this bridge, this one is internally
+ * serialized process-wide (a single mutex, not per-context) across ALL
+ * contexts: OCCT's own STEP translator holds process-global,
+ * non-thread-safe state, and concurrent calls from independent contexts
+ * on independent threads were empirically found to segfault the process
+ * (see project/reports/AICAD-033.md). Callers do not need to add their
+ * own external synchronization for this specific function, but should
+ * expect concurrent aicad_occt_export_step calls from different threads
+ * to block on each other rather than run in parallel. */
+aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t handle,
+                                            const char* file_path);
+
 #ifdef __cplusplus
 }
 #endif

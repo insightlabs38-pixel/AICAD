@@ -19,6 +19,7 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepOffsetAPI_MakeOffsetShape.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
@@ -27,17 +28,25 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#include <Poly_Triangulation.hxx>
+#include <STEPControl_StepModelType.hxx>
+#include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
@@ -47,13 +56,28 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <exception>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 namespace {
+
+// AICAD-032: a cached flat-shaded triangle-soup tessellation for one
+// shape slot. `vertices`/`normals` are each `9 * triangle_count` doubles
+// (3 vertices per triangle * 3 coordinates, not shared across triangles;
+// `normals` holds each triangle's one flat normal duplicated across its
+// 3 vertices). `present` distinguishes "never tessellated" from "an
+// empty (zero-triangle) tessellation was cached".
+struct TessellationCache {
+  std::vector<double> vertices;
+  std::vector<double> normals;
+  size_t triangle_count = 0;
+  bool present = false;
+};
 
 // One slot in a context's shape table. `generation` is bumped every time
 // the slot is released, so a handle minted before release never matches
@@ -62,6 +86,7 @@ struct ShapeSlot {
   TopoDS_Shape shape;
   uint32_t generation = 0;
   bool occupied = false;
+  TessellationCache tessellation;
 };
 
 // Context-owned table of shapes, addressed by (slot, generation). Not
@@ -81,6 +106,9 @@ class ShapeTable {
     ShapeSlot& slot = slots_[slot_index];
     slot.shape = std::move(shape);
     slot.occupied = true;
+    // A new occupant never inherits a stale tessellation cache left by
+    // whatever previously occupied this slot (Stage-1 kernel policy #10).
+    slot.tessellation = TessellationCache();
     // generation starts at 1 for a slot's first-ever occupant (not 0, so
     // a value-initialized/zeroed handle can never validate).
     if (slot.generation == 0) {
@@ -110,9 +138,42 @@ class ShapeTable {
       return AICAD_OCCT_ERR_STALE_HANDLE;
     }
     slot.shape = TopoDS_Shape();
+    slot.tessellation = TessellationCache();
     slot.occupied = false;
     slot.generation += 1;
     free_slots_.push_back(handle.slot);
+    return AICAD_OCCT_OK;
+  }
+
+  // AICAD-032: stores a freshly computed tessellation for `handle`'s own
+  // slot (overwriting any previous cache for it).
+  aicad_occt_status_t SetTessellation(aicad_shape_handle_t handle, TessellationCache cache) {
+    if (handle.slot >= slots_.size()) {
+      return AICAD_OCCT_ERR_INVALID_HANDLE;
+    }
+    ShapeSlot& slot = slots_[handle.slot];
+    if (!slot.occupied || slot.generation != handle.generation) {
+      return AICAD_OCCT_ERR_STALE_HANDLE;
+    }
+    slot.tessellation = std::move(cache);
+    return AICAD_OCCT_OK;
+  }
+
+  // AICAD-032: retrieves `handle`'s own cached tessellation, if any.
+  // AICAD_OCCT_ERR_INVALID_ARGUMENT (not a handle-validity error) means
+  // the handle is valid but no tessellation is cached for it yet.
+  aicad_occt_status_t GetTessellation(aicad_shape_handle_t handle, const TessellationCache** out) const {
+    if (handle.slot >= slots_.size()) {
+      return AICAD_OCCT_ERR_INVALID_HANDLE;
+    }
+    const ShapeSlot& slot = slots_[handle.slot];
+    if (!slot.occupied || slot.generation != handle.generation) {
+      return AICAD_OCCT_ERR_STALE_HANDLE;
+    }
+    if (!slot.tessellation.present) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    *out = &slot.tessellation;
     return AICAD_OCCT_OK;
   }
 
@@ -1232,6 +1293,588 @@ aicad_occt_status_t aicad_occt_shape_bounding_box(aicad_occt_context_t* context,
     out_max[0] = xmax;
     out_max[1] = ymax;
     out_max[2] = zmax;
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
+
+// --- AICAD-029: topology exploration helpers ---
+
+namespace {
+
+// Rebuilds `shape_handle`'s unique-edge map exactly as
+// aicad_occt_shape_edge_count/_get_edge do, and returns the specific edge
+// at `edge_index` (0-based) -- the shared basis both
+// aicad_occt_shape_edge_adjacent_face_count and _get build on, so their
+// own `edge_index` contract stays anchored to shape_edge_count's own
+// enumeration order.
+aicad_occt_status_t LookupIndexedEdge(const TopoDS_Shape& shape, size_t edge_index, TopoDS_Edge* out_edge) {
+  TopTools_IndexedMapOfShape edges;
+  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+  if (edge_index >= static_cast<size_t>(edges.Extent())) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  *out_edge = TopoDS::Edge(edges.FindKey(static_cast<Standard_Integer>(edge_index) + 1));
+  return AICAD_OCCT_OK;
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_shape_vertex_count(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t handle,
+                                                    size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    // TopExp::MapShapes de-duplicates, matching
+    // aicad_occt_shape_edge_count/_face_count's own rationale: a shared
+    // vertex is visited once per incident edge by a raw explorer.
+    TopTools_IndexedMapOfShape vertices;
+    TopExp::MapShapes(*shape, TopAbs_VERTEX, vertices);
+    *out_count = static_cast<size_t>(vertices.Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_get_vertex(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t index,
+                                                 aicad_shape_handle_t* out_vertex_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_vertex_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape vertices;
+    TopExp::MapShapes(*shape, TopAbs_VERTEX, vertices);
+    // 0-based (matching aicad_occt_shape_get_edge/_get_face's own
+    // convention); TopTools_IndexedMapOfShape itself is 1-indexed.
+    if (index >= static_cast<size_t>(vertices.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopoDS_Shape& vertex = vertices.FindKey(static_cast<Standard_Integer>(index) + 1);
+    *out_vertex_handle = context->shapes.Insert(context->id, vertex);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_edge_vertices(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t edge_handle,
+                                              aicad_shape_handle_t* out_v0,
+                                              aicad_shape_handle_t* out_v1) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_v0 == nullptr || out_v1 == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* edge_shape = nullptr;
+  status = LookupTyped(context, edge_handle, TopAbs_EDGE, &edge_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopoDS_Vertex v0, v1;
+    // TopExp::Vertices' 3-argument form (no CumOri) returns the edge's
+    // vertices in its own orientation sense: v0 = "first", v1 = "last".
+    // For a closed edge (e.g. a full circle) both are the same vertex --
+    // documented in the header, not treated as an error here.
+    TopExp::Vertices(TopoDS::Edge(*edge_shape), v0, v1);
+    if (v0.IsNull() || v1.IsNull()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_v0 = context->shapes.Insert(context->id, v0);
+    *out_v1 = context->shapes.Insert(context->id, v1);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_count(aicad_occt_context_t* context,
+                                                                aicad_shape_handle_t shape_handle,
+                                                                size_t edge_index,
+                                                                size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopoDS_Edge edge;
+    status = LookupIndexedEdge(*shape, edge_index, &edge);
+    if (status != AICAD_OCCT_OK) {
+      return status;
+    }
+    TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+    TopExp::MapShapesAndAncestors(*shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+    if (!edge_face_map.Contains(edge)) {
+      // Can happen if `shape` itself is a bare Edge/Wire with no
+      // containing Face at all (e.g. a standalone spine wire) --
+      // zero adjacent faces, not an error.
+      *out_count = 0;
+      return AICAD_OCCT_OK;
+    }
+    *out_count = static_cast<size_t>(edge_face_map.FindFromKey(edge).Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_get(aicad_occt_context_t* context,
+                                                              aicad_shape_handle_t shape_handle,
+                                                              size_t edge_index,
+                                                              size_t adjacent_index,
+                                                              aicad_shape_handle_t* out_face_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_face_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopoDS_Edge edge;
+    status = LookupIndexedEdge(*shape, edge_index, &edge);
+    if (status != AICAD_OCCT_OK) {
+      return status;
+    }
+    TopTools_IndexedDataMapOfShapeListOfShape edge_face_map;
+    TopExp::MapShapesAndAncestors(*shape, TopAbs_EDGE, TopAbs_FACE, edge_face_map);
+    if (!edge_face_map.Contains(edge)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopTools_ListOfShape& faces = edge_face_map.FindFromKey(edge);
+    if (adjacent_index >= static_cast<size_t>(faces.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    TopTools_ListIteratorOfListOfShape it(faces);
+    for (size_t i = 0; i < adjacent_index; ++i) {
+      it.Next();
+    }
+    *out_face_handle = context->shapes.Insert(context->id, it.Value());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_length(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             double* out_length) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_length == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    GProp_GProps props;
+    // SkipShared=true: without it, BRepGProp::LinearProperties counts an
+    // edge once per adjacent face (empirically verified -- a box reports
+    // 72, exactly double the true 4*(dx+dy+dz)=36 unique-edge total),
+    // the same double-counting aicad_occt_shape_edge_count's own doc
+    // comment already identified for a raw TopExp_Explorer traversal.
+    // SkipShared=true matches this bridge's established "unique edges"
+    // semantics.
+    BRepGProp::LinearProperties(*shape, props, Standard_True);
+    *out_length = props.Mass();
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_center_of_mass(aicad_occt_context_t* context,
+                                                      aicad_shape_handle_t handle,
+                                                      double out_center[3]) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_center == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    // Dispatch on the shape's own highest-dimensional content: volume >
+    // area > length, matching physical "center of mass" intuition (a
+    // solid's mass comes from its volume, not incidentally from its
+    // boundary faces' area). Empirically, BRepGProp::VolumeProperties on
+    // a shape with no Solid returns a zero-mass, origin-centred result
+    // rather than failing -- that would silently produce a meaningless
+    // (0,0,0) centroid for e.g. a bare face, so the dispatch is explicit
+    // rather than relying on VolumeProperties' own fallback behavior.
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(*shape, TopAbs_SOLID, solids);
+    GProp_GProps props;
+    if (solids.Extent() > 0) {
+      BRepGProp::VolumeProperties(*shape, props);
+    } else {
+      TopTools_IndexedMapOfShape faces;
+      TopExp::MapShapes(*shape, TopAbs_FACE, faces);
+      if (faces.Extent() > 0) {
+        BRepGProp::SurfaceProperties(*shape, props);
+      } else {
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(*shape, TopAbs_EDGE, edges);
+        if (edges.Extent() > 0) {
+          BRepGProp::LinearProperties(*shape, props, Standard_True);
+        } else {
+          return AICAD_OCCT_ERR_OPERATION_FAILED;
+        }
+      }
+    }
+    const gp_Pnt centre = props.CentreOfMass();
+    out_center[0] = centre.X();
+    out_center[1] = centre.Y();
+    out_center[2] = centre.Z();
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
+
+namespace {
+
+// Counts how many of `subshapes`' unique elements `analyzer` reports as
+// invalid.
+size_t CountInvalid(const BRepCheck_Analyzer& analyzer, const TopTools_IndexedMapOfShape& subshapes) {
+  size_t invalid = 0;
+  for (Standard_Integer i = 1; i <= subshapes.Extent(); ++i) {
+    if (!analyzer.IsValid(subshapes.FindKey(i))) {
+      invalid += 1;
+    }
+  }
+  return invalid;
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               aicad_validation_report_t* out_report) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_report == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepCheck_Analyzer analyzer(*shape);
+    TopTools_IndexedMapOfShape vertices, edges, wires, faces;
+    TopExp::MapShapes(*shape, TopAbs_VERTEX, vertices);
+    TopExp::MapShapes(*shape, TopAbs_EDGE, edges);
+    TopExp::MapShapes(*shape, TopAbs_WIRE, wires);
+    TopExp::MapShapes(*shape, TopAbs_FACE, faces);
+    out_report->is_valid = analyzer.IsValid() ? 1 : 0;
+    out_report->invalid_vertex_count = CountInvalid(analyzer, vertices);
+    out_report->invalid_edge_count = CountInvalid(analyzer, edges);
+    out_report->invalid_wire_count = CountInvalid(analyzer, wires);
+    out_report->invalid_face_count = CountInvalid(analyzer, faces);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
+
+namespace {
+
+// AICAD-032: builds a flat-shaded triangle-soup TessellationCache for
+// `shape` at the given deflections. Returns false (leaving `out`
+// untouched) if BRepMesh_IncrementalMesh itself did not complete.
+bool ExtractTessellation(const TopoDS_Shape& shape,
+                          double linear_deflection,
+                          double angular_deflection,
+                          TessellationCache* out) {
+  BRepMesh_IncrementalMesh mesher(shape, linear_deflection, Standard_False, angular_deflection,
+                                   Standard_False);
+  if (!mesher.IsDone()) {
+    return false;
+  }
+
+  std::vector<double> vertices;
+  std::vector<double> normals;
+  size_t triangle_count = 0;
+
+  TopTools_IndexedMapOfShape faces;
+  TopExp::MapShapes(shape, TopAbs_FACE, faces);
+  for (Standard_Integer fi = 1; fi <= faces.Extent(); ++fi) {
+    const TopoDS_Face& face = TopoDS::Face(faces.FindKey(fi));
+    TopLoc_Location location;
+    const Handle(Poly_Triangulation)& triangulation = BRep_Tool::Triangulation(face, location);
+    if (triangulation.IsNull()) {
+      // BRepMesh_IncrementalMesh reported IsDone() overall but this
+      // particular face still has no triangulation -- contribute no
+      // triangles from it rather than failing the whole operation.
+      continue;
+    }
+    const gp_Trsf& trsf = location.Transformation();
+    const bool reversed = (face.Orientation() == TopAbs_REVERSED);
+    for (Standard_Integer ti = 1; ti <= triangulation->NbTriangles(); ++ti) {
+      Standard_Integer n1, n2, n3;
+      triangulation->Triangle(ti).Get(n1, n2, n3);
+      if (reversed) {
+        // A REVERSED face's triangle node order is defined relative to
+        // its underlying surface's natural (non-reversed) parametrization
+        // -- swapping two nodes flips the winding to match the face's
+        // own actual (outward) orientation.
+        std::swap(n2, n3);
+      }
+      const gp_Pnt p1 = triangulation->Node(n1).Transformed(trsf);
+      const gp_Pnt p2 = triangulation->Node(n2).Transformed(trsf);
+      const gp_Pnt p3 = triangulation->Node(n3).Transformed(trsf);
+      const gp_Vec edge1(p1, p2);
+      const gp_Vec edge2(p1, p3);
+      const gp_Vec raw_normal = edge1.Crossed(edge2);
+      const double normal_length = raw_normal.Magnitude();
+      double nx = 0.0, ny = 0.0, nz = 0.0;
+      if (normal_length > 1e-12) {
+        nx = raw_normal.X() / normal_length;
+        ny = raw_normal.Y() / normal_length;
+        nz = raw_normal.Z() / normal_length;
+      }
+      const gp_Pnt* corners[3] = {&p1, &p2, &p3};
+      for (const gp_Pnt* corner : corners) {
+        vertices.push_back(corner->X());
+        vertices.push_back(corner->Y());
+        vertices.push_back(corner->Z());
+        normals.push_back(nx);
+        normals.push_back(ny);
+        normals.push_back(nz);
+      }
+      triangle_count += 1;
+    }
+  }
+
+  out->vertices = std::move(vertices);
+  out->normals = std::move(normals);
+  out->triangle_count = triangle_count;
+  out->present = true;
+  return true;
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_tessellate(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           double linear_deflection,
+                                           double angular_deflection,
+                                           aicad_tessellation_counts_t* out_counts) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_counts == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!(linear_deflection > 0.0) || !std::isfinite(linear_deflection) ||
+      !(angular_deflection > 0.0) || !std::isfinite(angular_deflection)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TessellationCache cache;
+    if (!ExtractTessellation(*shape, linear_deflection, angular_deflection, &cache)) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    out_counts->triangle_count = cache.triangle_count;
+    status = context->shapes.SetTessellation(handle, std::move(cache));
+    if (status != AICAD_OCCT_OK) {
+      return status;
+    }
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 double* out_vertices,
+                                                 double* out_normals) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_vertices == nullptr || out_normals == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TessellationCache* cache = nullptr;
+  status = context->shapes.GetTessellation(handle, &cache);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    std::copy(cache->vertices.begin(), cache->vertices.end(), out_vertices);
+    std::copy(cache->normals.begin(), cache->normals.end(), out_normals);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+namespace {
+
+// AICAD-033 key finding: OCCT's STEP translator (STEPControl_Writer and
+// the XSTEP/Interface_Static machinery it drives) holds process-global,
+// non-thread-safe state -- confirmed empirically, not assumed: calling
+// aicad_occt_export_step concurrently from independent contexts on
+// independent threads (each thread otherwise fully respecting Stage-1
+// kernel policy #9's single-thread-affine-per-context contract)
+// intermittently segfaulted the process (see project/reports/AICAD-033.md
+// for the exact reproduction). This is a defect in the underlying kernel
+// library's own global state, not a per-context bridge bug, so a
+// per-context lock cannot fix it -- only a single process-wide mutex
+// serializing every STEP export call can, which is what this does.
+std::mutex& StepExportMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+}  // namespace
+
+aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t handle,
+                                            const char* file_path) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (file_path == nullptr || file_path[0] == '\0') {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(StepExportMutex());
+    STEPControl_Writer writer;
+    const IFSelect_ReturnStatus transfer_status = writer.Transfer(*shape, STEPControl_AsIs);
+    if (transfer_status != IFSelect_RetDone) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    const IFSelect_ReturnStatus write_status = writer.Write(file_path);
+    if (write_status != IFSelect_RetDone) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

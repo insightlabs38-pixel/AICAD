@@ -776,6 +776,260 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// The number of unique vertices in this shape (AICAD-029), via OCCT's
+    /// own de-duplicated `TopExp::MapShapes` -- matching
+    /// [`Shape::edge_count`]/[`Shape::face_count`]'s own rationale.
+    pub fn vertex_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_vertex_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the vertex at `index` (0-based, `< self.vertex_count()`) in
+    /// this shape's own current raw enumeration order (AICAD-029) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_edge`]/[`Shape::get_face`].
+    pub fn get_vertex(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_vertex(
+                self.context.raw,
+                self.raw_handle(),
+                index,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// This edge's two endpoint vertices, in the edge's own orientation
+    /// order (AICAD-029). `self` must address a shape of exactly kind
+    /// Edge. For a closed edge (e.g. a full circle) both returned vertices
+    /// coincide -- callers must not assume distinctness.
+    pub fn edge_vertices(&self) -> KernelResult<(Shape<'ctx>, Shape<'ctx>)> {
+        let mut v0 = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut v1 = v0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut v0`/`&mut v1` are valid out-params per the header's
+        // contract.
+        let status = unsafe {
+            ffi::aicad_occt_edge_vertices(self.context.raw, self.raw_handle(), &mut v0, &mut v1)
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(v0),
+            },
+            Shape {
+                context: self.context,
+                id: handle_to_id(v1),
+            },
+        ))
+    }
+
+    /// The number of faces of this shape adjacent to (bounded by) the edge
+    /// at `edge_index` (0-based, `< self.edge_count()`, per that same
+    /// function's own enumeration order) (AICAD-029).
+    pub fn edge_adjacent_face_count(&self, edge_index: usize) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_adjacent_face_count(
+                self.context.raw,
+                self.raw_handle(),
+                edge_index,
+                &mut count,
+            )
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the `adjacent_index`-th (0-based, `<
+    /// self.edge_adjacent_face_count(edge_index)`) face adjacent to the
+    /// edge at `edge_index` (AICAD-029) -- ephemeral and epoch-bound,
+    /// never a durable semantic reference.
+    pub fn edge_adjacent_face(
+        &self,
+        edge_index: usize,
+        adjacent_index: usize,
+    ) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_adjacent_face_get(
+                self.context.raw,
+                self.raw_handle(),
+                edge_index,
+                adjacent_index,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Total length of every unique edge in this shape (AICAD-030), via
+    /// OCCT's own `BRepGProp::LinearProperties` with `SkipShared=true` --
+    /// matching [`Shape::edge_count`]'s own "unique edges" scope (without
+    /// it, an edge shared by 2 faces is counted twice).
+    pub fn length(&self) -> KernelResult<f64> {
+        let mut length: f64 = 0.0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut length` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_length(self.context.raw, self.raw_handle(), &mut length)
+        };
+        status_result(status)?;
+        Ok(length)
+    }
+
+    /// Center of mass of this shape's own highest-dimensional content
+    /// (AICAD-030): volume-weighted if it contains any Solid, else
+    /// area-weighted if it contains any Face, else length-weighted over
+    /// its Edges. Fails with [`KernelError::OperationFailed`] if the
+    /// shape has none of these (e.g. a bare Vertex).
+    pub fn center_of_mass(&self) -> KernelResult<Point3> {
+        let mut centre = [0.0; 3];
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut centre` is a valid 3-element out-param per the header's
+        // contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_center_of_mass(
+                self.context.raw,
+                self.raw_handle(),
+                centre.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        Ok(Point3::new(centre[0], centre[1], centre[2]))
+    }
+
+    /// A normalized B-rep validation report (AICAD-031): overall validity
+    /// plus a per-topological-kind breakdown of invalid subshapes, via
+    /// OCCT's own `BRepCheck_Analyzer` queried per unique vertex/edge/
+    /// wire/face. Unlike [`Shape::is_valid`], this never itself indicates
+    /// failure for an invalid shape -- validity is data in the returned
+    /// report, not a rejected call (only a genuine bridge/argument error
+    /// produces `Err`).
+    pub fn validate(&self) -> KernelResult<ValidationReport> {
+        let mut report = ffi::aicad_validation_report_t::default();
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut report` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_validate(self.context.raw, self.raw_handle(), &mut report)
+        };
+        status_result(status)?;
+        Ok(ValidationReport {
+            is_valid: report.is_valid != 0,
+            invalid_vertex_count: report.invalid_vertex_count,
+            invalid_edge_count: report.invalid_edge_count,
+            invalid_wire_count: report.invalid_wire_count,
+            invalid_face_count: report.invalid_face_count,
+        })
+    }
+
+    /// Tessellates this shape into a flat-shaded triangle-soup mesh
+    /// (AICAD-032), via `BRepMesh_IncrementalMesh` at the given
+    /// (absolute) linear/angular deflections. Hides the native two-call
+    /// count-then-fetch protocol behind one Rust call; each call
+    /// re-tessellates from scratch (no caching is exposed at this level).
+    pub fn tessellate(
+        &self,
+        linear_deflection: f64,
+        angular_deflection: f64,
+    ) -> KernelResult<TriangleMesh> {
+        let mut counts = ffi::aicad_tessellation_counts_t::default();
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut counts` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_tessellate(
+                self.context.raw,
+                self.raw_handle(),
+                linear_deflection,
+                angular_deflection,
+                &mut counts,
+            )
+        };
+        status_result(status)?;
+        let triangle_count = counts.triangle_count;
+        let mut raw_vertices = vec![0.0_f64; 9 * triangle_count];
+        let mut raw_normals = vec![0.0_f64; 9 * triangle_count];
+        // SAFETY: `raw_vertices`/`raw_normals` are each a valid, live,
+        // `9 * triangle_count`-element `f64` buffer for the duration of
+        // this call, matching aicad_occt_tessellation_get's documented
+        // buffer-size contract for the SAME handle's just-cached
+        // tessellation; `self.context.raw`/`self.raw_handle()` as above.
+        let status = unsafe {
+            ffi::aicad_occt_tessellation_get(
+                self.context.raw,
+                self.raw_handle(),
+                raw_vertices.as_mut_ptr(),
+                raw_normals.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        let vertices = raw_vertices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|c| Point3::new(c[0], c[1], c[2]))
+            .collect();
+        let normals = raw_normals
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|c| cad_kernel_api::Vector3::new(c[0], c[1], c[2]))
+            .collect();
+        Ok(TriangleMesh { vertices, normals })
+    }
+
+    /// Exports this shape to `path` as an AP214 STEP file via OCCT's own
+    /// `STEPControl_Writer` (AICAD-033). Returns
+    /// [`KernelError::InvalidArgument`] if `path` cannot be represented
+    /// as a null-terminated C string (e.g. it contains an embedded NUL
+    /// byte, or is not valid UTF-8/OS-string-representable as such).
+    pub fn export_step(&self, path: &std::path::Path) -> KernelResult<()> {
+        let path_str = path.to_str().ok_or(KernelError::InvalidArgument)?;
+        let c_path = std::ffi::CString::new(path_str).map_err(|_| KernelError::InvalidArgument)?;
+        // SAFETY: `c_path` is a valid, live, null-terminated C string for
+        // the duration of this call; `self.context.raw`/`self.raw_handle()`
+        // as in `is_valid`.
+        let status = unsafe {
+            ffi::aicad_occt_export_step(self.context.raw, self.raw_handle(), c_path.as_ptr())
+        };
+        status_result(status)
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -786,6 +1040,45 @@ impl<'ctx> Shape<'ctx> {
 pub struct BoundingBox {
     pub min: Point3,
     pub max: Point3,
+}
+
+/// A normalized B-rep validation report, as reported by
+/// [`Shape::validate`] (AICAD-031). `is_valid` mirrors
+/// [`Shape::is_valid`]'s own bool for the same shape; the four
+/// `invalid_*_count` fields break that down by topological kind, each
+/// counted over the shape's own *unique* subshapes (matching
+/// [`Shape::edge_count`]/[`Shape::face_count`]'s own de-duplication
+/// convention). A shape with `is_valid == false` always has at least one
+/// nonzero count; a shape with `is_valid == true` always has all four at
+/// zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub is_valid: bool,
+    pub invalid_vertex_count: usize,
+    pub invalid_edge_count: usize,
+    pub invalid_wire_count: usize,
+    pub invalid_face_count: usize,
+}
+
+/// A flat-shaded triangle-soup mesh, as returned by [`Shape::tessellate`]
+/// (AICAD-032). `vertices.len() == normals.len() == 3 *
+/// triangle_count()`; vertices are **not** shared/deduplicated across
+/// triangles -- triangle `i` owns `vertices[3*i..3*i+3]`, each paired 1:1
+/// with `normals[3*i..3*i+3]`: that triangle's own flat geometric normal,
+/// duplicated across its 3 vertices (not an averaged/smooth per-vertex
+/// normal). See `project/reports/AICAD-032.md` for why this
+/// simplification was made for Stage-1's own scope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TriangleMesh {
+    pub vertices: Vec<Point3>,
+    pub normals: Vec<cad_kernel_api::Vector3>,
+}
+
+impl TriangleMesh {
+    /// The number of triangles in this mesh (`vertices.len() / 3`).
+    pub fn triangle_count(&self) -> usize {
+        self.vertices.len() / 3
+    }
 }
 
 impl<'ctx> Drop for Shape<'ctx> {
@@ -1661,6 +1954,403 @@ mod tests {
             compound.edge_count().unwrap(),
             24,
             "two disjoint boxes' union has 12+12=24 edges"
+        );
+    }
+
+    // --- AICAD-029: topology exploration ---
+
+    #[test]
+    fn a_box_has_exactly_eight_unique_vertices() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        assert_eq!(box_shape.vertex_count().unwrap(), 8);
+    }
+
+    #[test]
+    fn get_vertex_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_vertex(8).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn every_box_edge_is_adjacent_to_exactly_two_faces() {
+        // A closed manifold solid's every edge is shared by exactly 2
+        // faces -- Euler-formula-consistent for a box (V=8, E=12, F=6).
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let edge_count = box_shape.edge_count().unwrap();
+        for i in 0..edge_count {
+            assert_eq!(
+                box_shape.edge_adjacent_face_count(i).unwrap(),
+                2,
+                "edge {i} should be adjacent to exactly 2 faces"
+            );
+        }
+    }
+
+    #[test]
+    fn edge_adjacent_face_get_rejects_an_out_of_range_adjacent_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.edge_adjacent_face(0, 2).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn edge_adjacent_face_count_rejects_an_out_of_range_edge_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge_count = box_shape.edge_count().unwrap();
+        assert_eq!(
+            box_shape.edge_adjacent_face_count(edge_count).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn face_edges_is_covered_by_edge_count_applied_to_a_face_handle() {
+        // docs/plan/05 §3's face_edges: no new function was added for it --
+        // shape_edge_count/_get_edge (AICAD-027) already accept any shape
+        // kind, so applying them to a Face handle enumerates that face's
+        // own boundary edges. This test is the evidence that holds, not
+        // just an assumption.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        assert_eq!(
+            face.edge_count().unwrap(),
+            4,
+            "a box face is a quad: 4 edges"
+        );
+    }
+
+    #[test]
+    fn edge_vertices_of_an_open_line_edge_match_its_endpoints() {
+        let context = OcctContext::new().unwrap();
+        let p0 = Point3::new(1.0, 2.0, 3.0);
+        let p1 = Point3::new(4.0, 5.0, 6.0);
+        let edge = context.make_line_edge(p0, p1).unwrap();
+        let (v0, v1) = edge.edge_vertices().unwrap();
+        // Bnd_Box enlarges by the vertex's own confusion tolerance (~1e-7
+        // per side) even for a single-point shape; 1e-5 is comfortably
+        // above that gap.
+        let v0_box = v0.bounding_box().unwrap();
+        let v1_box = v1.bounding_box().unwrap();
+        assert!((v0_box.min.x - p0.x).abs() < 1e-5 && (v0_box.min.y - p0.y).abs() < 1e-5);
+        assert!((v1_box.min.x - p1.x).abs() < 1e-5 && (v1_box.min.y - p1.y).abs() < 1e-5);
+    }
+
+    #[test]
+    fn edge_vertices_of_a_closed_circle_edge_coincide() {
+        let context = OcctContext::new().unwrap();
+        let circle_wire = context
+            .make_circle_wire(Point3::ORIGIN, Direction3::Z, 2.0)
+            .unwrap();
+        assert_eq!(circle_wire.edge_count().unwrap(), 1);
+        let edge = circle_wire.get_edge(0).unwrap();
+        let (v0, v1) = edge.edge_vertices().unwrap();
+        let v0_box = v0.bounding_box().unwrap();
+        let v1_box = v1.bounding_box().unwrap();
+        assert!((v0_box.min.x - v1_box.min.x).abs() < 1e-5);
+        assert!((v0_box.min.y - v1_box.min.y).abs() < 1e-5);
+        assert!((v0_box.min.z - v1_box.min.z).abs() < 1e-5);
+    }
+
+    #[test]
+    fn edge_vertices_rejects_a_handle_that_is_not_an_edge() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.edge_vertices().unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn a_standalone_edge_has_zero_adjacent_faces() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        assert_eq!(edge.edge_adjacent_face_count(0).unwrap(), 0);
+    }
+
+    // --- AICAD-030: length and center-of-mass queries ---
+
+    #[test]
+    fn a_3_4_5_line_edge_has_length_exactly_5() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(3.0, 4.0, 0.0))
+            .unwrap();
+        assert!((edge.length().unwrap() - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_box_total_edge_length_matches_4_times_dx_plus_dy_plus_dz() {
+        // SkipShared=true is required in the native implementation:
+        // without it every edge (shared by 2 faces) is counted twice.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz) = (2.0, 3.0, 4.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let expected = 4.0 * (dx + dy + dz);
+        assert!((box_shape.length().unwrap() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn create_box_center_of_mass_is_its_geometric_center() {
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz) = (2.0, 3.0, 4.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let centre = box_shape.center_of_mass().unwrap();
+        assert!((centre.x - dx / 2.0).abs() < 1e-9);
+        assert!((centre.y - dy / 2.0).abs() < 1e-9);
+        assert!((centre.z - dz / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_standalone_line_edge_center_of_mass_is_its_midpoint() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 0.0, 0.0))
+            .unwrap();
+        let centre = edge.center_of_mass().unwrap();
+        assert!((centre.x - 5.0).abs() < 1e-9);
+        assert!(centre.y.abs() < 1e-9);
+        assert!(centre.z.abs() < 1e-9);
+    }
+
+    #[test]
+    fn center_of_mass_on_a_bare_vertex_fails_cleanly() {
+        // A bare Vertex (obtained via AICAD-029's get_vertex) has no
+        // edge/face/solid content for any of the three GProp dispatch
+        // branches to measure.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let vertex = box_shape.get_vertex(0).unwrap();
+        assert_eq!(
+            vertex.center_of_mass().unwrap_err(),
+            KernelError::OperationFailed
+        );
+    }
+
+    #[test]
+    fn length_of_a_bare_vertex_is_zero_not_an_error() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let vertex = box_shape.get_vertex(0).unwrap();
+        assert!((vertex.length().unwrap() - 0.0).abs() < 1e-12);
+    }
+
+    // --- AICAD-031: normalized B-rep validation report ---
+
+    #[test]
+    fn validate_of_a_valid_box_is_fully_clean() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 2.0, 3.0).unwrap();
+        let report = box_shape.validate().unwrap();
+        assert_eq!(
+            report,
+            ValidationReport {
+                is_valid: true,
+                invalid_vertex_count: 0,
+                invalid_edge_count: 0,
+                invalid_wire_count: 0,
+                invalid_face_count: 0,
+            }
+        );
+        assert_eq!(report.is_valid, box_shape.is_valid().unwrap());
+    }
+
+    #[test]
+    fn validate_of_an_open_wire_face_attributes_exactly_one_invalid_face() {
+        let context = OcctContext::new().unwrap();
+        let e0 = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let e1 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let e2 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0))
+            .unwrap();
+        let open_wire = context.make_wire_from_edges(&[&e0, &e1, &e2]).unwrap();
+        let open_face = open_wire.make_face().unwrap();
+        let report = open_face.validate().unwrap();
+        assert!(!report.is_valid);
+        assert_eq!(report.invalid_face_count, 1);
+        assert_eq!(report.invalid_vertex_count, 0);
+        assert_eq!(report.invalid_edge_count, 0);
+        assert_eq!(report.invalid_wire_count, 0);
+    }
+
+    // --- AICAD-032: display tessellation output ---
+
+    #[test]
+    fn a_box_tessellates_into_exactly_twelve_triangles() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let mesh = box_shape.tessellate(0.1, 0.5).unwrap();
+        assert_eq!(mesh.triangle_count(), 12);
+        assert_eq!(mesh.vertices.len(), 36);
+        assert_eq!(mesh.normals.len(), 36);
+    }
+
+    #[test]
+    fn tessellated_box_vertices_span_its_analytic_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz) = (2.0, 3.0, 4.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let mesh = box_shape.tessellate(0.1, 0.5).unwrap();
+        let (mut min, mut max) = (
+            Point3::new(1e300, 1e300, 1e300),
+            Point3::new(-1e300, -1e300, -1e300),
+        );
+        for v in &mesh.vertices {
+            min = Point3::new(min.x.min(v.x), min.y.min(v.y), min.z.min(v.z));
+            max = Point3::new(max.x.max(v.x), max.y.max(v.y), max.z.max(v.z));
+        }
+        assert!((min.x - 0.0).abs() < 1e-9 && (max.x - dx).abs() < 1e-9);
+        assert!((min.y - 0.0).abs() < 1e-9 && (max.y - dy).abs() < 1e-9);
+        assert!((min.z - 0.0).abs() < 1e-9 && (max.z - dz).abs() < 1e-9);
+    }
+
+    #[test]
+    fn every_tessellated_box_normal_is_a_unit_axis_aligned_vector() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let mesh = box_shape.tessellate(0.1, 0.5).unwrap();
+        for n in &mesh.normals {
+            let len = (n.x * n.x + n.y * n.y + n.z * n.z).sqrt();
+            assert!((len - 1.0).abs() < 1e-6);
+            let axis_aligned_count = [n.x, n.y, n.z]
+                .iter()
+                .filter(|c| (c.abs() - 1.0).abs() < 1e-6)
+                .count();
+            assert_eq!(axis_aligned_count, 1);
+        }
+    }
+
+    #[test]
+    fn a_cylinder_tessellates_into_more_than_a_trivial_handful_of_triangles() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(1.0, 2.0).unwrap();
+        let mesh = cylinder.tessellate(0.05, 0.2).unwrap();
+        assert!(mesh.triangle_count() > 8);
+    }
+
+    #[test]
+    fn tessellate_rejects_non_positive_deflections() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.tessellate(0.0, 0.5).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.tessellate(0.1, 0.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.tessellate(-0.1, 0.5).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn two_shapes_tessellate_independently() {
+        let context = OcctContext::new().unwrap();
+        let box_a = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let box_b = context.create_box(5.0, 5.0, 5.0).unwrap();
+        let mesh_a = box_a.tessellate(0.1, 0.5).unwrap();
+        let _mesh_b = box_b.tessellate(0.1, 0.5).unwrap();
+        let max_x = mesh_a.vertices.iter().fold(f64::MIN, |acc, v| acc.max(v.x));
+        assert!(
+            (max_x - 1.0).abs() < 1e-9,
+            "box_a's mesh must still reflect its own dimensions"
+        );
+    }
+
+    // --- AICAD-033: STEP export ---
+
+    #[test]
+    fn export_step_writes_a_syntactically_valid_step_file() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let path = std::env::temp_dir().join("aicad_rust_step_export_test.step");
+        box_shape.export_step(&path).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with("ISO-10303-21;"));
+        assert!(contents.contains("FILE_SCHEMA("));
+        assert!(contents.contains("MANIFOLD_SOLID_BREP("));
+        assert_eq!(
+            contents.matches("ADVANCED_FACE(").count(),
+            6,
+            "a box has 6 unique faces (AICAD-028)"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn export_step_fails_cleanly_for_an_unwritable_path() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let path = std::path::Path::new("/nonexistent_directory_aicad/x.step");
+        assert_eq!(
+            box_shape.export_step(path).unwrap_err(),
+            KernelError::OperationFailed
+        );
+    }
+
+    #[test]
+    fn concurrent_export_step_from_independent_contexts_does_not_crash() {
+        // Regression test for a genuine native defect found while writing
+        // this task's own tests: OCCT's STEP translator holds
+        // process-global, non-thread-safe state, and calling
+        // aicad_occt_export_step concurrently from independent contexts
+        // on independent threads intermittently segfaulted the process
+        // before native/occt_bridge/src/aicad_occt_bridge.cpp's
+        // StepExportMutex fix (project/reports/AICAD-033.md). This test
+        // reproduces the exact concurrency pattern that crashed and
+        // confirms it no longer does, matching AGENTS.md's native
+        // crash/hang policy ("add a permanent regression case").
+        const THREAD_COUNT: usize = 8;
+        const EXPORTS_PER_THREAD: usize = 20;
+
+        let results: Vec<bool> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREAD_COUNT)
+                .map(|t| {
+                    scope.spawn(move || {
+                        let context = OcctContext::new()
+                            .expect("context creation should succeed on a worker thread");
+                        let path = std::env::temp_dir()
+                            .join(format!("aicad_step_concurrency_test_{t}.step"));
+                        for i in 0..EXPORTS_PER_THREAD {
+                            let side = 1.0 + (i as f64) * 0.01;
+                            let shape = context
+                                .create_box(side, side, side)
+                                .expect("create_box should succeed on a worker thread");
+                            if shape.export_step(&path).is_err() {
+                                return false;
+                            }
+                        }
+                        std::fs::remove_file(&path).ok();
+                        true
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+
+        assert!(
+            results.iter().all(|&ok| ok),
+            "every thread's every export_step call should succeed without crashing the process"
         );
     }
 }
