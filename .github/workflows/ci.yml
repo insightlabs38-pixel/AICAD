@@ -62,7 +62,8 @@ jobs:
             libocct-foundation-dev \
             libocct-modeling-data-dev \
             libocct-modeling-algorithms-dev \
-            libocct-visualization-dev
+            libocct-visualization-dev \
+            libtbb-dev
       - name: cargo build --workspace
         run: cargo build --workspace --all-targets
       - name: cargo test --workspace
@@ -87,6 +88,16 @@ jobs:
         # NCollection_AliasedArray.hxx` on a working dev environment, not
         # assumed. No OCCT visualization module is actually linked or
         # used; only that one header's package placement requires this.
+        # libtbb-dev: OCCT's own CMake targets (OpenCASCADEFoundationClassesTargets.cmake
+        # et al.) declare a hardcoded INTERFACE_LINK_LIBRARIES dependency
+        # on /usr/lib/x86_64-linux-gnu/libtbb.so and libtbbmalloc.so for
+        # every module used here (FoundationClasses, ModelingData,
+        # ModelingAlgorithms all link TKernel, which requires both) --
+        # confirmed by grepping those .cmake files directly, not assumed
+        # from the linker error alone. The runtime libtbb12 package is
+        # pulled in automatically as an OCCT dependency, but the
+        # unversioned .so symlink needed at link time is only provided by
+        # libtbb-dev.
         run: |
           set -eu
           sudo apt-get update
@@ -94,7 +105,8 @@ jobs:
             libocct-foundation-dev \
             libocct-modeling-data-dev \
             libocct-modeling-algorithms-dev \
-            libocct-visualization-dev
+            libocct-visualization-dev \
+            libtbb-dev
       - name: cmake --version
         run: cmake --version
       - name: Native bridge smoke build
