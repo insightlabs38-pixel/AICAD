@@ -15,11 +15,15 @@
  *
  * AicadShapeHandle is epoch/build-local (RFC-0002 §5 "raw handles"):
  * `context_id` rejects a handle used against the wrong context;
- * `index` rejects an out-of-range handle. A `generation` field for
- * detecting a *stale* handle (one whose slot was released and reused)
- * is added by AICAD-019's shape-handle table, not by this task —
- * AICAD-016 has no operation that releases a shape yet, so there is
- * nothing for a generation counter to guard here.
+ * `index` rejects an out-of-range handle; `generation` (AICAD-019's
+ * shape-handle table) rejects a *stale* handle — one whose slot was
+ * released via aicad_occt_release_shape and, possibly, reused by a
+ * later create_box call for an unrelated shape. This is what
+ * AGENTS.md's non-negotiable "Released/stale handles must never
+ * accidentally alias newly created geometry" means concretely at this
+ * boundary: reusing a slot index is allowed (it bounds memory growth
+ * for long-running contexts), silently letting an old handle keep
+ * working against the new occupant is not.
  */
 
 #ifndef AICAD_OCCT_BRIDGE_H
@@ -55,10 +59,15 @@ typedef struct AicadStatus {
 /* POD, safe to pass and copy by value. Fields are part of the public
  * contract (this is a raw/unsafe handle by design, per RFC-0002 §5), but
  * callers must treat them as opaque and never construct one from
- * scratch — always copy one previously returned by this ABI. */
+ * scratch — always copy one previously returned by this ABI.
+ *
+ * `generation` must match the issuing slot's current generation
+ * counter for the handle to be accepted; it changes every time that
+ * slot is released and reused. */
 typedef struct AicadShapeHandle {
   uint64_t context_id;
   uint32_t index;
+  uint32_t generation;
 } AicadShapeHandle;
 
 /* Creates a new, independent kernel context. Returns NULL and sets
@@ -86,9 +95,21 @@ void aicad_occt_create_box(AicadOcctContext* ctx, double dx, double dy,
  * *out_volume. Fails with AICAD_STATUS_INVALID_ARGUMENT if ctx is NULL,
  * AICAD_STATUS_FOREIGN_CONTEXT_HANDLE if handle was not issued by ctx,
  * or AICAD_STATUS_INVALID_HANDLE if handle.index is out of range for
- * ctx. */
+ * ctx, its slot has been released, or handle.generation does not match
+ * the slot's current generation (a stale handle). */
 void aicad_occt_shape_volume(AicadOcctContext* ctx, AicadShapeHandle handle,
                               double* out_volume, AicadStatus* out_status);
+
+/* Releases the shape referenced by handle, freeing its slot for reuse
+ * by a later aicad_occt_create_box call and bumping the slot's
+ * generation counter so this exact handle (and any other outstanding
+ * copy of it) is permanently rejected afterward, even if the slot is
+ * later reused for an unrelated shape. Fails with the same handle-
+ * validation rules as aicad_occt_shape_volume; releasing an
+ * already-released (or otherwise invalid) handle is
+ * AICAD_STATUS_INVALID_HANDLE, not a silent no-op. */
+void aicad_occt_release_shape(AicadOcctContext* ctx, AicadShapeHandle handle,
+                               AicadStatus* out_status);
 
 #ifdef __cplusplus
 }

@@ -64,14 +64,18 @@ pub mod kind {
 /// entity (`AGENTS.md` non-negotiable "Raw topology is
 /// ephemeral/unsafe and epoch-bound"; RFC-0002 §5).
 ///
-/// `context_id` and `index` mirror `native/occt_bridge`'s
-/// `AicadShapeHandle` (AICAD-016) field-for-field, because the
+/// `context_id`, `index`, and `generation` mirror `native/occt_bridge`'s
+/// `AicadShapeHandle` (AICAD-016/019) field-for-field, because the
 /// epoch/context-scoping concept is backend-independent even though the
 /// *values* a specific backend assigns are not — a future non-OCCT
-/// backend is free to assign `context_id`/`index` however it likes, as
-/// long as it upholds the same contract: a handle is valid only against
-/// the context that issued it, and only while that context still
-/// considers the underlying slot live.
+/// backend is free to assign these fields however it likes, as long as
+/// it upholds the same contract: a handle is valid only against the
+/// context that issued it, only while that context still considers the
+/// underlying slot live, and only while `generation` matches the slot's
+/// current generation (rejecting a handle whose slot was released and
+/// possibly reused for an unrelated entity — AGENTS.md non-negotiable
+/// "Released/stale handles must never accidentally alias newly created
+/// geometry").
 ///
 /// Never construct one of these from arbitrary numbers outside a
 /// backend crate (`crates/cad-occt-bridge` and future backends). This
@@ -82,6 +86,7 @@ pub mod kind {
 pub struct KernelHandle<Kind> {
     pub context_id: u64,
     pub index: u32,
+    pub generation: u32,
     _kind: PhantomData<Kind>,
 }
 
@@ -89,10 +94,11 @@ impl<Kind> KernelHandle<Kind> {
     /// Constructs a handle from its raw fields. Intended for backend
     /// crates translating a native/FFI result into this kernel-neutral
     /// type — not for constructing a handle speculatively.
-    pub fn new(context_id: u64, index: u32) -> Self {
+    pub fn new(context_id: u64, index: u32, generation: u32) -> Self {
         Self {
             context_id,
             index,
+            generation,
             _kind: PhantomData,
         }
     }
@@ -115,7 +121,9 @@ impl<Kind> Copy for KernelHandle<Kind> {}
 
 impl<Kind> PartialEq for KernelHandle<Kind> {
     fn eq(&self, other: &Self) -> bool {
-        self.context_id == other.context_id && self.index == other.index
+        self.context_id == other.context_id
+            && self.index == other.index
+            && self.generation == other.generation
     }
 }
 
@@ -125,6 +133,7 @@ impl<Kind> Hash for KernelHandle<Kind> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.context_id.hash(state);
         self.index.hash(state);
+        self.generation.hash(state);
     }
 }
 
@@ -133,6 +142,7 @@ impl<Kind> fmt::Debug for KernelHandle<Kind> {
         f.debug_struct("KernelHandle")
             .field("context_id", &self.context_id)
             .field("index", &self.index)
+            .field("generation", &self.generation)
             .finish()
     }
 }
@@ -214,30 +224,33 @@ mod tests {
 
     #[test]
     fn handles_with_equal_fields_are_equal_regardless_of_kind_type_identity() {
-        let a: KernelSolid = KernelHandle::new(1, 2);
-        let b: KernelSolid = KernelHandle::new(1, 2);
+        let a: KernelSolid = KernelHandle::new(1, 2, 0);
+        let b: KernelSolid = KernelHandle::new(1, 2, 0);
         assert_eq!(a, b);
     }
 
     #[test]
     fn handles_with_different_fields_are_not_equal() {
-        let a: KernelSolid = KernelHandle::new(1, 2);
-        let b: KernelSolid = KernelHandle::new(1, 3);
-        let c: KernelSolid = KernelHandle::new(2, 2);
+        let a: KernelSolid = KernelHandle::new(1, 2, 0);
+        let b: KernelSolid = KernelHandle::new(1, 3, 0);
+        let c: KernelSolid = KernelHandle::new(2, 2, 0);
+        let d: KernelSolid = KernelHandle::new(1, 2, 1);
         assert_ne!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, d);
     }
 
     #[test]
     fn handle_kind_is_a_compile_time_distinction_not_a_runtime_field() {
         // If this compiles, KernelFace and KernelSolid are genuinely
-        // distinct Rust types even though their runtime shape (two
+        // distinct Rust types even though their runtime shape (three
         // integers) is identical — the assertion below only needs the
         // shared fields to be readable on both.
-        let face: KernelFace = KernelHandle::new(5, 0);
-        let solid: KernelSolid = KernelHandle::new(5, 0);
+        let face: KernelFace = KernelHandle::new(5, 0, 0);
+        let solid: KernelSolid = KernelHandle::new(5, 0, 0);
         assert_eq!(face.context_id, solid.context_id);
         assert_eq!(face.index, solid.index);
+        assert_eq!(face.generation, solid.generation);
     }
 
     #[test]
@@ -247,7 +260,7 @@ mod tests {
             value.clone()
         }
 
-        let a: KernelShape = KernelHandle::new(7, 1);
+        let a: KernelShape = KernelHandle::new(7, 1, 0);
         assert_copy(&a);
         let b = a;
         let c = clone_it(&a);

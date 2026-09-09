@@ -109,6 +109,46 @@ int main() {
   Expect(status.code == AICAD_STATUS_OK && RelativelyClose(volume2, 6.0, 1e-9),
          "ctx2's box2 volume matches 1*2*3 = 6, independent of ctx1's shapes");
 
+  // --- AICAD-019: shape-handle table (release + stale-handle rejection) ---
+  AicadShapeHandle to_release{};
+  aicad_occt_create_box(ctx1, 4.0, 5.0, 6.0, &to_release, &status);
+  Expect(status.code == AICAD_STATUS_OK, "box to be released is created successfully");
+
+  aicad_occt_release_shape(ctx1, to_release, &status);
+  Expect(status.code == AICAD_STATUS_OK, "releasing a live handle succeeds");
+
+  double released_volume = 0.0;
+  aicad_occt_shape_volume(ctx1, to_release, &released_volume, &status);
+  Expect(status.code == AICAD_STATUS_INVALID_HANDLE,
+         "using a just-released handle is rejected as invalid/stale");
+
+  aicad_occt_release_shape(ctx1, to_release, &status);
+  Expect(status.code == AICAD_STATUS_INVALID_HANDLE,
+         "releasing an already-released handle again is rejected, not a silent no-op");
+
+  // The freed slot must be reusable, and the OLD handle to it must stay
+  // rejected forever after — this is the core AGENTS.md non-negotiable
+  // ("Released/stale handles must never accidentally alias newly
+  // created geometry") made concrete.
+  AicadShapeHandle reused{};
+  aicad_occt_create_box(ctx1, 7.0, 8.0, 9.0, &reused, &status);
+  Expect(status.code == AICAD_STATUS_OK, "a new box can reuse a released slot");
+  Expect(reused.index == to_release.index,
+         "the new box actually reused the released slot's index (free-list worked)");
+  Expect(reused.generation != to_release.generation,
+         "the reused slot's generation differs from the released handle's generation");
+
+  double reused_volume = 0.0;
+  aicad_occt_shape_volume(ctx1, reused, &reused_volume, &status);
+  Expect(status.code == AICAD_STATUS_OK && RelativelyClose(reused_volume, 504.0, 1e-9),
+         "the reused slot's volume matches the NEW box (7*8*9 = 504), not the old one");
+
+  double stale_volume_after_reuse = 0.0;
+  aicad_occt_shape_volume(ctx1, to_release, &stale_volume_after_reuse, &status);
+  Expect(status.code == AICAD_STATUS_INVALID_HANDLE,
+         "the old (pre-release) handle stays rejected even after its slot is reused, "
+         "never silently aliasing the new box");
+
   aicad_occt_context_destroy(ctx1);
   aicad_occt_context_destroy(ctx2);
   aicad_occt_context_destroy(nullptr);  // must be a safe no-op

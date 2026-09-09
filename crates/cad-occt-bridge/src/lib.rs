@@ -75,11 +75,16 @@ mod ffi {
         }
     }
 
+    /// Mirrors `native/occt_bridge`'s `AicadShapeHandle` (AICAD-019
+    /// added `generation`, which native's shape-handle table bumps once
+    /// per released slot to reject a stale handle even after its slot
+    /// is reused for an unrelated shape).
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct AicadShapeHandle {
         pub context_id: u64,
         pub index: u32,
+        pub generation: u32,
     }
 
     unsafe extern "C" {
@@ -97,6 +102,11 @@ mod ffi {
             ctx: *mut AicadOcctContext,
             handle: AicadShapeHandle,
             out_volume: *mut f64,
+            out_status: *mut AicadStatus,
+        );
+        pub fn aicad_occt_release_shape(
+            ctx: *mut AicadOcctContext,
+            handle: AicadShapeHandle,
             out_status: *mut AicadStatus,
         );
     }
@@ -169,6 +179,7 @@ impl OcctContext {
         let mut handle = ffi::AicadShapeHandle {
             context_id: 0,
             index: 0,
+            generation: 0,
         };
         let mut status = ffi::AicadStatus::placeholder();
         // Safety: `self.raw` is a live context for at least the
@@ -178,18 +189,21 @@ impl OcctContext {
             ffi::aicad_occt_create_box(self.raw.as_ptr(), dx, dy, dz, &mut handle, &mut status);
         }
         check_status(status)?;
-        Ok(KernelSolid::new(handle.context_id, handle.index))
+        Ok(KernelSolid::new(
+            handle.context_id,
+            handle.index,
+            handle.generation,
+        ))
     }
 
     /// Returns the exact volume of the solid `handle` refers to. Fails
     /// with [`KernelError::ForeignContextHandle`] if `handle` was issued
     /// by a different `OcctContext`, or [`KernelError::InvalidHandle`]
-    /// if it is out of range for this one.
+    /// if it is out of range for this one, has been released, or is
+    /// otherwise stale (its slot was reused after release — see
+    /// [`Self::release_shape`]).
     pub fn shape_volume(&self, handle: KernelSolid) -> KernelResult<f64> {
-        let ffi_handle = ffi::AicadShapeHandle {
-            context_id: handle.context_id,
-            index: handle.index,
-        };
+        let ffi_handle = to_ffi_handle(handle);
         let mut volume = 0.0_f64;
         let mut status = ffi::AicadStatus::placeholder();
         // Safety: same reasoning as `create_box`; `handle` is passed by
@@ -200,6 +214,31 @@ impl OcctContext {
         }
         check_status(status)?;
         Ok(volume)
+    }
+
+    /// Releases the solid `handle` refers to, freeing its slot for
+    /// reuse by a later [`Self::create_box`] call and permanently
+    /// invalidating `handle` (and every other copy of it) — see
+    /// `native/occt_bridge`'s `aicad_occt_release_shape` (AICAD-019).
+    /// Releasing an already-released (or otherwise invalid) handle
+    /// fails with [`KernelError::InvalidHandle`] rather than succeeding
+    /// silently.
+    pub fn release_shape(&self, handle: KernelSolid) -> KernelResult<()> {
+        let ffi_handle = to_ffi_handle(handle);
+        let mut status = ffi::AicadStatus::placeholder();
+        // Safety: same reasoning as `shape_volume`.
+        unsafe {
+            ffi::aicad_occt_release_shape(self.raw.as_ptr(), ffi_handle, &mut status);
+        }
+        check_status(status)
+    }
+}
+
+fn to_ffi_handle(handle: KernelSolid) -> ffi::AicadShapeHandle {
+    ffi::AicadShapeHandle {
+        context_id: handle.context_id,
+        index: handle.index,
+        generation: handle.generation,
     }
 }
 
@@ -295,7 +334,8 @@ mod tests {
         let handle = ctx
             .create_box(1.0, 1.0, 1.0)
             .expect("create_box should succeed");
-        let out_of_range = KernelSolid::new(handle.context_id, handle.index + 9999);
+        let out_of_range =
+            KernelSolid::new(handle.context_id, handle.index + 9999, handle.generation);
 
         let result = ctx.shape_volume(out_of_range);
         assert!(matches!(result, Err(KernelError::InvalidHandle(_))));
@@ -318,5 +358,47 @@ mod tests {
         let ctx = OcctContext::new().expect("context creation should succeed");
         let _handle = ctx.create_box(1.0, 1.0, 1.0).unwrap();
         drop(ctx);
+    }
+
+    #[test]
+    fn released_handle_is_rejected_and_double_release_fails() {
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let handle = ctx.create_box(4.0, 5.0, 6.0).unwrap();
+
+        ctx.release_shape(handle)
+            .expect("releasing a live handle should succeed");
+
+        let result = ctx.shape_volume(handle);
+        assert!(matches!(result, Err(KernelError::InvalidHandle(_))));
+
+        let double_release = ctx.release_shape(handle);
+        assert!(matches!(double_release, Err(KernelError::InvalidHandle(_))));
+    }
+
+    #[test]
+    fn stale_handle_never_aliases_a_reused_slot() {
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let released = ctx.create_box(4.0, 5.0, 6.0).unwrap();
+        ctx.release_shape(released).unwrap();
+
+        let reused = ctx
+            .create_box(7.0, 8.0, 9.0)
+            .expect("a new box should be able to reuse the released slot");
+        assert_eq!(
+            reused.index, released.index,
+            "the free list should have reused the released slot's index"
+        );
+        assert_ne!(
+            reused.generation, released.generation,
+            "the reused slot must carry a different generation than the released handle"
+        );
+
+        assert_close(ctx.shape_volume(reused).unwrap(), 504.0, 1e-9);
+
+        // The critical property: the OLD (pre-release) handle must stay
+        // rejected forever, never silently resolving to the new box
+        // that now occupies its slot.
+        let result = ctx.shape_volume(released);
+        assert!(matches!(result, Err(KernelError::InvalidHandle(_))));
     }
 }
