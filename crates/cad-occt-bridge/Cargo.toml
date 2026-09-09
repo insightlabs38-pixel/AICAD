@@ -7,3 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+cad-kernel-api = { path = "../cad-kernel-api" }
+
+[build-dependencies]
+cc = "1"

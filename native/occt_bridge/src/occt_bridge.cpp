@@ -15,11 +15,23 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <new>
 #include <vector>
+
+// AICAD-018: crates/cad-occt-bridge's FFI declarations represent
+// AicadStatusCode as a fixed `#[repr(i32)]` Rust enum, which assumes
+// this C++ compiler gives the C `enum AicadStatusCode` an `int`-sized
+// underlying representation (true for GCC/Clang on this project's
+// supported targets, since every enumerator is small and non-negative).
+// This static_assert turns a violation of that assumption into a native
+// build failure instead of undefined behavior at the ABI boundary.
+static_assert(sizeof(AicadStatusCode) == sizeof(int32_t),
+              "AicadStatusCode's underlying type must be 32 bits to match "
+              "crates/cad-occt-bridge's #[repr(i32)] FFI declaration");
 
 namespace {
 
