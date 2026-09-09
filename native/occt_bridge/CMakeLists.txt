@@ -54,6 +54,55 @@ set(OCCT_PROBE_LIBS
   TKPrim
 )
 
+# TKOffset provides BRepOffsetAPI_MakePipe/ThruSections (AICAD-025: sweep
+# and loft) and also BRepOffsetAPI_MakeOffsetShape/MakeThickSolid
+# (AICAD-028: shell/offset -- same OCCT module, no new library needed).
+# Linked only into aicad_occt_bridge, not into OCCT_PROBE_LIBS
+# (occt_probe's discovery check stays scoped to the Batch-1A/1B module
+# set it originally verified).
+set(OCCT_SWEEP_LOFT_LIBS
+  TKOffset
+)
+
+foreach(_lib IN LISTS OCCT_SWEEP_LOFT_LIBS)
+  if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
+    message(FATAL_ERROR
+      "OCCT discovery: required module library '${_lib}' (for sweep/loft, "
+      "AICAD-025) is not among OpenCASCADE_LIBRARIES reported by the "
+      "discovered installation (${OpenCASCADE_LIBRARIES}).")
+  endif()
+endforeach()
+
+# TKBO provides BRepAlgoAPI_Fuse/Cut/Common (AICAD-026: boolean
+# union/cut/intersect).
+set(OCCT_BOOLEAN_LIBS
+  TKBO
+)
+
+foreach(_lib IN LISTS OCCT_BOOLEAN_LIBS)
+  if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
+    message(FATAL_ERROR
+      "OCCT discovery: required module library '${_lib}' (for boolean "
+      "union/cut/intersect, AICAD-026) is not among OpenCASCADE_LIBRARIES "
+      "reported by the discovered installation (${OpenCASCADE_LIBRARIES}).")
+  endif()
+endforeach()
+
+# TKFillet provides BRepFilletAPI_MakeFillet/MakeChamfer (AICAD-027:
+# fillet and chamfer).
+set(OCCT_FILLET_LIBS
+  TKFillet
+)
+
+foreach(_lib IN LISTS OCCT_FILLET_LIBS)
+  if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
+    message(FATAL_ERROR
+      "OCCT discovery: required module library '${_lib}' (for fillet/"
+      "chamfer, AICAD-027) is not among OpenCASCADE_LIBRARIES reported by "
+      "the discovered installation (${OpenCASCADE_LIBRARIES}).")
+  endif()
+endforeach()
+
 foreach(_lib IN LISTS OCCT_PROBE_LIBS)
   if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
     message(FATAL_ERROR
@@ -81,7 +130,7 @@ add_library(aicad_occt_bridge SHARED src/aicad_occt_bridge.cpp)
 target_include_directories(aicad_occt_bridge PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(aicad_occt_bridge SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 target_link_directories(aicad_occt_bridge PRIVATE ${OpenCASCADE_LIBRARY_DIR})
-target_link_libraries(aicad_occt_bridge PRIVATE ${OCCT_PROBE_LIBS} Threads::Threads)
+target_link_libraries(aicad_occt_bridge PRIVATE ${OCCT_PROBE_LIBS} ${OCCT_SWEEP_LOFT_LIBS} ${OCCT_BOOLEAN_LIBS} ${OCCT_FILLET_LIBS} Threads::Threads)
 
 add_executable(abi_boundary_test tests/abi_boundary_test.cpp)
 target_include_directories(abi_boundary_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -113,6 +162,23 @@ add_executable(extrude_revolve_test tests/extrude_revolve_test.cpp)
 target_include_directories(extrude_revolve_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(extrude_revolve_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+# --- Batch 1C: hard geometry operations (AICAD-025..028) ---
+add_executable(sweep_loft_test tests/sweep_loft_test.cpp)
+target_include_directories(sweep_loft_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(sweep_loft_test PRIVATE aicad_occt_bridge Threads::Threads)
+
+add_executable(boolean_test tests/boolean_test.cpp)
+target_include_directories(boolean_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(boolean_test PRIVATE aicad_occt_bridge Threads::Threads)
+
+add_executable(fillet_chamfer_test tests/fillet_chamfer_test.cpp)
+target_include_directories(fillet_chamfer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(fillet_chamfer_test PRIVATE aicad_occt_bridge Threads::Threads)
+
+add_executable(shell_offset_test tests/shell_offset_test.cpp)
+target_include_directories(shell_offset_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(shell_offset_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -130,6 +196,14 @@ add_test(NAME face_test COMMAND face_test)
 set_tests_properties(face_test PROPERTIES TIMEOUT 60)
 add_test(NAME extrude_revolve_test COMMAND extrude_revolve_test)
 set_tests_properties(extrude_revolve_test PROPERTIES TIMEOUT 60)
+add_test(NAME sweep_loft_test COMMAND sweep_loft_test)
+set_tests_properties(sweep_loft_test PROPERTIES TIMEOUT 60)
+add_test(NAME boolean_test COMMAND boolean_test)
+set_tests_properties(boolean_test PROPERTIES TIMEOUT 60)
+add_test(NAME fillet_chamfer_test COMMAND fillet_chamfer_test)
+set_tests_properties(fillet_chamfer_test PROPERTIES TIMEOUT 60)
+add_test(NAME shell_offset_test COMMAND shell_offset_test)
+set_tests_properties(shell_offset_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #

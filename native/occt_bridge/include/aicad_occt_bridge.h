@@ -197,6 +197,190 @@ aicad_occt_status_t aicad_occt_revolve(aicad_occt_context_t* context,
                                         double angle_radians,
                                         aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-025: sweep and loft, minimal supported forms.
+ *
+ * These are the first two Batch-1C "hard geometry operations": more
+ * general than extrude/revolve's constant linear/rotational sweep, but
+ * still deliberately narrow (RFC-0002 §3's capability-driven
+ * minimal-surface rule) -- no variable-section sweep, no explicit
+ * trihedron/up-vector control, and no ruled-vs-smoothed loft selection is
+ * exposed yet. See `project/reports/AICAD-025.md` for exactly which
+ * spine/section shapes are and are not supported -- per AGENTS.md, a
+ * kernel-level limitation here is recorded honestly rather than forced to
+ * appear universally successful. --- */
+
+/* Sweeps a planar profile face along a path wire (the "spine"), producing
+ * a solid. The spine may be open or closed and need not be planar or
+ * straight, but OCCT requires it to be G1-continuous (no sharp tangent
+ * discontinuity between consecutive edges) -- a polygonal spine with
+ * sharp corners is rejected with AICAD_OCCT_ERR_OPERATION_FAILED rather
+ * than silently healed or approximated. The profile is swept starting at
+ * the spine's first vertex, oriented by OCCT's own corrected-Frenet
+ * trihedron computation. */
+aicad_occt_status_t aicad_occt_sweep(aicad_occt_context_t* context,
+                                      aicad_shape_handle_t profile_face_handle,
+                                      aicad_shape_handle_t spine_wire_handle,
+                                      aicad_shape_handle_t* out_handle);
+
+/* Lofts a solid through an ordered list of closed planar wire
+ * cross-sections (`section_count` >= 2), producing a solid whose boundary
+ * connects consecutive sections with ruled (straight-line generatrix)
+ * surfaces -- the minimal, most geometrically predictable loft form, not
+ * OCCT's smoothed/spline-fitted default. `sections`/`section_count` is a
+ * caller-owned array (no STL container crosses this boundary), matching
+ * aicad_occt_make_wire_from_edges' convention. All sections must share
+ * the same number of edges/vertices for OCCT to establish a
+ * correspondence between them; a mismatched section list is rejected
+ * with AICAD_OCCT_ERR_OPERATION_FAILED. */
+aicad_occt_status_t aicad_occt_loft(aicad_occt_context_t* context,
+                                     const aicad_shape_handle_t* sections,
+                                     size_t section_count,
+                                     aicad_shape_handle_t* out_handle);
+
+/* --- AICAD-026: boolean union/cut/intersect.
+ *
+ * Unlike extrude/revolve/sweep (which each require one specific
+ * topological input kind, per RFC-0002 §3's minimal-surface rule), these
+ * accept any non-null shape handle for both operands: OCCT's own
+ * BRepAlgoAPI_Fuse/Cut/Common always produce a TopAbs_COMPOUND result
+ * (verified empirically, not assumed -- even fusing two TopAbs_SOLID
+ * boxes yields a COMPOUND, never a bare SOLID), so restricting these
+ * operations' own inputs to TopAbs_SOLID would make boolean results
+ * un-chainable into a second boolean operation. See
+ * project/reports/AICAD-026.md. Both operands must already belong to
+ * `context`; a stale, invalid, or foreign-context handle for either is
+ * rejected exactly as every other operation in this bridge rejects one. --- */
+
+/* Union (fuse) of `a` and `b`. */
+aicad_occt_status_t aicad_occt_boolean_union(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t a,
+                                              aicad_shape_handle_t b,
+                                              aicad_shape_handle_t* out_handle);
+
+/* Subtraction: `a` minus `b`. */
+aicad_occt_status_t aicad_occt_boolean_cut(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t a,
+                                            aicad_shape_handle_t b,
+                                            aicad_shape_handle_t* out_handle);
+
+/* Intersection (common material) of `a` and `b`. */
+aicad_occt_status_t aicad_occt_boolean_intersect(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t a,
+                                                  aicad_shape_handle_t b,
+                                                  aicad_shape_handle_t* out_handle);
+
+/* --- AICAD-027: fillet and chamfer.
+ *
+ * Selecting WHICH edges to round/chamfer requires raw, index-based edge
+ * access -- there is no persistent semantic edge-reference system yet
+ * (that is Stage 4's job; `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`
+ * §5-6 already specifies exactly this raw/indexed access pattern --
+ * `raw_edge(f, 2)` -- for cases like this one, so this is implementing an
+ * already-approved design, not selecting a new architecture
+ * alternative). `aicad_occt_shape_edge_count`/`_get_edge` expose the
+ * minimum needed to select edges now: a strictly ephemeral, epoch-bound
+ * enumeration of a shape's UNIQUE edges (via OCCT's `TopExp::MapShapes`,
+ * NOT a raw `TopExp_Explorer` traversal, which revisits each edge once
+ * per adjacent face -- verified empirically, e.g. 24 vs. the correct 12
+ * for a box; see project/reports/AICAD-027.md). Callers must never treat
+ * the resulting index or edge handle as a durable semantic reference
+ * (Stage-1 kernel policies #10-12) -- it is valid only within the current
+ * geometry epoch, like every other handle this bridge hands out. --- */
+
+/* Number of unique edges in `handle`'s shape. */
+aicad_occt_status_t aicad_occt_shape_edge_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count);
+
+/* Returns a handle to the edge at `index` (0-based, `< edge_count` from
+ * aicad_occt_shape_edge_count against the same handle) in `handle`'s
+ * shape, per its own current raw enumeration order -- ephemeral and
+ * epoch-bound, not a durable reference. */
+aicad_occt_status_t aicad_occt_shape_get_edge(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_edge_handle);
+
+/* Fillets (rounds) the given edges of `shape_handle` with a single
+ * constant radius. `edges`/`edge_count` (>= 1) is a caller-owned array of
+ * edge handles previously obtained from aicad_occt_shape_get_edge against
+ * this same shape_handle. Accepts any non-null shape_handle (not
+ * restricted to Solid) -- matching aicad_occt_boolean_union's own
+ * rationale: a boolean result is a Compound and must remain fillet-able
+ * without first being re-wrapped. */
+aicad_occt_status_t aicad_occt_fillet(aicad_occt_context_t* context,
+                                       aicad_shape_handle_t shape_handle,
+                                       const aicad_shape_handle_t* edges,
+                                       size_t edge_count,
+                                       double radius,
+                                       aicad_shape_handle_t* out_handle);
+
+/* Chamfers the given edges of `shape_handle` with a single constant
+ * symmetric distance (equal setback on both faces adjacent to each
+ * edge). See aicad_occt_fillet for the edges/edge_count contract. */
+aicad_occt_status_t aicad_occt_chamfer(aicad_occt_context_t* context,
+                                        aicad_shape_handle_t shape_handle,
+                                        const aicad_shape_handle_t* edges,
+                                        size_t edge_count,
+                                        double distance,
+                                        aicad_shape_handle_t* out_handle);
+
+/* --- AICAD-028: shell and offset (spike).
+ *
+ * These are the most failure-prone operations in this bridge (OCCT's own
+ * BRepOffsetAPI_MakeOffsetShape header documentation lists several
+ * documented limitations: it may fail for vertices where more than 3
+ * edges converge, the offset value must be small enough relative to
+ * local curvature to avoid self-intersection, and BSpline surfaces with
+ * C0 continuity are unsupported). Per AGENTS.md, this bridge does not
+ * spend unbounded effort forcing universal success here -- honest
+ * capability boundaries are recorded in project/reports/AICAD-028.md
+ * rather than hidden or worked around. Face selection reuses the same
+ * raw/index-based pattern aicad_occt_shape_edge_count/get_edge
+ * established for AICAD-027 (docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+ * §5-6), applied to TopAbs_FACE instead of TopAbs_EDGE. --- */
+
+/* Number of unique faces in `handle`'s shape. */
+aicad_occt_status_t aicad_occt_shape_face_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count);
+
+/* Returns a handle to the face at `index` (0-based, `< face_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, not a durable reference. */
+aicad_occt_status_t aicad_occt_shape_get_face(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_face_handle);
+
+/* Hollows `shape_handle` into a shell of constant wall `thickness`,
+ * removing (opening) the given `faces_to_remove` (>= 1, each obtained
+ * from aicad_occt_shape_get_face against this same shape_handle).
+ * `thickness`'s sign selects which side of the original surface the
+ * hollow is built on (negative: hollow the interior out, leaving the
+ * original outer boundary in place -- the common "shell" case; positive:
+ * grow a shell wall outward). Accepts any non-null shape_handle (not
+ * restricted to Solid), matching aicad_occt_boolean_union's own
+ * rationale. */
+aicad_occt_status_t aicad_occt_shell(aicad_occt_context_t* context,
+                                      aicad_shape_handle_t shape_handle,
+                                      const aicad_shape_handle_t* faces_to_remove,
+                                      size_t face_count,
+                                      double thickness,
+                                      aicad_shape_handle_t* out_handle);
+
+/* Constructs a shape parallel to `shape_handle`'s boundary, offset by
+ * `distance` (positive: outside; negative: inside). Gaps at edges/
+ * vertices are filled with pipes/spheres (OCCT's default GeomAbs_Arc join
+ * mode) -- for a convex solid this makes a positive-distance offset
+ * geometrically equivalent to filleting every edge with that same
+ * distance as radius (see project/reports/AICAD-028.md for the analytic
+ * evidence this equivalence enabled). */
+aicad_occt_status_t aicad_occt_offset(aicad_occt_context_t* context,
+                                       aicad_shape_handle_t shape_handle,
+                                       double distance,
+                                       aicad_shape_handle_t* out_handle);
+
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
  * geometry API yet; `cad-geometry-api` owns that surface later. --- */

@@ -7,13 +7,22 @@
 
 #include "aicad_occt_bridge.h"
 
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepOffsetAPI_MakeOffsetShape.hxx>
+#include <BRepOffsetAPI_MakePipe.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
@@ -22,6 +31,9 @@
 #include <GProp_GProps.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
+#include <TopExp.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -593,6 +605,499 @@ aicad_occt_status_t aicad_occt_revolve(aicad_occt_context_t* context,
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, make_revol.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_sweep(aicad_occt_context_t* context,
+                                      aicad_shape_handle_t profile_face_handle,
+                                      aicad_shape_handle_t spine_wire_handle,
+                                      aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* profile_shape = nullptr;
+  status = LookupTyped(context, profile_face_handle, TopAbs_FACE, &profile_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* spine_shape = nullptr;
+  status = LookupTyped(context, spine_wire_handle, TopAbs_WIRE, &spine_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    const TopoDS_Wire& spine = TopoDS::Wire(*spine_shape);
+    BRepOffsetAPI_MakePipe make_pipe(spine, *profile_shape);
+    if (!make_pipe.IsDone()) {
+      // The most common cause here is a spine that is not G1-continuous
+      // (e.g. a polygonal path with sharp corners) -- see this function's
+      // header doc comment and project/reports/AICAD-025.md.
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_pipe.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_loft(aicad_occt_context_t* context,
+                                     const aicad_shape_handle_t* sections,
+                                     size_t section_count,
+                                     aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (sections == nullptr || out_handle == nullptr || section_count < 2) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    // isSolid=true (caps the first/last sections into a closed solid);
+    // ruled=true (straight-line generatrix between consecutive sections
+    // -- the minimal, analytically-predictable loft form; see this
+    // function's header doc comment).
+    BRepOffsetAPI_ThruSections thru_sections(/*isSolid=*/Standard_True, /*ruled=*/Standard_True);
+    for (size_t i = 0; i < section_count; ++i) {
+      const TopoDS_Shape* wire_shape = nullptr;
+      status = LookupTyped(context, sections[i], TopAbs_WIRE, &wire_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      thru_sections.AddWire(TopoDS::Wire(*wire_shape));
+    }
+    thru_sections.Build();
+    if (!thru_sections.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, thru_sections.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+namespace {
+
+// Shared lookup for operations that accept any topological shape kind
+// (boolean operands, and fillet/chamfer's target shape): unlike
+// LookupTyped, no kind restriction is imposed (see each caller's own
+// header doc comment for why).
+aicad_occt_status_t LookupAnyKind(aicad_occt_context_t* context,
+                                          aicad_shape_handle_t handle,
+                                          const TopoDS_Shape** out) {
+  aicad_occt_status_t status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  return context->shapes.Lookup(handle, out);
+}
+
+}  // namespace
+
+aicad_occt_status_t aicad_occt_boolean_union(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t a,
+                                              aicad_shape_handle_t b,
+                                              aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape_a = nullptr;
+  status = LookupAnyKind(context, a, &shape_a);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* shape_b = nullptr;
+  status = LookupAnyKind(context, b, &shape_b);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepAlgoAPI_Fuse fuse(*shape_a, *shape_b);
+    if (!fuse.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, fuse.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_boolean_cut(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t a,
+                                            aicad_shape_handle_t b,
+                                            aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape_a = nullptr;
+  status = LookupAnyKind(context, a, &shape_a);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* shape_b = nullptr;
+  status = LookupAnyKind(context, b, &shape_b);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepAlgoAPI_Cut cut(*shape_a, *shape_b);
+    if (!cut.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, cut.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_boolean_intersect(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t a,
+                                                  aicad_shape_handle_t b,
+                                                  aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape_a = nullptr;
+  status = LookupAnyKind(context, a, &shape_a);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* shape_b = nullptr;
+  status = LookupAnyKind(context, b, &shape_b);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepAlgoAPI_Common common(*shape_a, *shape_b);
+    if (!common.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, common.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_edge_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    // TopExp::MapShapes de-duplicates: a plain TopExp_Explorer over
+    // TopAbs_EDGE revisits each edge once per adjacent face (verified
+    // empirically -- 24 visits for a box's 12 actual edges), which is
+    // not the "unique edges" count this function promises.
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(*shape, TopAbs_EDGE, edges);
+    *out_count = static_cast<size_t>(edges.Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_get_edge(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_edge_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_edge_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape edges;
+    TopExp::MapShapes(*shape, TopAbs_EDGE, edges);
+    // TopTools_IndexedMapOfShape is 1-indexed; the ABI's `index` is
+    // 0-based (matching aicad_occt_make_wire_from_edges' own convention).
+    if (index >= static_cast<size_t>(edges.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopoDS_Shape& edge = edges.FindKey(static_cast<Standard_Integer>(index) + 1);
+    *out_edge_handle = context->shapes.Insert(context->id, edge);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_fillet(aicad_occt_context_t* context,
+                                       aicad_shape_handle_t shape_handle,
+                                       const aicad_shape_handle_t* edges,
+                                       size_t edge_count,
+                                       double radius,
+                                       aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (edges == nullptr || out_handle == nullptr || edge_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!(radius > 0.0) || !std::isfinite(radius)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* base_shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &base_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepFilletAPI_MakeFillet make_fillet(*base_shape);
+    for (size_t i = 0; i < edge_count; ++i) {
+      const TopoDS_Shape* edge_shape = nullptr;
+      status = LookupTyped(context, edges[i], TopAbs_EDGE, &edge_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      make_fillet.Add(radius, TopoDS::Edge(*edge_shape));
+    }
+    make_fillet.Build();
+    if (!make_fillet.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_fillet.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_chamfer(aicad_occt_context_t* context,
+                                        aicad_shape_handle_t shape_handle,
+                                        const aicad_shape_handle_t* edges,
+                                        size_t edge_count,
+                                        double distance,
+                                        aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (edges == nullptr || out_handle == nullptr || edge_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!(distance > 0.0) || !std::isfinite(distance)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* base_shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &base_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepFilletAPI_MakeChamfer make_chamfer(*base_shape);
+    for (size_t i = 0; i < edge_count; ++i) {
+      const TopoDS_Shape* edge_shape = nullptr;
+      status = LookupTyped(context, edges[i], TopAbs_EDGE, &edge_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      make_chamfer.Add(distance, TopoDS::Edge(*edge_shape));
+    }
+    make_chamfer.Build();
+    if (!make_chamfer.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_chamfer.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_face_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(*shape, TopAbs_FACE, faces);
+    *out_count = static_cast<size_t>(faces.Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_get_face(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_face_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_face_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(*shape, TopAbs_FACE, faces);
+    // TopTools_IndexedMapOfShape is 1-indexed; the ABI's `index` is
+    // 0-based (matching aicad_occt_shape_get_edge's own convention).
+    if (index >= static_cast<size_t>(faces.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopoDS_Shape& face = faces.FindKey(static_cast<Standard_Integer>(index) + 1);
+    *out_face_handle = context->shapes.Insert(context->id, face);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shell(aicad_occt_context_t* context,
+                                      aicad_shape_handle_t shape_handle,
+                                      const aicad_shape_handle_t* faces_to_remove,
+                                      size_t face_count,
+                                      double thickness,
+                                      aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (faces_to_remove == nullptr || out_handle == nullptr || face_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (thickness == 0.0 || !std::isfinite(thickness)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* base_shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &base_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_ListOfShape closing_faces;
+    for (size_t i = 0; i < face_count; ++i) {
+      const TopoDS_Shape* face_shape = nullptr;
+      status = LookupTyped(context, faces_to_remove[i], TopAbs_FACE, &face_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      closing_faces.Append(*face_shape);
+    }
+    BRepOffsetAPI_MakeThickSolid make_thick;
+    make_thick.MakeThickSolidByJoin(*base_shape, closing_faces, thickness, 1e-6);
+    if (!make_thick.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_thick.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_offset(aicad_occt_context_t* context,
+                                       aicad_shape_handle_t shape_handle,
+                                       double distance,
+                                       aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (distance == 0.0 || !std::isfinite(distance)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* base_shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &base_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepOffsetAPI_MakeOffsetShape make_offset;
+    make_offset.PerformByJoin(*base_shape, distance, 1e-6);
+    if (!make_offset.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_offset.Shape());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

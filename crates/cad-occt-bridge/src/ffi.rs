@@ -109,6 +109,88 @@ unsafe extern "C" {
         angle_radians: f64,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_sweep(
+        context: *mut aicad_occt_context_t,
+        profile_face_handle: aicad_shape_handle_t,
+        spine_wire_handle: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_loft(
+        context: *mut aicad_occt_context_t,
+        sections: *const aicad_shape_handle_t,
+        section_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_boolean_union(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_boolean_cut(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_boolean_intersect(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_edge(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_edge_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_fillet(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edges: *const aicad_shape_handle_t,
+        edge_count: usize,
+        radius: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_chamfer(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edges: *const aicad_shape_handle_t,
+        edge_count: usize,
+        distance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_face_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_face(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_face_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shell(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        faces_to_remove: *const aicad_shape_handle_t,
+        face_count: usize,
+        thickness: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_offset(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        distance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_area(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,

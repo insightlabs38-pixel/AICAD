@@ -222,6 +222,37 @@ impl OcctContext {
             id: handle_to_id(handle),
         })
     }
+
+    /// Lofts a solid through an ordered list of closed planar wire
+    /// cross-sections (`sections.len() >= 2`), each owned by this
+    /// context, using straight (ruled) generatrices between consecutive
+    /// sections -- the minimal, analytically-predictable loft form
+    /// (AICAD-025). All sections must share the same number of
+    /// edges/vertices for OCCT to establish a correspondence between
+    /// them.
+    pub fn loft<'ctx>(&'ctx self, sections: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> = sections
+            .iter()
+            .map(|section| id_to_handle(section.id))
+            .collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `handles` is a valid, live, contiguous array of
+        // `handles.len()` elements for the duration of this call (no STL
+        // container crosses the boundary), matching
+        // `aicad_occt_make_wire_from_edges`' convention; `self.raw`/
+        // `&mut handle` as in `create_box`.
+        let status =
+            unsafe { ffi::aicad_occt_loft(self.raw, handles.as_ptr(), handles.len(), &mut handle) };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
 }
 
 impl Drop for OcctContext {
@@ -420,6 +451,323 @@ impl<'ctx> Shape<'ctx> {
                 angle_radians,
                 &mut handle,
             )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Sweeps this planar profile face along `spine` (a path wire owned by
+    /// the same context), producing a solid (AICAD-025). The spine may be
+    /// open or closed but must be G1-continuous; a sharp-cornered spine
+    /// may construct a shape that reports invalid rather than being
+    /// rejected outright -- construction success and topological validity
+    /// are distinct here, matching [`Shape::make_face`]'s own documented
+    /// contract (Stage-1 kernel policy #14). See
+    /// `project/reports/AICAD-025.md` for exactly which spines are
+    /// supported.
+    pub fn sweep(&self, spine: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`; `spine.raw_handle()` addresses a
+        // slot `spine` owns in the same context (enforced by `'ctx`).
+        let status = unsafe {
+            ffi::aicad_occt_sweep(
+                self.context.raw,
+                self.raw_handle(),
+                spine.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Union (fuse) of `self` and `other` (AICAD-026). Neither operand is
+    /// mutated; the result is a new [`Shape`] in the same context (DL-2).
+    /// Unlike `extrude`/`revolve`/`sweep`, this does not require a
+    /// specific topological input kind: OCCT's own boolean algorithms
+    /// always produce a Compound result (verified empirically, not
+    /// assumed -- see `project/reports/AICAD-026.md`), so restricting
+    /// operands to Solid would make a boolean result un-chainable into a
+    /// further boolean operation.
+    pub fn union(&self, other: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`; `other.raw_handle()` addresses a
+        // slot `other` owns in the same context (enforced by `'ctx`).
+        let status = unsafe {
+            ffi::aicad_occt_boolean_union(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Subtraction: `self` minus `other` (AICAD-026). See [`Shape::union`]
+    /// for the operand-kind rationale.
+    pub fn cut(&self, other: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `union` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_boolean_cut(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Intersection (common material) of `self` and `other` (AICAD-026).
+    /// See [`Shape::union`] for the operand-kind rationale.
+    pub fn intersect(&self, other: &Shape<'ctx>) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `union` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_boolean_intersect(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// The number of unique edges in this shape (AICAD-027), via OCCT's
+    /// own de-duplicated `TopExp::MapShapes` (a raw `TopExp_Explorer`
+    /// traversal instead revisits each edge once per adjacent face,
+    /// verified empirically -- see `project/reports/AICAD-027.md`).
+    pub fn edge_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the edge at `index` (0-based, `< self.edge_count()`) in
+    /// this shape's own current raw enumeration order (AICAD-027) --
+    /// ephemeral and epoch-bound, never a durable semantic reference
+    /// (Stage-1 kernel policies #10-12). Intended for immediate use as a
+    /// [`Shape::fillet`]/[`Shape::chamfer`] edge selector, not for
+    /// storage.
+    pub fn get_edge(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_edge(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Fillets (rounds) `edges` (each obtained from this shape's own
+    /// [`Shape::get_edge`]) with a single constant `radius` (AICAD-027).
+    /// Accepts any shape kind (not restricted to Solid) -- see
+    /// [`Shape::union`] for the same rationale applied here.
+    pub fn fillet(&self, edges: &[&Shape<'ctx>], radius: f64) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `handles` is a valid, live, contiguous array of
+        // `handles.len()` elements for the duration of this call (no STL
+        // container crosses the boundary), matching
+        // `aicad_occt_make_wire_from_edges`' convention; `self.context.raw`/
+        // `self.raw_handle()`/`&mut handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_fillet(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                radius,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Chamfers `edges` (each obtained from this shape's own
+    /// [`Shape::get_edge`]) with a single constant symmetric `distance`
+    /// (AICAD-027). See [`Shape::fillet`] for the operand-kind rationale.
+    pub fn chamfer(&self, edges: &[&Shape<'ctx>], distance: f64) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `fillet` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_chamfer(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                distance,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// The number of unique faces in this shape (AICAD-028), via OCCT's
+    /// own de-duplicated `TopExp::MapShapes`.
+    pub fn face_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_face_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the face at `index` (0-based, `< self.face_count()`) in
+    /// this shape's own current raw enumeration order (AICAD-028) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_edge`]. Intended for immediate
+    /// use as a [`Shape::shell`] face-to-remove selector, not for
+    /// storage.
+    pub fn get_face(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_face(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Hollows this shape into a shell of constant wall `thickness`,
+    /// removing (opening) `faces_to_remove` (each obtained from this
+    /// shape's own [`Shape::get_face`]) (AICAD-028). `thickness`'s sign
+    /// selects which side of the original surface the hollow is built on
+    /// (negative: hollow the interior out, the common "shell" case).
+    /// Accepts any shape kind, matching [`Shape::union`]'s rationale.
+    pub fn shell(
+        &self,
+        faces_to_remove: &[&Shape<'ctx>],
+        thickness: f64,
+    ) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> = faces_to_remove
+            .iter()
+            .map(|face| id_to_handle(face.id))
+            .collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `handles` is a valid, live, contiguous array of
+        // `handles.len()` elements for the duration of this call (no STL
+        // container crosses the boundary); `self.context.raw`/
+        // `self.raw_handle()`/`&mut handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shell(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                thickness,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Constructs a shape parallel to this shape's boundary, offset by
+    /// `distance` (positive: outside; negative: inside) (AICAD-028). For
+    /// a convex solid, a positive-distance offset is geometrically
+    /// equivalent to filleting every edge with that distance as radius
+    /// (both are the Minkowski sum of the solid with a ball of that
+    /// radius) -- see `project/reports/AICAD-028.md`.
+    pub fn offset(&self, distance: f64) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_offset(self.context.raw, self.raw_handle(), distance, &mut handle)
         };
         status_result(status)?;
         Ok(Shape {
@@ -858,6 +1206,461 @@ mod tests {
         assert_eq!(
             face.extrude(Direction3::Z, -1.0).unwrap_err(),
             KernelError::InvalidArgument
+        );
+    }
+
+    // --- AICAD-025: sweep and loft ---
+
+    fn square_wire<'ctx>(context: &'ctx OcctContext, side: f64, z: f64) -> Shape<'ctx> {
+        let p = |x: f64, y: f64| Point3::new(x, y, z);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(side, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(side, 0.0), p(side, side)).unwrap();
+        let e2 = context.make_line_edge(p(side, side), p(0.0, side)).unwrap();
+        let e3 = context.make_line_edge(p(0.0, side), p(0.0, 0.0)).unwrap();
+        context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap()
+    }
+
+    fn centered_square_wire<'ctx>(context: &'ctx OcctContext, side: f64, z: f64) -> Shape<'ctx> {
+        let h = side / 2.0;
+        let p = |x: f64, y: f64| Point3::new(x, y, z);
+        let e0 = context.make_line_edge(p(-h, -h), p(h, -h)).unwrap();
+        let e1 = context.make_line_edge(p(h, -h), p(h, h)).unwrap();
+        let e2 = context.make_line_edge(p(h, h), p(-h, h)).unwrap();
+        let e3 = context.make_line_edge(p(-h, h), p(-h, -h)).unwrap();
+        context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap()
+    }
+
+    fn straight_spine<'ctx>(context: &'ctx OcctContext, p0: Point3, p1: Point3) -> Shape<'ctx> {
+        let edge = context.make_line_edge(p0, p1).unwrap();
+        context.make_wire_from_edges(&[&edge]).unwrap()
+    }
+
+    #[test]
+    fn sweep_square_profile_along_straight_spine_matches_extrude() {
+        let context = OcctContext::new().unwrap();
+        let profile = square_wire(&context, 1.0, 0.0).make_face().unwrap();
+        let spine = straight_spine(&context, Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0));
+        let swept = profile.sweep(&spine).expect("sweep should succeed");
+        assert!(swept.is_valid().unwrap());
+        assert!(
+            (swept.volume().unwrap() - 5.0).abs() < 1e-6,
+            "straight-spine sweep of a unit square must match extrude's volume 1*1*5=5.0"
+        );
+    }
+
+    #[test]
+    fn sweep_circle_profile_along_straight_spine_matches_cylinder_volume() {
+        let context = OcctContext::new().unwrap();
+        let profile = context
+            .make_circle_wire(Point3::ORIGIN, Direction3::Z, 2.0)
+            .unwrap()
+            .make_face()
+            .unwrap();
+        let spine = straight_spine(&context, Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0));
+        let swept = profile.sweep(&spine).expect("sweep should succeed");
+        let expected = std::f64::consts::PI * 2.0 * 2.0 * 5.0;
+        assert!((swept.volume().unwrap() - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn sweep_rejects_a_profile_that_is_not_a_face() {
+        let context = OcctContext::new().unwrap();
+        let wire_profile = square_wire(&context, 1.0, 0.0);
+        let spine = straight_spine(&context, Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0));
+        assert_eq!(
+            wire_profile.sweep(&spine).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn sweep_rejects_a_spine_that_is_not_a_wire() {
+        let context = OcctContext::new().unwrap();
+        let profile = square_wire(&context, 1.0, 0.0).make_face().unwrap();
+        let not_a_wire = context
+            .make_line_edge(Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0))
+            .unwrap();
+        assert_eq!(
+            profile.sweep(&not_a_wire).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn loft_between_two_identical_squares_matches_prism_volume() {
+        let context = OcctContext::new().unwrap();
+        let a = centered_square_wire(&context, 1.0, 0.0);
+        let b = centered_square_wire(&context, 1.0, 5.0);
+        let lofted = context.loft(&[&a, &b]).expect("loft should succeed");
+        assert!(lofted.is_valid().unwrap());
+        assert!(
+            (lofted.volume().unwrap() - 5.0).abs() < 1e-6,
+            "loft between two identical square sections must match prism volume 1*1*5=5.0"
+        );
+    }
+
+    #[test]
+    fn loft_square_frustum_matches_analytic_volume() {
+        // side 2 at z=0, side 4 at z=3: an exact frustum of a pyramid
+        // (ruled ThruSections between two concentric, axis-aligned
+        // squares produces planar trapezoid side faces), analytic volume
+        // h/3*(A1+A2+sqrt(A1*A2)).
+        let context = OcctContext::new().unwrap();
+        let a = centered_square_wire(&context, 2.0, 0.0);
+        let b = centered_square_wire(&context, 4.0, 3.0);
+        let lofted = context.loft(&[&a, &b]).expect("loft should succeed");
+        assert!(lofted.is_valid().unwrap());
+        let (a1, a2, h): (f64, f64, f64) = (2.0 * 2.0, 4.0 * 4.0, 3.0);
+        let expected = (h / 3.0) * (a1 + a2 + (a1 * a2).sqrt());
+        assert!((lofted.volume().unwrap() - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn loft_rejects_fewer_than_two_sections() {
+        let context = OcctContext::new().unwrap();
+        let a = centered_square_wire(&context, 1.0, 0.0);
+        assert_eq!(
+            context.loft(&[&a]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn loft_rejects_a_section_that_is_not_a_wire() {
+        let context = OcctContext::new().unwrap();
+        let not_a_wire = context
+            .make_line_edge(Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0))
+            .unwrap();
+        let b = centered_square_wire(&context, 1.0, 5.0);
+        assert_eq!(
+            context.loft(&[&not_a_wire, &b]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    // --- AICAD-026: boolean union/cut/intersect ---
+
+    fn overlapping_boxes(context: &OcctContext) -> (Shape<'_>, Shape<'_>) {
+        let a = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b_raw = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b = b_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                1.0, 1.0, 1.0,
+            )))
+            .unwrap();
+        (a, b)
+    }
+
+    #[test]
+    fn boolean_union_matches_inclusion_exclusion_volume() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let fused = a.union(&b).expect("union should succeed");
+        assert!(fused.is_valid().unwrap());
+        assert!((fused.volume().unwrap() - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_cut_matches_inclusion_exclusion_volume() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let cut = a.cut(&b).expect("cut should succeed");
+        assert!(cut.is_valid().unwrap());
+        assert!((cut.volume().unwrap() - 7.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_intersect_matches_inclusion_exclusion_volume() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let common = a.intersect(&b).expect("intersect should succeed");
+        assert!(common.is_valid().unwrap());
+        assert!((common.volume().unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn boolean_result_is_chainable_into_a_further_boolean() {
+        // Boolean results are Compounds, not Solids (verified empirically
+        // -- see project/reports/AICAD-026.md); this proves the Rust
+        // wrapper's operand-kind-unrestricted contract actually allows
+        // chaining, not just that the native ABI does.
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let fused = a.union(&b).unwrap(); // volume 15
+        let third = context.create_box(3.0, 3.0, 3.0).unwrap(); // volume 27
+        let third_far = third
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                100.0, 100.0, 100.0,
+            )))
+            .unwrap();
+        let chained = fused
+            .union(&third_far)
+            .expect("chained union should succeed");
+        assert!((chained.volume().unwrap() - 42.0).abs() < 1e-6);
+    }
+
+    /// AICAD-026/SESSION_HANDOFF: the Rust-level counterpart of
+    /// `native/occt_bridge/tests/boolean_test.cpp`'s "epoch bump on
+    /// mutation" case, but expressed through the borrow checker instead
+    /// of the raw ABI: dropping one boolean-union input must release
+    /// exactly that shape's native handle without disturbing the other
+    /// input or the union result, both of which remain independently
+    /// usable `Shape<'ctx>` values for the rest of the context's
+    /// lifetime.
+    #[test]
+    fn dropping_one_boolean_input_does_not_disturb_the_other_input_or_the_result() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let fused = a.union(&b).expect("union should succeed");
+        drop(a); // releases only `a`'s native handle
+        assert!(
+            (b.volume().unwrap() - 8.0).abs() < 1e-9,
+            "the other, undropped boolean-union input must remain valid after its sibling is dropped"
+        );
+        assert!(
+            (fused.volume().unwrap() - 15.0).abs() < 1e-6,
+            "the union result must remain valid and unchanged after one of its two original inputs is dropped"
+        );
+    }
+
+    #[test]
+    fn boolean_disjoint_intersect_is_empty() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let b_raw = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let b = b_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                10.0, 10.0, 10.0,
+            )))
+            .unwrap();
+        let common = a
+            .intersect(&b)
+            .expect("intersect should succeed (construct an empty result)");
+        assert!((common.volume().unwrap() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn boolean_union_rejects_a_handle_from_a_foreign_context() {
+        let context_a = OcctContext::new().unwrap();
+        let context_b = OcctContext::new().unwrap();
+        let a = context_a.create_box(1.0, 1.0, 1.0).unwrap();
+        let foreign = context_b.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(a.union(&foreign).unwrap_err(), KernelError::ForeignContext);
+    }
+
+    // --- AICAD-027: fillet and chamfer ---
+
+    #[test]
+    fn a_box_has_exactly_twelve_unique_edges() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(4.0, 5.0, 6.0).unwrap();
+        assert_eq!(box_shape.edge_count().unwrap(), 12);
+    }
+
+    #[test]
+    fn get_edge_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_edge(12).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn fillet_all_edges_matches_rounded_box_analytic_volume() {
+        // Filleting every edge of a box with radius r produces a "rounded
+        // box" whose volume is the closed-form Minkowski-sum-with-a-ball
+        // formula: V = Lx*Ly*Lz + 2r(Lx*Ly+Ly*Lz+Lz*Lx) + pi*r^2*(Lx+Ly+Lz)
+        // + (4/3)*pi*r^3, where Lx/Ly/Lz are the box dimensions inset by r
+        // on every side.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, r) = (4.0, 5.0, 6.0, 1.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let count = box_shape.edge_count().unwrap();
+        let edges: Vec<Shape<'_>> = (0..count).map(|i| box_shape.get_edge(i).unwrap()).collect();
+        let edge_refs: Vec<&Shape<'_>> = edges.iter().collect();
+        let rounded = box_shape
+            .fillet(&edge_refs, r)
+            .expect("fillet should succeed for all 12 edges");
+        assert!(rounded.is_valid().unwrap());
+        let (lx, ly, lz) = (dx - 2.0 * r, dy - 2.0 * r, dz - 2.0 * r);
+        let pi = std::f64::consts::PI;
+        let expected = lx * ly * lz
+            + 2.0 * r * (lx * ly + ly * lz + lz * lx)
+            + pi * r * r * (lx + ly + lz)
+            + (4.0 / 3.0) * pi * r * r * r;
+        let volume = rounded.volume().unwrap();
+        assert!(
+            (volume - expected).abs() < expected * 1e-4,
+            "rounded-box volume {volume} did not match analytic {expected}"
+        );
+    }
+
+    #[test]
+    fn chamfer_single_edge_matches_analytic_volume() {
+        // Chamfering exactly one edge (and only one -- neither adjacent
+        // edge is also modified) removes a clean triangular prism of
+        // cross-section legs (d,d) along the full edge length, so
+        // volume = box_volume - (d^2/2)*edge_length.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, d) = (4.0, 5.0, 6.0, 0.5);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let count = box_shape.edge_count().unwrap();
+        // Find the edge from (0,0,dz) to (dx,0,dz): the intersection of
+        // the y=0 face and the z=dz (top) face, length dx.
+        let target = (0..count)
+            .map(|i| box_shape.get_edge(i).unwrap())
+            .find(|edge| {
+                let bbox = edge.bounding_box().unwrap();
+                (bbox.min.x - 0.0).abs() < 1e-6
+                    && (bbox.max.x - dx).abs() < 1e-6
+                    && (bbox.min.y - 0.0).abs() < 1e-6
+                    && (bbox.max.y - 0.0).abs() < 1e-6
+                    && (bbox.min.z - dz).abs() < 1e-6
+                    && (bbox.max.z - dz).abs() < 1e-6
+            })
+            .expect("the specific top-front edge must be found among the box's 12 edges");
+        let chamfered = box_shape
+            .chamfer(&[&target], d)
+            .expect("chamfer should succeed for a single identified edge");
+        assert!(chamfered.is_valid().unwrap());
+        let expected = dx * dy * dz - (d * d / 2.0) * dx;
+        let volume = chamfered.volume().unwrap();
+        assert!((volume - expected).abs() < expected * 1e-6);
+    }
+
+    #[test]
+    fn fillet_and_chamfer_reject_a_handle_that_is_not_an_edge() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.fillet(&[&box_shape], 1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.chamfer(&[&box_shape], 0.1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn fillet_rejects_a_non_positive_radius() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge = box_shape.get_edge(0).unwrap();
+        assert_eq!(
+            box_shape.fillet(&[&edge], 0.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+        assert_eq!(
+            box_shape.fillet(&[&edge], -1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    // --- AICAD-028: shell and offset ---
+
+    #[test]
+    fn a_box_has_exactly_six_unique_faces() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        assert_eq!(box_shape.face_count().unwrap(), 6);
+    }
+
+    #[test]
+    fn get_face_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_face(6).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn shell_hollowed_box_matches_analytic_volume() {
+        // Hollowing a box with its top face removed and wall thickness t
+        // (built inward) leaves a cavity spanning x in [t,dx-t], y in
+        // [t,dy-t], z in [t,dz] (open at the top) -> volume =
+        // dx*dy*dz - (dx-2t)*(dy-2t)*(dz-t).
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, t) = (2.0, 3.0, 4.0, 0.2);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let count = box_shape.face_count().unwrap();
+        let top_face = (0..count)
+            .map(|i| box_shape.get_face(i).unwrap())
+            .find(|face| {
+                let bbox = face.bounding_box().unwrap();
+                (bbox.min.z - dz).abs() < 1e-6 && (bbox.max.z - dz).abs() < 1e-6
+            })
+            .expect("the top face must be found among the box's 6 faces");
+        let shelled = box_shape
+            .shell(&[&top_face], -t)
+            .expect("shell should succeed");
+        assert!(shelled.is_valid().unwrap());
+        let expected = dx * dy * dz - (dx - 2.0 * t) * (dy - 2.0 * t) * (dz - t);
+        let volume = shelled.volume().unwrap();
+        assert!((volume - expected).abs() < expected * 1e-4);
+    }
+
+    #[test]
+    fn offset_box_matches_minkowski_sum_analytic_volume() {
+        // A positive-distance offset with OCCT's default arc join is the
+        // Minkowski sum of the box with a ball of that radius -- same
+        // closed form as fillet-all-edges, without the inset term.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, delta) = (2.0, 3.0, 4.0, 0.3);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let offset = box_shape.offset(delta).expect("offset should succeed");
+        assert!(offset.is_valid().unwrap());
+        let pi = std::f64::consts::PI;
+        let expected = dx * dy * dz
+            + 2.0 * delta * (dx * dy + dy * dz + dz * dx)
+            + pi * delta * delta * (dx + dy + dz)
+            + (4.0 / 3.0) * pi * delta * delta * delta;
+        let volume = offset.volume().unwrap();
+        assert!((volume - expected).abs() < expected * 1e-4);
+    }
+
+    #[test]
+    fn shell_rejects_a_handle_that_is_not_a_face() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.shell(&[&box_shape], -0.1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn offset_rejects_a_zero_distance() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.offset(0.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn fillet_and_chamfer_accept_a_compound_shape() {
+        // Matches the boolean-result-is-chainable rationale: fillet a
+        // Compound (a boolean-union result of two disjoint boxes) to
+        // prove operand-kind is not restricted to Solid here either.
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b_raw = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b = b_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                20.0, 0.0, 0.0,
+            )))
+            .unwrap();
+        let compound = a.union(&b).unwrap();
+        assert_eq!(
+            compound.edge_count().unwrap(),
+            24,
+            "two disjoint boxes' union has 12+12=24 edges"
         );
     }
 }
