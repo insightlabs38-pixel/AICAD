@@ -4,12 +4,14 @@ Unresolved architecture/product decisions requiring owner approval belong here.
 Do not silently resolve them in implementation work.
 
 Populated by the orientation pass over `docs/plan/` performed per
-`project/FIRST_PROMPT.md`, before executing AICAD-002 onward. See
+`project/FIRST_PROMPT.md`, before executing AICAD-002 onward, and finalized
+by task AICAD-005 ("Create OWNER_DECISIONS.md and DECISION_LOG.md from
+unresolved plan decisions"; see `project/reports/AICAD-005.md`). See
 `project/reports/ORIENTATION_PASS.md` for the full analysis (document map,
 invariants, traceability matrix, contradictions) this list was drawn from.
-This file will be revisited and formally finalized by task AICAD-005
-("Create OWNER_DECISIONS.md and DECISION_LOG.md from unresolved plan
-decisions"); entries below are not to be resolved implicitly before then.
+This file is not closed — re-run the review whenever a later task's
+`plan_references` surface a new unresolved decision, and add it here rather
+than resolving it implicitly.
 
 Status legend: `open` = no owner ruling yet. Once the owner rules, move the
 decision (with rationale) to `project/DECISION_LOG.md` and mark it here as
