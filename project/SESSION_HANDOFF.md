@@ -1,89 +1,76 @@
 # Session Handoff
 
-## Latest: Stage 0 approved by owner; Stage 1 active, AICAD-015 in progress
+## Latest: Batch 1A (kernel boundary) complete — AICAD-015 through AICAD-019 done
 
-The owner has recorded Stage-0 approval: `project/DECISION_LOG.md#DL-10`,
-citing `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md` (commit
-`aad7267`) and the implementation team's own `project/gates/stage-0-gate.md`
-(AICAD-014). `project/CURRENT_STAGE.md` has been updated to `stage: 1,
-status: active`. This closes out the prior handoff entry below (kept for
-history) and starts Stage 1 per the authorized roadmap window
-(`AICAD-015` through `AICAD-037`, in batches 1A-1E; `AICAD-038`/Stage 2
-remain forbidden without further owner approval).
+Stage 0 was approved by the owner this session
+(`project/DECISION_LOG.md#DL-10`, citing
+`project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md` at commit
+`aad7267` and the implementation team's own
+`project/gates/stage-0-gate.md`). `project/CURRENT_STAGE.md` is now
+`stage: 1, status: active`.
 
-**Current state:** beginning Batch 1A (kernel boundary), starting with
-`AICAD-015` (OCCT discovery/probe CMake target). See the task loop in
-`AGENTS.md`/`project/TASKS.yaml` for the per-task procedure. Per the
-active per-invocation work budget, at most one batch (1A: AICAD-015..019)
-is authorized this invocation, followed by the `STAGE1-A_KERNEL_BOUNDARY.md`
-checkpoint before Batch 1B may begin.
+**Note for future sessions:** the independent Stage-0 review existed on
+an unmerged branch (`claude/aicad-stage-0-review-9leull`) that a prior
+session never merged into `branch/loving-feynman-qcrzen` or `main`. This
+session found and fast-forward-merged it (commit `aad7267`) before
+recording the owner decision. If a future invocation is ever told an
+artifact/commit exists but `git log`/file search can't find it on the
+current branch, check `git branch -a`/`git fetch --all` for an unmerged
+sibling branch before concluding the artifact doesn't exist.
 
----
+This session then completed **all of Batch 1A** in the authorized Stage-1
+window (`AICAD-015` through `AICAD-037`, batches 1A-1E;
+`AICAD-038`/Stage 2 remain forbidden without further owner approval):
 
-## Prior entry: Independent Stage-0 review complete — recommendation: PASS
+| Task | Summary | Report |
+|---|---|---|
+| AICAD-015 | OCCT discovery/probe CMake target (`native/occt_bridge`) | `project/reports/AICAD-015.md` |
+| AICAD-016 | C ABI boundary (`aicad_occt_bridge.h`/`.cpp`): status codes, generation-counted opaque handles, exception containment | `project/reports/AICAD-016.md` |
+| AICAD-017 | `cad-kernel-api`: 9 backend-independent handle newtypes + `KernelError` | `project/reports/AICAD-017.md` |
+| AICAD-018 | `cad-occt-bridge`: safe RAII Rust wrapper (`OcctContext`/`Shape<'ctx>`), `build.rs` builds+installs the native project | `project/reports/AICAD-018.md` |
+| AICAD-019 | Lifecycle/shape-table stress tests at scale + concurrency, valgrind evidence | `project/reports/AICAD-019.md` |
 
-An independent, adversarial Stage-0 review (not part of the original
-AICAD-007..014 authoring batch) was performed against commit
-`02b89c89074ab4dee47b3a0171eafe44f531d210` (tip of merged PR #1). Full
-findings, adversarial paper-example probes, and the post-patch re-review
-are recorded in `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`.
+**Batch 1A checkpoint:** `project/gates/STAGE1-A_KERNEL_BOUNDARY.md` —
+**PASS**, all nine required properties verified with a fresh end-to-end
+run. Two non-blocking follow-ups recorded there (G1: exception-containment
+catch branches not yet proven reachable by a genuine OCCT exception,
+revisit once Batch 1B has a naturally-degenerate input; G2: valgrind is a
+documented manual check, not wired into per-push CI).
 
-**Result: Stage 0 independently passed review, after three patches:**
+**Per-invocation work budget:** this invocation completed exactly one
+batch (1A) and is stopping here for a clean handoff, per
+`AGENTS.md`/the scheduled-task brief ("Complete at most ONE batch per
+invocation... Prefer a clean durable handoff over starting one more
+task").
 
-- F1 (MAJOR): the frozen grammar sketch never defined `if`/`match` as
-  expressions, even though the paper example's required "conditional"
-  concept and `docs/plan/07`'s own precedent both need it. Patched into
-  `rfcs/0001-language-principles.md` §7 and `specs/language/grammar.ebnf`.
-- F2 (MAJOR): RFC-0004's own frozen quantity shape (§5) had no field for
-  the absolute/delta affine distinction its own affine-unit rule (§7)
-  required, and no rule for what `absolute - absolute` produces. Patched
-  into `rfcs/0004-units-type-system.md` §5 and §7 (`affine_kind`
-  discriminant + subtraction rule).
-- F3 (MINOR): two open-decision-dependent constructs in the paper example
-  (`r.left_edge`/`r.right_edge`, pending D3; the `Datum`-to-axis coercion
-  in `mate concentric`) carried their caveat only in the companion `.md`,
-  not inline in the `.aicad` source most likely to be copy-pasted as a
-  worked reference. Patched with inline comments in
-  `examples/assemblies/stage0_paper_example.aicad`.
+## Current state / next action
 
-All three patches operationalize already-approved owner rulings (DL-1,
-DL-2, DL-3) or are documentation-only; none required a new
-`project/OWNER_DECISIONS.md` entry, and none touched an open decision's
-status. No BLOCKER-level finding was made. `project/OWNER_DECISIONS.md`'s
-open items (D3, D5, D10, D11, D12, D15, plus the residual sub-items of D7,
-D8, D13) remain open exactly as before — this review did not silently
-resolve any of them; see the review document §8 for confirmation that none
-blocks Stage 1.
+- **Active stage:** Stage 1 (`project/CURRENT_STAGE.md`), Batch 1A
+  complete and checkpointed (PASS).
+- **Next task:** `AICAD-020`, the first task in **Batch 1B — Constructive
+  geometry** (`AICAD-020` through `AICAD-024`), per `project/TASKS.yaml`
+  and the scheduled-task brief's batch list. Read `AICAD-020`'s full
+  `project/TASKS.yaml` entry and its `plan_references` before starting
+  (not yet read this session).
+- **After Batch 1B (AICAD-024):** create/update
+  `project/gates/STAGE1-B_CONSTRUCTIVE_GEOMETRY.md` before Batch 1C.
+- Batch 1B is expected to add the first topology-*mutating* operation
+  (a boolean op, per `docs/plan/15_IMPLEMENTATION_ROADMAP.md` Stage 1's
+  "booleans" build item) — when it lands, add the epoch-bump-on-mutation
+  test that AICAD-016/018/019 all deferred pending exactly this
+  operation existing (see their "Limitations" sections).
+- No owner blockers. No regressions. All required workspace checks
+  (`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings`, `cargo build --workspace --all-targets`,
+  `cargo test --workspace`) and the native `ctest` suite
+  (`native/occt_bridge/build`, 3 tests) pass as of the AICAD-019 commit.
+- Environment (Stage-1 kernel policy #15, unchanged across AICAD-015..019,
+  reconfirm at the start of Batch 1B rather than assuming): Ubuntu 24.04.4
+  LTS, x86_64, GCC/G++ 13.3.0, Rust 1.98.1 (`rust-toolchain.toml`), CMake
+  3.28.3, OCCT 7.6.3 (`libocct-*-dev` 7.6.3+dfsg1-7.1build1).
 
-**This is still a recommendation, not an approval.** Per `AGENTS.md`
-("The agent may prepare gate evidence and recommend pass/do-not-pass. The
-agent may not approve a roadmap stage. Stage progression is an owner
-decision.") and `project/CURRENT_STAGE.md` ("Owner approval required to
-advance: Yes"), Stage 0 is not actually passed until the owner records that
-decision in `project/DECISION_LOG.md`. Two independent recommendations now
-exist for the owner to weigh: the implementation team's own
-`project/gates/stage-0-gate.md` (AICAD-014), and this session's independent
-`project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`.
+## Important decisions this session
 
-## Next task
-
-**AICAD-015** ("Add OCCT discovery/probe CMake target", Stage 1) is next in
-`project/TASKS.yaml`, once the owner records Stage-0 approval.
-
-**AICAD-015 was NOT started or executed in this session.** This session's
-scope was the independent Stage-0 review and its three in-scope patches
-only, per its own instructions.
-
-## For the next session
-
-- If the owner has recorded a Stage-0 pass decision in
-  `project/DECISION_LOG.md` since this handoff was written: proceed to
-  AICAD-015 per `project/TASKS.yaml`'s normal work loop
-  (`AGENTS.md` §"Work loop").
-- If not: do not begin AICAD-015. Either wait for the owner decision, or
-  continue Stage-0-scoped work only (e.g. addressing any further owner
-  feedback on either gate packet).
-- Two gate-packet documents both currently recommend PASS
-  (`project/gates/stage-0-gate.md` and
-  `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`); neither
-  supersedes the other, and neither is self-executing.
+- `project/DECISION_LOG.md#DL-10`: owner Stage-0 approval recorded.
+- No new `project/OWNER_DECISIONS.md` entries were required by any
+  AICAD-015..019 task; no open decision was touched.
