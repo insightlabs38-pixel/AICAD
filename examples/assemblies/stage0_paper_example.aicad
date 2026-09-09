@@ -1,0 +1,164 @@
+// Stage-0 paper/spec example (AICAD-012).
+//
+// Purpose: prove that a realistic design spanning parameters, a function,
+// a loop, a conditional, a sketch, an extrusion, a semantic query,
+// low-level geometry, an assembly, a constraint, and a test can be
+// written under RFC-0001 through RFC-0005 without semantic contradiction
+// — the Stage-0 exit gate in docs/plan/15_IMPLEMENTATION_ROADMAP.md.
+//
+// This is a PAPER EXAMPLE, not compilable source: no lexer/parser/
+// compiler exists yet at Stage 0 (project/CURRENT_STAGE.md "Not allowed
+// yet: final parser implementation"). Every construct used here is drawn
+// directly from a specific docs/plan/ section or a frozen RFC-000x
+// clause; see stage0_paper_example.md alongside this file for the exact
+// mapping reviewed by AICAD-013.
+//
+// Syntax per RFC-0001: braces + explicit semicolons, no significant
+// indentation, no automatic semicolon insertion. Mutation per RFC-0001
+// §5: `body.cut(...)` is functional sugar; rebinding `body = ...` is
+// explicit everywhere it happens.
+
+enum MotorSize { NEMA17, NEMA23 }
+
+configuration Product {
+    motor: MotorSize = NEMA17;
+}
+
+// --- function ---------------------------------------------------------
+
+pure fn corner_points(size: Vector2<Length>, inset: Length) -> List<Point2> {
+    return [
+        [inset,           inset],
+        [size.x - inset,  inset],
+        [size.x - inset,  size.y - inset],
+        [inset,           size.y - inset],
+    ];
+}
+
+// --- low-level geometry -------------------------------------------------
+// Analytic curve construction, sweep, and a raw-topology repair step
+// guarded by unsafe geometry / validate (docs/plan/05, RFC-0002 §4).
+
+fn retaining_hook(radius: Length, sweep_angle: Angle) -> Solid {
+    let profile = bspline_curve(
+        degree = 3,
+        control_points = [
+            [0mm, 0mm, 0mm],
+            [1.2mm, 0.4mm, 0mm],
+            [2.1mm, 1.8mm, 0mm],
+            [1.4mm, 3.2mm, 0mm],
+        ],
+        knots = [0.0, 1.0],
+        multiplicities = [4, 4],
+    );
+
+    let path = circle_curve(
+        center = [0mm, 0mm, 0mm],
+        normal = +Z,
+        radius = radius,
+    ).trim(0deg, sweep_angle);
+
+    var hook = sweep(profile = profile, path = path, orientation = minimum_twist);
+
+    unsafe geometry {
+        let raw: KernelShape* = raw_shape(hook);
+        let healed = heal(raw, profile = HealingProfile.default);
+        hook = adopt_validated(healed, validation = ValidationLevel.strict);
+    }
+
+    return hook;
+}
+
+// --- part: parameters, constraint, conditional, sketch, extrusion,
+//     loop, semantic query, test ----------------------------------------
+
+part Bracket {
+    param width: Length = 80mm;
+    param height: Length = 60mm;
+    param thickness: Length = 5mm;
+    param bolt_diameter: Length = 4.3mm;
+    param mount_inset: Length = 8mm;
+
+    constraint {                                  // algebraic parameter constraint
+        width >= 40mm;
+        height >= 30mm;
+        mount_inset < width / 2;
+    }
+
+    let wall = if Product.motor == MotorSize.NEMA17 { 3mm } else { 4mm };  // conditional
+
+    let profile = sketch(plane = XY) {
+        let r = rectangle(size = [width, height], center = [0mm, 0mm]);
+        symmetric(r.left_edge, r.right_edge, about = y_axis);  // sketch constraint
+    };
+
+    let base = extrude(profile, distance = thickness);          // extrusion
+
+    var body = base;
+    for p in corner_points(size = [width, height], inset = mount_inset) {  // loop
+        body = body.cut(hole(center = p, diameter = bolt_diameter, depth = ThroughAll));
+    }
+
+    body = union(body, retaining_hook(radius = 7.5mm, sweep_angle = 38deg));
+
+    expose mounting_face = query body.faces {                   // semantic query
+        planar;
+        normal ~= +Z within 0.1deg;
+        largest(area);
+    };
+
+    expose mount_axis = datum_axis(source = mounting_face, name = "mount_axis");
+    expose shape = body;                                          // whole-body semantic output
+
+    test "bracket is valid with four bolt holes" {               // test
+        assert valid(body);
+        assert count(query body.faces {
+            cylindrical;
+            radius ~= bolt_diameter / 2 within 0.01mm;
+        }) == 4;
+    }
+}
+
+// --- vendor component (external, imported geometry) --------------------
+
+component Motor {
+    let body = import_step("nema17.step");
+    metadata {
+        manufacturer: "Generic";
+        part_number: "NEMA17";
+    }
+    expose mounting_face = query body.faces {
+        planar;
+        normal ~= -Z within 0.1deg;
+        largest(area);
+    };
+    expose output_axis = datum_axis(source = detect_cylindrical_axis(body), name = "output_axis");
+    expose shape = body;                                          // whole-body semantic output
+}
+
+// --- assembly: components, mates (constraint), joint, test --------------
+
+assembly ActuatorStage0 {
+    instance bracket = Bracket();
+    instance motor = Motor();
+
+    mate coincident(motor.mounting_face, bracket.mounting_face);  // assembly constraint
+    mate concentric(motor.output_axis, bracket.mount_axis);       // assembly constraint
+
+    joint output {
+        type: revolute;
+        parent: bracket.mount_axis;
+        child: motor.output_axis;
+        limits: -180deg..180deg;
+    }
+
+    requirement R_CLEARANCE {
+        description: "Motor body clears bracket wall";
+        severity: blocker;
+        assert clearance(motor.shape, bracket.shape) >= 1.0mm;
+    }
+
+    test "assembly has exactly one rotational degree of freedom" {
+        assert degrees_of_freedom(self) == 1;
+    }
+}
