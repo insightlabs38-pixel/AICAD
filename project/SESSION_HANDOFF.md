@@ -1,5 +1,40 @@
 # Session Handoff
 
+## IMPORTANT — CI on `main` was red since the PR #2 merge (`179afd8`); fix pushed this session, verify it landed
+
+PR #3's CI (all three of `cargo build/test --workspace`, `native bridge
+build smoke`, `cargo clippy -D warnings`) failed on push. Root-caused and
+confirmed via GitHub Actions run history that **`main` itself has been
+red since commit `179afd8`** (the PR #2 merge introducing Batch 1A/1B) —
+not something this session's Batch 1C work caused:
+
+1. `cad-occt-bridge/build.rs` (AICAD-018) runs CMake against
+   `native/occt_bridge`, requiring OpenCASCADE — but the
+   `build-and-test` CI job never had an OCCT install step added for it.
+2. `native-build-smoke` does install OCCT, but a header
+   (`NCollection_AliasedArray.hxx`, pulled in transitively by
+   `BRepPrimAPI_MakeBox.hxx`) lives under `libocct-visualization-dev` in
+   Ubuntu's OCCT packaging, not `libocct-foundation-dev` — that package
+   was never in the install list.
+
+Fixed in `.github/workflows/ci.yml` (commit `3e4d4a9`, pushed to
+`branch/pensive-hopper-5cbjby`/PR #3): added the missing OCCT install step
+to `build-and-test`, added `libocct-visualization-dev` to both jobs'
+package lists. Validated by tracing every OCCT header transitively
+included by `occt_probe.cpp`/`aicad_occt_bridge.cpp` (403 unique headers)
+and confirming each is owned by exactly one of the four now-installed
+packages — not just patching the one header named in the error message.
+Full diagnosis posted as a PR #3 comment.
+
+**If you are a future invocation reading this: check whether PR #3's CI
+is now green on commit `3e4d4a9` or later before doing anything else.**
+If it's still red, that takes priority over starting a new roadmap task —
+this fix has not yet been confirmed by an actual passing CI run as of
+this note being written (this session pushed the fix and is
+watching/waiting for the next `check_run.completed` event, but a
+container/session boundary may have intervened before that arrived). If
+CI is green, this note can be pruned on the next handoff rewrite.
+
 ## Latest: Batch 1C (hard geometry operations) complete — AICAD-025 through AICAD-028 done
 
 This session started from `main`/`origin/main` at commit `179afd8`
