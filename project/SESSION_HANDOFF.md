@@ -18,18 +18,18 @@ commits (`182850f` through `1f4fa19`, listed below) are pushed to
 `origin/main`**. `origin/main` remains at `179afd8` (confirmed via a
 fresh `git fetch origin main` immediately before this note was written —
 unchanged since this session's own base, so no reconciliation is needed
-whenever the merge happens). Per this session's own operating
-instructions, PR creation is gated on explicit user request and was not
-authorized this session, so no PR was opened. **A future invocation must
-not treat Batch 1C as complete-on-main until it verifies these commits
-(or their equivalent) are actually present in `origin/main`'s ancestry**
-— check `git log origin/main` for commit `61a9520` (AICAD-028) or later
-before assuming this work is canonical, exactly as this file's own
-"CANONICAL PUBLISHING" operating instructions require. If a PR for
-`branch/pensive-hopper-5cbjby` does not yet exist, one should be opened
-(by a human, or by a future invocation explicitly authorized to do so) to
-merge this branch the same way `branch/loving-feynman-qde9m3` (Batch 1A+
-1B) was merged via PR #2.
+whenever the merge happens). This session did not open a PR itself (PR
+creation is gated on explicit request), but **PR #3**
+(`https://github.com/insightlabs38-pixel/AICAD/pull/3`) was created for
+this branch from the Claude Code UI shortly after this session's work
+landed, and this session subscribed to its activity. **A future
+invocation must not treat Batch 1C as complete-on-main until it verifies
+these commits (or their equivalent) are actually present in
+`origin/main`'s ancestry** — check `git log origin/main` for commit
+`61a9520` (AICAD-028) or later, or check PR #3's merge status, before
+assuming this work is canonical, exactly as this file's own "CANONICAL
+PUBLISHING" operating instructions require. Any further commits pushed to
+`branch/pensive-hopper-5cbjby` update PR #3 automatically.
 
 This session completed **all of Batch 1C** (`AICAD-025` through
 `AICAD-028`, the last batch before Batch 1D):
