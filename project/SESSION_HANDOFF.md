@@ -11,16 +11,25 @@ immediately before this note was written — `origin/main` is still at
 `903dceb`, unchanged since this session's own base). This session's own
 work is `git log`-visible starting at commit `dd823dd`.
 
-**Canonical-publishing status — NOT YET CANONICAL.** This session's
-commits (`dd823dd` through `4eac108`, listed below) are pushed to
-`origin/branch/compassionate-wright-lbvrc1` and **PR #4**
-(`https://github.com/insightlabs38-pixel/AICAD/pull/4`) was opened for
-them (not merged). This session subscribed to PR #4's activity. **A
-future invocation must not treat Batch 1D as complete-on-main until it
-verifies these commits (or their equivalent) are actually present in
-`origin/main`'s ancestry** — check `git log origin/main` for commit
-`c21e4dd` (AICAD-033) or later, or check PR #4's merge status, before
-assuming this work is canonical.
+**Canonical-publishing status — CANONICAL.** **PR #4**
+(`https://github.com/insightlabs38-pixel/AICAD/pull/4`) merged into
+`origin/main` as commit `4f06266`. `origin/main` now contains all of
+Batch 1D — confirmed via `git log origin/main` (commit `c21e4dd`,
+AICAD-033, is in its ancestry) and via the merge/close webhook this
+session received, not assumed. A future invocation can start directly
+from `origin/main` without any reconciliation.
+
+**CI note (found and fixed before merge, already landed):** the first
+PR push (head `4eac108`) failed all three of `native bridge build
+smoke`/`cargo build/test --workspace`/`cargo clippy -D warnings` with
+`IFSelect_ReturnStatus.hxx: No such file or directory` — AICAD-033's new
+`TKXSBase`/`TKSTEPBase`/`TKSTEP` dependency needs
+`libocct-data-exchange-dev`, which this session's own dev environment
+already had installed (so the gap wasn't caught locally) but CI's
+`.github/actions/install-occt-dev/action.yml` package list had never
+been updated for it. Fixed (commit `6889fc0`, confirmed via `dpkg -S`,
+not guessed) and merged along with the rest of the batch; CI was green
+on the final head before merge.
 
 This session completed **all of Batch 1D** (`AICAD-029` through
 `AICAD-033`, the last batch before Batch 1E):
@@ -64,9 +73,8 @@ active scheduled-task brief.
 
 - **Active stage:** Stage 1 (`project/CURRENT_STAGE.md`, unchanged this
   session — still says Stage 1 active), Batch 1A, 1B, 1C, and 1D all
-  complete and checkpointed (PASS). Batch 1A/1B/1C are canonical on
-  `origin/main` (via PR #2/#3); **Batch 1D is NOT yet canonical** — see
-  above.
+  complete and checkpointed (PASS), and all four are canonical on
+  `origin/main` (via PR #2/#3/#4 respectively).
 - **Next task:** `AICAD-034`, the first task in **Batch 1E — Stage-1
   proof** (`AICAD-034` through `AICAD-037`), per `project/TASKS.yaml` and
   the scheduled-task brief's batch list. Read `AICAD-034`'s full
