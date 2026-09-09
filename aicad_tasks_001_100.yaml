@@ -1,0 +1,2694 @@
+schema_version: 1
+queue_policy: One bounded task at a time. AGENTS.md + CURRENT_STAGE.md govern execution. Owner approves every stage gate.
+tasks:
+- id: AICAD-001
+  stage: 0
+  title: Import plan bundle verbatim into docs/plan; record SHA-256/version
+  status: todo
+  depends_on: []
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-001.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-002
+  stage: 0
+  title: Create proposed monorepo directory skeleton
+  status: todo
+  depends_on:
+  - AICAD-001
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-002.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-003
+  stage: 0
+  title: Create Rust workspace/toolchain policy and baseline ignore/editor config
+  status: todo
+  depends_on:
+  - AICAD-002
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-003.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-004
+  stage: 0
+  title: 'Create baseline CI: fmt, clippy, tests, native build smoke'
+  status: todo
+  depends_on:
+  - AICAD-003
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-004.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-005
+  stage: 0
+  title: Create OWNER_DECISIONS.md and DECISION_LOG.md from unresolved plan decisions
+  status: todo
+  depends_on:
+  - AICAD-004
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-005.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-006
+  stage: 0
+  title: Create Stage 0-4 gate-to-test traceability matrix
+  status: todo
+  depends_on:
+  - AICAD-005
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-006.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-007
+  stage: 0
+  title: Draft RFC-0001 language principles
+  status: todo
+  depends_on:
+  - AICAD-006
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-007.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-008
+  stage: 0
+  title: Draft RFC-0002 geometry/runtime and kernel abstraction
+  status: todo
+  depends_on:
+  - AICAD-007
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-008.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-009
+  stage: 0
+  title: Draft RFC-0003 semantic references
+  status: todo
+  depends_on:
+  - AICAD-008
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-009.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-010
+  stage: 0
+  title: Draft RFC-0004 units/type system
+  status: todo
+  depends_on:
+  - AICAD-009
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-010.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-011
+  stage: 0
+  title: Draft RFC-0005 diagnostics
+  status: todo
+  depends_on:
+  - AICAD-010
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-011.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-012
+  stage: 0
+  title: Write Stage-0 paper/spec example spanning the required concepts
+  status: todo
+  depends_on:
+  - AICAD-011
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-012.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-013
+  stage: 0
+  title: Run contradiction review across RFCs and paper example
+  status: todo
+  depends_on:
+  - AICAD-012
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-013.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-014
+  stage: 0
+  title: Prepare Stage-0 owner gate packet
+  status: todo
+  depends_on:
+  - AICAD-013
+  plan_references:
+  - docs/plan/README.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Packet includes RFCs, paper example, unresolved decisions, evidence, and explicit pass/do-not-pass recommendation;
+    agent does not self-approve.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-014.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-015
+  stage: 1
+  title: Add OCCT discovery/probe CMake target
+  status: todo
+  depends_on:
+  - AICAD-014
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-015.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-016
+  stage: 1
+  title: Create native/occt_bridge C ABI boundary
+  status: todo
+  depends_on:
+  - AICAD-015
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-016.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-017
+  stage: 1
+  title: Create cad-kernel-api backend-independent handle/error types
+  status: todo
+  depends_on:
+  - AICAD-016
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-017.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-018
+  stage: 1
+  title: Create cad-occt-bridge safe Rust wrapper
+  status: todo
+  depends_on:
+  - AICAD-017
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-018.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-019
+  stage: 1
+  title: Implement kernel context lifecycle and shape-handle table
+  status: todo
+  depends_on:
+  - AICAD-018
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-019.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-020
+  stage: 1
+  title: Implement box and cylinder
+  status: todo
+  depends_on:
+  - AICAD-019
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-020.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-021
+  stage: 1
+  title: Implement points/vectors/axes/frames and rigid transforms
+  status: todo
+  depends_on:
+  - AICAD-020
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-021.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-022
+  stage: 1
+  title: Implement line/circle curves and edge/wire creation
+  status: todo
+  depends_on:
+  - AICAD-021
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-022.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-023
+  stage: 1
+  title: Implement planar face from closed wire
+  status: todo
+  depends_on:
+  - AICAD-022
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-023.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-024
+  stage: 1
+  title: Implement extrude and revolve
+  status: todo
+  depends_on:
+  - AICAD-023
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-024.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-025
+  stage: 1
+  title: Implement sweep and loft minimal supported forms
+  status: todo
+  depends_on:
+  - AICAD-024
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-025.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-026
+  stage: 1
+  title: Implement boolean union/cut/intersect
+  status: todo
+  depends_on:
+  - AICAD-025
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-026.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-027
+  stage: 1
+  title: Implement fillet and chamfer
+  status: todo
+  depends_on:
+  - AICAD-026
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-027.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-028
+  stage: 1
+  title: Implement shell/offset spike
+  status: todo
+  depends_on:
+  - AICAD-027
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-028.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-029
+  stage: 1
+  title: Implement topology exploration
+  status: todo
+  depends_on:
+  - AICAD-028
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-029.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-030
+  stage: 1
+  title: Implement bounds/length/area/volume/center-of-mass queries
+  status: todo
+  depends_on:
+  - AICAD-029
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-030.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-031
+  stage: 1
+  title: Implement B-rep validity checks and normalized validation report
+  status: todo
+  depends_on:
+  - AICAD-030
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-031.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-032
+  stage: 1
+  title: Implement display tessellation output
+  status: todo
+  depends_on:
+  - AICAD-031
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-032.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-033
+  stage: 1
+  title: Implement STEP export
+  status: todo
+  depends_on:
+  - AICAD-032
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-033.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-034
+  stage: 1
+  title: Build Stage-1 complex bracket directly through Rust/native API
+  status: todo
+  depends_on:
+  - AICAD-033
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Bracket is a valid exact B-rep; analytic property/topology checks pass; it exports to STEP.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-034.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-035
+  stage: 1
+  title: Create independent STEP verification harness
+  status: todo
+  depends_on:
+  - AICAD-034
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Exported Stage-1 geometry is independently re-imported/verified and compared by documented non-byte-equality metrics.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-035.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-036
+  stage: 1
+  title: Add bounded geometry regression/fuzz harness
+  status: todo
+  depends_on:
+  - AICAD-035
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-036.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-037
+  stage: 1
+  title: Prepare Stage-1 owner gate packet
+  status: todo
+  depends_on:
+  - AICAD-036
+  plan_references:
+  - docs/plan/01_SYSTEM_ARCHITECTURE.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Packet proves Rust/native -> narrow OCCT bridge -> valid exact bracket -> STEP -> independent verification.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-037.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-038
+  stage: 2
+  title: Create cad-diagnostics crate and JSON-schema conformance tests
+  status: todo
+  depends_on:
+  - AICAD-037
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-038.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-039
+  stage: 2
+  title: Create cad-ast and cad-lexer with token/span model
+  status: todo
+  depends_on:
+  - AICAD-038
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-039.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-040
+  stage: 2
+  title: Implement numeric literals with engineering-unit suffix tokenization
+  status: todo
+  depends_on:
+  - AICAD-039
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-040.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-041
+  stage: 2
+  title: Implement expression parser and precedence
+  status: todo
+  depends_on:
+  - AICAD-040
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-041.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-042
+  stage: 2
+  title: 'Implement declarations: let/const/param/fn/struct/enum/part'
+  status: todo
+  depends_on:
+  - AICAD-041
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-042.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-043
+  stage: 2
+  title: 'Implement control-flow syntax: if/for/while/match/return'
+  status: todo
+  depends_on:
+  - AICAD-042
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-043.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-044
+  stage: 2
+  title: Implement module/import syntax and loader skeleton
+  status: todo
+  depends_on:
+  - AICAD-043
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-044.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-045
+  stage: 2
+  title: Implement minimal formatter / AST pretty-printer
+  status: todo
+  depends_on:
+  - AICAD-044
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-045.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-046
+  stage: 2
+  title: Create cad-types primitive type representation
+  status: todo
+  depends_on:
+  - AICAD-045
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-046.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-047
+  stage: 2
+  title: Create cad-units dimensional vector/canonicalization per RFC-0004
+  status: todo
+  depends_on:
+  - AICAD-046
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-047.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-048
+  stage: 2
+  title: Implement initial unit registry and conversions
+  status: todo
+  depends_on:
+  - AICAD-047
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-048.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-049
+  stage: 2
+  title: Implement dimensional arithmetic type rules
+  status: todo
+  depends_on:
+  - AICAD-048
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Correct derived dimensions infer; illegal mixed-dimension arithmetic fails with stable diagnostics.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-049.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-050
+  stage: 2
+  title: Implement name binding/scopes/symbol table
+  status: todo
+  depends_on:
+  - AICAD-049
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-050.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-051
+  stage: 2
+  title: Create typed HIR and AST->HIR lowering skeleton
+  status: todo
+  depends_on:
+  - AICAD-050
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-051.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-052
+  stage: 2
+  title: Implement type checking for literals/bindings/functions/calls
+  status: todo
+  depends_on:
+  - AICAD-051
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-052.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-053
+  stage: 2
+  title: Implement structs/enums field and variant typing
+  status: todo
+  depends_on:
+  - AICAD-052
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-053.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-054
+  stage: 2
+  title: Implement function execution and lexical scopes
+  status: todo
+  depends_on:
+  - AICAD-053
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-054.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-055
+  stage: 2
+  title: Implement conditional and match execution
+  status: todo
+  depends_on:
+  - AICAD-054
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-055.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-056
+  stage: 2
+  title: Implement loops and basic collections/iterators
+  status: todo
+  depends_on:
+  - AICAD-055
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-056.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-057
+  stage: 2
+  title: Implement recursion and Result/error propagation
+  status: todo
+  depends_on:
+  - AICAD-056
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-057.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-058
+  stage: 2
+  title: Implement execution resource-budget accounting
+  status: todo
+  depends_on:
+  - AICAD-057
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-058.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-059
+  stage: 2
+  title: Create backend-independent Geometry IR
+  status: todo
+  depends_on:
+  - AICAD-058
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-059.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-060
+  stage: 2
+  title: Implement HIR/runtime geometry dispatch into Geometry IR/kernel API
+  status: todo
+  depends_on:
+  - AICAD-059
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-060.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-061
+  stage: 2
+  title: Create cad-cli build command with human and JSON diagnostics
+  status: todo
+  depends_on:
+  - AICAD-060
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-061.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-062
+  stage: 2
+  title: Create Tree-sitter grammar for supported syntax subset
+  status: todo
+  depends_on:
+  - AICAD-061
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-062.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-063
+  stage: 2
+  title: Implement end-to-end source -> exact bracket -> STEP slice
+  status: todo
+  depends_on:
+  - AICAD-062
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - AICAD source using typed units and ordinary control flow compiles through HIR/Geometry IR to valid exact bracket
+    and verified STEP.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-063.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-064
+  stage: 2
+  title: Prepare Stage-2 owner gate packet
+  status: todo
+  depends_on:
+  - AICAD-063
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Packet proves ordinary programs construct parameterized geometry without special interpreter shortcuts.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-064.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-065
+  stage: 3
+  title: Implement first-class param declarations and derived expressions
+  status: todo
+  depends_on:
+  - AICAD-064
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-065.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-066
+  stage: 3
+  title: Create cad-feature-graph node identity/dependency model
+  status: todo
+  depends_on:
+  - AICAD-065
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-066.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-067
+  stage: 3
+  title: Build feature DAG from supported modeling operations
+  status: todo
+  depends_on:
+  - AICAD-066
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-067.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-068
+  stage: 3
+  title: Implement cache keys and dirty propagation
+  status: todo
+  depends_on:
+  - AICAD-067
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-068.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-069
+  stage: 3
+  title: Implement source-to-feature mapping and provenance
+  status: todo
+  depends_on:
+  - AICAD-068
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-069.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-070
+  stage: 3
+  title: Create safe language-facing geometry types
+  status: todo
+  depends_on:
+  - AICAD-069
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-070.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-071
+  stage: 3
+  title: Implement part concept plus box/cylinder/plate standard helpers
+  status: todo
+  depends_on:
+  - AICAD-070
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-071.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-072
+  stage: 3
+  title: Create minimal sketch entity IR
+  status: todo
+  depends_on:
+  - AICAD-071
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-072.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-073
+  stage: 3
+  title: Create solver-independent sketch constraint IR/adapter
+  status: todo
+  depends_on:
+  - AICAD-072
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-073.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-074
+  stage: 3
+  title: Implement common sketch constraints needed by baseline parts
+  status: todo
+  depends_on:
+  - AICAD-073
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-074.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-075
+  stage: 3
+  title: Lower solved closed sketch profiles to exact faces
+  status: todo
+  depends_on:
+  - AICAD-074
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-075.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-076
+  stage: 3
+  title: Implement high-level extrude/revolve/hole/pocket
+  status: todo
+  depends_on:
+  - AICAD-075
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-076.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-077
+  stage: 3
+  title: Implement mirror and linear/circular pattern basics
+  status: todo
+  depends_on:
+  - AICAD-076
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-077.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-078
+  stage: 3
+  title: Implement high-level fillet/chamfer/shell wrappers and normalized diagnostics
+  status: todo
+  depends_on:
+  - AICAD-077
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-078.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-079
+  stage: 3
+  title: Implement named semantic outputs baseline + ordinary-part examples + AI benchmark seed
+  status: todo
+  depends_on:
+  - AICAD-078
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Human source can expose semantic names; baseline ordinary parts build; fresh-model simple-part benchmark can run
+    using the core-skill draft.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-079.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-080
+  stage: 4
+  title: Define stable VertexRef/EdgeRef/WireRef/FaceRef/ShellRef/SolidRef semantic-recipe representations
+  status: todo
+  depends_on:
+  - AICAD-079
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-080.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-081
+  stage: 4
+  title: Create query AST/IR with cardinality expectations and deterministic ranking
+  status: todo
+  depends_on:
+  - AICAD-080
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-081.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-082
+  stage: 4
+  title: 'Implement geometry predicates: planar/cylindrical/radius/area/length/normal/axis'
+  status: todo
+  depends_on:
+  - AICAD-081
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-082.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-083
+  stage: 4
+  title: 'Implement topology predicates: generated_by/modified_by/descended_from/adjacent_to/boundary'
+  status: todo
+  depends_on:
+  - AICAD-082
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-083.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-084
+  stage: 4
+  title: Implement baseline spatial predicates
+  status: todo
+  depends_on:
+  - AICAD-083
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-084.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-085
+  stage: 4
+  title: Implement explicit semantic feature exports
+  status: todo
+  depends_on:
+  - AICAD-084
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-085.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-086
+  stage: 4
+  title: Capture available generated/modified lineage from kernel operations
+  status: todo
+  depends_on:
+  - AICAD-085
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-086.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-087
+  stage: 4
+  title: Store feature-level lineage for unchanged/new/modified/split/merged/deleted entities
+  status: todo
+  depends_on:
+  - AICAD-086
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-087.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-088
+  stage: 4
+  title: Implement semantic-reference resolver using approved precedence
+  status: todo
+  depends_on:
+  - AICAD-087
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-088.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-089
+  stage: 4
+  title: Implement ambiguity-as-error diagnostic with candidate summaries
+  status: todo
+  depends_on:
+  - AICAD-088
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - A single-reference query resolving multiple candidates never silently chooses an entity.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-089.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-090
+  stage: 4
+  title: Implement broken-reference diagnostic and non-guessing recovery hints
+  status: todo
+  depends_on:
+  - AICAD-089
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-090.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-091
+  stage: 4
+  title: Implement reference durability levels
+  status: todo
+  depends_on:
+  - AICAD-090
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-091.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-092
+  stage: 4
+  title: Implement geometry-fingerprint fallback only under approved policy
+  status: todo
+  depends_on:
+  - AICAD-091
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Fallback is visibly classified as weak/query_geometric and never masquerades as explicit/lineage/strong resolution.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-092.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-093
+  stage: 4
+  title: Implement raw topology handle epochs/stale-handle rejection
+  status: todo
+  depends_on:
+  - AICAD-092
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-093.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-094
+  stage: 4
+  title: Replay semantic references during incremental parameter regeneration
+  status: todo
+  depends_on:
+  - AICAD-093
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-094.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-095
+  stage: 4
+  title: Create cad refs check / reference-health report
+  status: todo
+  depends_on:
+  - AICAD-094
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-095.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-096
+  stage: 4
+  title: Build baseline topology-naming fixture corpus
+  status: todo
+  depends_on:
+  - AICAD-095
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Corpus includes extrusion resize, add/remove hole, pattern count, fillet radius, split, merge, branch reorder, and
+    suppression perturbations.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-096.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-097
+  stage: 4
+  title: Create deterministic perturbation runner
+  status: todo
+  depends_on:
+  - AICAD-096
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Focused implementation plus task-specific tests/benchmarks satisfy the referenced plan requirements; exact commands/results
+    are recorded in the task report.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-097.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-098
+  stage: 4
+  title: 'Implement benchmark metrics: correct / ambiguous-detected / broken-detected / silent-wrong / durability'
+  status: todo
+  depends_on:
+  - AICAD-097
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Metrics are deterministic/reproducible and each silent-wrong result is directly inspectable.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-098.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-099
+  stage: 4
+  title: Run adversarial bug-hunt; minimize and preserve every silent-wrong reproducer
+  status: todo
+  depends_on:
+  - AICAD-098
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Every discovered silent-wrong case becomes a minimized permanent regression fixture; expected behavior is never weakened
+    to make it pass.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-099.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-100
+  stage: 4
+  title: Prepare Stage-4 hard-gate packet for owner review
+  status: todo
+  depends_on:
+  - AICAD-099
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Packet reports full topology-naming results including silent-wrong count and known limits; agent must not start broad
+    Stage-5 feature expansion until owner passes the gate.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-100.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
