@@ -21,6 +21,7 @@ runs:
           libocct-modeling-data-dev \
           libocct-modeling-algorithms-dev \
           libocct-visualization-dev \
+          libocct-data-exchange-dev \
           libtbb-dev
         # Package list rationale:
         # - libocct-foundation-dev / libocct-modeling-data-dev /
@@ -29,6 +30,15 @@ runs:
         #   (FoundationClasses, ModelingData, ModelingAlgorithms, as of
         #   AICAD-015). Extend these three only alongside a corresponding
         #   CMakeLists.txt module addition.
+        # - libocct-data-exchange-dev: provides IFSelect_ReturnStatus.hxx/
+        #   STEPControl_Writer.hxx (TKXSBase/TKSTEPBase/TKSTEP, AICAD-033:
+        #   STEP export) -- confirmed via `dpkg -S IFSelect_ReturnStatus.hxx
+        #   STEPControl_Writer.hxx` on a working dev environment, not
+        #   assumed from the compiler error alone (this exact package list
+        #   was fixed once before, AICAD-016..019-era, for a different
+        #   missing package found the same way -- see the header note
+        #   above this action's own file about why a composite action
+        #   exists at all).
         # - libocct-visualization-dev: NOT because any OCCT visualization
         #   module is linked or used. On Ubuntu's OCCT packaging,
         #   foundation/modeling's own Poly_ArrayOfNodes.hxx (pulled in
