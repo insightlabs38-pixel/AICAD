@@ -1,0 +1,79 @@
+name: CI
+
+# Baseline Stage-0 CI (AICAD-004): fmt, clippy, build/test, and a native
+# build smoke check. Per docs/plan/22_REPOSITORY_WORK_PACKAGES.md and
+# project/CURRENT_STAGE.md, Stage 0 does not implement the OCCT bridge yet
+# (that begins at Stage 1, AICAD-015), so the native-build-smoke job
+# verifies the toolchain and reports "nothing to build yet" rather than
+# failing, until native/occt_bridge gains a real CMakeLists.txt.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to avoid wasted CI time.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: cargo fmt --check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the exact channel; rustup on the runner
+      # auto-installs it on first cargo/rustup invocation.
+      - name: Show toolchain
+        run: rustup show
+      - name: cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: cargo clippy -D warnings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: rustup show
+      - name: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  build-and-test:
+    name: cargo build/test --workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: rustup show
+      - name: cargo build --workspace
+        run: cargo build --workspace --all-targets
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  native-build-smoke:
+    name: native bridge build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cmake --version
+        run: cmake --version
+      - name: Native bridge smoke build
+        # native/occt_bridge has no CMakeLists.txt yet (Stage 1, AICAD-015+
+        # adds the OCCT discovery/probe CMake target). Report status
+        # explicitly rather than silently passing or failing, so this job
+        # starts doing real work the moment a CMakeLists.txt lands without
+        # any CI file changes required.
+        run: |
+          set -eu
+          found=$(find native -mindepth 1 -iname 'CMakeLists.txt' 2>/dev/null | head -n1 || true)
+          if [ -z "$found" ]; then
+            echo "No native/**/CMakeLists.txt present yet (expected before Stage 1, AICAD-015). Smoke check is a no-op."
+            exit 0
+          fi
+          dir=$(dirname "$found")
+          echo "Found $found — configuring and building $dir"
+          cmake -S "$dir" -B "$dir/build"
+          cmake --build "$dir/build"
