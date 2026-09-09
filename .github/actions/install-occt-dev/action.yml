@@ -1,0 +1,51 @@
+name: Install OCCT development packages
+description: >
+  Installs the OpenCASCADE development packages every job that runs cargo
+  against a workspace containing cad-occt-bridge (whose build.rs invokes
+  CMake against native/occt_bridge) or builds native/occt_bridge directly
+  needs. Factored into one composite action after the same package list
+  had to be fixed twice in two separate CI jobs in immediate succession
+  (a header placement gap, then a missing linker package) and a third job
+  was found still missing the step entirely -- duplicating this list
+  inline in every job is exactly what let that third gap go unnoticed.
+runs:
+  using: composite
+  steps:
+    - name: apt-get install OCCT development packages
+      shell: bash
+      run: |
+        set -eu
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libocct-foundation-dev \
+          libocct-modeling-data-dev \
+          libocct-modeling-algorithms-dev \
+          libocct-visualization-dev \
+          libtbb-dev
+        # Package list rationale:
+        # - libocct-foundation-dev / libocct-modeling-data-dev /
+        #   libocct-modeling-algorithms-dev: match
+        #   native/occt_bridge/CMakeLists.txt's OCCT_PROBE_LIBS
+        #   (FoundationClasses, ModelingData, ModelingAlgorithms, as of
+        #   AICAD-015). Extend these three only alongside a corresponding
+        #   CMakeLists.txt module addition.
+        # - libocct-visualization-dev: NOT because any OCCT visualization
+        #   module is linked or used. On Ubuntu's OCCT packaging,
+        #   foundation/modeling's own Poly_ArrayOfNodes.hxx (pulled in
+        #   transitively by BRepPrimAPI_MakeBox.hxx, used by both
+        #   occt_probe.cpp and aicad_occt_bridge.cpp) includes
+        #   NCollection_AliasedArray.hxx, which that packaging places
+        #   under libocct-visualization-dev instead -- confirmed via
+        #   `dpkg -S NCollection_AliasedArray.hxx` on a working dev
+        #   environment, not assumed from the compiler error alone.
+        # - libtbb-dev: OCCT's own installed CMake target files
+        #   (OpenCASCADEFoundationClassesTargets.cmake,
+        #   OpenCASCADEModelingDataTargets.cmake,
+        #   OpenCASCADEModelingAlgorithmsTargets.cmake) hardcode an
+        #   INTERFACE_LINK_LIBRARIES dependency on
+        #   /usr/lib/x86_64-linux-gnu/libtbb.so and libtbbmalloc.so for
+        #   TKernel and everything built on it -- confirmed by grepping
+        #   those .cmake files directly. The runtime libtbb12 package is
+        #   pulled in automatically as an OCCT dependency, but the
+        #   unversioned .so symlink needed at link time only ships in
+        #   libtbb-dev.
