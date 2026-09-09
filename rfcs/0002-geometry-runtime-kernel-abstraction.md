@@ -126,9 +126,15 @@ begins.
 
 ## 5. Canonical-state and cache model (frozen, from `01` §6-7)
 
-- **Canonical:** the source tree, the lockfile (`cad.lock`/`aicad.toml`'s
-  referenced lock data, per RFC-0001 §3 naming), and external immutable
-  assets (e.g. imported STEP files, referenced by content digest).
+- **Canonical:** the source tree, the lockfile, and external immutable
+  assets (e.g. imported STEP files, referenced by content digest). RFC-0001
+  §3 (DL-4) froze the project manifest name as `aicad.toml` but did not
+  freeze a lockfile file name; the plan's own placeholder is `cad.lock`
+  (`docs/plan/12_PACKAGES_PLUGINS_EXTENSIONS.md` §5). Harmonizing it to
+  `aicad.lock` alongside `aicad.toml` is the natural choice but is **not**
+  frozen by this RFC — treat the exact lockfile file name as open until
+  `crates/cad-packages`/`crates/cad-cli` need it (Stage 2 CLI baseline at
+  the earliest).
 - **Cacheable, never canonical:** everything under `.aicad-cache/` — AST
   cache, typed-HIR cache, feature-DAG cache, BREP cache, display-mesh
   cache, analysis cache. This is already enforced mechanically by

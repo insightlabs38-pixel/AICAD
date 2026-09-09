@@ -85,7 +85,7 @@ part Bracket {
         mount_inset < width / 2;
     }
 
-    let wall = if Product.motor == MotorSize.NEMA17 { 3mm } else { 4mm };  // conditional
+    let wall = if Product.motor == NEMA17 { 3mm } else { 4mm };  // conditional
 
     let profile = sketch(plane = XY) {
         let r = rectangle(size = [width, height], center = [0mm, 0mm]);

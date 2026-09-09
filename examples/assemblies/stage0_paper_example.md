@@ -61,3 +61,21 @@ resolved here (resolving it would be a type-system design decision outside
 this task's scope, and outside every currently-open
 `project/OWNER_DECISIONS.md` item — it may warrant its own future entry if
 it blocks real implementation work in Stage 3/6).
+
+A second gap, found during AICAD-013's review, is squarely inside the
+already-open `project/OWNER_DECISIONS.md` D3 (sketch entity/object model):
+this example's sketch constraint,
+`symmetric(r.left_edge, r.right_edge, about = y_axis);`, presumes a
+`rectangle(...)`'s `Profile` result exposes its sides as named,
+field-accessible sub-entities (`r.left_edge`, `r.right_edge`). Nothing in
+`docs/plan/04_HIGH_LEVEL_MODELING_API.md` §3-4 documents such fields —
+`rectangle` is only documented as returning an opaque `Profile`. This
+phrasing is a plausible reading consistent with D3's "explicit named
+source objects" lean (`docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md`
+§4.3) but must **not** be read as resolving D3 — it is exactly the
+open question D3 already tracks, illustrated concretely rather than newly
+discovered. No change was made to the example itself: the alternative
+(building the rectangle from four explicitly-named `line(...)` calls with
+manual coincidence constraints) would only relocate the same open question
+to "how do independently-drawn lines close into one profile," not resolve
+it, while making the example considerably longer for no gain in rigor.
