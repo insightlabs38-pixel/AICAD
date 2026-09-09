@@ -496,6 +496,40 @@ aicad_occt_status_t aicad_occt_shape_center_of_mass(aicad_occt_context_t* contex
                                                      aicad_shape_handle_t handle,
                                                      double out_center[3]);
 
+/* --- AICAD-031: normalized B-rep validation report.
+ *
+ * docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md §3's `validate()` and
+ * docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md §7's fuller
+ * `validate(target, level?, checks?, tolerance?, healing_allowed?)`
+ * signature. Stage-1 implements the `target`-only, single-level subset:
+ * no caller-selectable `level`/`checks`/`tolerance`, and
+ * `healing_allowed` is not offered at all (Stage-1 kernel policy #14:
+ * validation and repair/healing are distinct concepts, and no `heal`
+ * operation exists yet for this to opt into). This normalizes
+ * aicad_occt_shape_is_valid's single bool into a per-topological-kind
+ * breakdown -- still not a full diagnostic (no per-subshape identity or
+ * failure-reason enum crosses this ABI; see project/reports/AICAD-031.md
+ * for why). --- */
+
+/* Normalized validation report: overall validity plus a count of
+ * invalid subshapes broken down by topological kind, via
+ * BRepCheck_Analyzer::IsValid() queried per unique vertex/edge/wire/face
+ * (TopExp::MapShapes-deduplicated, matching this bridge's own established
+ * "unique subshapes" convention). A shape with `is_valid == 0` always has
+ * at least one nonzero count among the four; a shape with `is_valid == 1`
+ * always has all four at zero. */
+typedef struct aicad_validation_report {
+  int is_valid;
+  size_t invalid_vertex_count;
+  size_t invalid_edge_count;
+  size_t invalid_wire_count;
+  size_t invalid_face_count;
+} aicad_validation_report_t;
+
+aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               aicad_validation_report_t* out_report);
+
 #ifdef __cplusplus
 }
 #endif

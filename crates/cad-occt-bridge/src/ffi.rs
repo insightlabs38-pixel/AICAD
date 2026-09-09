@@ -242,4 +242,22 @@ unsafe extern "C" {
         handle: aicad_shape_handle_t,
         out_center: *mut f64, // [f64; 3]
     ) -> c_int;
+    pub fn aicad_occt_shape_validate(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_report: *mut aicad_validation_report_t,
+    ) -> c_int;
+}
+
+/// Mirrors `aicad_validation_report_t` field-for-field: `int is_valid;
+/// size_t invalid_vertex_count; size_t invalid_edge_count; size_t
+/// invalid_wire_count; size_t invalid_face_count;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_validation_report_t {
+    pub is_valid: c_int,
+    pub invalid_vertex_count: usize,
+    pub invalid_edge_count: usize,
+    pub invalid_wire_count: usize,
+    pub invalid_face_count: usize,
 }

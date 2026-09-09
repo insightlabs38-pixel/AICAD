@@ -934,6 +934,30 @@ impl<'ctx> Shape<'ctx> {
         Ok(Point3::new(centre[0], centre[1], centre[2]))
     }
 
+    /// A normalized B-rep validation report (AICAD-031): overall validity
+    /// plus a per-topological-kind breakdown of invalid subshapes, via
+    /// OCCT's own `BRepCheck_Analyzer` queried per unique vertex/edge/
+    /// wire/face. Unlike [`Shape::is_valid`], this never itself indicates
+    /// failure for an invalid shape -- validity is data in the returned
+    /// report, not a rejected call (only a genuine bridge/argument error
+    /// produces `Err`).
+    pub fn validate(&self) -> KernelResult<ValidationReport> {
+        let mut report = ffi::aicad_validation_report_t::default();
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut report` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_validate(self.context.raw, self.raw_handle(), &mut report)
+        };
+        status_result(status)?;
+        Ok(ValidationReport {
+            is_valid: report.is_valid != 0,
+            invalid_vertex_count: report.invalid_vertex_count,
+            invalid_edge_count: report.invalid_edge_count,
+            invalid_wire_count: report.invalid_wire_count,
+            invalid_face_count: report.invalid_face_count,
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -944,6 +968,24 @@ impl<'ctx> Shape<'ctx> {
 pub struct BoundingBox {
     pub min: Point3,
     pub max: Point3,
+}
+
+/// A normalized B-rep validation report, as reported by
+/// [`Shape::validate`] (AICAD-031). `is_valid` mirrors
+/// [`Shape::is_valid`]'s own bool for the same shape; the four
+/// `invalid_*_count` fields break that down by topological kind, each
+/// counted over the shape's own *unique* subshapes (matching
+/// [`Shape::edge_count`]/[`Shape::face_count`]'s own de-duplication
+/// convention). A shape with `is_valid == false` always has at least one
+/// nonzero count; a shape with `is_valid == true` always has all four at
+/// zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidationReport {
+    pub is_valid: bool,
+    pub invalid_vertex_count: usize,
+    pub invalid_edge_count: usize,
+    pub invalid_wire_count: usize,
+    pub invalid_face_count: usize,
 }
 
 impl<'ctx> Drop for Shape<'ctx> {
@@ -2011,5 +2053,47 @@ mod tests {
         let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
         let vertex = box_shape.get_vertex(0).unwrap();
         assert!((vertex.length().unwrap() - 0.0).abs() < 1e-12);
+    }
+
+    // --- AICAD-031: normalized B-rep validation report ---
+
+    #[test]
+    fn validate_of_a_valid_box_is_fully_clean() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 2.0, 3.0).unwrap();
+        let report = box_shape.validate().unwrap();
+        assert_eq!(
+            report,
+            ValidationReport {
+                is_valid: true,
+                invalid_vertex_count: 0,
+                invalid_edge_count: 0,
+                invalid_wire_count: 0,
+                invalid_face_count: 0,
+            }
+        );
+        assert_eq!(report.is_valid, box_shape.is_valid().unwrap());
+    }
+
+    #[test]
+    fn validate_of_an_open_wire_face_attributes_exactly_one_invalid_face() {
+        let context = OcctContext::new().unwrap();
+        let e0 = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let e1 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let e2 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0))
+            .unwrap();
+        let open_wire = context.make_wire_from_edges(&[&e0, &e1, &e2]).unwrap();
+        let open_face = open_wire.make_face().unwrap();
+        let report = open_face.validate().unwrap();
+        assert!(!report.is_valid);
+        assert_eq!(report.invalid_face_count, 1);
+        assert_eq!(report.invalid_vertex_count, 0);
+        assert_eq!(report.invalid_edge_count, 0);
+        assert_eq!(report.invalid_wire_count, 0);
     }
 }

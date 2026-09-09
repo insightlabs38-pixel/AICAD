@@ -188,6 +188,10 @@ add_executable(measurement_test tests/measurement_test.cpp)
 target_include_directories(measurement_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(measurement_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+add_executable(validation_test tests/validation_test.cpp)
+target_include_directories(validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(validation_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -217,6 +221,8 @@ add_test(NAME topology_test COMMAND topology_test)
 set_tests_properties(topology_test PROPERTIES TIMEOUT 60)
 add_test(NAME measurement_test COMMAND measurement_test)
 set_tests_properties(measurement_test PROPERTIES TIMEOUT 60)
+add_test(NAME validation_test COMMAND validation_test)
+set_tests_properties(validation_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #

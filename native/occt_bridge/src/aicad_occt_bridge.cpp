@@ -1552,3 +1552,62 @@ aicad_occt_status_t aicad_occt_shape_center_of_mass(aicad_occt_context_t* contex
 }
 
 }  // extern "C"
+
+namespace {
+
+// Counts how many of `subshapes`' unique elements `analyzer` reports as
+// invalid.
+size_t CountInvalid(const BRepCheck_Analyzer& analyzer, const TopTools_IndexedMapOfShape& subshapes) {
+  size_t invalid = 0;
+  for (Standard_Integer i = 1; i <= subshapes.Extent(); ++i) {
+    if (!analyzer.IsValid(subshapes.FindKey(i))) {
+      invalid += 1;
+    }
+  }
+  return invalid;
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               aicad_validation_report_t* out_report) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_report == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepCheck_Analyzer analyzer(*shape);
+    TopTools_IndexedMapOfShape vertices, edges, wires, faces;
+    TopExp::MapShapes(*shape, TopAbs_VERTEX, vertices);
+    TopExp::MapShapes(*shape, TopAbs_EDGE, edges);
+    TopExp::MapShapes(*shape, TopAbs_WIRE, wires);
+    TopExp::MapShapes(*shape, TopAbs_FACE, faces);
+    out_report->is_valid = analyzer.IsValid() ? 1 : 0;
+    out_report->invalid_vertex_count = CountInvalid(analyzer, vertices);
+    out_report->invalid_edge_count = CountInvalid(analyzer, edges);
+    out_report->invalid_wire_count = CountInvalid(analyzer, wires);
+    out_report->invalid_face_count = CountInvalid(analyzer, faces);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
