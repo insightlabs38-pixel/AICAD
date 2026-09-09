@@ -13,13 +13,40 @@ This file is not closed — re-run the review whenever a later task's
 `plan_references` surface a new unresolved decision, and add it here rather
 than resolving it implicitly.
 
-Status legend: `open` = no owner ruling yet. Once the owner rules, move the
-decision (with rationale) to `project/DECISION_LOG.md` and mark it here as
-`resolved -> DECISION_LOG#<n>`.
+Status legend: `open` = no owner ruling yet; `RESOLVED` = fully settled, see
+the cited `project/DECISION_LOG.md` entry; `PARTIALLY RESOLVED` = the owner
+ruled on the part needed now, with an explicit remaining sub-question still
+open below and in the log entry itself. A resolved/partial entry's original
+question/plan-references are kept here for context; the ruling and its
+rationale live in `project/DECISION_LOG.md`.
+
+**Quick index (as of 2026-09-09):**
+
+| ID | Status |
+|---|---|
+| D1 Canonical surface syntax | RESOLVED — DL-1 |
+| D2 Mutation semantics | RESOLVED — DL-2 |
+| D3 Sketch entity/object model | open |
+| D4 Type/units semantics | RESOLVED — DL-3 |
+| D5 Determinism-equivalence contract | open |
+| D6 Kernel abstraction boundary | RESOLVED — DL-5 |
+| D7 Reference resolution/fallback policy | PARTIALLY RESOLVED — DL-8 |
+| D8 OCAF vs. kernel-independent graph | PARTIALLY RESOLVED (directional) — DL-9 |
+| D9 Intrinsic-vs-package boundary | RESOLVED — DL-7 |
+| D10 Diagnostic stability policy | open |
+| D11 Constraint IR/solver independence | open |
+| D12 Trusted native plugin boundary | open |
+| D13 OCCT/standards licensing | PARTIALLY RESOLVED (development policy) — DL-6 |
+| D14 File extension/branding | RESOLVED — DL-4 |
+| D15 Plugin runtime (WASM vs. external) | open |
 
 ---
 
 ## D1. Canonical surface syntax family
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-1`.** Braces for
+blocks, explicit semicolons for statements, broadly Rust/TypeScript-like,
+no ASI. Original question/context kept below for record.
 
 **Question:** Rust/TypeScript-style braces-and-semicolons vs. Python-style
 indentation for the canonical `.aicad`/`.cadl` grammar (RFC-0001 scope)?
@@ -27,8 +54,9 @@ indentation for the canonical `.aicad`/`.cadl` grammar (RFC-0001 scope)?
 **Plan references:** `docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md` §4.1;
 `docs/plan/02_LANGUAGE_AND_COMPILER.md` §1.
 
-**Status:** The plan recommends Rust/TypeScript-style but explicitly labels
-this a decision to "prototype before freezing," not a settled choice.
+**Prior framing (superseded — see resolution above):** The plan recommends
+Rust/TypeScript-style but explicitly labels this a decision to "prototype
+before freezing," not a settled choice.
 
 **Blocking impact:** RFC-0001 (AICAD-007) and every subsequent parser task
 (AICAD-039+) depend on this being frozen first.
@@ -36,6 +64,11 @@ this a decision to "prototype before freezing," not a settled choice.
 ---
 
 ## D2. Mutation semantics: functional core vs. builder/method sugar
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-2`.** Functional,
+value-oriented semantic core; method/builder syntax is sugar lowering to
+functional HIR calls and never implies in-place mutation. Original
+question/context kept below for record.
 
 **Question:** Is `body = cut(base, holes);` (functional) or
 `base.cut(hole(...));` (method/builder) the canonical surface form, and what
@@ -46,8 +79,9 @@ exactly does builder-style syntax lower to in HIR?
 examples are inconsistent on this without resolving it — see
 `project/reports/ORIENTATION_PASS.md` §6 (contradiction 3).
 
-**Status:** Plan recommends supporting both (functional core + ergonomic
-sugar) but the exact desugaring/SSA lowering rule is not specified.
+**Prior framing (superseded — see resolution above):** Plan recommends
+supporting both (functional core + ergonomic sugar) but the exact
+desugaring/SSA lowering rule is not specified.
 
 **Blocking impact:** RFC-0001, grammar (AICAD-039/041), HIR lowering
 (AICAD-051).
@@ -76,6 +110,12 @@ AICAD-074, AICAD-075).
 
 ## D4. Type/units semantics specifics
 
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-3`.** Structural
+canonicalization, same-dimension implicit conversion only, conservative
+interval `Tolerance<T>` by default (RSS/statistical is a separate later
+API), affine units distinguish absolute vs. delta. Original question/
+context kept below for record.
+
 **Question:** Exact dimension-canonicalization algorithm, whether/when
 implicit unit conversions are allowed, and tolerance/range arithmetic
 semantics (e.g. how `Tolerance<T> + Tolerance<T>` behaves).
@@ -83,9 +123,9 @@ semantics (e.g. how `Tolerance<T> + Tolerance<T>` behaves).
 **Plan references:** `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §3-6,
 §21; `AICAD_AGENT_OPERATING_MODEL.md` §7 item 3.
 
-**Status:** Baseline dimension list and quantity representation are given,
-but canonicalization/conversion/tolerance-arithmetic rules are not fully
-specified.
+**Prior framing (superseded — see resolution above):** Baseline dimension
+list and quantity representation are given, but canonicalization/
+conversion/tolerance-arithmetic rules are not fully specified.
 
 **Blocking impact:** RFC-0004 (AICAD-010), `cad-units` (AICAD-047-049). This
 is an AGENTS.md escalation trigger ("change typed-units semantics") — must
@@ -118,6 +158,12 @@ Stage 8/13 determinism benchmarks.
 
 ## D6. Kernel abstraction boundary and lineage exposure
 
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-5`.**
+Capability-driven minimal kernel-neutral surface; no OCCT type crosses
+`cad-occt-bridge`; adapter exposes operation-local lineage evidence only,
+durable identity is owned above the kernel. Original question/context kept
+below for record.
+
 **Question:** Exact narrow bridge operation set and what lineage information
 (entity split/merge/creation history) the kernel adapter must expose to the
 semantic-reference layer above it.
@@ -126,10 +172,11 @@ semantic-reference layer above it.
 `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §8; `AICAD_AGENT_OPERATING_MODEL.md`
 §7 item 5.
 
-**Status:** A representative bridge operation list exists (§4 of doc 01),
-but it is stated as "add capabilities only as required" — the boundary is
-not frozen, and lineage-exposure requirements are described conceptually
-without a concrete adapter-level contract.
+**Prior framing (superseded — see resolution above):** A representative
+bridge operation list exists (§4 of doc 01), but it is stated as "add
+capabilities only as required" — the boundary is not frozen, and
+lineage-exposure requirements are described conceptually without a
+concrete adapter-level contract.
 
 **Blocking impact:** AICAD-016/017/018 (kernel bridge crates), and
 AICAD-086/087 (lineage capture) in Stage 4.
@@ -137,6 +184,16 @@ AICAD-086/087 (lineage capture) in Stage 4.
 ---
 
 ## D7. Semantic-reference resolution model, durability, and fallback policy
+
+**Status: PARTIALLY RESOLVED — see `project/DECISION_LOG.md#DL-8`.**
+Fail-closed resolution (`Resolved`/`Ambiguous`/`Broken` only, never an
+arbitrary best candidate) is settled; geometry-fingerprint matching is
+disabled as an automatic fallback for the first Stage-4 implementation and
+usable only for diagnostics/ranking/experiments. **Still open:** whether/
+when to enable automatic fingerprint-based recovery later — deferred to a
+future owner decision gated on benchmark evidence of a negligible
+silent-wrong-resolution rate, not currently blocking any Stage 0-4 task.
+Original question/context kept below for record.
 
 **Question:** Exact resolution precedence across the reference-construction
 strategies in `06_REFERENCES_QUERIES_FEATURE_DAG.md` §3, the precise
@@ -150,12 +207,13 @@ before it must be treated as ambiguous/broken instead of silently resolved.
 approved policy") presupposes this decision exists by the time Stage 4
 reaches it.
 
-**Status:** Open. This is the single highest-priority decision in the plan:
-`AGENTS.md` and `docs/plan/00_PRINCIPLES_AND_SCOPE.md` §3 invariant 8 both
-state ambiguity must be an error, never an arbitrary selection, and Stage 4
-is a hard release gate specifically about silent-wrong-resolution risk
-(`docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md` §5,
-`docs/plan/15_IMPLEMENTATION_ROADMAP.md` Stage 4).
+**Prior framing (largely superseded — see resolution above; the remaining
+open sub-item is restated there):** This was the single highest-priority
+decision in the plan: `AGENTS.md` and `docs/plan/00_PRINCIPLES_AND_SCOPE.md`
+§3 invariant 8 both state ambiguity must be an error, never an arbitrary
+selection, and Stage 4 is a hard release gate specifically about
+silent-wrong-resolution risk (`docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md`
+§5, `docs/plan/15_IMPLEMENTATION_ROADMAP.md` Stage 4).
 
 **Blocking impact:** AICAD-088 through AICAD-092 directly; do not implement
 a fallback-selection policy implicitly when that stage is reached.
@@ -163,6 +221,16 @@ a fallback-selection policy implicitly when that stage is reached.
 ---
 
 ## D8. OCAF usage vs. kernel-independent semantic graph
+
+**Status: PARTIALLY RESOLVED (directional) — see
+`project/DECISION_LOG.md#DL-9`.** AICAD owns a kernel-independent semantic
+graph, authoritative for identity/features/dependencies/references; public
+semantics/serialized identity must never depend on OCAF. **Still open:**
+the exact extent (if any) of OCAF's use as an internal OCCT-side
+persistence/labeling/lineage aid remains prototype-driven — track under
+`project/experiments/` before `crates/cad-occt-bridge` or
+`crates/cad-references` commit to a specific internal mechanism. Original
+question/context kept below for record.
 
 **Question:** Should persistent semantic references and lineage be built on
 OCCT's OCAF framework, on a kernel-independent semantic graph layered above
@@ -175,15 +243,22 @@ capability is later found insufficient?
 AGENTS.md escalation trigger ("select between major unresolved architecture
 alternatives").
 
-**Status:** Plan leans toward "likely needs a kernel-independent semantic
-graph above OCAF" but explicitly calls for prototyping both before
-committing.
+**Prior framing (largely superseded — see resolution above; the remaining
+open sub-item is restated there):** Plan leans toward "likely needs a
+kernel-independent semantic graph above OCAF" but explicitly calls for
+prototyping both before committing.
 
 **Blocking impact:** WP-07 (semantic references), Stage 4 tasks broadly.
 
 ---
 
 ## D9. Compiler-intrinsic vs. standard-package boundary enforcement
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-7`.** A new compiler
+intrinsic requires an RFC demonstrating it cannot reasonably be ordinary
+source, a standard package, or an existing kernel API operation; no
+intrinsic may be added solely for implementation convenience. Original
+question/context kept below for record.
 
 **Question:** The plan gives a qualitative test ("could this be a library
 instead of a compiler intrinsic?" — `docs/plan/00_PRINCIPLES_AND_SCOPE.md`
@@ -195,8 +270,8 @@ intrinsics. Should one be adopted formally?
 §7 item 9. AGENTS.md escalation trigger: "add a compiler intrinsic where a
 library solution may work."
 
-**Status:** Open, low urgency until the standard library work in Stage 3+
-begins in earnest.
+**Prior framing (superseded — see resolution above):** Open, low urgency
+until the standard library work in Stage 3+ begins in earnest.
 
 ---
 
@@ -251,6 +326,16 @@ importers/exporters, native solvers).
 
 ## D13. Licensing/redistribution for standards-derived content and OCCT
 
+**Status: PARTIALLY RESOLVED (development-phase policy) — see
+`project/DECISION_LOG.md#DL-6`.** OCCT treated strictly as an external
+dependency (dynamic linkage, preserved notices, no incorporation of OCCT
+source), and standards-derived functionality must be independently
+implemented with no copied ISO/ASME protected content. **Still open:** a
+formal distribution/license review is required before any public
+binary/commercial distribution policy is frozen — this is a separate,
+future gate, not yet scheduled. Original question/context kept below for
+record.
+
 **Question:** (a) OCCT's license (LGPL-2.1-with-exception family) and its
 implications for how the native bridge is built/distributed/linked; (b)
 licensing/redistribution constraints for content derived from ISO/ASME
@@ -263,9 +348,10 @@ redistribution constraints for standards-derived libraries/data");
 `docs/plan/13_ENGINEERING_MODULES.md` §11 ("implement against
 licensed/authoritative standards work during the engineering stage").
 
-**Status:** Open. This is an explicit AGENTS.md/operating-model escalation
-trigger ("require a license/security policy decision") and has not been
-addressed anywhere in the plan bundle.
+**Prior framing (largely superseded — see resolution above; the remaining
+open sub-item is restated there):** This was an explicit AGENTS.md/
+operating-model escalation trigger ("require a license/security policy
+decision") and had not been addressed anywhere in the plan bundle.
 
 **Blocking impact:** Relevant as soon as Stage 1 links against OCCT
 (AICAD-015/016), and required before Stage 12B (GD&T) implementation.
@@ -273,6 +359,12 @@ addressed anywhere in the plan bundle.
 ---
 
 ## D14. File extension / project branding
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-4`.** Product name
+AICAD; source extension `.aicad`; project manifest `aicad.toml`; a
+distinct `.aicadpkg` extension if a packaged archive format is needed;
+`CAD-IR` stays an internal name only. Original question/context kept below
+for record.
 
 **Question:** Final module and bundle file extensions (candidates: `.cadl`
 source / `.aicad` bundle, vs. `.aicad` for both) and product branding
@@ -286,7 +378,8 @@ documents (02, 09) do not fully agree with each other even though both
 flag the choice as unresolved — see
 `project/reports/ORIENTATION_PASS.md` §6 (contradiction 2).
 
-**Status:** Open, explicitly deferred by the plan itself.
+**Prior framing (superseded — see resolution above):** Open, explicitly
+deferred by the plan itself.
 
 **Blocking impact:** Low urgency for Stage 0, but should be resolved before
 RFC-0001 finalizes source-file conventions and before AICAD-002's repository
