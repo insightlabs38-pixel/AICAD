@@ -17,7 +17,13 @@
 # ("CMakeLists.txt # OCCT bridge only if needed").
 
 cmake_minimum_required(VERSION 3.16)
-project(aicad_occt_bridge CXX)
+# C is enabled alongside CXX because tests/abi_c_linkage_test.c (AICAD-016)
+# needs a working C compiler/toolchain: a CXX-only `project()` does not
+# enable C, and CMake then silently fails to produce an object for a .c
+# source (found empirically — the link step ran with no object file for
+# abi_c_linkage_test.c at all, failing with "undefined reference to
+# `main`" instead of a clearer configure-time error).
+project(aicad_occt_bridge CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,6 +55,13 @@ if(OpenCASCADE_MAJOR_VERSION LESS 7)
 endif()
 
 message(STATUS "AICAD occt_bridge: OpenCASCADE ${OpenCASCADE_MAJOR_VERSION}.${OpenCASCADE_MINOR_VERSION}.${OpenCASCADE_MAINTENANCE_VERSION} found at ${OpenCASCADE_INSTALL_PREFIX}")
+# Machine-parseable line `crates/cad-occt-bridge/build.rs` (AICAD-018)
+# greps for out of this configure step's stdout, so it can emit
+# `cargo:rustc-link-search` for OCCT's actual library directory without
+# reimplementing OCCT discovery in Rust. Keep this exact `KEY=VALUE`
+# format (and keep it a `message(STATUS ...)`, not e.g. `message(NOTICE
+# ...)`) if this line is ever touched — build.rs depends on it.
+message(STATUS "AICAD_OCCT_LIBRARY_DIR=${OpenCASCADE_LIBRARY_DIR}")
 
 # Only the modules the discovery probe actually exercises (FoundationClasses
 # for Standard_Version.hxx/version macros; ModelingData + ModelingAlgorithms
