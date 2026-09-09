@@ -166,6 +166,31 @@ unsafe extern "C" {
         distance: f64,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_shape_face_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_face(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_face_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shell(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        faces_to_remove: *const aicad_shape_handle_t,
+        face_count: usize,
+        thickness: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_offset(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        distance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_area(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,

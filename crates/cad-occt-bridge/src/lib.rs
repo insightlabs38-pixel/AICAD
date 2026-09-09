@@ -674,6 +674,108 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// The number of unique faces in this shape (AICAD-028), via OCCT's
+    /// own de-duplicated `TopExp::MapShapes`.
+    pub fn face_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_face_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the face at `index` (0-based, `< self.face_count()`) in
+    /// this shape's own current raw enumeration order (AICAD-028) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_edge`]. Intended for immediate
+    /// use as a [`Shape::shell`] face-to-remove selector, not for
+    /// storage.
+    pub fn get_face(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_face(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Hollows this shape into a shell of constant wall `thickness`,
+    /// removing (opening) `faces_to_remove` (each obtained from this
+    /// shape's own [`Shape::get_face`]) (AICAD-028). `thickness`'s sign
+    /// selects which side of the original surface the hollow is built on
+    /// (negative: hollow the interior out, the common "shell" case).
+    /// Accepts any shape kind, matching [`Shape::union`]'s rationale.
+    pub fn shell(
+        &self,
+        faces_to_remove: &[&Shape<'ctx>],
+        thickness: f64,
+    ) -> KernelResult<Shape<'ctx>> {
+        let handles: Vec<ffi::aicad_shape_handle_t> = faces_to_remove
+            .iter()
+            .map(|face| id_to_handle(face.id))
+            .collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `handles` is a valid, live, contiguous array of
+        // `handles.len()` elements for the duration of this call (no STL
+        // container crosses the boundary); `self.context.raw`/
+        // `self.raw_handle()`/`&mut handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shell(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                thickness,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Constructs a shape parallel to this shape's boundary, offset by
+    /// `distance` (positive: outside; negative: inside) (AICAD-028). For
+    /// a convex solid, a positive-distance offset is geometrically
+    /// equivalent to filleting every edge with that distance as radius
+    /// (both are the Minkowski sum of the solid with a ball of that
+    /// radius) -- see `project/reports/AICAD-028.md`.
+    pub fn offset(&self, distance: f64) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_offset(self.context.raw, self.raw_handle(), distance, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -1453,6 +1555,90 @@ mod tests {
         );
         assert_eq!(
             box_shape.fillet(&[&edge], -1.0).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    // --- AICAD-028: shell and offset ---
+
+    #[test]
+    fn a_box_has_exactly_six_unique_faces() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        assert_eq!(box_shape.face_count().unwrap(), 6);
+    }
+
+    #[test]
+    fn get_face_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_face(6).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn shell_hollowed_box_matches_analytic_volume() {
+        // Hollowing a box with its top face removed and wall thickness t
+        // (built inward) leaves a cavity spanning x in [t,dx-t], y in
+        // [t,dy-t], z in [t,dz] (open at the top) -> volume =
+        // dx*dy*dz - (dx-2t)*(dy-2t)*(dz-t).
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, t) = (2.0, 3.0, 4.0, 0.2);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let count = box_shape.face_count().unwrap();
+        let top_face = (0..count)
+            .map(|i| box_shape.get_face(i).unwrap())
+            .find(|face| {
+                let bbox = face.bounding_box().unwrap();
+                (bbox.min.z - dz).abs() < 1e-6 && (bbox.max.z - dz).abs() < 1e-6
+            })
+            .expect("the top face must be found among the box's 6 faces");
+        let shelled = box_shape
+            .shell(&[&top_face], -t)
+            .expect("shell should succeed");
+        assert!(shelled.is_valid().unwrap());
+        let expected = dx * dy * dz - (dx - 2.0 * t) * (dy - 2.0 * t) * (dz - t);
+        let volume = shelled.volume().unwrap();
+        assert!((volume - expected).abs() < expected * 1e-4);
+    }
+
+    #[test]
+    fn offset_box_matches_minkowski_sum_analytic_volume() {
+        // A positive-distance offset with OCCT's default arc join is the
+        // Minkowski sum of the box with a ball of that radius -- same
+        // closed form as fillet-all-edges, without the inset term.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz, delta) = (2.0, 3.0, 4.0, 0.3);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let offset = box_shape.offset(delta).expect("offset should succeed");
+        assert!(offset.is_valid().unwrap());
+        let pi = std::f64::consts::PI;
+        let expected = dx * dy * dz
+            + 2.0 * delta * (dx * dy + dy * dz + dz * dx)
+            + pi * delta * delta * (dx + dy + dz)
+            + (4.0 / 3.0) * pi * delta * delta * delta;
+        let volume = offset.volume().unwrap();
+        assert!((volume - expected).abs() < expected * 1e-4);
+    }
+
+    #[test]
+    fn shell_rejects_a_handle_that_is_not_a_face() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.shell(&[&box_shape], -0.1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn offset_rejects_a_zero_distance() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.offset(0.0).unwrap_err(),
             KernelError::InvalidArgument
         );
     }

@@ -325,6 +325,62 @@ aicad_occt_status_t aicad_occt_chamfer(aicad_occt_context_t* context,
                                         double distance,
                                         aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-028: shell and offset (spike).
+ *
+ * These are the most failure-prone operations in this bridge (OCCT's own
+ * BRepOffsetAPI_MakeOffsetShape header documentation lists several
+ * documented limitations: it may fail for vertices where more than 3
+ * edges converge, the offset value must be small enough relative to
+ * local curvature to avoid self-intersection, and BSpline surfaces with
+ * C0 continuity are unsupported). Per AGENTS.md, this bridge does not
+ * spend unbounded effort forcing universal success here -- honest
+ * capability boundaries are recorded in project/reports/AICAD-028.md
+ * rather than hidden or worked around. Face selection reuses the same
+ * raw/index-based pattern aicad_occt_shape_edge_count/get_edge
+ * established for AICAD-027 (docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+ * §5-6), applied to TopAbs_FACE instead of TopAbs_EDGE. --- */
+
+/* Number of unique faces in `handle`'s shape. */
+aicad_occt_status_t aicad_occt_shape_face_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count);
+
+/* Returns a handle to the face at `index` (0-based, `< face_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, not a durable reference. */
+aicad_occt_status_t aicad_occt_shape_get_face(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_face_handle);
+
+/* Hollows `shape_handle` into a shell of constant wall `thickness`,
+ * removing (opening) the given `faces_to_remove` (>= 1, each obtained
+ * from aicad_occt_shape_get_face against this same shape_handle).
+ * `thickness`'s sign selects which side of the original surface the
+ * hollow is built on (negative: hollow the interior out, leaving the
+ * original outer boundary in place -- the common "shell" case; positive:
+ * grow a shell wall outward). Accepts any non-null shape_handle (not
+ * restricted to Solid), matching aicad_occt_boolean_union's own
+ * rationale. */
+aicad_occt_status_t aicad_occt_shell(aicad_occt_context_t* context,
+                                      aicad_shape_handle_t shape_handle,
+                                      const aicad_shape_handle_t* faces_to_remove,
+                                      size_t face_count,
+                                      double thickness,
+                                      aicad_shape_handle_t* out_handle);
+
+/* Constructs a shape parallel to `shape_handle`'s boundary, offset by
+ * `distance` (positive: outside; negative: inside). Gaps at edges/
+ * vertices are filled with pipes/spheres (OCCT's default GeomAbs_Arc join
+ * mode) -- for a convex solid this makes a positive-distance offset
+ * geometrically equivalent to filleting every edge with that same
+ * distance as radius (see project/reports/AICAD-028.md for the analytic
+ * evidence this equivalence enabled). */
+aicad_occt_status_t aicad_occt_offset(aicad_occt_context_t* context,
+                                       aicad_shape_handle_t shape_handle,
+                                       double distance,
+                                       aicad_shape_handle_t* out_handle);
+
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
  * geometry API yet; `cad-geometry-api` owns that surface later. --- */

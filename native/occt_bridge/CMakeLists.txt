@@ -55,7 +55,9 @@ set(OCCT_PROBE_LIBS
 )
 
 # TKOffset provides BRepOffsetAPI_MakePipe/ThruSections (AICAD-025: sweep
-# and loft). Linked only into aicad_occt_bridge, not into OCCT_PROBE_LIBS
+# and loft) and also BRepOffsetAPI_MakeOffsetShape/MakeThickSolid
+# (AICAD-028: shell/offset -- same OCCT module, no new library needed).
+# Linked only into aicad_occt_bridge, not into OCCT_PROBE_LIBS
 # (occt_probe's discovery check stays scoped to the Batch-1A/1B module
 # set it originally verified).
 set(OCCT_SWEEP_LOFT_LIBS
@@ -173,6 +175,10 @@ add_executable(fillet_chamfer_test tests/fillet_chamfer_test.cpp)
 target_include_directories(fillet_chamfer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(fillet_chamfer_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+add_executable(shell_offset_test tests/shell_offset_test.cpp)
+target_include_directories(shell_offset_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(shell_offset_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -196,6 +202,8 @@ add_test(NAME boolean_test COMMAND boolean_test)
 set_tests_properties(boolean_test PROPERTIES TIMEOUT 60)
 add_test(NAME fillet_chamfer_test COMMAND fillet_chamfer_test)
 set_tests_properties(fillet_chamfer_test PROPERTIES TIMEOUT 60)
+add_test(NAME shell_offset_test COMMAND shell_offset_test)
+set_tests_properties(shell_offset_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #
