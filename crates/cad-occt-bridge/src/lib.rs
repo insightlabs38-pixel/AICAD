@@ -345,6 +345,30 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Builds a planar face bounded by this wire (AICAD-023). `self` must
+    /// address a single closed, planar wire; the resulting face's own
+    /// validity should be checked with [`Shape::is_valid`] rather than
+    /// assumed from this call succeeding -- construction success and
+    /// topological validity are distinct concepts here (Stage-1 kernel
+    /// policy #14), matching `aicad_occt_make_face_from_wire`'s
+    /// documented contract.
+    pub fn make_face(&self) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `is_valid`'s SAFETY comment; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_from_wire(self.context.raw, self.raw_handle(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -634,5 +658,60 @@ mod tests {
             context.make_wire_from_edges(&edges).unwrap_err(),
             KernelError::InvalidArgument
         );
+    }
+
+    // --- AICAD-023: planar face from a closed wire ---
+
+    #[test]
+    fn make_circle_wire_and_face_matches_analytic_area() {
+        let context = OcctContext::new().unwrap();
+        let wire = context
+            .make_circle_wire(Point3::ORIGIN, Direction3::Z, 3.0)
+            .expect("make_circle_wire should succeed");
+        let face = wire
+            .make_face()
+            .expect("make_face should succeed for a closed circle wire");
+        assert!(face.is_valid().unwrap());
+        let expected_area = std::f64::consts::PI * 3.0 * 3.0;
+        assert!((face.area().unwrap() - expected_area).abs() < expected_area * 1e-6);
+    }
+
+    #[test]
+    fn make_face_from_square_wire_matches_unit_area() {
+        let context = OcctContext::new().unwrap();
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(1.0, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(1.0, 0.0), p(1.0, 1.0)).unwrap();
+        let e2 = context.make_line_edge(p(1.0, 1.0), p(0.0, 1.0)).unwrap();
+        let e3 = context.make_line_edge(p(0.0, 1.0), p(0.0, 0.0)).unwrap();
+        let wire = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        let face = wire.make_face().unwrap();
+        assert!((face.area().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn open_wire_face_is_constructible_but_invalid() {
+        // Stage-1 kernel policy #14 ("validation and repair/healing are
+        // distinct semantic concepts") through the Rust wrapper: an open
+        // wire's face still builds (IsDone) but must report invalid.
+        let context = OcctContext::new().unwrap();
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(1.0, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(1.0, 0.0), p(1.0, 1.0)).unwrap();
+        let open_wire = context.make_wire_from_edges(&[&e0, &e1]).unwrap();
+        let open_face = open_wire.make_face().expect("construction itself succeeds");
+        assert!(
+            !open_face.is_valid().unwrap(),
+            "an open wire's face must report as invalid"
+        );
+    }
+
+    #[test]
+    fn make_face_rejects_a_handle_that_is_not_a_wire() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        assert_eq!(edge.make_face().unwrap_err(), KernelError::InvalidArgument);
     }
 }

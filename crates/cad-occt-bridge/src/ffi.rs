@@ -89,6 +89,11 @@ unsafe extern "C" {
         edge_count: usize,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_make_face_from_wire(
+        context: *mut aicad_occt_context_t,
+        wire_handle: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_area(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,

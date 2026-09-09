@@ -9,6 +9,7 @@
 
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -21,6 +22,7 @@
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax2.hxx>
@@ -469,6 +471,36 @@ aicad_occt_status_t aicad_occt_make_wire_from_edges(aicad_occt_context_t* contex
       }
     }
     *out_handle = context->shapes.Insert(context->id, make_wire.Wire());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_face_from_wire(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t wire_handle,
+                                                    aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* wire_shape = nullptr;
+  status = LookupTyped(context, wire_handle, TopAbs_WIRE, &wire_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    const TopoDS_Wire& wire = TopoDS::Wire(*wire_shape);
+    BRepBuilderAPI_MakeFace make_face(wire, /*OnlyPlane=*/Standard_True);
+    if (!make_face.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_face.Face());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

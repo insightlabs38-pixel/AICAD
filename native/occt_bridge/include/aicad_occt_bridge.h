@@ -166,6 +166,16 @@ aicad_occt_status_t aicad_occt_make_wire_from_edges(aicad_occt_context_t* contex
                                                      size_t edge_count,
                                                      aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-023: planar face from a closed wire. --- */
+
+/* Builds a planar face bounded by `wire_handle`, which must address a
+ * single closed, planar wire. The face's plane is inferred from the
+ * wire's geometry (OCCT's own planarity deduction), not supplied
+ * separately -- every Stage-1 profile is planar. */
+aicad_occt_status_t aicad_occt_make_face_from_wire(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t wire_handle,
+                                                    aicad_shape_handle_t* out_handle);
+
 /* --- Query helpers used to prove these operations produced a real, valid
  * B-rep, per AGENTS.md's evidence rule -- not exposed as end-user
  * geometry API yet; `cad-geometry-api` owns that surface later. --- */
