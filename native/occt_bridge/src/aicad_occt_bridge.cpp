@@ -1453,4 +1453,102 @@ aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_get(aicad_occt_context_t
   }
 }
 
+aicad_occt_status_t aicad_occt_shape_length(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             double* out_length) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_length == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    GProp_GProps props;
+    // SkipShared=true: without it, BRepGProp::LinearProperties counts an
+    // edge once per adjacent face (empirically verified -- a box reports
+    // 72, exactly double the true 4*(dx+dy+dz)=36 unique-edge total),
+    // the same double-counting aicad_occt_shape_edge_count's own doc
+    // comment already identified for a raw TopExp_Explorer traversal.
+    // SkipShared=true matches this bridge's established "unique edges"
+    // semantics.
+    BRepGProp::LinearProperties(*shape, props, Standard_True);
+    *out_length = props.Mass();
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_center_of_mass(aicad_occt_context_t* context,
+                                                      aicad_shape_handle_t handle,
+                                                      double out_center[3]) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_center == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    // Dispatch on the shape's own highest-dimensional content: volume >
+    // area > length, matching physical "center of mass" intuition (a
+    // solid's mass comes from its volume, not incidentally from its
+    // boundary faces' area). Empirically, BRepGProp::VolumeProperties on
+    // a shape with no Solid returns a zero-mass, origin-centred result
+    // rather than failing -- that would silently produce a meaningless
+    // (0,0,0) centroid for e.g. a bare face, so the dispatch is explicit
+    // rather than relying on VolumeProperties' own fallback behavior.
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(*shape, TopAbs_SOLID, solids);
+    GProp_GProps props;
+    if (solids.Extent() > 0) {
+      BRepGProp::VolumeProperties(*shape, props);
+    } else {
+      TopTools_IndexedMapOfShape faces;
+      TopExp::MapShapes(*shape, TopAbs_FACE, faces);
+      if (faces.Extent() > 0) {
+        BRepGProp::SurfaceProperties(*shape, props);
+      } else {
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(*shape, TopAbs_EDGE, edges);
+        if (edges.Extent() > 0) {
+          BRepGProp::LinearProperties(*shape, props, Standard_True);
+        } else {
+          return AICAD_OCCT_ERR_OPERATION_FAILED;
+        }
+      }
+    }
+    const gp_Pnt centre = props.CentreOfMass();
+    out_center[0] = centre.X();
+    out_center[1] = centre.Y();
+    out_center[2] = centre.Z();
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
 }  // extern "C"

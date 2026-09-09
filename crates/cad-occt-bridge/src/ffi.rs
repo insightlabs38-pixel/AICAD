@@ -232,4 +232,14 @@ unsafe extern "C" {
         adjacent_index: usize,
         out_face_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_shape_length(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_length: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_shape_center_of_mass(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_center: *mut f64, // [f64; 3]
+    ) -> c_int;
 }

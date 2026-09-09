@@ -471,6 +471,31 @@ aicad_occt_status_t aicad_occt_shape_edge_adjacent_face_get(aicad_occt_context_t
                                                              size_t adjacent_index,
                                                              aicad_shape_handle_t* out_face_handle);
 
+/* --- AICAD-030: length and center-of-mass queries (volume/area/
+ * bounding_box already exist from AICAD-016..028's own construction/
+ * validation evidence work). --- */
+
+/* Total length of every unique edge in the shape (via
+ * BRepGProp::LinearProperties with SkipShared=true -- without it, an edge
+ * shared by 2 faces is counted twice, verified empirically: a box
+ * reports 72 instead of the true 36 = 4*(dx+dy+dz) with SkipShared
+ * false), matching aicad_occt_shape_edge_count's own "unique edges"
+ * scope -- not restricted to Edge/Wire-kind handles, any shape's own
+ * edges contribute (e.g. a solid's total edge length). */
+aicad_occt_status_t aicad_occt_shape_length(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             double* out_length);
+
+/* Center of mass of the shape's own highest-dimensional content: a
+ * volume-weighted centroid if the shape contains any Solid, else an
+ * area-weighted centroid if it contains any Face, else a length-weighted
+ * centroid over its Edges. Fails with AICAD_OCCT_ERR_OPERATION_FAILED if
+ * the shape has none of these (e.g. a bare Vertex). `out_center` receives
+ * 3 doubles (x, y, z). */
+aicad_occt_status_t aicad_occt_shape_center_of_mass(aicad_occt_context_t* context,
+                                                     aicad_shape_handle_t handle,
+                                                     double out_center[3]);
+
 #ifdef __cplusplus
 }
 #endif

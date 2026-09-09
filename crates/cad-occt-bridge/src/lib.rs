@@ -898,6 +898,42 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Total length of every unique edge in this shape (AICAD-030), via
+    /// OCCT's own `BRepGProp::LinearProperties` with `SkipShared=true` --
+    /// matching [`Shape::edge_count`]'s own "unique edges" scope (without
+    /// it, an edge shared by 2 faces is counted twice).
+    pub fn length(&self) -> KernelResult<f64> {
+        let mut length: f64 = 0.0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut length` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_length(self.context.raw, self.raw_handle(), &mut length)
+        };
+        status_result(status)?;
+        Ok(length)
+    }
+
+    /// Center of mass of this shape's own highest-dimensional content
+    /// (AICAD-030): volume-weighted if it contains any Solid, else
+    /// area-weighted if it contains any Face, else length-weighted over
+    /// its Edges. Fails with [`KernelError::OperationFailed`] if the
+    /// shape has none of these (e.g. a bare Vertex).
+    pub fn center_of_mass(&self) -> KernelResult<Point3> {
+        let mut centre = [0.0; 3];
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut centre` is a valid 3-element out-param per the header's
+        // contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_center_of_mass(
+                self.context.raw,
+                self.raw_handle(),
+                centre.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        Ok(Point3::new(centre[0], centre[1], centre[2]))
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -1908,5 +1944,72 @@ mod tests {
             .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
             .unwrap();
         assert_eq!(edge.edge_adjacent_face_count(0).unwrap(), 0);
+    }
+
+    // --- AICAD-030: length and center-of-mass queries ---
+
+    #[test]
+    fn a_3_4_5_line_edge_has_length_exactly_5() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(3.0, 4.0, 0.0))
+            .unwrap();
+        assert!((edge.length().unwrap() - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_box_total_edge_length_matches_4_times_dx_plus_dy_plus_dz() {
+        // SkipShared=true is required in the native implementation:
+        // without it every edge (shared by 2 faces) is counted twice.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz) = (2.0, 3.0, 4.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let expected = 4.0 * (dx + dy + dz);
+        assert!((box_shape.length().unwrap() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn create_box_center_of_mass_is_its_geometric_center() {
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz) = (2.0, 3.0, 4.0);
+        let box_shape = context.create_box(dx, dy, dz).unwrap();
+        let centre = box_shape.center_of_mass().unwrap();
+        assert!((centre.x - dx / 2.0).abs() < 1e-9);
+        assert!((centre.y - dy / 2.0).abs() < 1e-9);
+        assert!((centre.z - dz / 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_standalone_line_edge_center_of_mass_is_its_midpoint() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 0.0, 0.0))
+            .unwrap();
+        let centre = edge.center_of_mass().unwrap();
+        assert!((centre.x - 5.0).abs() < 1e-9);
+        assert!(centre.y.abs() < 1e-9);
+        assert!(centre.z.abs() < 1e-9);
+    }
+
+    #[test]
+    fn center_of_mass_on_a_bare_vertex_fails_cleanly() {
+        // A bare Vertex (obtained via AICAD-029's get_vertex) has no
+        // edge/face/solid content for any of the three GProp dispatch
+        // branches to measure.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let vertex = box_shape.get_vertex(0).unwrap();
+        assert_eq!(
+            vertex.center_of_mass().unwrap_err(),
+            KernelError::OperationFailed
+        );
+    }
+
+    #[test]
+    fn length_of_a_bare_vertex_is_zero_not_an_error() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let vertex = box_shape.get_vertex(0).unwrap();
+        assert!((vertex.length().unwrap() - 0.0).abs() < 1e-12);
     }
 }
