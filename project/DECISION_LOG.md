@@ -320,3 +320,54 @@ them; do not add entries here unilaterally.
   prototype-driven and not yet decided — track experiments under
   `project/experiments/` before committing `crates/cad-occt-bridge` or
   `crates/cad-references` to a specific internal persistence mechanism.
+
+---
+
+## DL-10: Stage 0 passed — owner approval to advance to Stage 1
+
+- Date: 2026-09-09
+- Resolves: Stage-0 exit gate (`project/CURRENT_STAGE.md`), not a single
+  `OWNER_DECISIONS.md` item.
+- Decision: Stage 0 is approved. The owner has reviewed both Stage-0 gate
+  recommendations — the implementation team's own
+  `project/gates/stage-0-gate.md` (AICAD-014) and the independent,
+  adversarial second review, `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`
+  (commit `aad72671b64e2471ca31c8fa332aeb098d486210` on the
+  now-merged branch `claude/aicad-stage-0-review-9leull`) — and accepts the
+  independent review's final PASS recommendation as given, after its three
+  applied patches (F1: `if`/`match` as expressions added to
+  `rfcs/0001-language-principles.md` §7 and `specs/language/grammar.ebnf`;
+  F2: the `affine_kind` absolute/delta discriminant and subtraction rule
+  added to `rfcs/0004-units-type-system.md` §5/§7; F3: inline
+  open-decision caveats added to
+  `examples/assemblies/stage0_paper_example.aicad`). Stage 1
+  (`AICAD-015` onward, per `project/TASKS.yaml`) is authorized to begin.
+- Rationale: Two independent reviews (AICAD-013/014's own contradiction
+  review and gate packet, and the separate adversarial review) both
+  concluded PASS after fixing every concrete gap either one found; neither
+  found a BLOCKER; neither review's patches touched an open
+  `project/OWNER_DECISIONS.md` item or a stage-gate/benchmark criterion.
+  Per `AGENTS.md` ("Stage gates: ... Stage progression is an owner
+  decision"), this entry is what actually authorizes the advance — the
+  gate packets themselves were recommendations only.
+- Alternatives considered: Requiring a third review pass (rejected — the
+  second review was explicitly adversarial/independent of the first and
+  found only patchable, non-architectural gaps; a third pass would not be
+  evidence-additive without a new concern to investigate). Deferring
+  approval pending F4 (a possible future diagnostic for discarded
+  geometry-valued expression statements) (rejected — F4 is explicitly
+  forward-looking and non-blocking per the independent review §4, and does
+  not gate Stage 0 under RFC-0005's own scope, which freezes only the
+  diagnostic taxonomy shape at this stage, not the concrete code registry).
+- Affected RFCs/tasks: closes out AICAD-001 through AICAD-014 (Stage 0);
+  unblocks AICAD-015 through AICAD-037 (Stage 1, per
+  `project/TASKS.yaml`'s authorized batch structure). `project/CURRENT_STAGE.md`
+  is updated to Stage 1 active in the same change as this entry.
+- Supersedes: none (first ruling recorded on Stage 0 as a whole).
+- **Open items carried forward unresolved (not settled by this entry):**
+  D3, D5, D10, D11, D12, D15 remain open per `project/OWNER_DECISIONS.md`;
+  the residual sub-items of D7, D8, D13 remain open. F4 (discarded
+  geometry-expression-statement diagnostic) remains a non-blocking,
+  forward-looking note for whoever designs the Stage-2 diagnostic code
+  registry (AICAD-038, itself still out of scope until a separate
+  Stage-2 owner approval).
