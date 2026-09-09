@@ -48,6 +48,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Show toolchain
         run: rustup show
+      - name: Install OCCT development packages
+        # AICAD-018's cad-occt-bridge/build.rs configures/builds
+        # native/occt_bridge via CMake, which requires OpenCASCADE.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libocct-foundation-dev libocct-modeling-data-dev \
+            libocct-modeling-algorithms-dev libocct-data-exchange-dev
       - name: cargo build --workspace
         run: cargo build --workspace --all-targets
       - name: cargo test --workspace

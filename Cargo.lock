@@ -73,6 +73,9 @@ version = "0.0.0"
 [[package]]
 name = "cad-occt-bridge"
 version = "0.0.0"
+dependencies = [
+ "cad-kernel-api",
+]
 
 [[package]]
 name = "cad-packages"
