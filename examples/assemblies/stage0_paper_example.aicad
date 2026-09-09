@@ -89,6 +89,10 @@ part Bracket {
 
     let profile = sketch(plane = XY) {
         let r = rectangle(size = [width, height], center = [0mm, 0mm]);
+        // `r.left_edge`/`r.right_edge`: a plausible reading of the open
+        // sketch entity/object model (OWNER_DECISIONS.md D3), NOT a frozen
+        // API. Do not copy this field-access form as settled syntax until
+        // D3 is ruled on — see stage0_paper_example.md for the full note.
         symmetric(r.left_edge, r.right_edge, about = y_axis);  // sketch constraint
     };
 
@@ -143,6 +147,10 @@ assembly ActuatorStage0 {
     instance motor = Motor();
 
     mate coincident(motor.mounting_face, bracket.mounting_face);  // assembly constraint
+    // `mate concentric` takes a `Datum` here (bracket.mount_axis is
+    // datum_axis(...)'s return type) where the plan documents this mate as
+    // taking "axes/cylinders"; no Datum-to-axis-reference coercion rule is
+    // frozen anywhere. Plausible, not verified — see stage0_paper_example.md.
     mate concentric(motor.output_axis, bracket.mount_axis);       // assembly constraint
 
     joint output {

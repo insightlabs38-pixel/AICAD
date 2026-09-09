@@ -162,6 +162,24 @@ grows into the authoritative artifact starting at Stage 2, task AICAD-039+;
 see `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17-19). It exists to make §4-5
 concrete and to seed `specs/language/grammar.ebnf`.
 
+**Patch (independent Stage-0 review, `project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md`):**
+the grammar sketch as originally drafted defined `if`/`match` only as
+*statements* (`if_stmt`, `match_stmt`), with no `if`/`match` alternative
+under `expression`, and left `block_expr` referenced but undefined. This
+silently conflicted with existing precedent already used elsewhere in the
+frozen material — `docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md`
+§10's own canonical example (`let wall = match Product.material { Plastic
+=> 3mm, Aluminum => 2mm, };`) and the Stage-0 paper example's `let wall =
+if Product.motor == NEMA17 { 3mm } else { 4mm };`
+(`examples/assemblies/stage0_paper_example.aicad`) both require `if`/`match`
+to appear in expression position, which the original grammar sketch never
+actually granted. The `if_expr`/`match_expr`/`block_expr` productions added
+below close that gap. This is a documentation/completeness fix, not a new
+architecture decision: it follows the "broadly Rust-like" framing already
+approved by DL-1 (Rust's `if`/`match` are expressions; this only makes that
+explicit) and does not choose among any open `project/OWNER_DECISIONS.md`
+item.
+
 ```ebnf
 (* AICAD grammar sketch — RFC-0001, Stage 0. Informal; not exhaustive. *)
 
@@ -197,7 +215,23 @@ params         = param , { "," , param } ;
 param          = identifier , ":" , type , [ "=" , expression ] ;
 
 expression     = call_expr | method_call_expr | binary_expr | literal
-               | identifier | "(" , expression , ")" | block_expr ;
+               | identifier | "(" , expression , ")" | block_expr
+               | if_expr | match_expr ;
+block_expr     = "{" , { statement } , [ expression ] , "}" ;
+                 (* an optional trailing, non-semicolon-terminated
+                    expression is the block's value; a block with no
+                    trailing expression has no value and may only be used
+                    where a value is not required *)
+if_expr        = "if" , expression , block_expr ,
+                 "else" , ( block_expr | if_expr ) ;
+                 (* the `else` arm is REQUIRED in expression position so
+                    both arms produce a value of a unifiable type; an
+                    `if` with no `else` remains valid only as if_stmt
+                    (statement position, no value) *)
+match_expr     = "match" , expression , "{" , { match_arm } , "}" ;
+                 (* same arm shape as match_stmt (§ above); used in
+                    expression position when every arm yields a value of a
+                    unifiable type *)
 call_expr      = identifier , "(" , [ args ] , ")" ;                (* cut(body, hole) *)
 method_call_expr
                = expression , "." , identifier , "(" , [ args ] , ")" ; (* body.cut(hole) — sugar, DL-2 *)
