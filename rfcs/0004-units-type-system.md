@@ -59,6 +59,19 @@ The standard library may expand this set without a grammar change.
   canonical value, unit dimension, preferred display unit, optional
   precision/uncertainty metadata. Display unit is presentation-only and
   never affects type-checking or comparison.
+- **Patch (independent Stage-0 review):** `03` §5's quantity shape, as
+  written, has no field distinguishing an absolute quantity from a delta
+  quantity, yet §7 below requires the type checker to reject
+  `absolute + absolute` for affine dimensions. To keep this RFC internally
+  consistent, affine-dimensioned quantities (§7) carry one additional
+  discriminant beyond the general shape above — `affine_kind: absolute |
+  delta` — and it is this discriminant, never the source unit spelling,
+  that the type checker uses to admit or reject an operation. This patch
+  only makes explicit a mechanism §7's invariant already requires; it does
+  not select the discriminant's concrete surface syntax or type-name
+  spelling (e.g. whether a delta is its own named type or a tagged
+  `Temperature` value) — that concrete encoding remains Stage-2 work, as
+  §7 already states.
 
 ## 6. Tolerances (DL-3, resolved)
 
@@ -80,7 +93,9 @@ The standard library may expand this set without a grammar change.
 
 - Affine units — initially Celsius and Fahrenheit — **distinguish absolute
   quantities from delta quantities** and do not use ordinary scale-only
-  conversion rules.
+  conversion rules. The absolute-vs-delta distinction is carried by the
+  `affine_kind` discriminant added to the quantity shape in §5 above; it is
+  not inferred from unit spelling or context.
 - Concretely: converting an absolute temperature (`20degC` -> Kelvin)
   requires the affine offset (`+273.15`); converting a temperature
   *difference* (`a delta of 5degC` -> Kelvin) does not apply that offset
@@ -89,6 +104,15 @@ The standard library may expand this set without a grammar change.
   quantities together (`20degC + 20degC` is meaningless), while adding an
   absolute quantity and a delta quantity of the same unit family is
   well-defined.
+- **Patch (independent Stage-0 review):** the RFC as originally drafted
+  forbade `absolute + absolute` but never stated what `absolute - absolute`
+  produces, leaving no defined way to construct a delta value at all.
+  Subtracting two *absolute* quantities of the same affine unit family
+  produces a *delta* quantity (`affine_kind: delta`, §5); subtracting a
+  delta from an absolute produces an absolute; subtracting two deltas
+  produces a delta. This is the minimal rule consistent with the
+  already-approved absolute/delta distinction and does not introduce a new
+  architecture decision.
 - This is intentionally more conservative than "unit conversion is always
   linear rescaling," because affine-temperature bugs are a well-known,
   easy-to-introduce class of engineering error
