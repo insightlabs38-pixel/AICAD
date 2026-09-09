@@ -70,6 +70,12 @@ bool run_sanity_construction(double &out_volume_bbox_diagonal) {
         std::cerr << "FAIL: bounding box of a valid solid was void\n";
         return false;
     }
+    // BRepBndLib::Add leaves a small default gap (~1e-7, added
+    // symmetrically on every side by Get()) that is not part of the
+    // shape's true extent; SetGap only takes effect for Get() calls made
+    // after it (found empirically during AICAD-016: setting it before
+    // Add has no effect, since Add sets its own gap).
+    bounds.SetGap(0.0);
 
     double xmin, ymin, zmin, xmax, ymax, zmax;
     bounds.Get(xmin, ymin, zmin, xmax, ymax, zmax);
@@ -82,7 +88,7 @@ bool run_sanity_construction(double &out_volume_bbox_diagonal) {
     const double expected = std::sqrt(1400.0);
     const double diff = out_volume_bbox_diagonal - expected;
     const double abs_diff = diff < 0.0 ? -diff : diff;
-    if (abs_diff > 1e-6) {
+    if (abs_diff > 1e-9) {
         std::cerr << "FAIL: bounding-box diagonal " << out_volume_bbox_diagonal
                    << " does not match expected " << expected << "\n";
         return false;

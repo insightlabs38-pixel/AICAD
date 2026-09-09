@@ -11,4 +11,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(aicad_native)
 
+# Must be called at the top level for `ctest` run from the root build
+# directory to discover tests registered by add_subdirectory'd
+# CMakeLists.txt files (CMake only writes a root CTestTestfile.cmake if
+# enable_testing() was seen before/at the directory that adds them).
+enable_testing()
+
 add_subdirectory(native/occt_bridge)

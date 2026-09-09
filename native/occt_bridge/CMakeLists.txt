@@ -1,10 +1,14 @@
-# native/occt_bridge — AICAD-015: OCCT discovery/probe CMake target.
+# native/occt_bridge — AICAD-015 (OCCT discovery/probe) + AICAD-016 (C ABI
+# boundary).
 #
-# Scope of this file (AICAD-015 only): locate a usable OCCT installation and
-# build `occt_discovery_probe`, a small executable that proves OCCT headers
+# AICAD-015 scope: locate a usable OCCT installation and build
+# `occt_discovery_probe`, a small executable that proves OCCT headers
 # resolve *and* OCCT libraries link and run correctly on this machine (not
-# merely that `find_package` succeeded). It does not implement the C ABI
-# boundary itself — that is AICAD-016, in `src/` (not yet populated).
+# merely that `find_package` succeeded).
+#
+# AICAD-016 scope: build `aicad_occt_bridge`, the narrow C ABI library
+# `crates/cad-occt-bridge` (AICAD-018) will link against, plus its two
+# native tests (`abi_smoke_test`, `abi_c_linkage_test`).
 #
 # Kept as a standalone CMake project (rather than requiring the whole
 # AICAD workspace to configure through it) so the probe/bridge can be
@@ -72,3 +76,45 @@ target_link_libraries(occt_discovery_probe PRIVATE ${AICAD_OCCT_PROBE_LIBS})
 # hardening flags such as -ffile-prefix-map tied to OCCT's own build path,
 # which are meaningless for this target). Only the include/library/link
 # wiring above is reused.
+
+# ---------------------------------------------------------------------------
+# AICAD-016: the C ABI boundary library.
+# ---------------------------------------------------------------------------
+
+# Same module set as the probe (box construction + bounding-box query);
+# widen only when a later Stage-1 task's bridge function needs a module
+# this list does not already cover.
+set(AICAD_OCCT_BRIDGE_LIBS
+  TKernel
+  TKMath
+  TKBRep
+  TKG3d
+  TKGeomBase
+  TKTopAlgo
+  TKPrim
+)
+
+add_library(aicad_occt_bridge STATIC src/bridge.cpp)
+target_include_directories(aicad_occt_bridge
+  PUBLIC include
+  PRIVATE ${OpenCASCADE_INCLUDE_DIR})
+target_link_directories(aicad_occt_bridge PRIVATE ${OpenCASCADE_LIBRARY_DIR})
+target_link_libraries(aicad_occt_bridge PUBLIC ${AICAD_OCCT_BRIDGE_LIBS})
+# The library is public C++ (uses OCCT headers/exceptions internally) but
+# its *published* symbols are all `extern "C"`, matching the ABI contract
+# in include/aicad_occt_bridge.h; -fvisibility is intentionally left at
+# CMake's default here since this is a STATIC library linked directly
+# into a consuming crate, not a shared object with its own export surface.
+
+enable_testing() # harmless if already called by a parent CMakeLists.txt
+                 # (e.g. the repo root); required when this directory is
+                 # configured standalone, per this file's own header
+                 # comment about independent iteration.
+
+add_executable(abi_smoke_test tests/abi_smoke_test.cpp)
+target_link_libraries(abi_smoke_test PRIVATE aicad_occt_bridge)
+add_test(NAME abi_smoke_test COMMAND abi_smoke_test)
+
+add_executable(abi_c_linkage_test tests/abi_c_linkage_test.c)
+target_link_libraries(abi_c_linkage_test PRIVATE aicad_occt_bridge)
+add_test(NAME abi_c_linkage_test COMMAND abi_c_linkage_test)
