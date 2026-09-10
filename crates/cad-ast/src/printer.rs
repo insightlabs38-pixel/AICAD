@@ -506,6 +506,26 @@ impl Printer {
                 self.write(" ");
                 self.print_match_arms(arms);
             }
+            Expr::ListLiteral { elements, .. } => {
+                self.write("[");
+                for (i, element) in elements.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.print_expr(element);
+                }
+                self.write("]");
+            }
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                self.print_expr(start);
+                self.write(if *inclusive { "..=" } else { ".." });
+                self.print_expr(end);
+            }
         }
     }
 

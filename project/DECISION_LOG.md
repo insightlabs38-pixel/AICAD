@@ -524,3 +524,77 @@ them; do not add entries here unilaterally.
   concrete comparison-profile implementation once that crate's own task is
   reached).
 - Supersedes: none (first ruling on D5).
+
+## DL-13: D16 — collection/iteration semantics (Stage-2 minimum foundation)
+
+- Date: 2026-09-10
+- Resolves: `OWNER_DECISIONS.md#D16`.
+- Decision: `for var in iterable { ... }` is core language control flow,
+  operating over values satisfying AICAD's iteration protocol. This does
+  **not** authorize a general-purpose compiler-intrinsic mechanism. Stage 2
+  supports, at minimum: `List<T>` (immutable, via a new `[e1, e2, ...]`
+  list-literal expression — elements unify to one compatible element type
+  using the existing type/unit-conversion rules, e.g. `[5mm, 2cm, 1in] ->
+  List<Length>`; incompatible dimensional elements are a type error; an
+  empty `[]` requires contextual type information or a stable
+  type-inference diagnostic is emitted); `Range<Int>`/`Range<UInt>` (via
+  new `start..end` half-open and `start..=end` inclusive range-expression
+  syntax; automatic `for` iteration is ascending by one, empty rather than
+  reversing direction when `start` is beyond the terminal bound;
+  `Range<T>` may exist for other element types, dimensional ones included,
+  but is not automatically iterable without a future explicit-stepping
+  API this decision does not build); and `Iterator<T>` as an internal/
+  runtime iteration abstraction only, never exposed as compiler magic
+  (`for` may lower to `iter`/`next`-shaped operations internally, but
+  those are implementation machinery, not new source-level intrinsics).
+  `iterable` is evaluated exactly once per `for` loop; each iteration
+  introduces a fresh immutable loop binding scoped to the loop body and
+  participates in the approved execution resource-budget accounting;
+  iteration order is deterministic (list order for `List<T>`, numeric
+  ascending order for integer ranges). Explicitly **not** authorized by
+  this decision: full `Set<T>`/`Map<K,V>` semantics, collection
+  comprehensions, arbitrary user-defined iterator protocols, async/
+  parallel iteration, implicit dimensional-range stepping, or any new
+  general compiler-intrinsic facility — all remain future work requiring
+  their own decision.
+- Rationale: Owner ruling, in direct response to `AICAD-056`'s own
+  escalation (`project/reports/AICAD-056.md`'s first session): no
+  `.aicad` source program could construct a collection/iterator value
+  under the grammar as it stood after `AICAD-045` (no array/list-literal
+  or range-operator syntax, no compiler-intrinsic-function mechanism), so
+  `for`-loop execution — named by `AICAD-056`'s own title — could not
+  proceed without either new public syntax or a new intrinsic boundary,
+  both `AGENTS.md` owner-escalation triggers. This ruling supplies the
+  minimum coherent collection/iteration model `AICAD-056` needs while
+  preserving `AGENTS.md`'s "prefer library/std-package features over new
+  compiler intrinsics" principle: `List`/`Range` are ordinary expression
+  syntax reusing the existing type/unit-conversion machinery, not a new
+  intrinsic-function boundary, and `Iterator<T>`'s `iter`/`next` shape
+  stays private lowering machinery rather than surfaced language syntax.
+- Alternatives considered: A compiler-intrinsic `range(...)`/`list(...)`
+  constructor-function boundary requiring no new expression grammar
+  (rejected by the owner — "This does NOT authorize a general-purpose
+  compiler-intrinsic mechanism," and per D9/DL-7 a new intrinsic needs an
+  RFC showing a library solution cannot work, which is circular before any
+  collection primitive exists at all); implicit direction-reversing
+  iteration when `start > end` (rejected — "iteration is empty rather than
+  implicitly reversing direction," consistent with `AGENTS.md`'s "ambiguity
+  is an error, never an arbitrary selection"); automatic dimensional-range
+  stepping (e.g. inferring a 1mm step for `Range<Length>`) (rejected — no
+  step size is defined, and inventing one would be exactly the kind of
+  silent semantic invention `AGENTS.md` forbids; left to "a future explicit
+  stepping API"); building the complete `docs/plan/02_LANGUAGE_AND_COMPILER
+  .md` §9 collection list (`Optional<T>`, `Result<T,E>`, `Generator<T>`,
+  `Graph<N,E>`) now (rejected — explicitly out of scope: "AICAD-056 does
+  not need to implement the entire future collection library").
+- Affected RFCs/tasks: `AICAD-056` (resumes with this ruling — grammar/
+  AST/lexer/parser/HIR/type-checker/runtime changes are explicitly
+  authorized "even where those components were introduced by earlier
+  Stage-2 tasks", i.e. `AICAD-039`-`045`'s frozen grammar and
+  `specs/language/grammar.ebnf`); `AICAD-057` (`Result<T,E>`/error
+  propagation — D16 does not authorize `Result<T,E>` itself, only
+  `Iterator<T>`/`List<T>`/`Range<T>`; `AICAD-057` remains its own,
+  separate scope); any later task assuming a collection/iterator value or
+  type exists should re-check this entry's explicit scope limit before
+  extending it.
+- Supersedes: none (first ruling on D16).

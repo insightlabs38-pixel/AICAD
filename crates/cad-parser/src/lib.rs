@@ -97,6 +97,7 @@ fn can_start_expression(kind: &TokenKind) -> bool {
             | TokenKind::Minus
             | TokenKind::Bang
             | TokenKind::LBrace
+            | TokenKind::LBracket
             | TokenKind::Keyword(Keyword::If)
             | TokenKind::Keyword(Keyword::Match)
     )
@@ -225,11 +226,47 @@ impl<'a> Parser<'a> {
 
     // --- expressions, lowest to highest precedence -----------------------
     //
-    // parse_expression -> or -> and -> equality -> relational -> additive
-    //   -> multiplicative -> unary -> postfix -> primary
+    // parse_expression -> range -> or -> and -> equality -> relational
+    //   -> additive -> multiplicative -> unary -> postfix -> primary
 
     pub fn parse_expression(&mut self) -> Option<Expr> {
-        self.parse_or()
+        self.parse_range()
+    }
+
+    /// `range_expr = expression ( ".." | "..=" ) expression` —
+    /// `project/OWNER_DECISIONS.md#D16`'s owner-approved range syntax.
+    /// Sits just below `parse_expression`'s own entry point (the loosest-
+    /// binding level below the range operators themselves) and is
+    /// deliberately **non-associative**: `next` (`parse_or`) never itself
+    /// consumes a `..`/`..=`, so a second range operator on either side
+    /// (`a..b..c`) is never reachable from a single `parse_range` call —
+    /// exactly one range operator per range expression, matching every
+    /// worked example in the owner ruling (none of which chain them).
+    fn parse_range(&mut self) -> Option<Expr> {
+        let start = self.parse_or()?;
+        let inclusive = match self.peek_kind() {
+            TokenKind::DotDot => false,
+            TokenKind::DotDotEq => true,
+            _ => return Some(start),
+        };
+        let op_span = self.advance().span;
+        if !can_start_expression(self.peek_kind()) {
+            self.error(
+                8,
+                "EXPECTED_EXPRESSION",
+                "Expected an expression after range operator.".to_string(),
+                op_span,
+            );
+            return Some(start);
+        }
+        let end = self.parse_or()?;
+        let span = start.span().join(end.span());
+        Some(Expr::Range {
+            start: Box::new(start),
+            end: Box::new(end),
+            inclusive,
+            span,
+        })
     }
 
     fn parse_binary_level(
@@ -433,6 +470,37 @@ impl<'a> Parser<'a> {
         args
     }
 
+    /// `list_expr = "[" [ expression { "," expression } [","] ] "]"` —
+    /// `project/OWNER_DECISIONS.md#D16`'s owner-approved list-literal
+    /// syntax. Mirrors `parse_call_args`'s own trailing-comma handling
+    /// exactly (a plain `Vec<Expr>` here, rather than `Arg`, since a list
+    /// element is never named — `named_arg` is call-site-only syntax).
+    fn parse_list_literal(&mut self) -> Option<Expr> {
+        let open = self.advance(); // '['
+        let start = open.span;
+        let mut elements = Vec::new();
+        if self.peek_kind() != &TokenKind::RBracket {
+            while let Some(element) = self.parse_expression() {
+                elements.push(element);
+                if self.eat(|k| *k == TokenKind::Comma).is_some() {
+                    if self.peek_kind() == &TokenKind::RBracket {
+                        break; // trailing comma
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        let close = self.expect(&TokenKind::RBracket, "']'");
+        let end = close
+            .map(|t| t.span)
+            .unwrap_or_else(|| elements.last().map(Expr::span).unwrap_or(start));
+        Some(Expr::ListLiteral {
+            elements,
+            span: start.join(end),
+        })
+    }
+
     /// True if the token *after* the current one is exactly `Eq` (not
     /// `EqEq`, which the lexer already tokenizes as one distinct token —
     /// no further disambiguation is needed beyond checking the token kind
@@ -507,6 +575,7 @@ impl<'a> Parser<'a> {
                     span: open.join(end),
                 })
             }
+            TokenKind::LBracket => self.parse_list_literal(),
             TokenKind::LBrace => self.parse_block_expr().map(Expr::Block),
             TokenKind::Keyword(Keyword::If) => self.parse_if_expr(),
             TokenKind::Keyword(Keyword::Match) => self.parse_match_expr(),
@@ -1332,23 +1401,28 @@ impl<'a> Parser<'a> {
     /// `package_path = identifier , { "." identifier } ;` (`std.fasteners`).
     fn parse_import_path(&mut self) -> Option<ImportPath> {
         let start = self.peek().span;
-        if self.peek_kind() == &TokenKind::Dot {
+        if matches!(self.peek_kind(), TokenKind::Dot | TokenKind::DotDot) {
             let mut up_levels: u32 = 0;
             loop {
-                if self.peek_kind() != &TokenKind::Dot {
+                if !matches!(self.peek_kind(), TokenKind::Dot | TokenKind::DotDot) {
                     break;
                 }
+                // `../` — the lexer's own maximal munch (`AICAD-056`,
+                // `project/OWNER_DECISIONS.md#D16`'s new range operators)
+                // tokenizes `..` as one `DotDot`, not two separate `Dot`s,
+                // so this checks a `DotDot` immediately followed by `/`
+                // (two tokens) rather than the pre-`DotDot` three-`Dot`
+                // lookahead this used before that token existed.
                 let second = self.tokens.get(self.pos + 1).map(|t| &t.kind);
-                let third = self.tokens.get(self.pos + 2).map(|t| &t.kind);
-                if matches!(second, Some(TokenKind::Dot)) && matches!(third, Some(TokenKind::Slash))
+                if self.peek_kind() == &TokenKind::DotDot
+                    && matches!(second, Some(TokenKind::Slash))
                 {
-                    self.advance();
                     self.advance();
                     self.advance();
                     up_levels += 1;
                     continue;
                 }
-                if matches!(second, Some(TokenKind::Slash)) {
+                if self.peek_kind() == &TokenKind::Dot && matches!(second, Some(TokenKind::Slash)) {
                     self.advance();
                     self.advance();
                     break;
@@ -1820,6 +1894,122 @@ mod tests {
                 .iter()
                 .any(|d| d.code.as_string() == "PARSE-E001")
         );
+    }
+
+    // --- List literals / range expressions (`AICAD-056`,
+    //     `project/OWNER_DECISIONS.md#D16`) ---
+
+    #[test]
+    fn parses_list_literal() {
+        let expr = parse_ok("[1, 2, 3]");
+        match expr {
+            Expr::ListLiteral { elements, .. } => assert_eq!(elements.len(), 3),
+            other => panic!("expected ListLiteral, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_empty_list_literal() {
+        let expr = parse_ok("[]");
+        match expr {
+            Expr::ListLiteral { elements, .. } => assert!(elements.is_empty()),
+            other => panic!("expected ListLiteral, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_literal_allows_a_trailing_comma() {
+        let expr = parse_ok("[1, 2,]");
+        match expr {
+            Expr::ListLiteral { elements, .. } => assert_eq!(elements.len(), 2),
+            other => panic!("expected ListLiteral, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_literal_elements_can_be_dimensional_literals() {
+        // "[5mm, 2cm, 1in]" — project/OWNER_DECISIONS.md#D16's own worked
+        // example. Parsing does not check dimensional compatibility (that
+        // is `cad-hir`'s job); this only confirms the syntax parses.
+        let expr = parse_ok("[5mm, 2cm, 1in]");
+        match expr {
+            Expr::ListLiteral { elements, .. } => assert_eq!(elements.len(), 3),
+            other => panic!("expected ListLiteral, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reports_missing_closing_bracket_in_list_literal() {
+        let (expr, diagnostics) = parse_expr("[1, 2", "t.aicad");
+        assert!(expr.is_some());
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "PARSE-E006")
+        );
+    }
+
+    #[test]
+    fn parses_half_open_range() {
+        let expr = parse_ok("0..count");
+        match expr {
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                assert!(!inclusive);
+                assert!(matches!(*start, Expr::Literal(_)));
+                assert!(matches!(*end, Expr::Ident(_)));
+            }
+            other => panic!("expected Range, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_inclusive_range() {
+        let expr = parse_ok("0..=10");
+        match expr {
+            Expr::Range { inclusive, .. } => assert!(inclusive),
+            other => panic!("expected Range, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn range_operator_is_not_chainable() {
+        // "0..5..10" — a second ".." after a complete range expression is
+        // trailing, not a longer chain (this module's own doc comment on
+        // `parse_range`: exactly one range operator per range expression).
+        let (expr, diagnostics) = parse_expr("0..5..10", "t.aicad");
+        assert!(expr.is_some());
+        assert_eq!(diagnostics[0].code.as_string(), "PARSE-E009"); // TRAILING_TOKENS
+    }
+
+    #[test]
+    fn range_binds_looser_than_addition() {
+        // "1 + 2 .. 3 + 4" must parse as (1 + 2) .. (3 + 4), not fail to
+        // parse or bind at some other precedence.
+        let expr = parse_ok("1 + 2 .. 3 + 4");
+        match expr {
+            Expr::Range { start, end, .. } => {
+                assert!(matches!(
+                    *start,
+                    Expr::Binary {
+                        op: BinaryOp::Add,
+                        ..
+                    }
+                ));
+                assert!(matches!(
+                    *end,
+                    Expr::Binary {
+                        op: BinaryOp::Add,
+                        ..
+                    }
+                ));
+            }
+            other => panic!("expected Range, got {other:?}"),
+        }
     }
 }
 
@@ -2480,6 +2670,33 @@ mod control_flow_tests {
         let program = program_ok("fn f() { for p in points { g(p); } }");
         match &fn_body(&program).stmts[0] {
             Stmt::For { var, .. } => assert_eq!(var.node, "p"),
+            other => panic!("expected Stmt::For, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_for_stmt_over_a_list_literal() {
+        // "for x in [1, 2, 3] { }" — `project/OWNER_DECISIONS.md#D16`.
+        let program = program_ok("fn f() { for x in [1, 2, 3] { } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::For { var, iterable, .. } => {
+                assert_eq!(var.node, "x");
+                assert!(matches!(iterable, Expr::ListLiteral { .. }));
+            }
+            other => panic!("expected Stmt::For, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_for_stmt_over_a_range() {
+        // "for i in 0..count { }" — `project/OWNER_DECISIONS.md#D16`'s own
+        // worked example.
+        let program = program_ok("fn f() { for i in 0..count { } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::For { var, iterable, .. } => {
+                assert_eq!(var.node, "i");
+                assert!(matches!(iterable, Expr::Range { .. }));
+            }
             other => panic!("expected Stmt::For, got {other:?}"),
         }
     }

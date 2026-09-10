@@ -15,7 +15,14 @@
    Stage-0 paper example) already relies on if/match in expression
    position. No new syntax is introduced beyond RFC-0001 §4's "broadly
    Rust/TypeScript-like" framing (DL-1); no open OWNER_DECISIONS.md item is
-   touched. *)
+   touched.
+
+   Patched again (`AICAD-056`) to add list_expr/range_expr, per the owner
+   ruling recorded at `project/OWNER_DECISIONS.md#D16` (positive test:
+   `crates/cad-parser`'s `list_literal_*`/`*range*` tests; negative test:
+   `range_operator_is_not_chainable`/`reports_missing_closing_bracket_in_
+   list_literal`). Both are ordinary `expression` alternatives — no new
+   statement/declaration syntax, no compiler intrinsic. *)
 
 program        = { item } ;
 item           = let_decl | const_decl | param_decl
@@ -48,9 +55,32 @@ fn_decl        = [ "pure" ] , "fn" , identifier , "(" , [ params ] , ")" ,
 params         = param , { "," , param } ;
 param          = identifier , ":" , type , [ "=" , expression ] ;
 
-expression     = call_expr | method_call_expr | binary_expr | literal
+expression     = range_expr ;
+range_expr     = or_expr , [ ( ".." | "..=" ) , or_expr ] ;
+                 (* `project/OWNER_DECISIONS.md#D16`. Non-associative: at
+                    most one range operator per range expression — a
+                    second ".."/"..=" on either side is not part of this
+                    production (e.g. "0..5..10" is "0..5" followed by
+                    trailing tokens, a parse error), matching every worked
+                    example in the owner ruling. *)
+or_expr        = call_expr | method_call_expr | binary_expr | literal
                | identifier | "(" , expression , ")" | block_expr
-               | if_expr | match_expr ;
+               | if_expr | match_expr | list_expr ;
+                 (* "or_expr" names this production's precedence level
+                    (lowest of the non-range alternatives, `||`), not a
+                    restriction to boolean-or expressions only — every
+                    existing `expression` alternative from before
+                    `AICAD-056` is reachable through the ordinary
+                    precedence ladder `cad-parser`'s own module doc comment
+                    documents (range -> or -> and -> equality ->
+                    relational -> additive -> multiplicative -> unary ->
+                    postfix -> primary). *)
+list_expr      = "[" , [ expression , { "," , expression } , [","] ] , "]" ;
+                 (* `project/OWNER_DECISIONS.md#D16`. Produces an immutable
+                    List<T>; element-type unification is a type-checking
+                    concern, not a grammar one (mirrors match_expr's own
+                    "used in expression position when every arm yields a
+                    value" division of labor, above). *)
 block_expr     = "{" , { statement } , [ expression ] , "}" ;
                  (* optional trailing, non-semicolon-terminated expression
                     is the block's value *)

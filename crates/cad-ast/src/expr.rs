@@ -224,6 +224,28 @@ pub enum Expr {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    /// `"[" [ expression { "," expression } [","] ] "]"` — `list_expr`
+    /// (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`). Produces an
+    /// immutable `List<T>`; whether every element's type actually unifies
+    /// to one compatible `T` is a type-checking concern, not something
+    /// this parser enforces (mirrors `Expr::Match`'s identical division of
+    /// labor, immediately above).
+    ListLiteral {
+        elements: Vec<Expr>,
+        span: Span,
+    },
+    /// `start ".." end` (half-open) or `start "..=" end` (inclusive) —
+    /// `range_expr` (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`).
+    /// Non-associative: `a..b..c` is a parse error, since `cad-parser`
+    /// only ever recognizes one range operator per `parse_range` call (see
+    /// that method's own doc comment) — matching the owner ruling's own
+    /// worked examples, none of which chain range operators.
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -238,7 +260,9 @@ impl Expr {
             | Expr::MethodCall { span, .. }
             | Expr::Field { span, .. }
             | Expr::If { span, .. }
-            | Expr::Match { span, .. } => *span,
+            | Expr::Match { span, .. }
+            | Expr::ListLiteral { span, .. }
+            | Expr::Range { span, .. } => *span,
             Expr::Block(block) => block.span,
         }
     }

@@ -1,162 +1,142 @@
 # Session Handoff
 
-## Latest: Stage 2 Batch S2-09, `AICAD-056` PARTIALLY complete — blocked on an owner decision (D16). Resume `AICAD-056` next, do not skip ahead.
+## Latest: `AICAD-056` COMPLETE (owner resolved D16 mid-session) — Batch S2-09 continuing to `AICAD-057`.
 
-This session started from `c96fd40` ("Update SESSION_HANDOFF.md: Stage-2
-Batch S2-08 complete"), the tip of `origin/claude/aicad-stage2-dev` at
-session start (`git fetch origin --prune` confirmed the branch had not
-advanced past `c96fd40` before this session began; working tree was clean).
-Added one commit:
-
-```
-<HEAD> <this session's commit>  AICAD-056: Implement while/loop/break/continue; escalate for/collections as D16
-c96fd40                          Update SESSION_HANDOFF.md: Stage-2 Batch S2-08 complete  (inherited)
-```
+This session started from `162fcc4` ("AICAD-056: Implement while/loop/
+break/continue; escalate for/collections as D16"), the tip of
+`origin/claude/aicad-stage2-dev` at session start (that commit was itself
+a prior invocation's own escalation of `AICAD-056`'s `for`/collections
+half as `project/OWNER_DECISIONS.md#D16`, per its own `SESSION_HANDOFF.md`
+instruction to resume `AICAD-056` itself next). Partway through this
+session, the owner delivered a full ruling on D16 (recorded as `project/
+DECISION_LOG.md#DL-13`), authorizing exactly: `List<T>` via new
+`[e1, e2, ...]` list-literal syntax; `Range<Int>`/`Range<UInt>` via new
+`start..end`/`start..=end` range syntax; `Iterator<T>` as private
+lowering/runtime machinery only; and explicitly *not* a general compiler-
+intrinsic mechanism, `Set<T>`/`Map<K,V>`, comprehensions, user-defined
+iterator protocols, async/parallel iteration, or implicit dimensional-
+range stepping. This session implemented that ruling in full and completed
+`AICAD-056`. See `project/reports/AICAD-056.md`'s "Session 2" section for
+the complete decision record, exact commands/results, and every file
+changed.
 
 ### What this session did
 
-Read `crates/cad-runtime/src/interp.rs`'s module doc comment and
-`project/reports/AICAD-054.md`/`AICAD-055.md`'s "Known limitations"
-sections first, per the prior handoff's own recommendation. Confirmed by
-direct inspection (see `project/reports/AICAD-056.md`'s "Why for/
-collections could not proceed without escalating" section for the full
-evidence trail) that **no `.aicad` source program can construct a
-collection/iterator value today**:
-
-- `specs/language/grammar.ebnf`'s frozen `expression` production has no
-  array/list-literal syntax and no range operator (`..`/`..=`) — confirmed
-  by reading the entire 74-line file, which is explicitly "the
-  authoritative, machine-checked grammar starting at Stage 2."
-- The plan's own `for i in 0..count` example (`docs/plan/
-  03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md`) and `List<T>`/`Range<T>`/
-  `Iterator<T>`/`Generator<T>` requirement (`docs/plan/
-  02_LANGUAGE_AND_COMPILER.md` §9) were never promoted into that frozen
-  grammar by `AICAD-039`-`045` (confirmed against `project/gates/
-  STAGE2-A_FRONTEND.md`).
-- No compiler-intrinsic/builtin-function mechanism exists either —
-  `cad_hir` binding resolution only ever resolves user-declared
-  `fn`/`struct`/`enum`/`let`/`const`/`param` items.
-- `cad_hir::typeck`'s own `HirStmt::For` handling already carries a doc
-  comment making the identical observation independently.
-
-Giving `for` a real runtime meaning therefore requires either new public
-expression syntax or a new compiler-intrinsic boundary — both explicit
-`AGENTS.md` owner-escalation triggers, and both are `AICAD-056`'s own
-listed `project/TASKS.yaml` `escalate_if` conditions verbatim. Per
-`AGENTS.md`'s work loop step 4, this session stopped before inventing an
-architecture for it and recorded the question as `project/
-OWNER_DECISIONS.md#D16` instead of deciding it.
-
-What **was** implemented (the half of `AICAD-056` that needs no collection
-value at all): `while` and `loop` execution, with `break`/`continue`
-threaded as two new `Signal::Break(Span)`/`Signal::Continue(Span)` variants
-alongside the existing `Signal::Return`/`Signal::Error`, propagating
-through arbitrarily nested blocks/`if`/`match` via `?` exactly like
-`Return` already does, and mapped onto native Rust `break`/`continue` at
-the point where a `while`/`loop` construct's own body-execution result is
-matched. `break`/`continue` used with no enclosing loop in the current
-dynamic call frame — legal HIR, since `cad_hir::typeck`'s own
-`HirStmt::Break`/`HirStmt::Continue` check is a no-op — is a new real,
-reachable `RuntimeError::BreakOutsideLoop`/`ContinueOutsideLoop`
-(`RUNTIME-E119`/`RUNTIME-E120`), never a panic. `for` is unchanged
-(`RuntimeError::Unsupported`, message/doc comment updated to point at
-D16 instead of "AICAD-056's own scheduled scope"). 9 new tests (33 -> 42
-total in `cad-runtime`).
-
-See `project/reports/AICAD-056.md` for the full decision record, exact
-commands/results, and every file changed.
+1. Recorded the D16 ruling as `project/DECISION_LOG.md#DL-13` and marked
+   `project/OWNER_DECISIONS.md#D16` `RESOLVED`, per the owner's own
+   instruction.
+2. Implemented list-literal (`[e1, e2, ...]`) and range (`start..end`/
+   `start..=end`) syntax end-to-end: `cad-lexer` (`DotDot`/`DotDotEq`
+   tokens), `cad-ast` (`Expr::ListLiteral`/`Expr::Range`, printer
+   round-trip), `cad-parser` (`parse_range`/`parse_list_literal`, a new
+   precedence level below `or`), `cad-compiler::binder` (scope-walk arms),
+   `cad-hir` (`HirExpr::ListLiteral`/`Range`, lowering, `CheckedType::
+   List`/`Range`, element-type unification, `for`-loop iterable-type
+   resolution), `cad-runtime` (`Value::List`/`Value::Range`, `for`-loop
+   execution, a minimal iteration-budget placeholder for `AICAD-058`).
+   Updated `specs/language/grammar.ebnf` with the new `range_expr`/
+   `list_expr` productions per that file's own required process (spec
+   update + positive/negative tests).
+3. **Found and fixed a real regression during this task's own testing**:
+   the new `DotDot` token (lexer maximal munch on `..`) broke
+   `cad-parser`'s pre-existing relative-import path parsing (`import
+   ../foo;`), which expected two separate `Dot` tokens. Fixed
+   `parse_import_path` to recognize `DotDot` immediately followed by `/`
+   instead of its old three-`Dot`-token lookahead; both affected
+   pre-existing tests pass again, confirmed by a full `cad-parser` run.
+4. **Found and fixed a real bug during this task's own test-writing**: an
+   initial runtime "is this Range auto-iterable" check required the
+   runtime's own `PrimitiveType::Int`/`UInt` tag specifically — but
+   `crate::value`'s own already-documented "Deliberate simplification"
+   (every unitless numeric literal collapses to `Scalar(Float)` at
+   runtime, regardless of the type checker's `Int`/`UInt`/`Float`/
+   `Decimal` distinction) means that tag never actually appears, so the
+   check rejected *every* legitimately type-checked `Range<Int>`. Fixed by
+   checking only "is this a non-dimensional `Scalar`" at run time and
+   trusting `cad_hir::typeck`'s own compile-time `Int`/`UInt`-only rule —
+   see `project/reports/AICAD-056.md` decision 2 for the full reasoning.
+5. Wrote tests against the owner's own explicit required list (see
+   `project/reports/AICAD-056.md` "Tests" section for the full
+   cross-check) across `cad-lexer`/`cad-parser`/`cad-hir`/`cad-runtime`.
+6. Updated `project/TASKS.yaml` (`AICAD-056` -> `status: done`) and
+   `crates/cad-runtime/README.md`/`src/lib.rs` status descriptions.
 
 ## Current state / next action
 
 - **Active stage**: Stage 2. Stage 1 closed (DL-11); D5 policy-shape
   closed (DL-12), concrete v1 tolerance constants still **not** derived
   (unchanged — future `cad-validation`/execution-determinism-checkpoint
-  follow-up, not yet any completed batch's scope).
-- **Current/next batch**: S2-09 (`AICAD-056` loops+collections ->
-  `AICAD-057` recursion/Result -> `AICAD-058` resource budget ->
-  `STAGE2-C_EXECUTION.md` checkpoint). **`AICAD-056` is PARTIALLY
-  complete** — `while`/`loop`/`break`/`continue` execution is done, tested,
-  and all required checks pass; `for`-loop execution and "basic
-  collections/iterators" are blocked on `project/OWNER_DECISIONS.md#D16`
-  (owner decision needed: new range/array-literal syntax vs. a new
-  compiler-intrinsic-function boundary for constructing a collection
-  value — see that entry and `project/reports/AICAD-056.md` for the full
-  reasoning). `project/TASKS.yaml`'s `AICAD-056` entry is left
-  `status: todo`.
-- **THE NEXT INVOCATION MUST RESUME `AICAD-056` ITSELF, NOT SKIP AHEAD TO
-  `AICAD-057`.** This follows the active campaign brief's explicit rule
-  for an owner-controlled blocker ("the next invocation must resume that
-  exact task before any other roadmap work"). Concretely: check
-  `project/OWNER_DECISIONS.md#D16` for a ruling. If ruled on, implement
-  `for`/collections accordingly (new syntax needs its own lexer/parser/HIR/
-  typeck changes in addition to `cad-runtime`, not just an interpreter
-  change — do not assume it is a `cad-runtime`-only patch), add tests, and
-  complete/close out `AICAD-056` (mark `status: done`, no separate
-  `AICAD-056b` task id — this stays one task). If not yet ruled on, do not
-  re-invent a design; re-verify the blocker still holds (re-check
-  `specs/language/grammar.ebnf` and binding resolution have not changed)
-  and continue to wait — do not proceed to `AICAD-057` in that case either,
-  per the same rule, unless the owner has separately instructed otherwise.
+  follow-up). D16 (collection/iteration syntax) now closed (DL-13).
+- **Current/next batch**: S2-09. `AICAD-056` is **COMPLETE**
+  (`status: done`). **Next task is `AICAD-057`** ("Implement recursion and
+  Result/error propagation"), per the owner's own explicit instruction to
+  continue the batch in order once `AICAD-056` passed all required checks.
+  This session will attempt `AICAD-057` (and, context permitting,
+  `AICAD-058` and the `STAGE2-C_EXECUTION.md` checkpoint) next, in the
+  same invocation.
+- **No partial task.** `AICAD-056` is fully implemented, tested, reported,
+  and (once committed — see below) will be on `origin/claude/
+  aicad-stage2-dev`.
 - **Exact recent test status** (this session's own fresh runs, most
-  recent first):
-  - `cargo test -p cad-runtime`: 42 tests, all passing (33 inherited +9
-    from this session).
-  - `cargo test --workspace`: every test binary `test result: ok`, 0
-    failed — includes the full native/OCCT Stage-1 suite and every
-    Stage-2 front-end suite from prior batches (unaffected by this
-    session).
-  - `cargo build --workspace --all-targets`: clean.
-  - `cargo clippy --workspace --all-targets --all-features -- -D
-    warnings`: zero warnings, clean on the first pass.
-  - `cargo fmt --all -- --check`: clean (one diff found on the first pass
-    — rustfmt's own reflow of one new test's `assert_number_eq` call —
-    fixed with `cargo fmt --all` before this session's commit).
-- **No open regressions.** Every pre-existing test suite (`cad-ast`,
-  `cad-lexer`, `cad-parser`, `cad-compiler`, `cad-diagnostics`,
-  `cad-types`, `cad-units`, `cad-hir`, the full native/OCCT Stage-1 suite)
-  is untouched and still passes.
-- **Unresolved owner decisions**: **new** — `D16` (collection/iterator
-  construction syntax, this session's own escalation, blocks
-  `AICAD-056`'s `for`/collections half specifically). Unchanged: D3, D5
-  (concrete tolerance constants only — policy shape closed per DL-12),
-  D10, D11, D12, D15. This session added 2 new provisional `RUNTIME-Exxx`
-  codes (`RUNTIME-E119`/`E120`), same provisional-pending-D10 convention
-  as every prior batch.
-- **D5 status/evidence**: unchanged from prior batches. This batch's own
-  determinism-relevant finding: the new `while`/`loop` execution introduces
-  no new `HashMap` iteration (uses the same point-lookup/insert-only
-  `Frame`/`fns`/`globals` maps `AICAD-054` already established), consistent
-  with D5 Level 1.
-- **Pre-existing `TASKS.yaml` staleness** (unchanged, not this session's
-  scope to fix): `AICAD-001` through `AICAD-037` still show `status: todo`
-  despite being long complete. This session correctly left `AICAD-056`
-  `status: todo` for the reason stated above (a real, current partial
-  state, not stale bookkeeping) and touched no other entry.
-- **Recommended next action**: resume `AICAD-056` — read `project/
-  OWNER_DECISIONS.md#D16` first to check for a ruling before touching any
-  code. Do not begin `AICAD-057` first.
+  recent first): `cargo test -p cad-lexer` 29/29; `cargo test -p
+  cad-parser` 100/100 (includes the 2 relative-import regression tests
+  this task's own change broke and fixed); `cargo test -p cad-hir`
+  109/109; `cargo test -p cad-runtime` 54/54; `cargo test --workspace`
+  every binary `ok`, 0 failed (full native/OCCT Stage-1 suite included,
+  unaffected); `cargo build --workspace --all-targets` clean; `cargo
+  clippy --workspace --all-targets --all-features -- -D warnings` clean
+  (one real finding — `clippy::while_let_loop` in the new
+  `parse_list_literal` — found and fixed during this task); `cargo fmt
+  --all -- --check` clean (two intermediate diffs found and fixed with
+  `cargo fmt --all`).
+- **No open regressions** (the one regression this task's own change
+  introduced — the relative-import lexing break — was found and fixed
+  within this same session, confirmed by the fresh `cad-parser` run
+  above).
+- **Unresolved owner decisions**: D16 now resolved (DL-13). Unchanged: D3,
+  D5 (concrete tolerance constants only), D10, D11, D12, D15. This session
+  added 5 new provisional `RUNTIME-Exxx` codes (`E121`-`E123`, plus
+  session 1's `E119`-`E120` already on `origin`) and 5 new provisional
+  `TYPE-Exxx` codes (`E440`-`E444`), all still provisional pending D10,
+  same convention as every prior batch.
+- **D5 status/evidence**: unchanged from prior batches. This task's own
+  determinism-relevant finding: `for`-loop execution over `List`/`Range`
+  introduces no new `HashMap` iteration (list order is plain `Vec` order;
+  range iteration is a plain arithmetic loop) — consistent with D5 Level 1.
+- **Pre-existing `TASKS.yaml` staleness** (unchanged, not this batch's
+  scope): `AICAD-001` through `AICAD-037` still show `status: todo` despite
+  being long complete.
+- **Recommended next action**: proceed to `AICAD-057` ("Implement
+  recursion and Result/error propagation") in this same invocation, per
+  the owner's explicit instruction. If this invocation ends before
+  `AICAD-058`/the `STAGE2-C_EXECUTION.md` checkpoint are reached, the next
+  invocation should resume the batch at whichever of `AICAD-057`/`058`/the
+  checkpoint is not yet complete, in that fixed order — check this file's
+  own next update (written at the end of this invocation) for the exact
+  point reached.
 
 ## Environment
 
-Unchanged from prior sessions (reconfirmed, not assumed): Rust 1.98.1 (this
-session's first `cargo build` auto-installed it via `rustup` again,
-matching `rust-toolchain.toml` — the toolchain does not appear to persist
-across sessions in this container), edition 2024. This session's work added
-**zero** new third-party crate dependencies and touched only
-`crates/cad-runtime` (plus `project/OWNER_DECISIONS.md`, this file, and
-`project/reports/AICAD-056.md`). No native/OCCT work was touched.
+Unchanged from prior sessions (reconfirmed, not assumed): Rust 1.98.1
+(auto-installed via `rustup` again this session, matching
+`rust-toolchain.toml` — the toolchain does not appear to persist across
+sessions in this container), edition 2024. This session's work added
+**zero** new third-party crate dependencies. Crates touched: `cad-lexer`,
+`cad-ast`, `cad-parser`, `cad-compiler`, `cad-hir`, `cad-runtime`, plus
+`specs/language/grammar.ebnf` and the usual `project/` bookkeeping files.
+No native/OCCT work was touched.
 
 ## Git identity
 
 This container's global git config is `Claude <noreply@anthropic.com>`
 (with `user.useConfigOnly=true` and `core.hooksPath` pointed at the repo's
-identity-enforcing hooks) — matching every prior session's own finding, and
-**not modified** by this session (per `CLAUDE.md`/`AGENTS.md`: "NEVER
-update the git config"). Instead, this session's commit sets
+identity-enforcing hooks) — matching every prior session's own finding,
+and **not modified** by this session (per `CLAUDE.md`/`AGENTS.md`: "NEVER
+update the git config"). Instead, this session's commit(s) set
 `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
 `GIT_COMMITTER_EMAIL` to `insightlabs38-pixel`/`insightlabs38@gmail.com` as
-process-local environment variables for that one `git commit` invocation
-only — the repo's `prepare-commit-msg` hook (which hard-fails any commit
-whose author/committer identity doesn't match exactly) passed without
-needing any config change. No hook was bypassed or modified;
-`core.hooksPath` was left untouched; `--no-verify` was never used.
+process-local environment variables for each `git commit` invocation only
+— the repo's `prepare-commit-msg` hook (which hard-fails any commit whose
+author/committer identity doesn't match exactly) passed without needing
+any config change. No hook was bypassed or modified; `core.hooksPath` was
+left untouched; `--no-verify` was never used.

@@ -8,24 +8,27 @@
 //! over `cad_hir::HirProgram` (the same typed HIR `cad_hir::typeck`
 //! already type-checks); `AICAD-055` ("Implement conditional and match
 //! execution") added `if`/`match`; `AICAD-056` ("Implement loops and basic
-//! collections/iterators") added `while`/`loop`/`break`/`continue` (see
-//! `project/reports/AICAD-054.md`, `AICAD-055.md`, `AICAD-056.md` for each
-//! task's exact scope, decisions, and known limitations). `AICAD-056`'s
-//! own `for`-loop half is escalated, not implemented — see [`interp`]'s
-//! module doc comment "Known limitation: `for`-loop iteration" and
-//! `project/OWNER_DECISIONS.md#D16`. See [`interp`]'s own module doc
-//! comment for the full design: what is executed now, what remains
+//! collections/iterators") added `while`/`loop`/`break`/`continue`, then
+//! (after `project/OWNER_DECISIONS.md#D16`'s owner ruling on collection/
+//! iterator construction syntax) `List<T>`/`Range<Int>`/`Range<UInt>`
+//! values and `for`-loop execution over them (see `project/reports/
+//! AICAD-054.md`, `AICAD-055.md`, `AICAD-056.md` for each task's exact
+//! scope, decisions, and known limitations). See [`interp`]'s own module
+//! doc comment for the full design: what is executed now, what remains
 //! deliberately unimplemented, and the one documented `expected`-type-
 //! context gap left for ambiguous derived-dimension arithmetic.
 //!
-//! - [`value`]: [`value::Value`]/[`value::NumberValue`] — the runtime
-//!   value representation, and why numeric scalars deliberately collapse
-//!   to one runtime tag rather than mirroring the type checker's
-//!   `Int`/`UInt`/`Float`/`Decimal` distinction.
-//! - [`error`]: [`error::RuntimeError`] — every way execution can fail to
+//! - [`value`][]: [`value::Value`]/[`value::NumberValue`]/
+//!   [`value::RangeValue`] — the runtime value representation, and why
+//!   numeric scalars deliberately collapse to one runtime tag rather than
+//!   mirroring the type checker's `Int`/`UInt`/`Float`/`Decimal`
+//!   distinction (this is also why `for`-loop range iteration cannot
+//!   independently re-verify `Int`/`UInt`-only at run time — see
+//!   [`interp::Interpreter::exec_for`]'s own doc comment).
+//! - [`error`][]: [`error::RuntimeError`] — every way execution can fail to
 //!   produce a value, and its `cad_diagnostics::Diagnostic` conversion
 //!   under RFC-0005's `RUNTIME` family.
-//! - [`interp`]: [`interp::Interpreter`] — the evaluator itself.
+//! - [`interp`][]: [`interp::Interpreter`] — the evaluator itself.
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §2.2;
 //! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (execution sits between
@@ -40,4 +43,4 @@ pub mod value;
 
 pub use error::RuntimeError;
 pub use interp::Interpreter;
-pub use value::{NumberValue, Value};
+pub use value::{NumberValue, RangeValue, Value};

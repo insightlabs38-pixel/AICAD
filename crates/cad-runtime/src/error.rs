@@ -189,19 +189,17 @@ pub enum RuntimeError {
     NonExhaustiveMatch {
         span: Span,
     },
-    /// A HIR node this crate does not execute yet — `for`-loop execution
-    /// specifically is blocked on `project/OWNER_DECISIONS.md#D16` (no
-    /// collection/iterator value can be constructed from any `.aicad`
-    /// source program today: `specs/language/grammar.ebnf`'s frozen
-    /// `expression` production has no array/list-literal or range-operator
-    /// syntax, so `AICAD-056` could not give `for`'s `iterable` a real
-    /// runtime meaning without inventing new public surface syntax, an
-    /// `AGENTS.md` escalation trigger — see `crate::interp`'s module doc
-    /// comment "Known limitation: `for`-loop iteration"); struct field
-    /// access and construction have no runtime value representation yet
-    /// (see `crate::value`'s module doc comment). Reported as a structured
-    /// diagnostic, never a panic, so a program that happens to exercise
-    /// one of these before its owning task lands fails cleanly.
+    /// A HIR node this crate does not execute yet — struct field access
+    /// and construction have no runtime value representation yet (see
+    /// `crate::value`'s module doc comment); method calls have no
+    /// method/interface-implementation declaration syntax anywhere in the
+    /// language. Reported as a structured diagnostic, never a panic, so a
+    /// program that happens to exercise one of these before its owning
+    /// task lands fails cleanly. (`for`-loop iteration over a `List`/
+    /// `Range` is implemented — `AICAD-056`, `project/OWNER_DECISIONS.md
+    /// #D16` — and no longer reaches this variant; see
+    /// [`RuntimeError::NotIterable`]/[`RuntimeError::RangeNotIterable`]
+    /// for the two ways a `for` loop can still fail cleanly.)
     Unsupported {
         construct: &'static str,
         span: Span,
@@ -218,6 +216,42 @@ pub enum RuntimeError {
     },
     /// As [`RuntimeError::BreakOutsideLoop`], for `continue;`.
     ContinueOutsideLoop {
+        span: Span,
+    },
+    /// A `for var in iterable { ... }` whose `iterable` evaluated to
+    /// something other than a `Value::List`/`Value::Range` — `cad_hir::
+    /// typeck::check_iterable_element_type` already rejects this at
+    /// compile time (`TYPE-E443`), so this is defensive (this evaluator's
+    /// own "trusts, but verifies" design — see `crate::interp`'s module
+    /// doc comment), never a panic on an un-type-checked or hand-built
+    /// program.
+    NotIterable {
+        kind: &'static str,
+        span: Span,
+    },
+    /// A `for` loop's `iterable` evaluated to a `Value::Range` whose
+    /// element type is not `Int`/`UInt` (e.g. a dimensional `Range<Length>`
+    /// — `project/OWNER_DECISIONS.md#D16`: "not automatically iterable...
+    /// no step size is defined"). `cad_hir::typeck::
+    /// check_iterable_element_type` already rejects this at compile time
+    /// (`TYPE-E443`); reachable at run time only defensively (an
+    /// un-type-checked or hand-built program), same rationale as
+    /// [`RuntimeError::NotIterable`].
+    RangeNotIterable {
+        span: Span,
+    },
+    /// A `for` loop's own iteration count exceeded [`crate::interp::
+    /// Interpreter`]'s configured iteration budget. A minimal, provisional
+    /// placeholder for `AICAD-058`'s own scheduled "execution resource-
+    /// budget accounting" — this task's own required scope is only "every
+    /// iteration participates in the approved execution resource-budget
+    /// accounting" for `for` loops specifically (`project/
+    /// OWNER_DECISIONS.md#D16`'s FOR-LOOP SEMANTICS section); `AICAD-058`
+    /// is expected to generalize/replace this with the full budget
+    /// contract (recursion depth, other resource categories) `AGENTS.md`'s
+    /// "Execution safety" describes. Reported as a structured diagnostic,
+    /// never an unbounded hang or an uncontrolled `abort`.
+    IterationBudgetExceeded {
         span: Span,
     },
 }
@@ -250,6 +284,9 @@ impl RuntimeError {
             RuntimeError::NonExhaustiveMatch { .. } => "RUNTIME-E118".to_string(),
             RuntimeError::BreakOutsideLoop { .. } => "RUNTIME-E119".to_string(),
             RuntimeError::ContinueOutsideLoop { .. } => "RUNTIME-E120".to_string(),
+            RuntimeError::NotIterable { .. } => "RUNTIME-E121".to_string(),
+            RuntimeError::RangeNotIterable { .. } => "RUNTIME-E122".to_string(),
+            RuntimeError::IterationBudgetExceeded { .. } => "RUNTIME-E123".to_string(),
         }
     }
 
@@ -275,7 +312,10 @@ impl RuntimeError {
             | RuntimeError::Unsupported { span, .. }
             | RuntimeError::NonExhaustiveMatch { span }
             | RuntimeError::BreakOutsideLoop { span }
-            | RuntimeError::ContinueOutsideLoop { span } => *span,
+            | RuntimeError::ContinueOutsideLoop { span }
+            | RuntimeError::NotIterable { span, .. }
+            | RuntimeError::RangeNotIterable { span }
+            | RuntimeError::IterationBudgetExceeded { span } => *span,
         }
     }
 
@@ -302,6 +342,9 @@ impl RuntimeError {
             RuntimeError::NonExhaustiveMatch { .. } => "NON_EXHAUSTIVE_MATCH",
             RuntimeError::BreakOutsideLoop { .. } => "BREAK_OUTSIDE_LOOP",
             RuntimeError::ContinueOutsideLoop { .. } => "CONTINUE_OUTSIDE_LOOP",
+            RuntimeError::NotIterable { .. } => "NOT_ITERABLE",
+            RuntimeError::RangeNotIterable { .. } => "RANGE_NOT_ITERABLE",
+            RuntimeError::IterationBudgetExceeded { .. } => "ITERATION_BUDGET_EXCEEDED",
         }
     }
 
@@ -365,6 +408,17 @@ impl RuntimeError {
             }
             RuntimeError::ContinueOutsideLoop { .. } => {
                 "'continue' used outside a 'while'/'loop' loop".to_string()
+            }
+            RuntimeError::NotIterable { kind, .. } => {
+                format!("'for' cannot iterate over a {kind} value")
+            }
+            RuntimeError::RangeNotIterable { .. } => {
+                "this Range is not automatically iterable (no step size is defined for its \
+                 element type)"
+                    .to_string()
+            }
+            RuntimeError::IterationBudgetExceeded { .. } => {
+                "'for' loop exceeded its execution iteration budget".to_string()
             }
         }
     }

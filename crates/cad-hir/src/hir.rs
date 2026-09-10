@@ -203,6 +203,25 @@ pub enum HirExpr {
         arms: Vec<HirMatchArm>,
         span: Span,
     },
+    /// `[e1, e2, ...]` — `project/OWNER_DECISIONS.md#D16`'s owner-approved
+    /// list-literal syntax. Whether every element's type actually unifies
+    /// to one compatible element type is `cad_hir::typeck`'s job, not
+    /// lowering's — mirrors `HirExpr::Match`'s identical division of labor.
+    ListLiteral {
+        elements: Vec<HirExpr>,
+        span: Span,
+    },
+    /// `start..end` (half-open) or `start..=end` (inclusive) —
+    /// `project/OWNER_DECISIONS.md#D16`. Only `Range<Int>`/`Range<UInt>`
+    /// are automatically iterable in a `for` loop (`cad_hir::typeck`
+    /// enforces this); a `Range` value of any other element type still
+    /// type-checks and lowers identically, it is simply not iterable.
+    Range {
+        start: Box<HirExpr>,
+        end: Box<HirExpr>,
+        inclusive: bool,
+        span: Span,
+    },
 }
 
 impl HirExpr {
@@ -215,7 +234,9 @@ impl HirExpr {
             | HirExpr::Call { span, .. }
             | HirExpr::Field { span, .. }
             | HirExpr::If { span, .. }
-            | HirExpr::Match { span, .. } => *span,
+            | HirExpr::Match { span, .. }
+            | HirExpr::ListLiteral { span, .. }
+            | HirExpr::Range { span, .. } => *span,
             HirExpr::Block(block) => block.span,
         }
     }

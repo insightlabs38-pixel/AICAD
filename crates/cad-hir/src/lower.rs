@@ -693,6 +693,21 @@ impl<'a> Lowerer<'a> {
                 arms: arms.iter().map(|arm| self.lower_match_arm(arm)).collect(),
                 span: *span,
             },
+            Expr::ListLiteral { elements, span } => HirExpr::ListLiteral {
+                elements: elements.iter().map(|e| self.lower_expr(e)).collect(),
+                span: *span,
+            },
+            Expr::Range {
+                start,
+                end,
+                inclusive,
+                span,
+            } => HirExpr::Range {
+                start: Box::new(self.lower_expr(start)),
+                end: Box::new(self.lower_expr(end)),
+                inclusive: *inclusive,
+                span: *span,
+            },
         }
     }
 

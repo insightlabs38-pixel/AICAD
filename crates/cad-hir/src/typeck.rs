@@ -134,6 +134,25 @@ pub enum CheckedType {
     /// `BindingId` (`AICAD-053`) — not the matched *variant*'s binding;
     /// every variant of one enum shares this same `CheckedType`.
     Enum(BindingId),
+    /// An immutable `List<T>` (`AICAD-056`, `project/OWNER_DECISIONS.md
+    /// #D16`). `T` is restricted to a plain [`CheckedType::Value`] element
+    /// type (never `Struct`/`Enum`/nested `List`/`Range`) — the owner
+    /// ruling's own "Stage-2 collection foundation" scope limit ("does not
+    /// need to implement the entire future collection library"); nothing
+    /// in `AICAD-056`'s required test list needs a struct/enum or nested-
+    /// collection element, and keeping the element type as a plain
+    /// [`HirType`] (already `Copy`) keeps `CheckedType` itself `Copy`
+    /// rather than requiring a `Box` that would ripple through every
+    /// existing by-value `CheckedType` call site in this module.
+    List(HirType),
+    /// A `Range<T>` (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`) —
+    /// `start..end`/`start..=end`. Constructible for any plain element
+    /// type `T` (the owner ruling: "Range<T> may exist for dimensional
+    /// values such as Range<Length>"), but only `Range<Int>`/`Range<UInt>`
+    /// are automatically iterable in a `for` loop — see
+    /// `Checker::check_iterable_element_type`. Same `Copy`-preservation
+    /// rationale as [`CheckedType::List`].
+    Range(HirType),
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -275,6 +294,8 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::Value(e), CheckedType::Value(a)) => value_types_compatible(e, a),
         (CheckedType::Struct(e), CheckedType::Struct(a)) => e == a,
         (CheckedType::Enum(e), CheckedType::Enum(a)) => e == a,
+        (CheckedType::List(e), CheckedType::List(a)) => value_types_compatible(e, a),
+        (CheckedType::Range(e), CheckedType::Range(a)) => value_types_compatible(e, a),
         _ => false,
     }
 }
@@ -321,6 +342,8 @@ impl<'a> Checker<'a> {
             CheckedType::Struct(id) | CheckedType::Enum(id) => {
                 self.bindings[id.index()].name.clone()
             }
+            CheckedType::List(elem) => format!("List<{elem}>"),
+            CheckedType::Range(elem) => format!("Range<{elem}>"),
         }
     }
 
@@ -379,16 +402,57 @@ impl<'a> Checker<'a> {
     /// **no** declaration at all (a genuine typo, e.g. `Frobnicator`) is
     /// diagnosed as `UNKNOWN_TYPE_NAME`.
     ///
-    /// `HirTypeRef::Generic` (`Vector2<Length>`, ...) is never resolved —
-    /// no generic/collection type system exists yet anywhere in this
-    /// compiler (`cad_units`/`cad_types` cover only primitives and named
-    /// dimensions, and struct/enum nominal identity has no generic-
-    /// parameter concept either), so guessing one here would be exactly
-    /// the speculative invention `AGENTS.md` warns against; this returns
-    /// `None` silently (no diagnostic — a `Generic` reference is not a
-    /// "wrong" name, just not yet a typeable one).
+    /// `HirTypeRef::Generic` (`Vector2<Length>`, ...) is never resolved,
+    /// with exactly two named exceptions: `List<T>`/`Range<T>`
+    /// (`AICAD-056`, `project/OWNER_DECISIONS.md#D16` — the owner's own
+    /// "Stage-2 collection foundation" minimum). No other generic type
+    /// exists anywhere in this compiler (`cad_units`/`cad_types` cover
+    /// only primitives and named dimensions, and struct/enum nominal
+    /// identity has no generic-parameter concept either), so resolving any
+    /// other generic name here would still be exactly the speculative
+    /// invention `AGENTS.md` warns against; every other `Generic`
+    /// reference returns `None` silently (no diagnostic — not yet a
+    /// typeable one, not a "wrong" name).
     fn resolve_type_ref(&mut self, ty: &HirTypeRef) -> Option<CheckedType> {
         match ty {
+            HirTypeRef::Generic { name, args, span } if name == "List" && args.len() == 1 => {
+                match self.resolve_type_ref(&args[0])? {
+                    CheckedType::Value(elem) => Some(CheckedType::List(elem)),
+                    other => {
+                        self.diagnostics.push(self.diag(
+                            444,
+                            "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
+                            format!(
+                                "'List<{}>' is not supported — Stage 2 collection element types \
+                                 are limited to plain scalar/dimensional types \
+                                 (project/OWNER_DECISIONS.md#D16)",
+                                self.describe(other)
+                            ),
+                            *span,
+                        ));
+                        None
+                    }
+                }
+            }
+            HirTypeRef::Generic { name, args, span } if name == "Range" && args.len() == 1 => {
+                match self.resolve_type_ref(&args[0])? {
+                    CheckedType::Value(elem) => Some(CheckedType::Range(elem)),
+                    other => {
+                        self.diagnostics.push(self.diag(
+                            444,
+                            "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
+                            format!(
+                                "'Range<{}>' is not supported — Stage 2 collection element types \
+                                 are limited to plain scalar/dimensional types \
+                                 (project/OWNER_DECISIONS.md#D16)",
+                                self.describe(other)
+                            ),
+                            *span,
+                        ));
+                        None
+                    }
+                }
+            }
             HirTypeRef::Generic { .. } => None,
             HirTypeRef::Named { name, span } => {
                 if let Some(prim) = PrimitiveType::from_name(name) {
@@ -694,14 +758,20 @@ impl<'a> Checker<'a> {
                     self.check_else_stmt(else_stmt);
                 }
             }
-            HirStmt::For { iterable, body, .. } => {
-                // No collection/iterator type system exists yet
-                // (`cad_units`/`cad_types` cover only primitives/
-                // dimensions, and structs/enums have no element-type
-                // concept) — the loop variable's own binding type stays
-                // unresolved; `iterable`'s subexpressions are still
-                // checked for their own independent diagnostics.
-                self.check_expr(iterable, None);
+            HirStmt::For {
+                binding,
+                iterable,
+                body,
+                ..
+            } => {
+                // `AICAD-056`, `project/OWNER_DECISIONS.md#D16`: `iterable`
+                // must resolve to a `List<T>` or an auto-iterable
+                // `Range<Int>`/`Range<UInt>` — see
+                // `Checker::check_iterable_element_type`'s own doc comment
+                // for exactly what is/isn't accepted and why.
+                let iterable_ty = self.check_expr(iterable, None);
+                let elem_ty = self.check_iterable_element_type(iterable_ty, iterable.span());
+                self.binding_types[binding.index()] = elem_ty;
                 self.check_block(body, None);
             }
             HirStmt::While { cond, body, .. } => {
@@ -799,6 +869,192 @@ impl<'a> Checker<'a> {
                 arms,
                 span,
             } => self.check_match_expr(scrutinee, arms, expected, *span),
+            HirExpr::ListLiteral { elements, span } => {
+                self.check_list_literal(elements, expected, *span)
+            }
+            HirExpr::Range {
+                start, end, span, ..
+            } => self.check_range_expr(start, end, expected, *span),
+        }
+    }
+
+    /// `[e1, e2, ...]` (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`).
+    /// Every element must resolve to the same [`CheckedType::Value`]
+    /// (`value_types_compatible`, via [`types_compatible`]) — e.g. `5mm`,
+    /// `2cm`, and `1in` all resolve to the identical `Dimensional{Length,
+    /// None}` regardless of source unit spelling (dimension resolution is
+    /// unit-symbol-independent), so "elements unify to one compatible
+    /// element type" reduces to plain type-identity agreement, not a
+    /// numeric-promotion algorithm. An empty literal (`[]`) needs
+    /// `expected` (a `List<T>` annotation) to know its own element type at
+    /// all; without one, `EMPTY_LIST_TYPE_UNKNOWN` — the owner ruling's
+    /// own required case ("otherwise emit a stable type-inference
+    /// diagnostic").
+    fn check_list_literal(
+        &mut self,
+        elements: &[HirExpr],
+        expected: Option<CheckedType>,
+        span: Span,
+    ) -> Option<CheckedType> {
+        let expected_elem = match expected {
+            Some(CheckedType::List(elem)) => Some(CheckedType::Value(elem)),
+            _ => None,
+        };
+        if elements.is_empty() {
+            return match expected_elem {
+                Some(CheckedType::Value(elem)) => Some(CheckedType::List(elem)),
+                _ => {
+                    self.diagnostics.push(
+                        self.diag(
+                            441,
+                            "EMPTY_LIST_TYPE_UNKNOWN",
+                            "cannot infer the element type of an empty list literal '[]' — add an \
+                         explicit type annotation (e.g. 'let xs: List<Int> = [];')"
+                                .to_string(),
+                            span,
+                        ),
+                    );
+                    None
+                }
+            };
+        }
+        let mut elem_ty: Option<CheckedType> = None;
+        for element in elements {
+            let Some(this_ty) = self.check_expr(element, expected_elem.or(elem_ty)) else {
+                continue;
+            };
+            let CheckedType::Value(_) = this_ty else {
+                self.diagnostics.push(self.diag(
+                    444,
+                    "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
+                    format!(
+                        "list elements must have a plain scalar/dimensional type; found {}",
+                        self.describe(this_ty)
+                    ),
+                    element.span(),
+                ));
+                continue;
+            };
+            match elem_ty.or(expected_elem) {
+                None => elem_ty = Some(this_ty),
+                Some(target) => {
+                    if !types_compatible(target, this_ty) {
+                        self.diagnostics.push(self.diag(
+                            440,
+                            "LIST_ELEMENT_TYPE_MISMATCH",
+                            format!(
+                                "list elements must all have the same/compatible type; expected \
+                                 {}, found {}",
+                                self.describe(target),
+                                self.describe(this_ty)
+                            ),
+                            element.span(),
+                        ));
+                    } else if elem_ty.is_none() {
+                        elem_ty = Some(this_ty);
+                    }
+                }
+            }
+        }
+        match elem_ty.or(expected_elem) {
+            Some(CheckedType::Value(elem)) => Some(CheckedType::List(elem)),
+            _ => None,
+        }
+    }
+
+    /// `start..end` / `start..=end` (`AICAD-056`, `project/
+    /// OWNER_DECISIONS.md#D16`). `start`/`end` must resolve to the same
+    /// [`CheckedType::Value`]; the `expected` `Range<T>` annotation (if
+    /// any) is threaded into both, mirroring `check_binary`'s own
+    /// `Add`/`Sub` treatment of an `expected` dimension (both operands get
+    /// the same hint, since neither changes the result's element type).
+    fn check_range_expr(
+        &mut self,
+        start: &HirExpr,
+        end: &HirExpr,
+        expected: Option<CheckedType>,
+        span: Span,
+    ) -> Option<CheckedType> {
+        let expected_elem = match expected {
+            Some(CheckedType::Range(elem)) => Some(CheckedType::Value(elem)),
+            _ => None,
+        };
+        let start_ty = self.check_expr(start, expected_elem);
+        let end_ty = self.check_expr(end, expected_elem.or(start_ty));
+        let (Some(start_ty), Some(end_ty)) = (start_ty, end_ty) else {
+            return match expected_elem {
+                Some(CheckedType::Value(elem)) => Some(CheckedType::Range(elem)),
+                _ => None,
+            };
+        };
+        let (CheckedType::Value(_), CheckedType::Value(_)) = (start_ty, end_ty) else {
+            self.diagnostics.push(self.diag(
+                444,
+                "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
+                format!(
+                    "range bounds must have a plain scalar/dimensional type; found {} and {}",
+                    self.describe(start_ty),
+                    self.describe(end_ty)
+                ),
+                span,
+            ));
+            return None;
+        };
+        if !types_compatible(start_ty, end_ty) {
+            self.diagnostics.push(self.diag(
+                442,
+                "RANGE_BOUNDS_TYPE_MISMATCH",
+                format!(
+                    "range bounds must have the same/compatible type; found {} and {}",
+                    self.describe(start_ty),
+                    self.describe(end_ty)
+                ),
+                span,
+            ));
+            return None;
+        }
+        match start_ty {
+            CheckedType::Value(elem) => Some(CheckedType::Range(elem)),
+            _ => unreachable!("both arms already matched CheckedType::Value above"),
+        }
+    }
+
+    /// The `for var in iterable { ... }` loop variable's own element type,
+    /// given `iterable`'s already-checked type — `List<T>` -> `T`;
+    /// `Range<Int>`/`Range<UInt>` -> `Int`/`UInt` (the owner ruling's own
+    /// "automatic iteration is defined for Range<Int> and Range<UInt>");
+    /// any other `Range<T>` (e.g. `Range<Length>`) is a real diagnostic,
+    /// never silently accepted or silently unresolved — the owner ruling
+    /// is explicit that a dimensional range "is not automatically
+    /// iterable" without a future explicit-stepping API this task does not
+    /// build. Any non-collection type is `NOT_ITERABLE`. `None` (an
+    /// already-unresolved `iterable`, e.g. from an earlier error)
+    /// propagates silently, matching this module's general "`None` is not
+    /// an error" convention — no cascading diagnostic on top of one
+    /// `iterable` itself already reported.
+    fn check_iterable_element_type(
+        &mut self,
+        iterable_ty: Option<CheckedType>,
+        span: Span,
+    ) -> Option<CheckedType> {
+        match iterable_ty? {
+            CheckedType::List(elem) => Some(CheckedType::Value(elem)),
+            CheckedType::Range(
+                elem @ HirType::Scalar(PrimitiveType::Int | PrimitiveType::UInt),
+            ) => Some(CheckedType::Value(elem)),
+            other => {
+                self.diagnostics.push(self.diag(
+                    443,
+                    "NOT_ITERABLE",
+                    format!(
+                        "'for' can only iterate over a List<T> or a Range<Int>/Range<UInt>; \
+                         found {} (project/OWNER_DECISIONS.md#D16)",
+                        self.describe(other)
+                    ),
+                    span,
+                ));
+                None
+            }
         }
     }
 
@@ -2079,5 +2335,165 @@ mod tests {
             "enum A { Shared } enum B { Shared } fn f(a: A) -> Int { match a { Shared => { return 1; } } return 0; }",
         );
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E434"]);
+    }
+
+    // --- Collections / iteration (`AICAD-056`, `project/
+    //     OWNER_DECISIONS.md#D16`) ---
+
+    /// The `for`-loop `binding`'s own resolved element type, from a
+    /// program whose first (and only) top-level item is `fn f() { for ...
+    /// { ... } ... }`.
+    fn for_loop_element_type(
+        lowered: &LowerResult,
+        checked: &TypeCheckResult,
+    ) -> Option<CheckedType> {
+        let HirItem::Fn { body, .. } = &lowered.program.items[0] else {
+            panic!("expected a Fn item");
+        };
+        let HirStmt::For { binding, .. } = &body.stmts[0] else {
+            panic!("expected the fn body's first statement to be a for loop");
+        };
+        checked.binding_types[binding.index()]
+    }
+
+    #[test]
+    fn list_literal_of_ints_has_list_int_type() {
+        let (lowered, checked) = check("let xs = [1, 2, 3];");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(CheckedType::List(HirType::Scalar(PrimitiveType::Int)))
+        );
+    }
+
+    #[test]
+    fn list_literal_of_lengths_unifies_across_unit_spellings() {
+        // project/OWNER_DECISIONS.md#D16's own worked example: [5mm, 2cm,
+        // 1in] -> List<Length>, despite three different unit spellings.
+        let (lowered, checked) = check("let xs = [5mm, 2cm, 1in];");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(CheckedType::List(HirType::dimensional(Length, None)))
+        );
+    }
+
+    #[test]
+    fn list_literal_with_incompatible_element_dimensions_is_reported() {
+        let (_lowered, checked) = check("let xs = [5mm, 3kg];");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E440"]);
+    }
+
+    #[test]
+    fn empty_list_literal_with_contextual_type_annotation_type_checks() {
+        let (lowered, checked) = check("let xs: List<Int> = [];");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(CheckedType::List(HirType::Scalar(PrimitiveType::Int)))
+        );
+    }
+
+    #[test]
+    fn empty_list_literal_without_inferable_type_is_reported() {
+        let (_lowered, checked) = check("let xs = [];");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E441"]);
+    }
+
+    #[test]
+    fn range_of_ints_has_range_int_type() {
+        let (lowered, checked) = check("let r = 0..10;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(CheckedType::Range(HirType::Scalar(PrimitiveType::Int)))
+        );
+    }
+
+    #[test]
+    fn range_of_uints_via_annotation_has_range_uint_type() {
+        let (lowered, checked) = check("let r: Range<UInt> = 0..10;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(CheckedType::Range(HirType::Scalar(PrimitiveType::UInt)))
+        );
+    }
+
+    #[test]
+    fn dimensional_range_type_checks_as_a_value() {
+        // project/OWNER_DECISIONS.md#D16: "Range<T> may exist for
+        // dimensional values such as Range<Length>" — constructible, just
+        // not automatically iterable (see the dedicated rejection test
+        // below).
+        let (lowered, checked) = check("let r = 1mm..10mm;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(CheckedType::Range(HirType::dimensional(Length, None)))
+        );
+    }
+
+    #[test]
+    fn range_with_mismatched_bound_types_is_reported() {
+        let (_lowered, checked) = check("let r = 0..10mm;");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E442"]);
+    }
+
+    #[test]
+    fn for_over_list_of_ints_resolves_loop_variable_to_int() {
+        let (lowered, checked) = check("fn f() -> Int { for x in [1, 2, 3] { } return 0; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        assert_eq!(
+            for_loop_element_type(&lowered, &checked),
+            Some(value(HirType::Scalar(PrimitiveType::Int)))
+        );
+    }
+
+    #[test]
+    fn for_over_list_of_lengths_resolves_loop_variable_to_length() {
+        let (lowered, checked) = check("fn f() -> Int { for x in [5mm, 2cm] { } return 0; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        assert_eq!(
+            for_loop_element_type(&lowered, &checked),
+            Some(value(HirType::dimensional(Length, None)))
+        );
+    }
+
+    #[test]
+    fn for_over_half_open_int_range_resolves_loop_variable_to_int() {
+        let (lowered, checked) =
+            check("fn f(count: Int) -> Int { for i in 0..count { } return 0; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        assert_eq!(
+            for_loop_element_type(&lowered, &checked),
+            Some(value(HirType::Scalar(PrimitiveType::Int)))
+        );
+    }
+
+    #[test]
+    fn for_over_inclusive_int_range_type_checks() {
+        let (_lowered, checked) = check("fn f() -> Int { for i in 0..=10 { } return 0; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn for_over_dimensional_range_is_rejected() {
+        // project/OWNER_DECISIONS.md#D16: a dimensional Range is not
+        // automatically iterable (no step size is defined).
+        let (_lowered, checked) = check("fn f() -> Int { for x in 1mm..10mm { } return 0; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E443"]);
+    }
+
+    #[test]
+    fn for_over_a_non_iterable_expression_is_rejected() {
+        let (_lowered, checked) = check("fn f() -> Int { for x in 5 { } return 0; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E443"]);
     }
 }

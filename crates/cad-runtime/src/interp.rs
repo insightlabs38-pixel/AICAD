@@ -58,42 +58,34 @@
 //! Continue` check is a no-op (no Stage-2 batch task verifies loop-nesting
 //! at compile time), so a type-checked program can genuinely reach it.
 //!
+//! Also executed (`AICAD-056`, resumed after `project/OWNER_DECISIONS.md
+//! #D16`'s owner ruling): `for var in iterable { ... }` over a
+//! [`crate::value::Value::List`] (visits every element in source/list
+//! order) or an auto-iterable [`crate::value::Value::Range`] (`Range<Int>`/
+//! `Range<UInt>` only — ascending, half-open or inclusive per the range's
+//! own `inclusive` flag; `cad_hir::typeck::check_iterable_element_type`
+//! already rejects every other shape, including a dimensional
+//! `Range<Length>`, at compile time). `iterable` is evaluated exactly
+//! once, each iteration draws down [`Interpreter::consume_iteration_budget`]
+//! (a minimal placeholder for `AICAD-058`'s own scheduled resource-budget
+//! scope — see [`crate::error::RuntimeError::IterationBudgetExceeded`]'s
+//! own doc comment), and `break`/`continue`/`return` inside the loop body
+//! behave exactly like they already do for `while`/`loop`. See
+//! [`Interpreter::exec_for`]'s own doc comment for the full design,
+//! including the one runtime/type-checker nuance it documents (the
+//! `Int`/`UInt` distinction the type checker enforces at compile time is
+//! not independently re-checked at run time, because this crate's own
+//! numeric-scalar runtime representation cannot observe it — see that
+//! method's doc comment for why this is safe, not a gap).
+//!
 //! Deliberately **not** executed yet (each returns [`crate::error::
 //! RuntimeError::Unsupported`], never a panic, so a program exercising one
-//! of these fails cleanly rather than silently or incorrectly): `for`
-//! (blocked — see "Known limitation: `for`-loop iteration" below), struct
+//! of these fails cleanly rather than silently or incorrectly): struct
 //! construction and field access (no scheduled task yet explicitly owns a
 //! runtime struct *value* — see this crate's top-level doc comment "Known
 //! limitations"), and method calls (no method/interface-implementation
 //! declaration syntax exists anywhere in the language, matching
 //! `cad_hir::typeck::check_call`'s own identical finding).
-//!
-//! ## Known limitation: `for`-loop iteration
-//!
-//! `AICAD-056`'s own title ("Implement loops and basic collections/
-//! iterators") implies giving `for var in iterable { ... }` a real runtime
-//! meaning, which needs at least one constructible collection/iterator
-//! `Value`. No `.aicad` source program can construct one today:
-//! `specs/language/grammar.ebnf`'s frozen `expression` production
-//! (`call_expr | method_call_expr | binary_expr | literal | identifier |
-//! "(" expression ")" | block_expr | if_expr | match_expr`) has no array/
-//! list-literal syntax and no range operator (`docs/plan/03_TYPE_SYSTEM_
-//! UNITS_CONTROL_FLOW.md`'s own `for i in 0..count` example and `docs/
-//! plan/02_LANGUAGE_AND_COMPILER.md` §9's `List<T>`/`Range<T>`/
-//! `Iterator<T>` are plan-level sketches, never promoted into the frozen
-//! grammar any Stage-2 batch has actually implemented), and no compiler-
-//! intrinsic/builtin-function mechanism exists either (binding resolution
-//! only ever resolves user-declared `fn`/`struct`/`enum`/`let`/`const`/
-//! `param` items — see `cad_hir::binding`). Giving `for` a real meaning
-//! therefore requires either new public expression syntax or a new
-//! compiler-intrinsic-function boundary — both explicit `AGENTS.md`
-//! owner-escalation triggers ("change public language syntax... beyond an
-//! approved RFC", "add a compiler intrinsic where a library solution may
-//! work"), and both are this task's own listed `project/TASKS.yaml`
-//! `escalate_if` conditions. Escalated as `project/OWNER_DECISIONS.md#D16`
-//! rather than decided here; `for` continues to report `RuntimeError::
-//! Unsupported`, unchanged from `AICAD-054`/`AICAD-055`'s own identical
-//! behavior for it.
 //!
 //! ## Known limitation: ambiguous derived-dimension arithmetic
 //!
@@ -118,7 +110,7 @@
 //! this evaluator's `expected`-type context.
 
 use crate::error::RuntimeError;
-use crate::value::{NumberValue, Value};
+use crate::value::{NumberValue, RangeValue, Value};
 use cad_ast::Span;
 use cad_hir::hir::{
     BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem, HirLiteral, HirMatchArm,
@@ -190,7 +182,22 @@ pub struct Interpreter<'a> {
     /// Top-level `let`/`const`/`param` values, populated by
     /// [`Interpreter::run_top_level`].
     globals: Frame,
+    /// Remaining `for`-loop iterations this interpreter run may still
+    /// perform before [`RuntimeError::IterationBudgetExceeded`] — see
+    /// that variant's own doc comment for why this is a deliberately
+    /// minimal placeholder for `AICAD-058`'s own full resource-budget
+    /// scope, not that task's complete contract.
+    iterations_remaining: u64,
 }
+
+/// The default `for`-loop iteration budget a fresh [`Interpreter`] starts
+/// with — generous enough that no test/ordinary program in this crate's
+/// own suite could plausibly hit it by accident, while still being a real,
+/// finite bound (`AGENTS.md` "Execution safety": bounded, not merely
+/// "very large"). See [`Interpreter::with_iteration_budget`] to configure
+/// a smaller one (tests exercising [`RuntimeError::IterationBudgetExceeded`]
+/// itself, or a future `AICAD-058` caller).
+pub const DEFAULT_ITERATION_BUDGET: u64 = 10_000_000;
 
 impl<'a> Interpreter<'a> {
     pub fn new(
@@ -207,7 +214,18 @@ impl<'a> Interpreter<'a> {
             source,
             fns,
             globals: HashMap::new(),
+            iterations_remaining: DEFAULT_ITERATION_BUDGET,
         }
+    }
+
+    /// Overrides this interpreter's `for`-loop iteration budget (default
+    /// [`DEFAULT_ITERATION_BUDGET`]). Exists for tests that need to
+    /// observe [`RuntimeError::IterationBudgetExceeded`] without actually
+    /// running ten million iterations, and for a future `AICAD-058` caller
+    /// to configure a real, externally-supplied budget.
+    pub fn with_iteration_budget(mut self, budget: u64) -> Interpreter<'a> {
+        self.iterations_remaining = budget;
+        self
     }
 
     /// Evaluates every top-level `let`/`const`/`param` item's value
@@ -570,15 +588,13 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(())
             }
-            // Blocked on `project/OWNER_DECISIONS.md#D16` — see
-            // `RuntimeError::Unsupported`'s own doc comment and this
-            // module's "Known limitation: `for`-loop iteration" section.
-            HirStmt::For { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "a `for` loop (no collection/iterator value can be constructed from \
-                            any source program yet — see project/OWNER_DECISIONS.md#D16)",
-                span: *span,
-            }
-            .into()),
+            HirStmt::For {
+                binding,
+                iterable,
+                body,
+                span,
+                ..
+            } => self.exec_for(frame, *binding, iterable, body, *span),
             HirStmt::While { cond, body, .. } => {
                 while self.eval_bool(frame, cond)? {
                     match self.exec_block(frame, body) {
@@ -607,6 +623,146 @@ impl<'a> Interpreter<'a> {
             }
             HirStmt::Break { span } => Err(Signal::Break(*span)),
             HirStmt::Continue { span } => Err(Signal::Continue(*span)),
+        }
+    }
+
+    /// `for binding in iterable { body }` (`AICAD-056`, `project/
+    /// OWNER_DECISIONS.md#D16`). `iterable` is evaluated exactly once
+    /// (the owner ruling's own "FOR-LOOP SEMANTICS": "The iterable
+    /// expression is evaluated exactly once") — every value this loop
+    /// iterates over comes from that one evaluated `Value`, never a
+    /// re-evaluation of `iterable` itself. Each iteration inserts a fresh
+    /// value for `binding` into the same flat per-call `frame` (module doc
+    /// comment "no scope stack needed" — lowering already scoped
+    /// `binding`'s own `BindingId` to be visible only inside `body`, the
+    /// same convention every other loop/match-arm binding in this crate
+    /// already relies on) and participates in this interpreter's iteration
+    /// budget (`Interpreter::consume_iteration_budget`) — the owner
+    /// ruling's own "every iteration participates in the approved
+    /// execution resource-budget accounting."
+    ///
+    /// `cad_hir::typeck::check_iterable_element_type` already restricts a
+    /// type-checked program's `iterable` to a `List<T>` or an
+    /// auto-iterable `Range<Int>`/`Range<UInt>`; the `Value::Number`/`_`
+    /// fallback arms below defend the identical "trusts, but verifies"
+    /// invariant this crate's every other construct already keeps (module
+    /// doc comment) for an un-type-checked or hand-built program, never a
+    /// panic.
+    fn exec_for(
+        &mut self,
+        frame: &mut Frame,
+        binding: BindingId,
+        iterable: &HirExpr,
+        body: &HirBlock,
+        span: Span,
+    ) -> EvalResult<()> {
+        let iterable_value = self.eval_expr(frame, iterable)?;
+        match iterable_value {
+            Value::List(items) => {
+                for item in items {
+                    self.consume_iteration_budget(span)?;
+                    frame.insert(binding, item);
+                    match self.exec_block(frame, body) {
+                        Ok(_) => {}
+                        Err(Signal::Break(_)) => break,
+                        Err(Signal::Continue(_)) => continue,
+                        Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+                    }
+                }
+                Ok(())
+            }
+            Value::Range(range) => {
+                // Iteration order is numeric ascending order from `start`
+                // (the owner ruling's own "For integer ranges, iteration
+                // order is numeric ascending order according to the range
+                // bounds") — only `Int`/`UInt` bounds of the identical
+                // scalar type are auto-iterable; anything else (a
+                // dimensional bound, a mismatched pair, a non-`Number`
+                // bound) is `RangeNotIterable`, never guessed at.
+                let (Value::Number(start), Value::Number(end)) = (&*range.start, &*range.end)
+                else {
+                    return Err(RuntimeError::RangeNotIterable { span }.into());
+                };
+                // Only a non-dimensional `Scalar` bound is auto-iterable
+                // (`OperandType::Dimensional` — e.g. `Range<Length>` — is
+                // rejected, matching `cad_hir::typeck`'s own compile-time
+                // rule). This does **not** check specifically for
+                // `PrimitiveType::Int`/`UInt` the way `cad_hir::typeck::
+                // check_iterable_element_type` does at compile time: this
+                // crate's own numeric-scalar runtime representation
+                // (`crate::value`'s module doc comment "Deliberate
+                // simplification") deliberately collapses every unitless
+                // literal to `Scalar(Float)` regardless of the type
+                // checker's own `Int`/`UInt`/`Float`/`Decimal` distinction
+                // — by the time an already-type-checked `Range<Int>`
+                // reaches here, its bounds' own runtime tag is `Scalar
+                // (Float)`, not `Scalar(Int)`, so checking for `Int`/`UInt`
+                // specifically would reject every legitimately-iterable
+                // range constructed from ordinary integer literals.
+                // Enforcing the *actual* `Int`/`UInt`-only rule is
+                // `cad_hir::typeck::check_iterable_element_type`'s job
+                // (already done before this code ever runs); this is only
+                // this evaluator's own defensive fallback against a
+                // structurally wrong (dimensional/non-numeric) bound
+                // reaching an un-type-checked or hand-built program.
+                if !matches!(start.ty, OperandType::Scalar(_))
+                    || !matches!(end.ty, OperandType::Scalar(_))
+                {
+                    return Err(RuntimeError::RangeNotIterable { span }.into());
+                }
+                let elem_ty = start.ty;
+                let end_magnitude = end.magnitude;
+                let mut current = start.magnitude;
+                loop {
+                    let has_more = if range.inclusive {
+                        current <= end_magnitude
+                    } else {
+                        current < end_magnitude
+                    };
+                    if !has_more {
+                        return Ok(());
+                    }
+                    self.consume_iteration_budget(span)?;
+                    frame.insert(
+                        binding,
+                        Value::Number(NumberValue {
+                            magnitude: current,
+                            ty: elem_ty,
+                        }),
+                    );
+                    // Advanced before the body runs (rather than after),
+                    // so every exit path below — falling through, `break`,
+                    // or `continue` — already has the next value ready;
+                    // "if start is beyond the terminal bound, iteration is
+                    // empty" falls out for free from the `has_more` check
+                    // above, never an implicit reversal of direction.
+                    current += 1.0;
+                    match self.exec_block(frame, body) {
+                        Ok(_) => {}
+                        Err(Signal::Break(_)) => return Ok(()),
+                        Err(Signal::Continue(_)) => continue,
+                        Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+                    }
+                }
+            }
+            other => Err(RuntimeError::NotIterable {
+                kind: other.kind_name(),
+                span,
+            }
+            .into()),
+        }
+    }
+
+    /// Charges one `for`-loop iteration against this interpreter's
+    /// remaining budget — see [`Interpreter::iterations_remaining`]'s own
+    /// doc comment for exactly what this does and does not guarantee.
+    fn consume_iteration_budget(&mut self, span: Span) -> EvalResult<()> {
+        match self.iterations_remaining.checked_sub(1) {
+            Some(remaining) => {
+                self.iterations_remaining = remaining;
+                Ok(())
+            }
+            None => Err(RuntimeError::IterationBudgetExceeded { span }.into()),
         }
     }
 
@@ -674,6 +830,27 @@ impl<'a> Interpreter<'a> {
             } => {
                 let value = self.eval_expr(frame, scrutinee)?;
                 self.eval_match(frame, &value, arms, expr.span())
+            }
+            HirExpr::ListLiteral { elements, .. } => {
+                let mut items = Vec::with_capacity(elements.len());
+                for element in elements {
+                    items.push(self.eval_expr(frame, element)?);
+                }
+                Ok(Value::List(items))
+            }
+            HirExpr::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                let start = self.eval_expr(frame, start)?;
+                let end = self.eval_expr(frame, end)?;
+                Ok(Value::Range(RangeValue {
+                    start: Box::new(start),
+                    end: Box::new(end),
+                    inclusive: *inclusive,
+                }))
             }
         }
     }
@@ -1644,27 +1821,222 @@ mod tests {
         assert_eq!(diag_code(&err), "RUNTIME-E120");
     }
 
-    // --- Unsupported constructs fail cleanly, never panic ---
+    // --- for-loop execution over List<T>/Range<Int|UInt>
+    //     (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`) ---
 
     #[test]
-    fn unsupported_for_loop_is_a_clean_error() {
-        // No collection/iterator value can be constructed from any source
-        // program yet (`project/OWNER_DECISIONS.md#D16` — see this
-        // module's own "Known limitation: `for`-loop iteration" doc
-        // comment), so `iterable` is a placeholder plain expression —
-        // `cad_hir::typeck::check_expr`'s own `HirStmt::For` handling does
-        // not require it to be any particular type (see that module's own
-        // doc comment on this exact statement).
+    fn for_over_list_of_ints_sums_them() {
         let lowered = compiled(
-            "fn f() -> Float { \
-                 for i in 0.0 { } \
-                 return 0.0; \
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for x in [1, 2, 3] { total = total + x; } \
+                 return total; \
              }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
-        let err = interp.call_by_name("f", vec![]).unwrap_err();
-        assert_eq!(diag_code(&err), "RUNTIME-E117");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 6.0);
     }
+
+    #[test]
+    fn for_over_list_of_lengths_sums_them_in_canonical_metres() {
+        let lowered = compiled(
+            "fn f() -> Length { \
+                 var total = 0m; \
+                 for x in [5mm, 2cm, 1m] { total = total + x; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 0.005m + 0.02m + 1m = 1.025m canonical.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 1.025);
+    }
+
+    #[test]
+    fn for_over_list_dispatches_each_element_by_match_in_source_order() {
+        // An unambiguous, purely order-sensitive proof: each element is
+        // matched against a *different* literal in turn, and only the
+        // correct one increments `total` — if iteration order were wrong
+        // (or elements were skipped/repeated), the sum would differ from
+        // the expected weighted total.
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 var position = 0; \
+                 for x in [10, 20, 30] { \
+                     position = position + 1; \
+                     let expected = match position { 1 => 10, 2 => 20, 3 => 30, _ => -1, }; \
+                     if x == expected { total = total + x; } \
+                 } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 60.0);
+    }
+
+    #[test]
+    fn for_over_half_open_range_excludes_the_end_bound() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..5 { total = total + i; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 0 + 1 + 2 + 3 + 4 = 10 (5 itself excluded).
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 10.0);
+    }
+
+    #[test]
+    fn for_over_inclusive_range_includes_the_end_bound() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..=5 { total = total + i; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 0 + 1 + 2 + 3 + 4 + 5 = 15 (5 itself included).
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 15.0);
+    }
+
+    #[test]
+    fn for_over_empty_range_runs_zero_iterations() {
+        // Owner ruling: "If start is beyond the terminal bound, iteration
+        // is empty rather than implicitly reversing direction."
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 99; \
+                 for i in 5..5 { total = -1; } \
+                 for i in 10..5 { total = -1; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 99.0);
+    }
+
+    #[test]
+    fn for_over_empty_list_with_contextual_annotation_runs_zero_iterations() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 7; \
+                 let xs: List<Int> = []; \
+                 for x in xs { total = -1; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 7.0);
+    }
+
+    #[test]
+    fn for_loop_break_exits_immediately() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..10 { \
+                     if i >= 3 { break; } \
+                     total = total + i; \
+                 } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 0 + 1 + 2 = 3 (stops before adding 3).
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn for_loop_continue_skips_rest_of_body() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..5 { \
+                     if i == 2 { continue; } \
+                     total = total + i; \
+                 } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 0 + 1 + 3 + 4 = 8 (2 skipped by continue).
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 8.0);
+    }
+
+    #[test]
+    fn return_inside_a_for_loop_unwinds_past_it() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 for i in 0..10 { \
+                     if i == 3 { return i; } \
+                 } \
+                 return -1; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn for_loop_iterable_expression_is_evaluated_exactly_once() {
+        // Owner ruling: "The iterable expression is evaluated exactly
+        // once." `iterable` here is itself a block expression with a
+        // side-effecting statement (`counter = counter + 1`) — if this
+        // evaluator mistakenly re-evaluated `iterable` once per iteration
+        // (or per item) rather than once total, `counter` would end up 3
+        // (the list's own length) instead of 1.
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var counter = 0; \
+                 var total = 0; \
+                 for x in { counter = counter + 1; [1, 2, 3] } { \
+                     total = total + x; \
+                 } \
+                 return counter; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn for_loop_iteration_budget_exceeded_is_a_clean_error() {
+        // A minimal, provisional placeholder for `AICAD-058`'s own full
+        // resource-budget scope (`RuntimeError::IterationBudgetExceeded`'s
+        // own doc comment) — configured to a tiny budget here so the test
+        // itself stays fast and does not depend on the real (10 million)
+        // default.
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..1000 { total = total + i; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_iteration_budget(3);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E123");
+    }
+
+    #[test]
+    fn for_loop_within_budget_still_succeeds() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..3 { total = total + i; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_iteration_budget(3);
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 3.0);
+    }
+
+    // --- Unsupported constructs fail cleanly, never panic ---
 
     #[test]
     fn calling_a_non_function_binding_is_not_callable() {

@@ -39,7 +39,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D13 OCCT/standards licensing | PARTIALLY RESOLVED (development policy) — DL-6 |
 | D14 File extension/branding | RESOLVED — DL-4 |
 | D15 Plugin runtime (WASM vs. external) | open |
-| D16 Collection/iterator construction syntax | open |
+| D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
 
 ---
 
@@ -417,6 +417,17 @@ relevant starting at Stage 11.
 
 ## D16. Collection/iterator construction syntax (for `for`-loop execution)
 
+**Status: RESOLVED (Stage-2 minimum foundation) — see `project/
+DECISION_LOG.md#DL-13`.** `for` operates over AICAD's iteration protocol;
+Stage 2 supports at minimum `List<T>` (new `[e1, e2, ...]` list-literal
+syntax), `Range<Int>`/`Range<UInt>` (new `start..end`/`start..=end` range
+syntax, auto-iterable ascending by one), and `Iterator<T>` as an internal/
+runtime abstraction never exposed as compiler magic — explicitly not a
+general-purpose compiler-intrinsic mechanism, and explicitly not
+authorizing `Set<T>`/`Map<K,V>`/comprehensions/user-defined iterator
+protocols/async-or-parallel iteration/implicit dimensional-range stepping.
+Original question/context kept below for record.
+
 **Question:** `AICAD-056` ("Implement loops and basic collections/
 iterators") needs to give `for var in iterable { ... }` a real runtime
 meaning, which requires at least one constructible collection/iterator
@@ -465,20 +476,22 @@ no collection-literal/range syntax); `AGENTS.md` escalation triggers
 TASKS.yaml`'s `AICAD-056` entry lists both as its own `escalate_if`
 conditions verbatim.
 
-**Status:** Open, raised by `AICAD-056` (`project/reports/AICAD-056.md`).
-Blocks giving `for`-loop execution a real semantics; does not block
-`while`/`loop`/`break`/`continue` execution, which `AICAD-056` completed
-without needing a collection value at all. `crates/cad-runtime`'s `for`
-statement continues to report `RuntimeError::Unsupported` pending this
-ruling.
+**Prior framing (superseded — see resolution above):** Raised by
+`AICAD-056` (`project/reports/AICAD-056.md`'s first session), which had
+implemented `while`/`loop`/`break`/`continue` without needing a collection
+value at all and left `for` reporting `RuntimeError::Unsupported` pending
+this ruling.
 
-**Blocking impact:** `AICAD-056` (`for`-loop execution only — see above);
-any later task that assumes a `List<T>`/`Range<T>`/`Iterator<T>` value or
-type exists (none scheduled by name in the fixed S2-09 through S2-14 batch
-list as currently written, but `AICAD-059`'s Geometry IR and `AICAD-063`'s
-end-to-end proof may need to iterate over geometry query results — per
+**Blocking impact:** `AICAD-056` (resumed and completed with this ruling —
+see `project/reports/AICAD-056.md`'s second session); any later task that
+assumes a `List<T>`/`Range<T>`/`Iterator<T>` value or type exists should
+check this entry's explicit scope limit (`Set<T>`/`Map<K,V>`/
+comprehensions/user-defined iterators/dimensional stepping remain future
+work) before extending it — `AICAD-059`'s Geometry IR and `AICAD-063`'s
+end-to-end proof may need to iterate over geometry query results per
 `docs/plan/02_LANGUAGE_AND_COMPILER.md` §"All major collections should be
-iterable" — and should check this decision before assuming one exists).
+iterable", which this decision's `List<T>`/`Range<T>` foundation can now
+support.
 
 ---
 

@@ -101,6 +101,34 @@ pub enum Value {
     /// level type (RFC-0001's grammar has no `Unit`/`()` type spelling) —
     /// purely this evaluator's own internal "no value" marker.
     Unit,
+    /// An immutable `List<T>` (`AICAD-056`, `project/OWNER_DECISIONS.md
+    /// #D16`) — the evaluated result of a `[e1, e2, ...]` list literal.
+    /// Element order is exactly source order (`cad_hir::typeck` already
+    /// verified every element unifies to one compatible element type, so
+    /// this crate stores plain evaluated `Value`s with no further
+    /// per-element type bookkeeping — matching `NumberValue`'s own
+    /// canonical-magnitude convention: whatever unit conversion an
+    /// element's own literal needed already happened at `eval_literal`
+    /// time).
+    List(Vec<Value>),
+    /// A `Range<T>` (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`) —
+    /// `start..end` (half-open) or `start..=end` (inclusive). Stores the
+    /// already-evaluated bound `Value`s directly rather than a narrower
+    /// numeric-only representation, since `Range<T>` is constructible for
+    /// any plain element type per the owner ruling (`Range<Length>`
+    /// included) even though only `Range<Int>`/`Range<UInt>` are
+    /// automatically iterable — see `Interpreter::exec_for`'s own doc
+    /// comment for exactly which shapes iterate and which are rejected at
+    /// run time.
+    Range(RangeValue),
+}
+
+/// [`Value::Range`]'s payload — see that variant's own doc comment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RangeValue {
+    pub start: Box<Value>,
+    pub end: Box<Value>,
+    pub inclusive: bool,
 }
 
 impl Value {
@@ -115,6 +143,8 @@ impl Value {
             Value::Str(_) => "String",
             Value::EnumVariant(_) => "enum variant",
             Value::Unit => "Unit",
+            Value::List(_) => "List",
+            Value::Range(_) => "Range",
         }
     }
 }

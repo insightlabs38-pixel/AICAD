@@ -468,6 +468,15 @@ impl<'a> Binder<'a> {
                     self.check_match_arm(arm);
                 }
             }
+            Expr::ListLiteral { elements, .. } => {
+                for element in elements {
+                    self.check_expr(element);
+                }
+            }
+            Expr::Range { start, end, .. } => {
+                self.check_expr(start);
+                self.check_expr(end);
+            }
         }
     }
 
