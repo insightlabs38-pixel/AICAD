@@ -378,3 +378,149 @@ them; do not add entries here unilaterally.
   any `OWNER_DECISIONS.md` item — D3, D5, D10, D11, D12, D15 and the
   residual sub-items of D7/D8/D13 remain open exactly as before, and none
   was found by either Stage-0 review to block Stage 1.
+
+---
+
+## DL-11: Stage 1 passed — owner approval after independent adversarial review and UAF fix
+
+- Date: 2026-09-10
+- Resolves: Stage-1 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: **Stage 1 has passed.** The owner has reviewed the independent
+  adversarial Stage-1 gate review (`project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md`,
+  commit `cad4422`) — a fresh clean-rebuild reconstruction of all Stage-1
+  evidence directly from `origin/main`, including a fresh valgrind run, a
+  new ASan/UBSan instrumented rebuild (closing the long-open G2 sanitizer
+  gap), and an original 1920-call concurrent-stress probe against kernel
+  operations the batch's own concurrency investigation had not exercised
+  (sweep/loft/shell/offset/tessellate/topology exploration) — together with
+  the follow-up patch commit `e05d791` that closed the review's own
+  documentation/coverage gaps (missing `AICAD-037.md` report stub, a
+  narrowed STEP-independence claim in `project/gates/stage-1-gate.md`, a
+  new permanent `concurrency_probe.rs`, two new degenerate-input adversarial
+  cases) and fixed a genuine native use-after-free in
+  `aicad_occt_context_destroy`/`CheckContext` (a destroyed context's freed
+  control block could be dereferenced by a second destroy call or any
+  subsequent operation on a stale handle). This decision is the
+  owner-recorded pass decision `AGENTS.md`/`project/CURRENT_STAGE.md`
+  require before Stage 2 may begin, following the `DL-10` pattern.
+- Rationale: The independent review found no BLOCKER; one MAJOR
+  (STEP-verification independence framing — the gate packet's composite
+  claim could read as independently verifying re-imported geometry, when
+  only file-structure/entity-counts were independently verified) and four
+  MINOR coverage/documentation gaps, all closed by the follow-up patch
+  commit rather than left as unactioned recommendations. The
+  context-lifetime use-after-free was a genuine defect (memory safety, not
+  a style/coverage nit) discovered by the review's own stress probing; it
+  was root-caused, fixed by making a context's control block live in a
+  process-wide append-only registry for the life of the process with a
+  single atomic `live` flag as the sole safety-critical field (never
+  individually freed, so a second destroy or a stale-handle use can be
+  rejected rather than dereferencing freed memory), and given a permanent
+  regression test — matching `AGENTS.md`'s native crash/hang policy. The
+  fix is scoped to context lifetime management only; it does not change
+  the kernel-neutral public API, ABI shape, or any frozen semantics, so it
+  did not itself require a new `OWNER_DECISIONS.md` entry.
+- Alternatives considered: Deferring Stage-1 approval pending a further
+  review round (rejected — the UAF fix was itself re-verified by the
+  fix commit's own regression test and the pre-existing full suite
+  re-run, and no further BLOCKER/MAJOR finding remained open); treating
+  the context-lifetime fix as an architecture change requiring a new
+  `OWNER_DECISIONS.md` entry (rejected — it is an internal correctness fix
+  to lifecycle management inside `cad-occt-bridge`/`native/occt_bridge`,
+  not a change to `cad-kernel-api`'s public surface, ABI, or any DL-5/DL-6
+  ruling).
+- Affected RFCs/tasks: Closes out Stage 1 (`AICAD-015` through `AICAD-037`
+  plus the independent review and its follow-up patch). Unblocks Stage 2
+  (`project/CURRENT_STAGE.md` advanced to Stage 2; `AICAD-038` onward, per
+  `project/TASKS.yaml`, subject to the Stage-2 authorized roadmap window
+  through `AICAD-064` inclusive and per-batch checkpoints — `AICAD-065` and
+  all Stage-3 work remain forbidden until a later explicit owner approval).
+- Supersedes: none (first Stage-1 pass ruling). Does not reopen or alter
+  any other `OWNER_DECISIONS.md` item.
+
+---
+
+## DL-12: D5 canonical-state/deterministic-equivalence contract — layered v1 policy
+
+- Date: 2026-09-10
+- Resolves: `OWNER_DECISIONS.md#D5`.
+- Decision: AICAD does **not** define deterministic geometry as
+  byte-identical OCCT B-rep serialization. Canonical determinism is
+  layered:
+  - **Level 1 — language/compiler.** For identical source, dependencies,
+    parameters/configuration, compiler version, feature flags, and
+    execution profile: parsing/semantic structure, binding, normalized
+    quantities, typed HIR, Geometry IR, diagnostics, and canonical
+    AICAD-owned serialization must be deterministic. Canonical AICAD-owned
+    serialization must be byte-identical where such a serialization is
+    defined. Unordered maps, randomized hashing, concurrency scheduling,
+    and filesystem enumeration must not affect canonical compiler output.
+  - **Level 2 — same locked kernel environment.** With the same compiler
+    inputs plus an identical OCCT build/environment, geometry must satisfy
+    the same semantic/numerical verification profile. Byte-identical B-rep
+    output is NOT required.
+  - **Level 3 — supported cross-platform.** With identical compiler/kernel
+    versions on supported platforms, results are equivalent when they
+    validate successfully under the same contract, preserve semantically
+    required counts/classes, agree within the versioned engineering
+    equivalence profile (below), and preserve required semantic outcomes.
+    Kernel topology enumeration and serialized B-rep bytes are not
+    canonical.
+  - **Level 4 — different kernel version.** Different kernel versions are
+    compatibility comparisons, not deterministic identity, and may be
+    considered compatible only when they satisfy the versioned equivalence
+    profile. Kernel upgrades must not silently alter AICAD-owned canonical
+    semantic state.
+  - **Comparison profile.** A versioned, dimension-aware equivalence
+    profile, parameterized by characteristic linear scale `S`:
+    `linear: max(linear_abs, linear_rel * S)`;
+    `area: max(area_abs, area_rel * S^2)`;
+    `volume: max(volume_abs, volume_rel * S^3)`;
+    `center-of-mass: linear tolerance`; other measurements use
+    dimensionally appropriate tolerances. Validity and explicitly semantic
+    counts/requirements remain exact where specified — exact face/edge
+    counts are required only when a test explicitly declares them
+    semantically meaningful; kernel face/edge enumeration order is never
+    identity. The default comparison profile may not be silently widened;
+    changing its default tolerances requires explicit documented review
+    (i.e. a new `DECISION_LOG.md` entry, not a code-only change).
+  - The concrete numeric v1 tolerance constants for the comparison profile
+    are **not** fixed by this decision. Stage 2 must derive and document
+    them from actual Stage-1 evidence (the bracket's own closed-form-vs-
+    OCCT bounding-box/volume/center-of-mass agreement in
+    `project/reports/AICAD-034.md`, and the fillet/chamfer numerical noise
+    already calibrated there) and kernel precision behavior, and escalate
+    the derived constants to `project/OWNER_DECISIONS.md` for ruling if
+    Stage-2 evidence alone does not make a specific constant obvious
+    (`AGENTS.md`'s "produce the measurements/recommendation and escalate
+    the constants rather than guessing").
+- Rationale: Owner ruling. `docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md`
+  §18 already warned against claiming bit-identical B-rep across kernel/
+  platform versions, and Stage-1's own evidence (AICAD-034 gate;
+  fillet/chamfer bounding-box tolerance calibrated to observed OCCT
+  numerical noise) already treats exact/analytic-vs-kernel agreement as a
+  tolerance-bounded comparison rather than bit-identity — this decision
+  makes that practice an explicit, versioned, escalation-gated policy
+  instead of an implicit per-task judgment call, closing the D5 gap RFC-0001
+  §9 and RFC-0004 explicitly left open pending an owner ruling.
+- Alternatives considered: Requiring byte-identical B-rep serialization as
+  the determinism bar (rejected — explicitly warned against by `14` §18 and
+  infeasible across kernel/platform versions per widely-documented OCCT
+  behavior); leaving determinism entirely undefined into Stage 2 (rejected
+  — blocks `AICAD-052`/`AICAD-058`/`AICAD-063`'s own determinism
+  requirements and the Stage-2 hardening-mode D5 re-audit `AGENTS.md`
+  requires); fixing concrete numeric tolerance constants directly in this
+  ruling without Stage-2 evidence (rejected — `AGENTS.md` requires
+  escalating constants that require material judgment not yet supported by
+  evidence, rather than guessing them here).
+- Affected RFCs/tasks: RFC-0001 §2 invariant 9 and §9 (D5 was the RFC's own
+  explicitly flagged open question); RFC-0004 (unit/quantity equivalence
+  comparisons); Stage-2 tasks that touch determinism directly —
+  `AICAD-052` (type checking), `AICAD-058`/Stage-2C checkpoint (execution
+  determinism), `AICAD-063` (end-to-end proof's own final-part
+  verification), `AICAD-064` (Stage-2 gate, must re-audit D5 evidence per
+  the Stage-2C checkpoint instructions); `crates/cad-validation` (owns the
+  concrete comparison-profile implementation once that crate's own task is
+  reached).
+- Supersedes: none (first ruling on D5).
