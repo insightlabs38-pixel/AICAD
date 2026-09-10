@@ -1,197 +1,177 @@
 # Session Handoff
 
-## Latest: Stage 2 Batch S2-01 (AICAD-038, AICAD-039, AICAD-040) complete and canonical on `branch/determined-allen-4r42gi`.
+## Latest: Stage 2 Batch S2-02 (AICAD-041, AICAD-042, AICAD-043) complete.
 
-### IMPORTANT — branch-naming note for the next invocation
+### Branch-naming note (reconfirmed this session, unchanged conclusion)
 
 The active scheduled-task brief for this campaign names
-`origin/claude/aicad-stage2-dev` as "the" canonical Stage-2 branch and
-instructs each invocation to fetch/rebuild on top of it. **That branch
-does not exist in this repository** (confirmed via `git fetch origin
---prune` + `git branch -a` at the start of this session — only
-`branch/loving-feynman-*`, `branch/festive-cori-*`,
-`branch/compassionate-wright-*`, `branch/epic-archimedes-*`,
-`branch/pensive-hopper-*`, `claude/aicad-stage-0-review-9leull`,
-`claude/first-prompt-execution-kzavou`, and `main` existed). This matches
-the repository's own established Stage-0/Stage-1 convention throughout
-`project/reports/`: every prior session worked on its own harness-assigned
-randomly-named branch and merged into `main` via a PR (see the git log —
-`branch/loving-feynman-qde9m3` -> PR #2, `branch/pensive-hopper-5cbjby` ->
-PR #3, `branch/compassionate-wright-lbvrc1` -> PR #4/#5,
-`branch/festive-cori-pe2fun` -> PR #6/#7, `branch/epic-archimedes-f6d1fe`
--> PR #8) — there has never actually been one persistent
-`claude/aicad-stage2-dev`-style branch spanning multiple sessions in this
-repo's real history; `main` (via sequential merged PRs) has always been
-that persistent lineage.
+`origin/claude/aicad-stage2-dev` as "the" canonical Stage-2 branch. **That
+branch still does not exist** in this repository — reconfirmed this
+session via `git fetch origin --prune` + `git branch -a` at the start
+*and* end of this invocation. This matches the finding the prior
+(S2-01) session already recorded here in detail: every real session in
+this repo's history has worked on its own harness-assigned, randomly-
+named branch and merged into `main` via a PR (see git log —
+`branch/loving-feynman-qde9m3` -> PR #2, ... `branch/determined-allen-4r42gi`
+-> PR #9, most recently). There has never actually been a persistent
+`claude/aicad-stage2-dev`-style branch; `main` (via sequential merged PRs)
+is that persistent lineage in practice.
 
-This session's own harness-assigned working branch (per the outer
-"Git Development Branch Requirements"/"NEVER push to a different branch
-without explicit permission" instructions, which are session-level
-policy, not campaign-prompt text) is `branch/determined-allen-4r42gi`,
-created from `origin/main` at `09fdef5` — exactly the owner-approved
-Stage-1 commit the campaign brief itself calls for. Given the conflict
-between "create/use `origin/claude/aicad-stage2-dev`" (campaign brief) and
-"never push to a different branch than the one this session was assigned"
-(harness policy), this session treated the harness-assigned branch as
-authoritative and did **not** create `origin/claude/aicad-stage2-dev`,
-consistent with how every real prior session in this repo actually
-operated (own branch -> PR -> `main`).
+This session's own harness-assigned working branch (per the outer "Git
+Development Branch Requirements" instructions, which are session-level
+policy) is `branch/tender-hypatia-w0huqo`, created from `origin/main` at
+`cbf769a` (PR #9 merge — Stage-2 Batch S2-01, `AICAD-038`-`040`, already
+complete and canonical on `main` when this session started). Consistent
+with the prior session's own resolution of the same conflict, this
+session treated its harness-assigned branch as authoritative rather than
+trying to independently create `origin/claude/aicad-stage2-dev`.
 
-**Recommended for the next invocation**: check whether
-`origin/claude/aicad-stage2-dev` has been created by then (e.g. by a PR
-merge or owner action). If not, and your own harness assignment gives you
-a different branch name again, treat *your own* assigned branch the same
-way this session did — base it on the latest state of Stage-2 work (either
-`origin/main` if this branch has been merged, or this branch
-`branch/determined-allen-4r42gi` directly if not yet merged — check both)
-rather than trying to independently create the campaign brief's named
-branch. Whoever has commit access to `main` should decide whether/when to
-merge `branch/determined-allen-4r42gi`.
+**Recommended for the next invocation**: same check as always — see if
+`origin/claude/aicad-stage2-dev` has been created by an owner/human
+action by then; if not, and you have your own newly-assigned branch name,
+base it on the latest state of Stage-2 work (`origin/main` if this
+session's branch has been merged by then, or `branch/tender-hypatia-w0huqo`
+directly if not yet merged — check both) rather than trying to
+independently create the campaign brief's named branch.
 
 ### What this session did
 
-Started from `origin/main` at `09fdef5` (PR #8 merge: Stage-1 independent
-adversarial review + context-lifetime use-after-free fix). This session's
-own work is four commits on `branch/determined-allen-4r42gi`:
+Started from `origin/main` at `cbf769a`. Determined the earliest
+incomplete fixed batch was **S2-02** (`AICAD-041` -> `042` -> `043`;
+S2-01 was already complete/merged). Executed all three tasks of that
+batch, strictly in order, each with its own report/commit:
 
 ```
-1c3c767 AICAD-040: Implement numeric literals with engineering-unit suffix tokenization
-2b3c6fe AICAD-039: Create cad-ast and cad-lexer with token/span model
-57a31d5 AICAD-038: Create cad-diagnostics crate and JSON-schema conformance tests
-1eaac7c Record Stage-1 owner approval (DL-11) and D5 determinism policy (DL-12); advance to Stage 2
+62061b6 AICAD-043: Implement control-flow syntax (if/for/while/match/return)
+c473ecb AICAD-042: Implement declarations (let/const/param/fn/struct/enum/part)
+e85f2ad AICAD-041: Implement expression parser and precedence
 ```
 
-**Canonical-publishing status**: pushed to `origin/branch/determined-allen-4r42gi`
-with `git push -u origin branch/determined-allen-4r42gi` (see below for the
-exact command/result). Not merged into `main` — no PR was opened this
-session (the task instructions did not ask for one; per the outer
-CLAUDE.md/harness policy, do not open a PR unless explicitly asked).
+1. **AICAD-041** — `crates/cad-ast/src/expr.rs` (new): `Expr`/`Literal`/
+   `BinaryOp`/`UnaryOp`/`Arg` AST types. `crates/cad-parser/src/lib.rs`
+   (previously an empty placeholder): a precedence-climbing expression
+   parser covering literals, identifiers, unary/binary operators (a
+   frozen, C-family/Rust-like precedence table — no RFC specified one;
+   `cad-lexer`'s own docs named this task as where it gets frozen),
+   parenthesized grouping, call expressions, and method-call
+   expressions. Filled one evidenced grammar gap: `Expr::Field` (plain
+   `receiver.field` access), which the frozen grammar sketch omitted
+   despite pervasive use in the Stage-0 paper example
+   (`size.x - inset`, `Product.motor == NEMA17`). `block_expr`/
+   `if_expr`/`match_expr` were deliberately deferred to `AICAD-043`.
+   Found and fixed one real bug during test-writing: a missing binary
+   operand produced two diagnostics instead of one (double-reporting
+   through two independent detection layers) — fixed with a
+   `can_start_expression` lookahead check before recursing. 27 tests.
+2. **AICAD-042** — `crates/cad-ast/src/item.rs` (new): `Type`/`Field`/
+   `FnParam`/`Stmt`/`Block`/`Item`/`Program` AST types. Parser additions
+   for `let`/`const`/`param`/`fn`/`struct`/`enum`/`part` declarations
+   plus basic (`let`/`var`/assign/expr) statements. `Type` stays narrow
+   (bare name or generic args, matching the paper example's own
+   `Vector2<Length>`/`List<Point2>` evidence); enum variants are
+   unit-only (matching the paper example's only enum evidence,
+   `enum MotorSize { NEMA17, NEMA23 }`); `interface`/`assembly`/
+   `requirement`/`test`/`import` item forms and all control-flow syntax
+   stayed deferred (their own unreserved keywords / `AICAD-043`'s own
+   title). Every recovery loop (block statements, struct fields, enum
+   variants, part/top-level items) force-advances on a zero-progress
+   parse so malformed input can never hang the parser — regression-
+   tested directly. New diagnostic code `PARSE-E010`. 24 tests.
+3. **AICAD-043** — extends `expr.rs` (`BlockExpr`/`ElseBranch`/
+   `Pattern`/`MatchArmBody`/`MatchArm`/`Expr::Block`/`If`/`Match`) and
+   `item.rs` (`ElseClause`/`Stmt::If`/`For`/`While`/`Loop`/`Match`/
+   `Return`/`Break`/`Continue`). Two distinct `if`/`match` parsers keyed
+   by grammar context (statement position: `else` optional, via
+   `parse_stmt`; expression position: `else` mandatory, via
+   `parse_primary`) — matching the grammar's own `if_stmt`/`if_expr`
+   split exactly. `block_expr` treats `if`/`match` used mid-block as
+   statements only, never as the block's own trailing value (the only
+   concrete `if_expr` evidence, the paper example's
+   `let wall = if ... {3mm} else {4mm};`, is used directly as a binding's
+   value, never nested inside a bare `{ }`). `Pattern` stays narrow
+   (wildcard/literal/identifier, no data patterns, consistent with
+   `AICAD-042`'s unit-only enums). **One real design bug found and fixed
+   before commit**: an early draft of `parse_block_expr`'s dispatch did
+   not route `if`/`match` through the statement-shaped path, which
+   directly contradicted its own doc comment and failed one of this
+   task's own tests — root-caused (added `if`/`match` to the statement-
+   start set) rather than patched around by adjusting the test. New
+   diagnostic code `PARSE-E011`. 25 tests.
 
-1. **Recorded Stage-1 owner approval and the D5 owner ruling** (the task's
-   own explicit authorization to advance to Stage 2), per
-   `project/DECISION_LOG.md#DL-11`/`#DL-12`, and advanced
-   `project/CURRENT_STAGE.md` to Stage 2 with its own goal/exit-gate/
-   allowed-work sections. `project/OWNER_DECISIONS.md` D5 marked resolved
-   (policy shape only — concrete v1 tolerance constants still need
-   deriving from Stage-1 evidence during Stage 2, per DL-12's own text;
-   not yet done).
-2. **AICAD-038** — `crates/cad-diagnostics`: `Diagnostic`/`DiagnosticCode`/
-   `Severity`/`SourceSpan`/`Suggestion` types matching RFC-0005 §3-4
-   exactly; a dependency-free canonical `json` module (parser +
-   byte-identical-where-defined serializer — no third-party crate added,
-   first such decision point in this workspace, see that task's report);
-   a narrow JSON-Schema-subset validator (`type`/`required`/`properties`/
-   `items`/`enum`, no `$ref`/`pattern`); populated
-   `specs/schemas/diagnostic.schema.json`; conformance tests including
-   RFC-0005's own worked examples and adversarial negative cases. Found
-   and fixed one validator bug (`required` wrongly applied to a `null`
-   instance under a nullable object type) during testing.
-3. **AICAD-039** — `crates/cad-ast`: `Span`/`Spanned<T>`/`LineIndex`
-   (byte offset -> 1-based line/column). `crates/cad-lexer`: a
-   hand-written scanner producing spanned tokens for the 24 keywords
-   already reserved by `specs/language/grammar.ebnf` (deliberately not
-   `expose`/`query`/`unsafe`/etc. — not part of the frozen grammar
-   artifact yet), bool literals, raw numeric text, strings/raw strings,
-   `///` doc comments, and the evidenced operator set; lexical errors as
-   `cad_diagnostics::Diagnostic`s (`PARSE-E001..E003`). AST node types
-   (`Expr`/`Stmt`/`Item`) deliberately deferred to the parser tasks
-   (`AICAD-041`+) that will actually produce them. Found and fixed one
-   real lexer bug: the raw-string (`r"..."`) prefix check ran after the
-   generic identifier-start check, so raw strings were never recognized.
-4. **AICAD-040** — extended `TokenKind::Number` with an optional
-   immediately-adjacent unit suffix (`5mm`, `12.4MPa`, `30deg`, per
-   RFC-0004 §4), fused only with zero intervening whitespace and **not**
-   validated against the unit list (deferred to the future unit registry,
-   `AICAD-048`, per RFC-0004 §4's own "may expand without a grammar
-   change"). Verified every one of RFC-0004 §4's 26 initial units
-   individually. Found and resolved (by evidence, not by arbitrary
-   choice) a real spelling collision between the `in` (inches) unit and
-   the `in` for-loop keyword — they never compete for the same token
-   because of how each can actually appear in valid source; documented
-   in-code and tested both directions.
-
-**Batch S2-01 (`AICAD-038` -> `AICAD-039` -> `AICAD-040`) is now
-complete.** Per the fixed batch order in the campaign brief, do not begin
-Batch S2-02 (`AICAD-041`) in a session that hasn't yet confirmed this
-batch is on the canonical branch it will build on.
+**Batch S2-02 (`AICAD-041` -> `AICAD-042` -> `AICAD-043`) is now
+complete.** Per the campaign brief's fixed batch order, `AICAD-044`
+(Batch S2-03) must not begin in the invocation that reads this file
+without first re-confirming S2-02's canonical state (which it will,
+per the standard `git fetch`/`git log` reconstruction at the top of the
+campaign brief).
 
 ## Current state / next action
 
-- **Active stage**: Stage 2 (`project/CURRENT_STAGE.md` updated this
-  session). Stage 1 is closed (DL-11).
-- **Current/next batch**: S2-01 done. **Next is Batch S2-02**
-  (`AICAD-041` expression parser and precedence -> `AICAD-042`
-  declarations -> `AICAD-043` control-flow syntax), strictly in that
-  order, per the campaign brief's fixed batching. Do not start
-  `AICAD-044` within that batch.
-- **No partial task.** All three of this batch's tasks (038/039/040) are
+- **Active stage**: Stage 2. Stage 1 closed (DL-11); D5 policy-shape
+  closed (DL-12), concrete v1 tolerance constants still **not** derived
+  (unchanged from S2-01's own note — still a future `cad-validation`/
+  execution-determinism-checkpoint follow-up, not this batch's job).
+- **Current/next batch**: S2-02 done. **Next is Batch S2-03**
+  (`AICAD-044` module/import syntax and loader skeleton -> `AICAD-045`
+  minimal formatter/AST pretty-printer -> the `STAGE2-A_FRONTEND.md`
+  checkpoint), strictly in that order. Do not start `AICAD-046` before
+  that checkpoint passes.
+- **No partial task.** All three of this batch's tasks (041/042/043) are
   fully implemented, tested, reported, and committed.
 - **Exact recent test status** (this session's own fresh run, see each
   task's report for the exact commands):
-  - `cargo test -p cad-ast -p cad-lexer -p cad-diagnostics`: 7 + 27 + 20 +
-    10 = 64 tests, all passing.
+  - `cargo test -p cad-ast -p cad-lexer -p cad-diagnostics -p cad-parser`:
+    7 + 27 + (20 + 10) + 75 = 139 tests, all passing.
   - `cargo build --workspace --all-targets`: clean.
-  - `cargo clippy --workspace --all-targets --all-features -- -D
-    warnings`: zero warnings.
+  - `cargo clippy -p cad-ast -p cad-parser --all-targets --all-features
+    -- -D warnings`: zero warnings (two lints — `while_let_loop`,
+    `collapsible_if` — were found and fixed along the way, not
+    suppressed).
   - `cargo fmt --all -- --check`: clean.
-  - Native `ctest`/full Stage-1 Rust suite was **not** re-run this session
-    (no native/kernel code was touched) — last confirmed green at
-    `cad4422`/`e05d791` per the Stage-1 independent review.
-- **No open regressions.** Two real bugs were found and fixed within this
-  same session (the JSON-schema-validator `required`/`null` bug and the
-  lexer's raw-string-prefix-ordering bug) — both have permanent regression
-  tests, both are described above and in their tasks' own reports.
-- **Unresolved owner decisions** (unchanged by this session except D5):
-  D3 (sketch entity/object model), D5 **partially** — policy resolved
-  (DL-12) but the concrete v1 tolerance constants are NOT yet derived
-  (Stage-2 follow-up, see below), D10 (diagnostic code/schema stability —
-  `cad-diagnostics` treats every code as provisional per RFC-0005 §7), D11
+  - Native/OCCT Stage-1 Rust suite was **not** re-run this session (no
+    native/kernel code was touched) — last confirmed green at the
+    Stage-1 independent review commits (`cad4422`/`e05d791`).
+- **No open regressions.** Two real bugs were found and fixed within
+  this same session, both before their introducing commit landed (a
+  double-diagnostic bug in `AICAD-041`'s binary-operator parsing, and a
+  block_expr statement/expression-dispatch design bug in `AICAD-043` —
+  see each task's own report for the full account) — neither shipped as
+  a committed regression.
+- **Unresolved owner decisions** (unchanged by this session): D3 (sketch
+  entity/object model), D5 (concrete tolerance constants — policy
+  shape only, per DL-12), D10 (diagnostic code/schema stability), D11
   (constraint IR/solver independence), D12 (trusted native plugin
-  boundary), D15 (plugin runtime). None of these blocked Batch S2-01.
-- **D5 status/evidence**: `DECISION_LOG.md#DL-12` records the layered
-  Level 1-4 policy and comparison-profile *shape*. The concrete numeric
-  constants (linear/area/volume/center-of-mass absolute+relative
-  tolerances) still need to be derived from Stage-1's own evidence
-  (`project/reports/AICAD-034.md`'s closed-form-vs-OCCT agreement, the
-  fillet/chamfer bounding-box tolerance already calibrated there) — **not
-  done this session**, since Batch S2-01 was diagnostics/lexer work, not
-  `crates/cad-validation`. A future batch (S2-09's execution-determinism
-  checkpoint, or whenever `cad-validation` is first implemented) should
-  do this derivation and either add the constants directly or escalate
-  them to `project/OWNER_DECISIONS.md` per DL-12's own instruction if
-  Stage-2 evidence alone doesn't make a specific constant obvious.
-- **Pre-existing TASKS.yaml staleness noticed (not fixed, out of this
-  batch's scope)**: every Stage-0/Stage-1 task (`AICAD-001` through
-  `AICAD-037`) still shows `status: todo` in `project/TASKS.yaml` despite
-  being long complete per `project/reports/` and git history — no prior
-  session ever updated that field. This session set `status: done`
-  correctly for its own three tasks (038/039/040) but did **not** attempt
-  to retroactively fix the pre-existing 037 stale entries (out of scope
-  for a Stage-2 batch; would be a large, unrelated diff). A future
-  session should not trust `status: todo` in `project/TASKS.yaml` alone
-  as evidence a pre-038 task is incomplete — check `project/reports/` and
-  git history instead.
-- **Recommended next action**: start Batch S2-02 (`AICAD-041`) from
-  `branch/determined-allen-4r42gi`'s current head (`1c3c767`), after
-  resolving the branch-naming situation described above (check if
-  `origin/claude/aicad-stage2-dev` or a merge of this branch into `main`
-  has happened in the meantime; if not, continue on this branch or your
-  own newly-assigned one, based on whichever already carries this
-  session's Batch S2-01 commits).
+  boundary), D15 (plugin runtime). None of these blocked Batch S2-02.
+- **D5 status/evidence**: unchanged from S2-01's own note in
+  `DECISION_LOG.md#DL-12` — the concrete numeric constants still need
+  deriving from Stage-1 evidence, not yet attempted (this batch was
+  front-end parser work, not `crates/cad-validation`).
+- **Pre-existing `TASKS.yaml` staleness** (unchanged, not this batch's
+  scope to fix): `AICAD-001` through `AICAD-037` still show
+  `status: todo` despite being long complete — do not trust that field
+  alone for pre-038 tasks; check `project/reports/`/git history instead.
+  This session correctly set `status: done` for its own three tasks
+  (041/042/043).
+- **Recommended next action**: start Batch S2-03 (`AICAD-044`) from this
+  session's own head (`62061b6` on `branch/tender-hypatia-w0huqo`, or
+  `origin/main` if this branch has been merged by then), after
+  reconfirming the branch-naming situation above per the campaign
+  brief's own standard reconstruction steps.
 
 ## Environment
-Unchanged from Stage 1 (reconfirm rather than assume): Rust 1.98.1
-(`rust-toolchain.toml`), edition 2024. This session's own three crates
-(`cad-diagnostics`, `cad-ast`, `cad-lexer`) added **zero** third-party
-crate dependencies — `Cargo.lock` still has no non-`cad-*` entries as of
-this session's own commits (see AICAD-038's report for the reasoning).
-No native/OCCT work was touched this session.
+
+Unchanged from prior sessions (reconfirm rather than assume): Rust
+1.98.1 (`rust-toolchain.toml`), edition 2024 (this session's new code
+uses a `let`-chain in `cad-parser`, stable under this edition — confirmed
+by a clean `cargo clippy`/`cargo build`). This session's work (`cad-ast`,
+`cad-parser`) added **zero** third-party crate dependencies — `Cargo.lock`
+still has no non-`cad-*` entries. No native/OCCT work was touched.
 
 ## Git identity
-This session found no git identity configured in the environment (fresh
-container) and explicitly ran `git config user.name
-"insightlabs38-pixel"` / `git config user.email
-"insightlabs38@gmail.com"` before any commit, per `CLAUDE.md`. All four of
-this session's commits use that identity. No hook was bypassed or
-modified; `core.hooksPath` was left untouched; `--no-verify` was never
-used.
+
+This session found git identity set to `Claude <noreply@anthropic.com>`
+in the fresh container (not the required identity) and explicitly reset
+it to `insightlabs38-pixel <insightlabs38@gmail.com>` before any commit,
+per `CLAUDE.md`/`AGENTS.md`. All three of this session's commits use that
+identity. No hook was bypassed or modified; `core.hooksPath` was left
+untouched; `--no-verify` was never used.
