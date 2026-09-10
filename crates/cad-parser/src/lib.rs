@@ -2390,6 +2390,23 @@ mod import_tests {
             other => panic!("expected Fn, got {other:?}"),
         }
     }
+
+    /// Adversarial (`STAGE2-A_FRONTEND.md` checkpoint): a run of malformed
+    /// `import` declarations back-to-back with unrelated garbage tokens
+    /// must still terminate (each token consumed and reported at most
+    /// once per the recovery loop's own "force progress" guarantee,
+    /// exactly like `decl_tests::does_not_hang_on_a_sequence_of_unrecognized_tokens`)
+    /// rather than looping forever inside `parse_import_path`'s own
+    /// error path.
+    #[test]
+    fn does_not_hang_on_malformed_imports_adjacent_to_garbage() {
+        let (_, diagnostics) =
+            parse_program("import . ; import @@@ ; import ./ ; import ;", "t.aicad");
+        assert!(
+            !diagnostics.is_empty(),
+            "expected at least one diagnostic, got none"
+        );
+    }
 }
 
 /// `AICAD-043` tests: control-flow statements and expressions.

@@ -421,6 +421,34 @@ mod tests {
         );
     }
 
+    /// Adversarial (`STAGE2-A_FRONTEND.md` checkpoint): a straight-line
+    /// chain deeper than one hop (`a -> b -> c -> d -> e`, no diamond, no
+    /// cycle) resolves every module, in order, without hitting the
+    /// diamond-dedup or cycle-detection paths at all — a plain recursion-
+    /// depth sanity check distinct from `deduplicates_a_diamond_import...`
+    /// and `detects_a_two_file_cyclic_import`.
+    #[test]
+    fn resolves_a_five_deep_relative_import_chain() {
+        let dir = temp_dir("deepchain");
+        let names = ["a", "b", "c", "d", "e"];
+        for i in 0..names.len() {
+            let contents = if i + 1 < names.len() {
+                format!("import ./{};\n", names[i + 1])
+            } else {
+                "let end = 1;".to_string()
+            };
+            write(&dir, &format!("{}.aicad", names[i]), &contents);
+        }
+        let entry = dir.join("a.aicad");
+        let result = load_entry(&entry);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let expected: Vec<PathBuf> = names
+            .iter()
+            .map(|n| std::fs::canonicalize(dir.join(format!("{n}.aicad"))).unwrap())
+            .collect();
+        assert_eq!(module_paths(&result), expected);
+    }
+
     #[test]
     fn resolves_a_parent_directory_relative_import() {
         let dir = temp_dir("updir");
