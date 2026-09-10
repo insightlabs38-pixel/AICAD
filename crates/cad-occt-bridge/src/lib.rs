@@ -137,6 +137,46 @@ impl OcctContext {
         })
     }
 
+    /// Imports a STEP file and returns the resulting shape (AICAD-035),
+    /// via OCCT's own `STEPControl_Reader`. This is a narrow,
+    /// kernel-adapter-scoped operation added specifically to support the
+    /// Stage-1 proof's own export -> re-import verification pipeline --
+    /// **not** the full public language-level `import_step()` described
+    /// in `docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md` §9 (no unit/
+    /// heal/coordinate-policy/naming-policy options, no semantic-node
+    /// wrapping or provenance capture). If the file describes more than
+    /// one root shape, the returned shape is whichever single shape
+    /// OCCT's own reader designates (typically a Compound containing all
+    /// transferred roots) -- this does not impose or validate a
+    /// single-root-shape contract on its caller's STEP files.
+    ///
+    /// Read this method's own verification-scope caveat before treating
+    /// an export-then-import round trip through this bridge as
+    /// independent evidence: both directions share one OCCT installation,
+    /// so a round trip proves the pipeline is self-consistent, not that
+    /// an independent (non-OCCT) implementation agrees with OCCT's own
+    /// output. See `project/reports/AICAD-035.md` for the genuinely
+    /// independent (non-OCCT, structural-only) verification path used
+    /// alongside this.
+    pub fn import_step(&self, path: &std::path::Path) -> KernelResult<Shape<'_>> {
+        let path_str = path.to_str().ok_or(KernelError::InvalidArgument)?;
+        let c_path = std::ffi::CString::new(path_str).map_err(|_| KernelError::InvalidArgument)?;
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `c_path` is a valid, live, null-terminated C string for
+        // the duration of this call; `self.raw`/`&mut handle` as in
+        // `create_box`.
+        let status = unsafe { ffi::aicad_occt_import_step(self.raw, c_path.as_ptr(), &mut handle) };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
     /// Constructs a straight edge between two points (AICAD-022).
     pub fn make_line_edge(&self, p0: Point3, p1: Point3) -> KernelResult<Shape<'_>> {
         let p0 = [p0.x, p0.y, p0.z];
@@ -2352,5 +2392,156 @@ mod tests {
             results.iter().all(|&ok| ok),
             "every thread's every export_step call should succeed without crashing the process"
         );
+    }
+
+    // --- AICAD-036: fillet concurrency regression (found while building
+    // the Stage-1 proof bracket, AICAD-034) ---
+
+    #[test]
+    fn concurrent_fillet_of_a_concave_edge_from_independent_contexts_does_not_corrupt_the_result() {
+        // Regression test for a genuine native defect found while building
+        // the Stage-1 proof bracket (project/reports/AICAD-034.md /
+        // AICAD-036.md): BRepFilletAPI_MakeFillet (and the ChFi3d
+        // fillet-construction machinery it drives) intermittently produced
+        // an invalid B-rep (1-2 invalid faces per `Shape::validate`) when
+        // filleting a concave/reentrant edge on a multi-boolean shape
+        // concurrently from independent contexts on independent threads --
+        // reproduced at a ~47% failure rate over 30 repetitions with just 3
+        // concurrent threads, while the byte-for-byte identical
+        // construction run with NO concurrency never failed once across
+        // 300 repetitions. `union`/`cut`/`chamfer` were independently
+        // stress-tested under the same concurrent conditions and never
+        // failed, isolating the defect specifically to
+        // `BRepFilletAPI_MakeFillet`. Fixed the same way as AICAD-033's
+        // STEP-translator finding: a process-wide mutex serializing every
+        // `aicad_occt_fillet` call (`native/occt_bridge/src/aicad_occt_bridge.cpp`'s
+        // `FilletMutex`). This test reproduces the exact concurrent
+        // pattern that corrupted results and confirms it no longer does,
+        // per AGENTS.md's native crash/hang policy ("add a permanent
+        // regression case").
+        const THREADS: usize = 3;
+        const ROUNDS: usize = 15;
+
+        fn concave_l_shape(context: &OcctContext) -> Shape<'_> {
+            // An L-shaped bracket cross-section (base + perpendicular
+            // wall, genuine 3D overlap, not a coincident interface) with
+            // one concave/reentrant interior root edge -- the exact
+            // geometry category the original defect was found on.
+            let base = context.create_box(20.0, 15.0, 5.0).unwrap();
+            let wall = context.create_box(20.0, 5.0, 15.0).unwrap();
+            base.union(&wall).unwrap()
+        }
+
+        fn find_root_edge<'ctx>(shape: &Shape<'ctx>) -> Shape<'ctx> {
+            let count = shape.edge_count().unwrap();
+            (0..count)
+                .map(|i| shape.get_edge(i).unwrap())
+                .find(|edge| {
+                    let b = edge.bounding_box().unwrap();
+                    let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+                    close(b.min.y, 5.0)
+                        && close(b.max.y, 5.0)
+                        && close(b.min.z, 5.0)
+                        && close(b.max.z, 5.0)
+                        && close(b.min.x, 0.0)
+                        && close(b.max.x, 20.0)
+                })
+                .expect("the concave root edge must be found")
+        }
+
+        for _ in 0..ROUNDS {
+            let all_valid: Vec<bool> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..THREADS)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let context = OcctContext::new()
+                                .expect("context creation should succeed on a worker thread");
+                            let shape = concave_l_shape(&context);
+                            let root_edge = find_root_edge(&shape);
+                            let filleted = shape
+                                .fillet(&[&root_edge], 2.0)
+                                .expect("fillet should succeed for the concave root edge");
+                            filleted
+                                .is_valid()
+                                .expect("is_valid should not itself fail")
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(
+                all_valid.iter().all(|&ok| ok),
+                "every thread's concurrent fillet of the concave root edge must produce a valid B-rep"
+            );
+        }
+    }
+
+    // --- AICAD-035: STEP import (round-trip verification harness) ---
+
+    #[test]
+    fn import_step_round_trip_preserves_volume_bbox_and_topology_counts() {
+        // NOT independent verification of the exporter (both directions
+        // share one OCCT installation) -- proves the export/import
+        // pipeline is internally self-consistent for a shape whose exact
+        // properties this bridge already independently established.
+        // See project/reports/AICAD-035.md for the genuinely independent
+        // (non-OCCT) verification path used alongside this.
+        let context = OcctContext::new().unwrap();
+        let (dx, dy, dz) = (3.0, 4.0, 5.0);
+        let original = context.create_box(dx, dy, dz).unwrap();
+        let path = std::env::temp_dir().join("aicad_rust_step_import_round_trip.step");
+        original.export_step(&path).unwrap();
+
+        let reimported = context
+            .import_step(&path)
+            .expect("import_step should succeed for the file this bridge just exported");
+        assert!(reimported.is_valid().unwrap());
+
+        assert!((reimported.volume().unwrap() - original.volume().unwrap()).abs() < 1e-9);
+        assert!((original.volume().unwrap() - dx * dy * dz).abs() < 1e-9);
+
+        let original_bbox = original.bounding_box().unwrap();
+        let reimported_bbox = reimported.bounding_box().unwrap();
+        assert!((original_bbox.min.x - reimported_bbox.min.x).abs() < 1e-9);
+        assert!((original_bbox.max.x - reimported_bbox.max.x).abs() < 1e-9);
+        assert!((original_bbox.min.y - reimported_bbox.min.y).abs() < 1e-9);
+        assert!((original_bbox.max.y - reimported_bbox.max.y).abs() < 1e-9);
+        assert!((original_bbox.min.z - reimported_bbox.min.z).abs() < 1e-9);
+        assert!((original_bbox.max.z - reimported_bbox.max.z).abs() < 1e-9);
+
+        assert_eq!(
+            original.face_count().unwrap(),
+            reimported.face_count().unwrap()
+        );
+        assert_eq!(
+            original.edge_count().unwrap(),
+            reimported.edge_count().unwrap()
+        );
+        assert_eq!(original.face_count().unwrap(), 6);
+        assert_eq!(original.edge_count().unwrap(), 12);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn import_step_rejects_a_nonexistent_file() {
+        let context = OcctContext::new().unwrap();
+        let path = std::path::Path::new("/nonexistent_directory_aicad/x.step");
+        assert_eq!(
+            context.import_step(path).unwrap_err(),
+            KernelError::OperationFailed
+        );
+    }
+
+    #[test]
+    fn import_step_rejects_a_syntactically_invalid_file() {
+        let context = OcctContext::new().unwrap();
+        let path = std::env::temp_dir().join("aicad_rust_step_import_garbage.step");
+        std::fs::write(&path, b"this is not a STEP file\n").unwrap();
+        assert_eq!(
+            context.import_step(&path).unwrap_err(),
+            KernelError::OperationFailed
+        );
+        std::fs::remove_file(&path).ok();
     }
 }

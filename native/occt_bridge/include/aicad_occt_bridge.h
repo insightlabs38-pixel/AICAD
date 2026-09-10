@@ -307,7 +307,23 @@ aicad_occt_status_t aicad_occt_shape_get_edge(aicad_occt_context_t* context,
  * this same shape_handle. Accepts any non-null shape_handle (not
  * restricted to Solid) -- matching aicad_occt_boolean_union's own
  * rationale: a boolean result is a Compound and must remain fillet-able
- * without first being re-wrapped. */
+ * without first being re-wrapped.
+ *
+ * AICAD-036 finding: like aicad_occt_export_step/aicad_occt_import_step,
+ * this function is internally serialized process-wide (a single mutex,
+ * not per-context) across ALL contexts. Unlike the STEP translator's
+ * already-known issue, this was found for the underlying
+ * BRepFilletAPI_MakeFillet/ChFi3d fillet-construction machinery: a
+ * concave/reentrant edge on a multi-boolean shape was found to
+ * intermittently produce an invalid B-rep when called concurrently from
+ * independent contexts on independent threads, while the identical
+ * sequential (non-concurrent) construction never failed. See
+ * project/reports/AICAD-036.md for the full investigation. Callers do
+ * not need their own external synchronization for this specific
+ * function, but should expect concurrent aicad_occt_fillet calls from
+ * different threads to block on each other rather than run in parallel
+ * -- aicad_occt_chamfer was independently confirmed safe under the same
+ * conditions and is NOT part of this serialization. */
 aicad_occt_status_t aicad_occt_fillet(aicad_occt_context_t* context,
                                        aicad_shape_handle_t shape_handle,
                                        const aicad_shape_handle_t* edges,
@@ -581,13 +597,12 @@ aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
 
 /* --- AICAD-033: STEP export.
  *
- * docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md §9's `export_step()`
- * (paired with `import_step()`, not implemented by this bridge -- no
- * Stage-1 task needs import). Writes `handle`'s shape to `file_path` as
- * an AP214 STEP file via OCCT's own `STEPControl_Writer`. See
- * project/reports/AICAD-033.md for exactly how this task's export was
- * independently verified (a genuinely OCCT-independent Python STEP-21
- * parser, not merely re-importing through this same bridge). --- */
+ * docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md §9's `export_step()`.
+ * Writes `handle`'s shape to `file_path` as an AP214 STEP file via OCCT's
+ * own `STEPControl_Writer`. See project/reports/AICAD-033.md for exactly
+ * how this task's export was independently verified (a genuinely
+ * OCCT-independent Python STEP-21 parser, not merely re-importing
+ * through this same bridge). --- */
 
 /* `file_path` is a caller-owned, null-terminated path (a raw C string,
  * not an STL std::string, per Stage-1 kernel policy #8); this bridge
@@ -598,16 +613,54 @@ aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
  *
  * UNLIKE every other function in this bridge, this one is internally
  * serialized process-wide (a single mutex, not per-context) across ALL
- * contexts: OCCT's own STEP translator holds process-global,
- * non-thread-safe state, and concurrent calls from independent contexts
- * on independent threads were empirically found to segfault the process
- * (see project/reports/AICAD-033.md). Callers do not need to add their
- * own external synchronization for this specific function, but should
- * expect concurrent aicad_occt_export_step calls from different threads
- * to block on each other rather than run in parallel. */
+ * contexts, shared with `aicad_occt_import_step` below: OCCT's own STEP
+ * translator holds process-global, non-thread-safe state, and concurrent
+ * calls from independent contexts on independent threads were
+ * empirically found to segfault the process (see
+ * project/reports/AICAD-033.md). Callers do not need to add their own
+ * external synchronization for this specific function, but should expect
+ * concurrent aicad_occt_export_step/aicad_occt_import_step calls from
+ * different threads to block on each other rather than run in
+ * parallel. */
 aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
                                             aicad_shape_handle_t handle,
                                             const char* file_path);
+
+/* --- AICAD-035: STEP import, added narrowly to support the Stage-1
+ * proof's own export -> independent re-import/verification pipeline
+ * (docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md §9's `import_step()`
+ * paired counterpart). This is deliberately NOT the full public
+ * language-level `import_step()` described there (no unit/heal/
+ * preserve_metadata/coordinate_policy/naming_policy options, no semantic
+ * node wrapping, no provenance) -- that is later, higher-layer scope.
+ * This is the same minimal, capability-driven kernel-adapter operation
+ * every other Stage-1 bridge function already is: read a STEP file via
+ * OCCT's own `STEPControl_Reader`, transfer its root shapes, and return
+ * one resulting shape.
+ *
+ * Read the important verification-scope caveat before treating a
+ * round-trip through this function as independent evidence: it uses the
+ * SAME OCCT installation that performed the export, so
+ * export-then-import-through-this-bridge proves the round-trip pipeline
+ * itself is self-consistent (a real, useful check), not that an
+ * independent, non-OCCT implementation agrees with OCCT's own output --
+ * see project/reports/AICAD-035.md for the genuinely independent
+ * (non-OCCT, structural-only) verification path used alongside this. */
+
+/* `file_path` is a caller-owned, null-terminated path (as in
+ * `aicad_occt_export_step`). Fails with AICAD_OCCT_ERR_INVALID_ARGUMENT
+ * for a null/empty path or a null `out_handle`; fails with
+ * AICAD_OCCT_ERR_OPERATION_FAILED if the file cannot be read, is not a
+ * valid STEP file, or transfers zero shapes. If the file's DATA section
+ * describes more than one root shape, the returned shape is whichever
+ * single shape OCCT's own reader designates via `OneShape()` (typically
+ * a Compound containing all transferred roots) -- this bridge does not
+ * impose or validate a single-root-shape contract on its caller's STEP
+ * files. Shares `aicad_occt_export_step`'s process-wide mutex (see
+ * above). */
+aicad_occt_status_t aicad_occt_import_step(aicad_occt_context_t* context,
+                                            const char* file_path,
+                                            aicad_shape_handle_t* out_handle);
 
 #ifdef __cplusplus
 }
