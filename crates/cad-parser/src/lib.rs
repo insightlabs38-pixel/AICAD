@@ -26,10 +26,13 @@
 //! `AICAD-041`/`042`/`043` acceptance criterion requires.
 
 mod expr;
+mod item;
+mod stmt;
+mod ty;
 
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
-use cad_lexer::{Token, TokenKind};
+use cad_lexer::{Keyword, Token, TokenKind};
 
 /// Parses one full expression from `source`, requiring the expression to
 /// consume every token up to (but not including) end-of-file — trailing
@@ -40,6 +43,34 @@ pub fn parse_expr(source: &str, file: &str) -> Result<cad_ast::Expr, Box<Diagnos
     let expr = parser.parse_expression()?;
     parser.expect_eof()?;
     Ok(expr)
+}
+
+/// Parses one top-level declaration (grammar `item`, restricted to the
+/// six forms `AICAD-042` implements: `let`/`const`/`param`/`fn`/`struct`/
+/// `enum`/`part`), requiring it to consume every token up to `Eof`.
+pub fn parse_item(source: &str, file: &str) -> Result<cad_ast::Item, Box<Diagnostic>> {
+    let mut parser = Parser::new(source, file)?;
+    let item = parser.parse_item()?;
+    parser.expect_eof()?;
+    Ok(item)
+}
+
+/// Parses one `block` (`"{" , { statement } , "}"`), requiring it to
+/// consume every token up to `Eof`.
+pub fn parse_block(source: &str, file: &str) -> Result<cad_ast::Block, Box<Diagnostic>> {
+    let mut parser = Parser::new(source, file)?;
+    let block = parser.parse_block()?;
+    parser.expect_eof()?;
+    Ok(block)
+}
+
+/// Parses one `statement`, requiring it to consume every token up to
+/// `Eof`.
+pub fn parse_statement(source: &str, file: &str) -> Result<cad_ast::Stmt, Box<Diagnostic>> {
+    let mut parser = Parser::new(source, file)?;
+    let stmt = parser.parse_statement()?;
+    parser.expect_eof()?;
+    Ok(stmt)
 }
 
 /// The shared parser state: a token cursor plus everything needed to
@@ -169,6 +200,21 @@ impl<'a> Parser<'a> {
     fn expect(&mut self, kind: TokenKind, expected: &str) -> Result<Token, Box<Diagnostic>> {
         if std::mem::discriminant(self.peek()) == std::mem::discriminant(&kind) {
             Ok(self.bump())
+        } else {
+            Err(self.unexpected_token(expected, self.peek().clone()))
+        }
+    }
+
+    fn at_keyword(&self, kw: Keyword) -> bool {
+        matches!(self.peek(), TokenKind::Keyword(k) if *k == kw)
+    }
+
+    /// Consumes the current token if it is exactly the keyword `kw`,
+    /// returning its span; otherwise returns an `UNEXPECTED_TOKEN`/
+    /// `UNEXPECTED_EOF` diagnostic without consuming anything.
+    fn expect_keyword(&mut self, kw: Keyword, expected: &str) -> Result<Span, Box<Diagnostic>> {
+        if self.at_keyword(kw) {
+            Ok(self.bump().span)
         } else {
             Err(self.unexpected_token(expected, self.peek().clone()))
         }

@@ -5,7 +5,8 @@
 //!
 //! **Scope of `AICAD-039`:** only the span/position model (this file)
 //! existed after that task. `AICAD-041` (expression parser and
-//! precedence) added [`Ident`] and the `expr` module. Each node type is
+//! precedence) added [`Ident`] and the `expr` module. `AICAD-042`
+//! (declarations) added the `ty`/`item`/`stmt` modules. Each node type is
 //! added by the parser task that first needs to produce it, per
 //! `AGENTS.md` "No speculative future work" — see each module's own docs
 //! for exactly which grammar productions it covers and which are left for
@@ -13,9 +14,18 @@
 
 mod expr;
 mod ident;
+mod item;
+mod stmt;
+mod ty;
 
 pub use expr::{Arg, BinaryOp, Expr, ExprKind, UnaryOp};
 pub use ident::Ident;
+pub use item::{
+    ConstDecl, EnumDecl, EnumVariant, EnumVariantKind, FieldDecl, FnDecl, Item, LetDecl, Param,
+    ParamDecl, PartDecl, PartMember, StructDecl,
+};
+pub use stmt::{AssignStmt, Block, ExprStmt, LetStmt, Stmt, VarStmt};
+pub use ty::Type;
 
 /// A half-open byte-offset range into one source file: `[start, end)`.
 ///

@@ -298,7 +298,7 @@ impl<'a> Parser<'a> {
         Ok(Arg::Positional(self.parse_expression()?))
     }
 
-    fn parse_ident(&mut self, expected: &str) -> Result<Ident, Box<Diagnostic>> {
+    pub(crate) fn parse_ident(&mut self, expected: &str) -> Result<Ident, Box<Diagnostic>> {
         match self.peek().clone() {
             TokenKind::Ident(name) => {
                 let span = self.bump().span;
