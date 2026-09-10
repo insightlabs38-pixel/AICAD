@@ -33,6 +33,7 @@
 #include <GProp_GProps.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
+#include <STEPControl_Reader.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <STEPControl_Writer.hxx>
 #include <Standard_Failure.hxx>
@@ -939,6 +940,36 @@ aicad_occt_status_t aicad_occt_shape_get_edge(aicad_occt_context_t* context,
   }
 }
 
+namespace {
+
+// AICAD-036 finding: BRepFilletAPI_MakeFillet (and the ChFi3d
+// fillet-construction machinery it drives internally) is not safe to
+// call concurrently from independent contexts on independent threads,
+// for at least some inputs -- confirmed empirically, not assumed. A
+// concave/reentrant edge on a multi-boolean shape (the Stage-1 proof
+// bracket's own interior root fillet, AICAD-034) intermittently produced
+// an invalid B-rep (1-2 invalid faces per `aicad_occt_shape_validate`)
+// when 3 independent contexts on 3 independent threads each built and
+// filleted the identical shape concurrently -- a ~47% failure rate over
+// 30 repetitions -- while the IDENTICAL construction run with no
+// concurrency at all (300 sequential repetitions, same process) never
+// failed once. `aicad_occt_boolean_union`/`_cut`/`_intersect` and
+// `aicad_occt_chamfer` were independently stress-tested under the same
+// concurrent conditions and never failed, isolating this specifically to
+// `BRepFilletAPI_MakeFillet` (see project/reports/AICAD-036.md for the
+// full investigation, reproduction counts, and the isolation
+// experiments). This mirrors AICAD-033's STEP-translator finding
+// (project/reports/AICAD-033.md): a real defect/limitation in this
+// version of the underlying kernel library's own global state, not a
+// per-context bridge bug, fixed the same way -- a single process-wide
+// mutex serializing every fillet call.
+std::mutex& FilletMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+}  // namespace
+
 aicad_occt_status_t aicad_occt_fillet(aicad_occt_context_t* context,
                                        aicad_shape_handle_t shape_handle,
                                        const aicad_shape_handle_t* edges,
@@ -961,6 +992,7 @@ aicad_occt_status_t aicad_occt_fillet(aicad_occt_context_t* context,
     return status;
   }
   try {
+    std::lock_guard<std::mutex> lock(FilletMutex());
     BRepFilletAPI_MakeFillet make_fillet(*base_shape);
     for (size_t i = 0; i < edge_count; ++i) {
       const TopoDS_Shape* edge_shape = nullptr;
@@ -1827,18 +1859,21 @@ aicad_occt_status_t aicad_occt_tessellation_get(aicad_occt_context_t* context,
 
 namespace {
 
-// AICAD-033 key finding: OCCT's STEP translator (STEPControl_Writer and
-// the XSTEP/Interface_Static machinery it drives) holds process-global,
-// non-thread-safe state -- confirmed empirically, not assumed: calling
-// aicad_occt_export_step concurrently from independent contexts on
-// independent threads (each thread otherwise fully respecting Stage-1
-// kernel policy #9's single-thread-affine-per-context contract)
-// intermittently segfaulted the process (see project/reports/AICAD-033.md
-// for the exact reproduction). This is a defect in the underlying kernel
-// library's own global state, not a per-context bridge bug, so a
-// per-context lock cannot fix it -- only a single process-wide mutex
-// serializing every STEP export call can, which is what this does.
-std::mutex& StepExportMutex() {
+// AICAD-033 key finding: OCCT's STEP translator (STEPControl_Writer/
+// STEPControl_Reader and the XSTEP/Interface_Static machinery they drive)
+// holds process-global, non-thread-safe state -- confirmed empirically,
+// not assumed: calling aicad_occt_export_step concurrently from
+// independent contexts on independent threads (each thread otherwise
+// fully respecting Stage-1 kernel policy #9's single-thread-affine-per-
+// context contract) intermittently segfaulted the process (see
+// project/reports/AICAD-033.md for the exact reproduction). This is a
+// defect in the underlying kernel library's own global state, not a
+// per-context bridge bug, so a per-context lock cannot fix it -- only a
+// single process-wide mutex serializing every STEP export/import call
+// can, which is what this does. AICAD-035 shares this same mutex for
+// `aicad_occt_import_step` rather than introducing a second one, since
+// reader and writer drive the same underlying global XSTEP session state.
+std::mutex& StepIoMutex() {
   static std::mutex mutex;
   return mutex;
 }
@@ -1865,7 +1900,7 @@ aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
     return status;
   }
   try {
-    std::lock_guard<std::mutex> lock(StepExportMutex());
+    std::lock_guard<std::mutex> lock(StepIoMutex());
     STEPControl_Writer writer;
     const IFSelect_ReturnStatus transfer_status = writer.Transfer(*shape, STEPControl_AsIs);
     if (transfer_status != IFSelect_RetDone) {
@@ -1875,6 +1910,40 @@ aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
     if (write_status != IFSelect_RetDone) {
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_import_step(aicad_occt_context_t* context,
+                                            const char* file_path,
+                                            aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (file_path == nullptr || file_path[0] == '\0' || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(StepIoMutex());
+    STEPControl_Reader reader;
+    const IFSelect_ReturnStatus read_status = reader.ReadFile(file_path);
+    if (read_status != IFSelect_RetDone) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    const Standard_Integer num_roots = reader.TransferRoots();
+    if (num_roots <= 0) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    const TopoDS_Shape shape = reader.OneShape();
+    if (shape.IsNull()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, shape);
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

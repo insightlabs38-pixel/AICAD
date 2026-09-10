@@ -265,6 +265,11 @@ unsafe extern "C" {
         handle: aicad_shape_handle_t,
         file_path: *const std::os::raw::c_char,
     ) -> c_int;
+    pub fn aicad_occt_import_step(
+        context: *mut aicad_occt_context_t,
+        file_path: *const std::os::raw::c_char,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t
