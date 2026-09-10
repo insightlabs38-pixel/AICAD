@@ -7,13 +7,16 @@
 //! populated this crate for the first time with a tree-walking evaluator
 //! over `cad_hir::HirProgram` (the same typed HIR `cad_hir::typeck`
 //! already type-checks); `AICAD-055` ("Implement conditional and match
-//! execution") then added `if`/`match` (see `project/reports/AICAD-054.md`
-//! and `project/reports/AICAD-055.md` for each task's exact scope,
-//! decisions, and known limitations). See [`interp`]'s own module doc
-//! comment for the full design: what is executed now, what is
-//! deliberately deferred to `AICAD-056` (loops), and the one documented
-//! `expected`-type-context gap left for ambiguous derived-dimension
-//! arithmetic.
+//! execution") added `if`/`match`; `AICAD-056` ("Implement loops and basic
+//! collections/iterators") added `while`/`loop`/`break`/`continue` (see
+//! `project/reports/AICAD-054.md`, `AICAD-055.md`, `AICAD-056.md` for each
+//! task's exact scope, decisions, and known limitations). `AICAD-056`'s
+//! own `for`-loop half is escalated, not implemented — see [`interp`]'s
+//! module doc comment "Known limitation: `for`-loop iteration" and
+//! `project/OWNER_DECISIONS.md#D16`. See [`interp`]'s own module doc
+//! comment for the full design: what is executed now, what remains
+//! deliberately unimplemented, and the one documented `expected`-type-
+//! context gap left for ambiguous derived-dimension arithmetic.
 //!
 //! - [`value`]: [`value::Value`]/[`value::NumberValue`] — the runtime
 //!   value representation, and why numeric scalars deliberately collapse

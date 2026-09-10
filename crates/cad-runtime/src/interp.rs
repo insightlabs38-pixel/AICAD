@@ -48,15 +48,52 @@
 //! scrutinee is a real, reachable [`crate::error::RuntimeError::
 //! NonExhaustiveMatch`], not a panic.
 //!
+//! Also executed (`AICAD-056`): `while` and `loop` (including `break`/
+//! `continue`, threaded as two new [`Signal`] variants exactly like
+//! [`Signal::Return`] — see that type's own doc comment). `break`/
+//! `continue` used with no enclosing `while`/`loop` in the current dynamic
+//! call frame is a real, reachable [`crate::error::RuntimeError::
+//! BreakOutsideLoop`]/[`crate::error::RuntimeError::ContinueOutsideLoop`],
+//! not a panic — `cad_hir::typeck`'s own `HirStmt::Break`/`HirStmt::
+//! Continue` check is a no-op (no Stage-2 batch task verifies loop-nesting
+//! at compile time), so a type-checked program can genuinely reach it.
+//!
 //! Deliberately **not** executed yet (each returns [`crate::error::
 //! RuntimeError::Unsupported`], never a panic, so a program exercising one
-//! of these fails cleanly rather than silently or incorrectly):
-//! `for`/`while`/`loop`/`break`/`continue` (`AICAD-056`), struct
+//! of these fails cleanly rather than silently or incorrectly): `for`
+//! (blocked — see "Known limitation: `for`-loop iteration" below), struct
 //! construction and field access (no scheduled task yet explicitly owns a
 //! runtime struct *value* — see this crate's top-level doc comment "Known
 //! limitations"), and method calls (no method/interface-implementation
 //! declaration syntax exists anywhere in the language, matching
 //! `cad_hir::typeck::check_call`'s own identical finding).
+//!
+//! ## Known limitation: `for`-loop iteration
+//!
+//! `AICAD-056`'s own title ("Implement loops and basic collections/
+//! iterators") implies giving `for var in iterable { ... }` a real runtime
+//! meaning, which needs at least one constructible collection/iterator
+//! `Value`. No `.aicad` source program can construct one today:
+//! `specs/language/grammar.ebnf`'s frozen `expression` production
+//! (`call_expr | method_call_expr | binary_expr | literal | identifier |
+//! "(" expression ")" | block_expr | if_expr | match_expr`) has no array/
+//! list-literal syntax and no range operator (`docs/plan/03_TYPE_SYSTEM_
+//! UNITS_CONTROL_FLOW.md`'s own `for i in 0..count` example and `docs/
+//! plan/02_LANGUAGE_AND_COMPILER.md` §9's `List<T>`/`Range<T>`/
+//! `Iterator<T>` are plan-level sketches, never promoted into the frozen
+//! grammar any Stage-2 batch has actually implemented), and no compiler-
+//! intrinsic/builtin-function mechanism exists either (binding resolution
+//! only ever resolves user-declared `fn`/`struct`/`enum`/`let`/`const`/
+//! `param` items — see `cad_hir::binding`). Giving `for` a real meaning
+//! therefore requires either new public expression syntax or a new
+//! compiler-intrinsic-function boundary — both explicit `AGENTS.md`
+//! owner-escalation triggers ("change public language syntax... beyond an
+//! approved RFC", "add a compiler intrinsic where a library solution may
+//! work"), and both are this task's own listed `project/TASKS.yaml`
+//! `escalate_if` conditions. Escalated as `project/OWNER_DECISIONS.md#D16`
+//! rather than decided here; `for` continues to report `RuntimeError::
+//! Unsupported`, unchanged from `AICAD-054`/`AICAD-055`'s own identical
+//! behavior for it.
 //!
 //! ## Known limitation: ambiguous derived-dimension arithmetic
 //!
@@ -103,17 +140,28 @@ use std::collections::HashMap;
 /// call's execution, including arbitrarily nested block expressions.
 type Frame = HashMap<BindingId, Value>;
 
-/// Non-local control transfer during expression/statement evaluation:
-/// either a genuine failure ([`Signal::Error`]) or an in-flight `return`
-/// ([`Signal::Return`]) unwinding toward its enclosing function call.
+/// Non-local control transfer during expression/statement evaluation: a
+/// genuine failure ([`Signal::Error`]), an in-flight `return`
+/// ([`Signal::Return`]) unwinding toward its enclosing function call, or an
+/// in-flight `break`/`continue` ([`Signal::Break`]/[`Signal::Continue`])
+/// unwinding toward its nearest enclosing `while`/`loop` (`AICAD-056`).
 /// Threading this as the `Err` case of every evaluation method's
-/// `Result` lets a `return` buried inside arbitrarily nested expressions
-/// (e.g. inside a block-expression's trailing position, itself nested
-/// inside a binary operand) propagate for free via `?`, without a
-/// separate signaling channel.
+/// `Result` lets a `return`/`break`/`continue` buried inside arbitrarily
+/// nested expressions (e.g. inside a block-expression's trailing position,
+/// itself nested inside a binary operand, or inside an `if`/`match` arm
+/// nested inside a loop body) propagate for free via `?`, without a
+/// separate signaling channel. `Break`/`Continue` carry the triggering
+/// statement's own `Span` purely so a loop-less escape (no enclosing
+/// `while`/`loop` in the current dynamic call frame — legal per
+/// `cad_hir::typeck`'s own no-op `HirStmt::Break`/`HirStmt::Continue`
+/// check, see `crate::error::RuntimeError::BreakOutsideLoop`'s doc
+/// comment) can still report the statement's real source location, exactly
+/// like every other `RuntimeError` variant.
 #[derive(Debug, Clone, PartialEq)]
 enum Signal {
     Return(Value),
+    Break(Span),
+    Continue(Span),
     Error(RuntimeError),
 }
 
@@ -200,6 +248,25 @@ impl<'a> Interpreter<'a> {
                      `return` statement — `return` is only reachable inside a block, and no \
                      top-level item value is a block-position statement sequence"
                 ),
+                // Unlike `return`, `break`/`continue` *can* syntactically
+                // appear inside a top-level value's nested block
+                // expression (e.g. `let x: Float = { break; };`) even
+                // though no loop encloses it there — a genuinely reachable
+                // "escaped every enclosing loop" case, not a `return`-style
+                // impossibility, so it gets the same real diagnostic
+                // `run_fn_body` gives it for a function body.
+                Err(Signal::Break(span)) => {
+                    return Err(Box::new(
+                        RuntimeError::BreakOutsideLoop { span }
+                            .to_diagnostic(self.file, self.source),
+                    ));
+                }
+                Err(Signal::Continue(span)) => {
+                    return Err(Box::new(
+                        RuntimeError::ContinueOutsideLoop { span }
+                            .to_diagnostic(self.file, self.source),
+                    ));
+                }
                 Err(Signal::Error(err)) => {
                     return Err(Box::new(err.to_diagnostic(self.file, self.source)));
                 }
@@ -244,6 +311,10 @@ impl<'a> Interpreter<'a> {
                 Signal::Return(_) => {
                     unreachable!("call_by_values never signals Return out of Interpreter::call")
                 }
+                Signal::Break(_) | Signal::Continue(_) => unreachable!(
+                    "run_fn_body already converts an escaping Break/Continue into Signal::Error \
+                     before call_by_values returns"
+                ),
             })
     }
 
@@ -420,6 +491,14 @@ impl<'a> Interpreter<'a> {
                 }
             }
             Err(Signal::Return(value)) => Ok(value),
+            // A `break`/`continue` that escaped every enclosing loop in
+            // this call frame — legal HIR per `cad_hir::typeck`'s own
+            // no-op check (see `RuntimeError::BreakOutsideLoop`'s doc
+            // comment), converted to a real diagnostic here rather than
+            // propagating the internal `Signal` type past this function's
+            // own boundary.
+            Err(Signal::Break(span)) => Err(RuntimeError::BreakOutsideLoop { span }.into()),
+            Err(Signal::Continue(span)) => Err(RuntimeError::ContinueOutsideLoop { span }.into()),
             Err(err @ Signal::Error(_)) => Err(err),
         }
     }
@@ -491,21 +570,34 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(())
             }
+            // Blocked on `project/OWNER_DECISIONS.md#D16` — see
+            // `RuntimeError::Unsupported`'s own doc comment and this
+            // module's "Known limitation: `for`-loop iteration" section.
             HirStmt::For { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "a `for` loop",
+                construct: "a `for` loop (no collection/iterator value can be constructed from \
+                            any source program yet — see project/OWNER_DECISIONS.md#D16)",
                 span: *span,
             }
             .into()),
-            HirStmt::While { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "a `while` loop",
-                span: *span,
+            HirStmt::While { cond, body, .. } => {
+                while self.eval_bool(frame, cond)? {
+                    match self.exec_block(frame, body) {
+                        Ok(_) => {}
+                        Err(Signal::Break(_)) => break,
+                        Err(Signal::Continue(_)) => continue,
+                        Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+                    }
+                }
+                Ok(())
             }
-            .into()),
-            HirStmt::Loop { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "a `loop`",
-                span: *span,
-            }
-            .into()),
+            HirStmt::Loop { body, .. } => loop {
+                match self.exec_block(frame, body) {
+                    Ok(_) => {}
+                    Err(Signal::Break(_)) => return Ok(()),
+                    Err(Signal::Continue(_)) => continue,
+                    Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+                }
+            },
             HirStmt::Match {
                 scrutinee, arms, ..
             } => {
@@ -513,16 +605,8 @@ impl<'a> Interpreter<'a> {
                 self.eval_match(frame, &value, arms, stmt.span())?;
                 Ok(())
             }
-            HirStmt::Break { span } => Err(RuntimeError::Unsupported {
-                construct: "`break`",
-                span: *span,
-            }
-            .into()),
-            HirStmt::Continue { span } => Err(RuntimeError::Unsupported {
-                construct: "`continue`",
-                span: *span,
-            }
-            .into()),
+            HirStmt::Break { span } => Err(Signal::Break(*span)),
+            HirStmt::Continue { span } => Err(Signal::Continue(*span)),
         }
     }
 
@@ -1412,15 +1496,165 @@ mod tests {
         assert_eq!(diag_code(&err), "RUNTIME-E118");
     }
 
+    // --- Loop execution (AICAD-056) ---
+
+    #[test]
+    fn while_loop_accumulates() {
+        let lowered = compiled(
+            "fn sum_to(n: Float) -> Float { \
+                 var i = 0.0; \
+                 var total = 0.0; \
+                 while i < n { \
+                     total = total + i; \
+                     i = i + 1.0; \
+                 } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 0 + 1 + 2 + 3 + 4 = 10
+        assert_number_eq(
+            interp.call_by_name("sum_to", vec![number(5.0)]).unwrap(),
+            10.0,
+        );
+    }
+
+    #[test]
+    fn while_loop_never_enters_body_when_condition_starts_false() {
+        let lowered = compiled(
+            "fn f() -> Float { \
+                 var total = 1.0; \
+                 while false { total = 99.0; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn while_loop_break_exits_immediately() {
+        let lowered = compiled(
+            "fn f() -> Float { \
+                 var i = 0.0; \
+                 while true { \
+                     if i >= 3.0 { break; } \
+                     i = i + 1.0; \
+                 } \
+                 return i; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn while_loop_continue_skips_rest_of_body() {
+        // Sums only the even values of i in [0, 5) — `continue` must skip
+        // straight back to the condition check without executing
+        // `total = total + i` below it.
+        let lowered = compiled(
+            "fn f() -> Float { \
+                 var i = 0.0; \
+                 var total = 0.0; \
+                 while i < 5.0 { \
+                     let current = i; \
+                     i = i + 1.0; \
+                     if current == 1.0 { continue; } \
+                     if current == 3.0 { continue; } \
+                     total = total + current; \
+                 } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 0 + 2 + 4 = 6 (1 and 3 skipped by `continue`)
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 6.0);
+    }
+
+    #[test]
+    fn bare_loop_with_break_terminates() {
+        let lowered = compiled(
+            "fn f() -> Float { \
+                 var i = 0.0; \
+                 loop { \
+                     i = i + 1.0; \
+                     if i >= 4.0 { break; } \
+                 } \
+                 return i; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 4.0);
+    }
+
+    #[test]
+    fn nested_loop_break_only_exits_innermost() {
+        let lowered = compiled(
+            "fn f() -> Float { \
+                 var outer = 0.0; \
+                 var total = 0.0; \
+                 while outer < 3.0 { \
+                     var inner = 0.0; \
+                     while true { \
+                         if inner >= 2.0 { break; } \
+                         total = total + 1.0; \
+                         inner = inner + 1.0; \
+                     } \
+                     outer = outer + 1.0; \
+                 } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // Inner loop runs twice per outer iteration, 3 outer iterations.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 6.0);
+    }
+
+    #[test]
+    fn return_inside_a_loop_unwinds_past_it() {
+        let lowered = compiled(
+            "fn f() -> Float { \
+                 var i = 0.0; \
+                 while true { \
+                     if i >= 2.0 { return i; } \
+                     i = i + 1.0; \
+                 } \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 2.0);
+    }
+
+    #[test]
+    fn break_outside_a_loop_is_a_clean_error() {
+        // Legal HIR: `cad_hir::typeck`'s own `HirStmt::Break` check is a
+        // no-op (does not verify loop nesting) — see module doc comment.
+        let lowered = compiled("fn f() -> Float { break; return 1.0; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E119");
+    }
+
+    #[test]
+    fn continue_outside_a_loop_is_a_clean_error() {
+        let lowered = compiled("fn f() -> Float { continue; return 1.0; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E120");
+    }
+
     // --- Unsupported constructs fail cleanly, never panic ---
 
     #[test]
     fn unsupported_for_loop_is_a_clean_error() {
-        // No collection/iterator type exists yet (`AICAD-056`'s own
-        // scheduled scope), so `iterable` is a placeholder plain
-        // expression — `cad_hir::typeck::check_expr`'s own `HirStmt::For`
-        // handling does not require it to be any particular type (see
-        // that module's own doc comment on this exact statement).
+        // No collection/iterator value can be constructed from any source
+        // program yet (`project/OWNER_DECISIONS.md#D16` — see this
+        // module's own "Known limitation: `for`-loop iteration" doc
+        // comment), so `iterable` is a placeholder plain expression —
+        // `cad_hir::typeck::check_expr`'s own `HirStmt::For` handling does
+        // not require it to be any particular type (see that module's own
+        // doc comment on this exact statement).
         let lowered = compiled(
             "fn f() -> Float { \
                  for i in 0.0 { } \

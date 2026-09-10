@@ -189,15 +189,35 @@ pub enum RuntimeError {
     NonExhaustiveMatch {
         span: Span,
     },
-    /// A HIR node this task does not execute yet — loop (`for`/`while`/
-    /// `loop`/`break`/`continue`) execution is `AICAD-056`'s own scheduled
-    /// scope per the fixed Stage-2 batch order; struct field access and
-    /// construction have no runtime value representation yet (see
-    /// `crate::value`'s module doc comment). Reported as a structured
+    /// A HIR node this crate does not execute yet — `for`-loop execution
+    /// specifically is blocked on `project/OWNER_DECISIONS.md#D16` (no
+    /// collection/iterator value can be constructed from any `.aicad`
+    /// source program today: `specs/language/grammar.ebnf`'s frozen
+    /// `expression` production has no array/list-literal or range-operator
+    /// syntax, so `AICAD-056` could not give `for`'s `iterable` a real
+    /// runtime meaning without inventing new public surface syntax, an
+    /// `AGENTS.md` escalation trigger — see `crate::interp`'s module doc
+    /// comment "Known limitation: `for`-loop iteration"); struct field
+    /// access and construction have no runtime value representation yet
+    /// (see `crate::value`'s module doc comment). Reported as a structured
     /// diagnostic, never a panic, so a program that happens to exercise
     /// one of these before its owning task lands fails cleanly.
     Unsupported {
         construct: &'static str,
+        span: Span,
+    },
+    /// A `break;` statement executed with no enclosing `while`/`loop` in
+    /// its own dynamic call frame. `cad_hir::typeck::check_stmt`'s own
+    /// `HirStmt::Break`/`HirStmt::Continue` arm is a no-op (`grammar.ebnf`'s
+    /// `statement` production allows `break_stmt`/`continue_stmt` anywhere
+    /// a statement is legal, and no Stage-2 batch task verifies loop-
+    /// nesting at compile time), so a type-checked program can genuinely
+    /// reach this at run time — reported cleanly, never a panic.
+    BreakOutsideLoop {
+        span: Span,
+    },
+    /// As [`RuntimeError::BreakOutsideLoop`], for `continue;`.
+    ContinueOutsideLoop {
         span: Span,
     },
 }
@@ -228,6 +248,8 @@ impl RuntimeError {
             RuntimeError::MissingReturn { .. } => "RUNTIME-E116".to_string(),
             RuntimeError::Unsupported { .. } => "RUNTIME-E117".to_string(),
             RuntimeError::NonExhaustiveMatch { .. } => "RUNTIME-E118".to_string(),
+            RuntimeError::BreakOutsideLoop { .. } => "RUNTIME-E119".to_string(),
+            RuntimeError::ContinueOutsideLoop { .. } => "RUNTIME-E120".to_string(),
         }
     }
 
@@ -251,7 +273,9 @@ impl RuntimeError {
             | RuntimeError::MissingArgument { span, .. }
             | RuntimeError::MissingReturn { span, .. }
             | RuntimeError::Unsupported { span, .. }
-            | RuntimeError::NonExhaustiveMatch { span } => *span,
+            | RuntimeError::NonExhaustiveMatch { span }
+            | RuntimeError::BreakOutsideLoop { span }
+            | RuntimeError::ContinueOutsideLoop { span } => *span,
         }
     }
 
@@ -276,6 +300,8 @@ impl RuntimeError {
             RuntimeError::MissingReturn { .. } => "MISSING_RETURN",
             RuntimeError::Unsupported { .. } => "UNSUPPORTED_CONSTRUCT",
             RuntimeError::NonExhaustiveMatch { .. } => "NON_EXHAUSTIVE_MATCH",
+            RuntimeError::BreakOutsideLoop { .. } => "BREAK_OUTSIDE_LOOP",
+            RuntimeError::ContinueOutsideLoop { .. } => "CONTINUE_OUTSIDE_LOOP",
         }
     }
 
@@ -333,6 +359,12 @@ impl RuntimeError {
             }
             RuntimeError::NonExhaustiveMatch { .. } => {
                 "no `match` arm matched this value".to_string()
+            }
+            RuntimeError::BreakOutsideLoop { .. } => {
+                "'break' used outside a 'while'/'loop' loop".to_string()
+            }
+            RuntimeError::ContinueOutsideLoop { .. } => {
+                "'continue' used outside a 'while'/'loop' loop".to_string()
             }
         }
     }

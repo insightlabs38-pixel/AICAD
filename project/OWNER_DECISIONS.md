@@ -39,6 +39,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D13 OCCT/standards licensing | PARTIALLY RESOLVED (development policy) — DL-6 |
 | D14 File extension/branding | RESOLVED — DL-4 |
 | D15 Plugin runtime (WASM vs. external) | open |
+| D16 Collection/iterator construction syntax | open |
 
 ---
 
@@ -411,6 +412,73 @@ before committing to one implementation.
 
 **Status:** Open; plan explicitly calls for prototyping both. Low urgency —
 relevant starting at Stage 11.
+
+---
+
+## D16. Collection/iterator construction syntax (for `for`-loop execution)
+
+**Question:** `AICAD-056` ("Implement loops and basic collections/
+iterators") needs to give `for var in iterable { ... }` a real runtime
+meaning, which requires at least one constructible collection/iterator
+`Value` — but no `.aicad` source program can construct one today.
+`specs/language/grammar.ebnf`'s frozen `expression` production (`call_expr
+| method_call_expr | binary_expr | literal | identifier | "(" expression
+")" | block_expr | if_expr | match_expr`) has no array/list-literal syntax
+and no range operator; `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md`'s
+own `for i in 0..count { ... }` generator example and `docs/plan/
+02_LANGUAGE_AND_COMPILER.md` §9's required `List<T>`/`Range<T>`/
+`Iterator<T>`/`Generator<T>` collections are plan-level sketches that were
+never promoted into the grammar any completed Stage-2 batch actually
+implements (`AICAD-039`-`045`'s frozen lexer/parser/grammar-checkpoint
+scope has no such production, confirmed by `project/gates/
+STAGE2-A_FRONTEND.md`). Nor does a compiler-intrinsic/builtin-function
+mechanism exist as an alternative path: `cad_hir`'s name binding only ever
+resolves user-declared `fn`/`struct`/`enum`/`let`/`const`/`param` items, so
+even a `range(a, b)`-shaped built-in constructor callable through the
+existing `call_expr` syntax would need a new kind of binding the language
+does not have yet.
+
+Three live options, none decided here:
+1. Add a range-operator expression (`a..b`, possibly `a..=b`) as new
+   grammar/AST/HIR surface syntax, with `for`/`Value` runtime support for a
+   `Range` value specifically (narrowest scope, matches the plan's own
+   `for i in 0..count` example, but is new public expression syntax).
+2. Add array/list-literal expression syntax (`[e1, e2, ...]`) plus a `List`
+   runtime value (broader — also gives `struct`/function code a way to
+   build ad hoc collections — but is new public expression syntax and a
+   real generic-type-system question for `List<T>`'s own typing).
+3. Introduce a narrow compiler-intrinsic constructor-function boundary
+   (e.g. `range`/`list` resolved specially by binding resolution rather
+   than through ordinary `fn` declarations) so no new *expression* grammar
+   is needed — but this is itself a `D9`/`DL-7`-governed decision ("a new
+   compiler intrinsic requires an RFC demonstrating it cannot reasonably be
+   ordinary source, a standard package, or an existing kernel API
+   operation") and needs its own justification for why a library solution
+   (option 1/2, once collections exist as real values) would not do.
+
+**Plan references:** `docs/plan/02_LANGUAGE_AND_COMPILER.md` §9;
+`docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` (the `0..count` generator
+example); `specs/language/grammar.ebnf` (frozen `expression` production,
+no collection-literal/range syntax); `AGENTS.md` escalation triggers
+"change public language syntax or semantics beyond an approved RFC" and
+"add a compiler intrinsic where a library solution may work"; `project/
+TASKS.yaml`'s `AICAD-056` entry lists both as its own `escalate_if`
+conditions verbatim.
+
+**Status:** Open, raised by `AICAD-056` (`project/reports/AICAD-056.md`).
+Blocks giving `for`-loop execution a real semantics; does not block
+`while`/`loop`/`break`/`continue` execution, which `AICAD-056` completed
+without needing a collection value at all. `crates/cad-runtime`'s `for`
+statement continues to report `RuntimeError::Unsupported` pending this
+ruling.
+
+**Blocking impact:** `AICAD-056` (`for`-loop execution only — see above);
+any later task that assumes a `List<T>`/`Range<T>`/`Iterator<T>` value or
+type exists (none scheduled by name in the fixed S2-09 through S2-14 batch
+list as currently written, but `AICAD-059`'s Geometry IR and `AICAD-063`'s
+end-to-end proof may need to iterate over geometry query results — per
+`docs/plan/02_LANGUAGE_AND_COMPILER.md` §"All major collections should be
+iterable" — and should check this decision before assuming one exists).
 
 ---
 
