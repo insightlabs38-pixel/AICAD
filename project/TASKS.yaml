@@ -1080,7 +1080,7 @@ tasks:
 - id: AICAD-041
   stage: 2
   title: Implement expression parser and precedence
-  status: todo
+  status: done
   depends_on:
   - AICAD-040
   plan_references:
