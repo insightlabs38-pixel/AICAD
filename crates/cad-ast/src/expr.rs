@@ -1,17 +1,21 @@
 //! Expression AST nodes (`specs/language/grammar.ebnf` `expression`
 //! production).
 //!
-//! **Scope note (`AICAD-041`):** this task implements the subset of
-//! `expression` that does not depend on statement/pattern infrastructure
-//! that later tasks in this same batch build: identifiers, literals,
-//! unary/binary operators with precedence, parenthesized grouping,
-//! `call_expr`, and `method_call_expr`. The grammar's `block_expr`,
-//! `if_expr`, and `match_expr` alternatives are added by `AICAD-043`
-//! ("control-flow syntax"), which is where `Block`/`Pattern` are also
-//! defined — see that task's own module (`crate::stmt`, `crate::pattern`)
-//! and report for why the split falls there rather than here.
+//! **Scope note (`AICAD-041`):** that task implemented the subset of
+//! `expression` that does not depend on statement/pattern infrastructure:
+//! identifiers, literals, unary/binary operators with precedence,
+//! parenthesized grouping, `call_expr`, and `method_call_expr`.
+//!
+//! **`AICAD-043` adds** the grammar's `block_expr`/`if_expr`/`match_expr`
+//! alternatives (`ExprKind::Block`/`If`/`Match` below), now that
+//! `crate::stmt`/`crate::pattern` (also `AICAD-043`) exist to build them
+//! from. `return`/`break`/`continue` are deliberately **not** added here
+//! even though `AICAD-043`'s title mentions them — the grammar's own
+//! `expression` production has no alternative for any of the three (only
+//! `return_stmt`/`break_stmt`/`continue_stmt` exist, under `statement`),
+//! so they stay statement-only, exactly as frozen.
 
-use crate::{Ident, Span};
+use crate::{Ident, MatchArm, Span, Stmt};
 
 /// One expression node: its kind plus the full source span it covers
 /// (joined from every child span via [`Span::join`]).
@@ -78,6 +82,44 @@ pub enum ExprKind {
         method: Ident,
         args: Vec<Arg>,
     },
+    /// `block_expr = "{" , { statement } , [ expression ] , "}"`.
+    Block(BlockExpr),
+    /// `if_expr = "if" , expression , block_expr , "else" , ( block_expr | if_expr ) ;`
+    /// — `else` is mandatory in expression position (both arms must
+    /// produce a unifiable value), unlike `if_stmt`.
+    If(IfExpr),
+    /// `match_expr = "match" , expression , "{" , { match_arm } , "}" ;`
+    Match(MatchExpr),
+}
+
+/// `block_expr` — distinct from `crate::Block` (the value-less `block`
+/// production `fn_decl` etc. use) by its optional `trailing` expression.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockExpr {
+    pub statements: Vec<Stmt>,
+    pub trailing: Option<Box<Expr>>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfExpr {
+    pub condition: Box<Expr>,
+    pub then_block: BlockExpr,
+    pub else_branch: Box<ElseExpr>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ElseExpr {
+    Block(BlockExpr),
+    If(IfExpr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchExpr {
+    pub scrutinee: Box<Expr>,
+    pub arms: Vec<MatchArm>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

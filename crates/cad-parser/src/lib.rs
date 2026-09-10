@@ -27,6 +27,7 @@
 
 mod expr;
 mod item;
+mod pattern;
 mod stmt;
 mod ty;
 
@@ -71,6 +72,14 @@ pub fn parse_statement(source: &str, file: &str) -> Result<cad_ast::Stmt, Box<Di
     let stmt = parser.parse_statement()?;
     parser.expect_eof()?;
     Ok(stmt)
+}
+
+/// Parses one `pattern`, requiring it to consume every token up to `Eof`.
+pub fn parse_pattern(source: &str, file: &str) -> Result<cad_ast::Pattern, Box<Diagnostic>> {
+    let mut parser = Parser::new(source, file)?;
+    let pattern = parser.parse_pattern()?;
+    parser.expect_eof()?;
+    Ok(pattern)
 }
 
 /// The shared parser state: a token cursor plus everything needed to
@@ -709,5 +718,86 @@ mod tests {
         // the parser must surface that rather than trying to parse a
         // token stream lexing already flagged as broken.
         assert_eq!(err_code("1 # 2"), "PARSE-E001");
+    }
+
+    // --- block_expr / if_expr / match_expr (AICAD-043) -------------------
+
+    #[test]
+    fn parses_if_expr_with_trailing_values() {
+        // The Stage-0 paper example's own shape:
+        // `if Product.motor == NEMA17 { 3mm } else { 4mm }`.
+        let expr = ok("if cond { 1 } else { 2 }");
+        let ExprKind::If(if_expr) = expr.kind else {
+            panic!("expected If, got {:?}", expr.kind);
+        };
+        assert_eq!(
+            if_expr.then_block.trailing.as_deref().unwrap().kind,
+            ExprKind::Number {
+                text: "1".to_string(),
+                unit: None
+            }
+        );
+    }
+
+    #[test]
+    fn if_expr_requires_else() {
+        assert_eq!(err_code("if cond { 1 }"), "PARSE-E006");
+    }
+
+    #[test]
+    fn parses_if_else_if_expr_chain() {
+        let expr = ok("if a { 1 } else if b { 2 } else { 3 }");
+        let ExprKind::If(if_expr) = expr.kind else {
+            panic!("expected If");
+        };
+        assert!(matches!(*if_expr.else_branch, cad_ast::ElseExpr::If(_)));
+    }
+
+    #[test]
+    fn parses_match_expr() {
+        let expr = ok("match x { A => 1, B => 2, }");
+        let ExprKind::Match(match_expr) = expr.kind else {
+            panic!("expected Match, got {:?}", expr.kind);
+        };
+        assert_eq!(match_expr.arms.len(), 2);
+    }
+
+    #[test]
+    fn parses_bare_block_expr_with_trailing_value() {
+        let expr = ok("{ let x = 1; x }");
+        let ExprKind::Block(block) = expr.kind else {
+            panic!("expected Block, got {:?}", expr.kind);
+        };
+        assert!(block.trailing.is_some());
+        assert_eq!(block.statements.len(), 1);
+    }
+
+    #[test]
+    fn parses_bare_block_expr_with_no_trailing_value() {
+        let expr = ok("{ f(); }");
+        let ExprKind::Block(block) = expr.kind else {
+            panic!("expected Block, got {:?}", expr.kind);
+        };
+        assert!(block.trailing.is_none());
+    }
+
+    #[test]
+    fn if_expr_used_as_a_call_argument_parses() {
+        // Confirms if_expr is reachable from ordinary expression contexts
+        // beyond a let-binding's value, e.g. a function call argument.
+        let expr = ok("f(if cond { 1 } else { 2 })");
+        assert!(matches!(expr.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn nested_block_expr_as_trailing_value_parses() {
+        let expr = ok("{ { 1 } }");
+        let ExprKind::Block(outer) = expr.kind else {
+            panic!("expected Block");
+        };
+        assert!(matches!(
+            outer.trailing.as_deref().map(|e| &e.kind),
+            Some(ExprKind::Block(_))
+        ));
     }
 }

@@ -26,8 +26,12 @@
 //! the lexer already produces: bool, number (with its optional unit
 //! suffix carried through unvalidated, per `cad_lexer::TokenKind::Number`'s
 //! own docs), string, and raw string.
+//!
+//! **`AICAD-043` adds** `block_expr`/`if_expr`/`match_expr` to primary
+//! expression parsing (deferred by this task originally — see the module
+//! docs on `ExprKind` in `cad_ast::expr` for why).
 
-use cad_ast::{Arg, BinaryOp, Expr, ExprKind, Ident, UnaryOp};
+use cad_ast::{Arg, BinaryOp, ElseExpr, Expr, ExprKind, Ident, IfExpr, MatchExpr, UnaryOp};
 use cad_diagnostics::Diagnostic;
 use cad_lexer::TokenKind;
 
@@ -253,8 +257,70 @@ impl<'a> Parser<'a> {
                     start.join(end),
                 ))
             }
+            TokenKind::LBrace => {
+                let block = self.parse_block_expr()?;
+                let span = block.span;
+                Ok(Expr::new(ExprKind::Block(block), span))
+            }
+            TokenKind::Keyword(cad_lexer::Keyword::If) => {
+                let if_expr = self.parse_if_expr()?;
+                let span = if_expr.span;
+                Ok(Expr::new(ExprKind::If(if_expr), span))
+            }
+            TokenKind::Keyword(cad_lexer::Keyword::Match) => {
+                let match_expr = self.parse_match_expr()?;
+                let span = match_expr.span;
+                Ok(Expr::new(ExprKind::Match(match_expr), span))
+            }
             found => Err(self.unexpected_token("an expression", found)),
         }
+    }
+
+    /// `if_expr = "if" , expression , block_expr , "else" , ( block_expr | if_expr ) ;`
+    /// — `else` is mandatory here (unlike `if_stmt`), since both arms must
+    /// produce a value.
+    fn parse_if_expr(&mut self) -> Result<IfExpr, Box<Diagnostic>> {
+        let start = self.expect_keyword(cad_lexer::Keyword::If, "'if'")?;
+        let condition = self.parse_expression()?;
+        let then_block = self.parse_block_expr()?;
+        self.expect_keyword(
+            cad_lexer::Keyword::Else,
+            "'else' (required after 'if' used as an expression, so both branches \
+             produce a value)",
+        )?;
+        let else_branch = if self.at_keyword(cad_lexer::Keyword::If) {
+            ElseExpr::If(self.parse_if_expr()?)
+        } else {
+            ElseExpr::Block(self.parse_block_expr()?)
+        };
+        let end = match &else_branch {
+            ElseExpr::Block(b) => b.span,
+            ElseExpr::If(i) => i.span,
+        };
+        Ok(IfExpr {
+            condition: Box::new(condition),
+            then_block,
+            else_branch: Box::new(else_branch),
+            span: start.join(end),
+        })
+    }
+
+    /// `match_expr = "match" , expression , "{" , { match_arm } , "}" ;`
+    /// (same `match_arm` shape as `match_stmt`, per the grammar's own note).
+    fn parse_match_expr(&mut self) -> Result<MatchExpr, Box<Diagnostic>> {
+        let start = self.expect_keyword(cad_lexer::Keyword::Match, "'match'")?;
+        let scrutinee = self.parse_expression()?;
+        self.expect(TokenKind::LBrace, "'{' to start a match body")?;
+        let mut arms = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            arms.push(self.parse_match_arm()?);
+        }
+        let end = self.expect(TokenKind::RBrace, "'}' to close a match body")?;
+        Ok(MatchExpr {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            span: start.join(end.span),
+        })
     }
 
     /// `args = ( expression | named_arg ) , { "," , ( expression | named_arg ) } ;`

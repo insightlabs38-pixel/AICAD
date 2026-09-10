@@ -4,12 +4,16 @@
 //! { statement } , "}"` — used by `fn_decl`'s body, and later by
 //! `if_stmt`/`for_stmt`/`while_stmt`/`loop_stmt`) and the subset of
 //! `statement` that isn't itself control flow: `let_stmt`, `var_stmt`,
-//! `assign_stmt`, `expr_stmt`. `AICAD-043` adds `If`/`For`/`While`/`Loop`/
-//! `Match`/`Return`/`Break`/`Continue` to [`Stmt`] alongside its own
-//! `pattern`/`block_expr` types — see `crate::pattern` and that task's
-//! report for why the split falls there.
+//! `assign_stmt`, `expr_stmt`.
+//!
+//! **`AICAD-043` adds:** `If`/`For`/`While`/`Loop`/`Match`/`Return`/
+//! `Break`/`Continue` to [`Stmt`], plus [`MatchArm`]/[`MatchArmBody`]
+//! (shared verbatim with `match_expr`, per the grammar's own "same arm
+//! shape" note) and [`ElseBranch`] (`if_stmt`'s optional `else`, whose
+//! grammar `[ "else" , ( block | if_stmt ) ]` — a plain `block`, never
+//! `block_expr` — is distinct from `if_expr`'s `ElseExpr` in `crate::expr`).
 
-use crate::{Expr, Ident, Span, Type};
+use crate::{Expr, Ident, Pattern, Span, Type};
 
 /// `block = "{" , { statement } , "}"` — a plain statement block with no
 /// trailing value, used by `fn_decl` (and, per the grammar, by
@@ -28,6 +32,14 @@ pub enum Stmt {
     Var(VarStmt),
     Assign(AssignStmt),
     Expr(ExprStmt),
+    If(IfStmt),
+    For(ForStmt),
+    While(WhileStmt),
+    Loop(LoopStmt),
+    Match(MatchStmt),
+    Return(ReturnStmt),
+    Break(BreakStmt),
+    Continue(ContinueStmt),
 }
 
 impl Stmt {
@@ -37,6 +49,14 @@ impl Stmt {
             Stmt::Var(s) => s.span,
             Stmt::Assign(s) => s.span,
             Stmt::Expr(s) => s.span,
+            Stmt::If(s) => s.span,
+            Stmt::For(s) => s.span,
+            Stmt::While(s) => s.span,
+            Stmt::Loop(s) => s.span,
+            Stmt::Match(s) => s.span,
+            Stmt::Return(s) => s.span,
+            Stmt::Break(s) => s.span,
+            Stmt::Continue(s) => s.span,
         }
     }
 }
@@ -72,5 +92,89 @@ pub struct AssignStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExprStmt {
     pub expr: Expr,
+    pub span: Span,
+}
+
+/// `if_stmt = "if" , expression , block , [ "else" , ( block | if_stmt ) ] ;`
+#[derive(Debug, Clone, PartialEq)]
+pub struct IfStmt {
+    pub condition: Box<Expr>,
+    pub then_block: Block,
+    pub else_branch: Option<Box<ElseBranch>>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ElseBranch {
+    Block(Block),
+    If(IfStmt),
+}
+
+/// `for_stmt = "for" , identifier , "in" , expression , block ;`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForStmt {
+    pub binding: Ident,
+    pub iterable: Box<Expr>,
+    pub body: Block,
+    pub span: Span,
+}
+
+/// `while_stmt = "while" , expression , block ;`
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhileStmt {
+    pub condition: Box<Expr>,
+    pub body: Block,
+    pub span: Span,
+}
+
+/// `loop_stmt = "loop" , block ;`
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopStmt {
+    pub body: Block,
+    pub span: Span,
+}
+
+/// `match_arm = pattern , "=>" , ( expression , "," | block ) ;` — shared
+/// verbatim by `match_stmt` and `match_expr` (`crate::expr::MatchExpr`)
+/// per the grammar's own "same arm shape" note.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: MatchArmBody,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchArmBody {
+    /// `pattern => expression ,`
+    Expr(Box<Expr>),
+    /// `pattern => block` (no trailing comma per the grammar).
+    Block(Block),
+}
+
+/// `match_stmt = "match" , expression , "{" , { match_arm } , "}" ;`
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchStmt {
+    pub scrutinee: Box<Expr>,
+    pub arms: Vec<MatchArm>,
+    pub span: Span,
+}
+
+/// `return_stmt = "return" , [ expression ] , ";" ;`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReturnStmt {
+    pub value: Option<Box<Expr>>,
+    pub span: Span,
+}
+
+/// `break_stmt = "break" , ";" ;` — no label, no value, per the grammar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BreakStmt {
+    pub span: Span,
+}
+
+/// `continue_stmt = "continue" , ";" ;`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContinueStmt {
     pub span: Span,
 }
