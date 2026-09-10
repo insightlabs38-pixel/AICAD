@@ -26,10 +26,19 @@ the `to_canonical_*`/`from_canonical_*`/`convert_*` conversion functions in
 register under both `Pressure` and `Stress`). Affine (temperature)
 conversion is absolute/delta-aware per RFC-0004 §7.
 
-Not yet implemented here: dimensional arithmetic *type-checking rules* —
-i.e. what an expression like `force * length` type-checks as, including how
-the Pressure/Stress and Torque/Energy multiplicity noted above gets
-resolved against an expected type (`AICAD-049`); wiring this registry into
+Also implemented (`AICAD-049`): dimensional arithmetic type rules in
+`src/arithmetic.rs` — `check_binary_arithmetic`/`check_comparison`/
+`check_unary_neg` over a task-scoped `OperandType` (scalar or
+dimension+optional-affine-kind). Resolves the Pressure/Stress and
+Torque/Energy multiplicity: an unannotated `*`/`/` whose result vector
+matches more than one named dimension is rejected
+(`DimensionalArithmeticError::AmbiguousDerivedDimension`) unless an
+explicit target dimension is supplied and matches, per `AGENTS.md`'s
+"ambiguity is an error, never an arbitrary selection". Implements
+RFC-0004 §7's full affine absolute/delta `+`/`-` table and rejects `*`/`/`
+on any affine operand outright. See `project/reports/AICAD-049.md`.
+
+Not yet implemented here: wiring this registry/arithmetic into
 `cad-ast`/binding/type-checking (`AICAD-050`/`052`); units beyond RFC-0004
 §4's frozen initial set (the RFC's own "the standard library may expand
 this set without a grammar change" is future work, not this task's scope).
