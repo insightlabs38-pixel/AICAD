@@ -8,25 +8,25 @@ Batches 1A/1B/1C/1D (AICAD-015 through AICAD-033), all checkpointed and
 canonical. The designated working branch (`branch/festive-cori-pe2fun`)
 started exactly at that commit (confirmed via `git fetch origin` and
 `git merge-base --is-ancestor origin/main HEAD` immediately before any
-task work began). This session's own work is two commits:
+task work began). This session's own work is three commits:
 ```
-a6fe021 AICAD-034/AICAD-035: Stage-1 proof bracket, STEP import, fillet-concurrency fix
+d07aa5b AICAD-037: Prepare Stage-1 owner gate packet
 2a6a970 AICAD-036: Add bounded adversarial geometry regression/fuzz harness
+a6fe021 AICAD-034/AICAD-035: Stage-1 proof bracket, STEP import, fillet-concurrency fix
 ```
-(AICAD-037, this handoff, and the gate packet are uncommitted at the
-time this note is written — see "Canonical-publishing status" below for
-what happens next.)
 
-**Canonical-publishing status — NOT YET CANONICAL.** This session's
-Batch 1E work exists only on `branch/festive-cori-pe2fun` at the time of
-writing. A future invocation of this routine must NOT treat Batch 1E
-(AICAD-034 through AICAD-037) as complete unless it is present on
-`origin/main` — re-verify via `git log origin/main` for commits
-`a6fe021`/`2a6a970` (or their post-merge equivalents) before resuming.
-If this session is authorized to open a pull request for this branch
-before ending, do so and record the PR URL here in a follow-up edit to
-this file before the session ends; otherwise the next invocation must
-open one itself before treating Batch 1E as canonical-in-progress.
+**Canonical-publishing status — NOT YET CANONICAL, PR OPEN.** This
+session's Batch 1E work is pushed to `origin/branch/festive-cori-pe2fun`
+and **PR #6** (`https://github.com/insightlabs38-pixel/AICAD/pull/6`) is
+open against `main`, base confirmed unchanged (`origin/main` still
+`0e9065c`) immediately before pushing. This session is watching PR #6
+for CI/review activity per its own PR-babysitting policy. A future
+invocation of this routine must NOT treat Batch 1E (AICAD-034 through
+AICAD-037) as complete unless PR #6 (or its replacement, if superseded)
+has actually merged into `origin/main` — re-verify via `git log
+origin/main` for commits `a6fe021`/`2a6a970`/`d07aa5b` (or their
+post-merge equivalents) before resuming, per PR #6's own merge state
+rather than assuming.
 
 This session completed **all of Batch 1E** (`AICAD-034` through
 `AICAD-037`, the final batch of Stage 1):
