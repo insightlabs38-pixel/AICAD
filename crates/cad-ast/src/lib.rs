@@ -7,16 +7,20 @@
 //! `AICAD-041` added the first real AST node types (`expr` module).
 //! `AICAD-042` added declaration/statement node types (`item` module).
 //! `AICAD-043` adds control-flow node types to both modules. `AICAD-044`
-//! adds `import_decl` node types (`item::ImportPath`/`Item::Import`) —
-//! see each module's own doc comment for its exact scope.
+//! adds `import_decl` node types (`item::ImportPath`/`Item::Import`).
+//! `AICAD-045` adds the pretty-printer (`printer` module,
+//! [`print_program`]) — see each module's own doc comment for its exact
+//! scope.
 
 mod expr;
 mod item;
+mod printer;
 
 pub use expr::{
     Arg, BinaryOp, BlockExpr, ElseBranch, Expr, Literal, MatchArm, MatchArmBody, Pattern, UnaryOp,
 };
 pub use item::{Block, ElseClause, Field, FnParam, ImportPath, Item, Program, Stmt, Type};
+pub use printer::print_program;
 
 /// A half-open byte-offset range into one source file: `[start, end)`.
 ///

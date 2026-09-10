@@ -69,6 +69,19 @@ pub enum UnaryOp {
     Not,
 }
 
+impl UnaryOp {
+    /// The operator's own source spelling — used by `AICAD-045`'s
+    /// pretty-printer, and available for diagnostics that want to name
+    /// an operator without re-deriving its spelling from the `Debug`
+    /// impl.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+        }
+    }
+}
+
 /// A binary operator, in the precedence order this task freezes (lowest
 /// binding power first). See this module's doc comment for the rationale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +103,28 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+}
+
+impl BinaryOp {
+    /// The operator's own source spelling — see [`UnaryOp::as_str`]'s doc
+    /// comment for why this exists.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BinaryOp::Or => "||",
+            BinaryOp::And => "&&",
+            BinaryOp::Eq => "==",
+            BinaryOp::NotEq => "!=",
+            BinaryOp::ApproxEq => "~=",
+            BinaryOp::Lt => "<",
+            BinaryOp::LtEq => "<=",
+            BinaryOp::Gt => ">",
+            BinaryOp::GtEq => ">=",
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+        }
+    }
 }
 
 /// One call/method-call argument: positional or named (`args`/`named_arg`
