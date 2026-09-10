@@ -1107,7 +1107,7 @@ tasks:
 - id: AICAD-042
   stage: 2
   title: 'Implement declarations: let/const/param/fn/struct/enum/part'
-  status: todo
+  status: done
   depends_on:
   - AICAD-041
   plan_references:

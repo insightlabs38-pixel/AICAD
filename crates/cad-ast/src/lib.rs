@@ -4,14 +4,18 @@
 //! onward) the AICAD abstract syntax tree node types themselves.
 //!
 //! History: `AICAD-039` established only the span/position model.
-//! `AICAD-041` adds the first real AST node types (`expr` module) — see
-//! that module's own doc comment for its exact scope. Later parser tasks
-//! (`AICAD-042`+) add `Stmt`/`Item`/declaration node types as each is
-//! reached, rather than guessing all of them up front
-//! (`AGENTS.md` "No speculative future work").
+//! `AICAD-041` added the first real AST node types (`expr` module).
+//! `AICAD-042` adds declaration/statement node types (`item` module) —
+//! see each module's own doc comment for its exact scope. Later parser
+//! tasks (`AICAD-043`+) add control-flow node types as each is reached,
+//! rather than guessing all of them up front (`AGENTS.md` "No speculative
+//! future work").
 
 mod expr;
+mod item;
+
 pub use expr::{Arg, BinaryOp, Expr, Literal, UnaryOp};
+pub use item::{Block, Field, FnParam, Item, Program, Stmt, Type};
 
 /// A half-open byte-offset range into one source file: `[start, end)`.
 ///
