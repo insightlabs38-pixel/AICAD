@@ -3,15 +3,18 @@
 //! (braces/semicolons, no automatic semicolon insertion, no
 //! indentation-sensitive productions).
 //!
-//! Scope note (`AICAD-039`): this lexer recognizes identifiers/keywords,
-//! boolean literals, raw numeric literals (no unit suffix — see
-//! `AICAD-040`), strings/raw strings, doc comments, and the punctuation/
-//! operators evidenced in the frozen grammar/RFC material. Operators with
-//! no textual evidence anywhere in `docs/plan/`/`rfcs/` (e.g. `%`,
-//! bitwise/shift operators) are intentionally omitted rather than guessed
-//! — `AICAD-041` (expression parser and precedence) is where the full
-//! binary-operator set is frozen, and extending the token set there is a
-//! small additive change, not a redesign.
+//! Scope note (`AICAD-039`/`AICAD-040`): this lexer recognizes
+//! identifiers/keywords, boolean literals, numeric literals with an
+//! optional immediately-adjacent engineering-unit suffix (RFC-0004 §4;
+//! see [`TokenKind::Number`]'s own docs for what "adjacent" means and why
+//! the suffix isn't validated here), strings/raw strings, doc comments,
+//! and the punctuation/operators evidenced in the frozen grammar/RFC
+//! material. Operators with no textual evidence anywhere in
+//! `docs/plan/`/`rfcs/` (e.g. `%`, bitwise/shift operators) are
+//! intentionally omitted rather than guessed — `AICAD-041` (expression
+//! parser and precedence) is where the full binary-operator set is
+//! frozen, and extending the token set there is a small additive change,
+//! not a redesign.
 
 mod token;
 
@@ -240,8 +243,24 @@ impl<'a> Lexer<'a> {
                 debug_assert_eq!(mark, self.pos);
             }
         }
-        let text = self.source[start as usize..self.pos as usize].to_string();
-        self.push(TokenKind::Number(text), start);
+        let number_end = self.pos;
+        let text = self.source[start as usize..number_end as usize].to_string();
+
+        // An engineering-unit suffix (RFC-0004 §4, e.g. `5mm`, `12.4MPa`,
+        // `30deg`) is any identifier-shaped run immediately following the
+        // number's digits with zero intervening whitespace. Not validated
+        // against a known-unit list here — see TokenKind::Number's docs.
+        let unit = if matches!(self.peek_char(), Some(c) if is_ident_start(c)) {
+            let suffix_start = self.pos;
+            while matches!(self.peek_char(), Some(c) if is_ident_continue(c)) {
+                self.bump();
+            }
+            Some(self.source[suffix_start as usize..self.pos as usize].to_string())
+        } else {
+            None
+        };
+
+        self.push(TokenKind::Number { text, unit }, start);
     }
 
     fn scan_string(&mut self, start: u32) {
@@ -420,6 +439,23 @@ mod tests {
         tokens.into_iter().map(|t| t.kind).collect()
     }
 
+    /// A bare (no unit suffix) number token, for tests predating
+    /// `AICAD-040`'s unit-suffix field.
+    fn num(text: &str) -> TokenKind {
+        TokenKind::Number {
+            text: text.to_string(),
+            unit: None,
+        }
+    }
+
+    /// A number token with a unit suffix.
+    fn num_unit(text: &str, unit: &str) -> TokenKind {
+        TokenKind::Number {
+            text: text.to_string(),
+            unit: Some(unit.to_string()),
+        }
+    }
+
     #[test]
     fn lexes_let_binding() {
         assert_eq!(
@@ -428,7 +464,7 @@ mod tests {
                 TokenKind::Keyword(Keyword::Let),
                 TokenKind::Ident("width".to_string()),
                 TokenKind::Eq,
-                TokenKind::Number("80".to_string()),
+                num("80"),
                 TokenKind::Semicolon,
                 TokenKind::Eof,
             ]
@@ -539,10 +575,10 @@ mod tests {
         assert_eq!(
             kinds("80 3.5 1.5e-3 2E10"),
             vec![
-                TokenKind::Number("80".to_string()),
-                TokenKind::Number("3.5".to_string()),
-                TokenKind::Number("1.5e-3".to_string()),
-                TokenKind::Number("2E10".to_string()),
+                num("80"),
+                num("3.5"),
+                num("1.5e-3"),
+                num("2E10"),
                 TokenKind::Eof,
             ]
         );
@@ -557,9 +593,101 @@ mod tests {
         assert_eq!(
             kinds("5.foo"),
             vec![
-                TokenKind::Number("5".to_string()),
+                num("5"),
                 TokenKind::Dot,
                 TokenKind::Ident("foo".to_string()),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_rfc_0004_worked_examples_with_unit_suffixes() {
+        // The exact three examples docs/plan/02 §3 gives: "5mm", "12.4MPa",
+        // "30deg".
+        assert_eq!(
+            kinds("5mm 12.4MPa 30deg"),
+            vec![
+                num_unit("5", "mm"),
+                num_unit("12.4", "MPa"),
+                num_unit("30", "deg"),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_every_rfc_0004_section_4_initial_unit() {
+        // length, angle, mass, force, pressure/stress, temperature —
+        // RFC-0004 §4's full initial unit set, each on a bare "1" so the
+        // test is purely about suffix recognition.
+        let units = [
+            "nm", "um", "mm", "cm", "m", "km", "in", "ft", // length
+            "deg", "rad", // angle
+            "mg", "g", "kg", "lbm", // mass
+            "N", "kN", "lbf", // force
+            "Pa", "kPa", "MPa", "GPa", "psi", "ksi", // pressure/stress
+            "K", "degC", "degF", // temperature (affine)
+        ];
+        for unit in units {
+            let source = format!("1{unit}");
+            let (tokens, diagnostics) = tokenize(&source, "t.aicad");
+            assert!(diagnostics.is_empty(), "{unit}: unexpected {diagnostics:?}");
+            assert_eq!(
+                tokens[0].kind,
+                num_unit("1", unit),
+                "unit suffix {unit} was not recognized"
+            );
+        }
+    }
+
+    #[test]
+    fn unit_suffix_requires_zero_whitespace_adjacency() {
+        // "5 mm" (a space between the number and the unit) must NOT fuse
+        // — this is two tokens, a bare number and a separate identifier.
+        assert_eq!(
+            kinds("5 mm"),
+            vec![num("5"), TokenKind::Ident("mm".to_string()), TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn scientific_notation_still_fuses_with_a_trailing_unit() {
+        assert_eq!(
+            kinds("1.5e-3kg"),
+            vec![num_unit("1.5e-3", "kg"), TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn unrecognized_suffix_still_fuses_without_a_diagnostic() {
+        // The lexer does not validate unit legitimacy (RFC-0004 §4: "the
+        // standard library may expand this set without a grammar
+        // change") — an unknown suffix still fuses; whether "foo" is a
+        // real unit is the unit registry's job (AICAD-048), not the
+        // lexer's.
+        let (tokens, diagnostics) = tokenize("5foo", "t.aicad");
+        assert!(diagnostics.is_empty());
+        assert_eq!(tokens[0].kind, num_unit("5", "foo"));
+    }
+
+    #[test]
+    fn inches_unit_suffix_does_not_collide_with_the_in_keyword() {
+        // "5in" (5 inches, RFC-0004 §4) must tokenize as one fused
+        // literal, never as Number("5") followed by Keyword::In — even
+        // though `in` is also the for-loop keyword. See token.rs's
+        // `lookup_reserved_word` doc comment for why these never compete.
+        assert_eq!(kinds("5in"), vec![num_unit("5", "in"), TokenKind::Eof]);
+        // The keyword usage is unaffected: it never appears glued to a
+        // digit in valid source, only as its own whitespace-delimited
+        // word.
+        assert_eq!(
+            kinds("for x in y"),
+            vec![
+                TokenKind::Keyword(Keyword::For),
+                TokenKind::Ident("x".to_string()),
+                TokenKind::Keyword(Keyword::In),
+                TokenKind::Ident("y".to_string()),
                 TokenKind::Eof,
             ]
         );
@@ -588,7 +716,7 @@ mod tests {
                 TokenKind::Keyword(Keyword::Let),
                 TokenKind::Ident("r".to_string()),
                 TokenKind::Eq,
-                TokenKind::Number("1".to_string()),
+                num("1"),
                 TokenKind::Semicolon,
                 TokenKind::Eof,
             ]
@@ -640,7 +768,7 @@ mod tests {
                 TokenKind::Keyword(Keyword::Let),
                 TokenKind::Ident("café".to_string()),
                 TokenKind::Eq,
-                TokenKind::Number("1".to_string()),
+                num("1"),
                 TokenKind::Semicolon,
                 TokenKind::Eof,
             ]

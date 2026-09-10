@@ -111,6 +111,17 @@ impl Keyword {
 /// resolved to [`TokenKind::BoolLiteral`] rather than a `Keyword` variant
 /// since they are literals (RFC-0004 §2's `Bool` primitive type), not
 /// declaration/control-flow syntax.
+///
+/// Note (`AICAD-040`): `Keyword::In` (`for x in y`) and RFC-0004 §4's
+/// `in` (inches) unit suffix share a spelling. This is not an actual
+/// lexical ambiguity: the `in` *keyword* only ever appears as a
+/// standalone word with whitespace/token boundaries around it (`x in y`),
+/// while the `in` *unit suffix* only exists when scanned immediately
+/// adjacent to a number's digits with zero intervening whitespace
+/// (`5in`). The lexer's number scanner (`Lexer::scan_number`) never
+/// routes through this function for a suffix candidate, so the two never
+/// compete for the same token — a number-adjacent `in` is always the
+/// unit.
 pub(crate) fn lookup_reserved_word(ident: &str) -> Option<TokenKind> {
     match ident {
         "true" => Some(TokenKind::BoolLiteral(true)),
@@ -120,19 +131,29 @@ pub(crate) fn lookup_reserved_word(ident: &str) -> Option<TokenKind> {
 }
 
 /// A lexical token kind.
-///
-/// `Number` deliberately holds only the raw numeric text (digits,
-/// optional `.`, optional exponent) with **no** engineering-unit suffix
-/// handling — that is `AICAD-040`'s own scope, which extends this enum
-/// rather than being folded in here ahead of that task.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     Ident(String),
     Keyword(Keyword),
     BoolLiteral(bool),
-    /// Raw numeric literal text, e.g. `"5"`, `"5.5"`, `"1.5e-3"`. No unit
-    /// suffix (`AICAD-040`).
-    Number(String),
+    /// A numeric literal: raw digit/decimal-point/exponent text (`text`,
+    /// e.g. `"5"`, `"5.5"`, `"1.5e-3"`) plus an optional immediately-
+    /// adjacent engineering-unit suffix (`unit`, e.g. `Some("mm")` for
+    /// `5mm`, `None` for a bare `5`).
+    ///
+    /// `unit` is **not** validated against RFC-0004 §4's unit set (or any
+    /// other registry) at this layer — see `AICAD-040`'s task report
+    /// (`project/reports/AICAD-040.md`) "Decisions" for why: RFC-0004 §4
+    /// itself says "the standard library may expand this set without a
+    /// grammar change", so the lexer treats *any* identifier-shaped run
+    /// immediately following a number's digits as its unit suffix, and
+    /// leaves "is this a real unit" to the unit registry (`AICAD-048`).
+    /// `text`/`unit` are only ever fused when there is zero whitespace
+    /// between them — `5mm` fuses, `5 mm` does not.
+    Number {
+        text: String,
+        unit: Option<String>,
+    },
     /// Decoded content of a `"..."` string literal (escapes resolved).
     Str(String),
     /// Verbatim content of an `r"..."` raw string literal (no escape
