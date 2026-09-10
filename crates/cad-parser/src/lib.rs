@@ -6,14 +6,18 @@
 //! operator-precedence table — see `cad_ast::expr`'s own doc comment for
 //! exactly which `expression` grammar alternatives are (and are not) in
 //! scope, and for the `Expr::Field` gap-filling decision. `AICAD-042`
-//! adds declaration (`let`/`const`/`param`/`fn`/`struct`/`enum`/`part`)
-//! and basic-statement (`let`/`var`/assign/expr) parsing — see
-//! `cad_ast::item`'s own doc comment for its exact scope. Control-flow
-//! parsing is `AICAD-043`.
+//! added declaration (`let`/`const`/`param`/`fn`/`struct`/`enum`/`part`)
+//! and basic-statement (`let`/`var`/assign/expr) parsing. `AICAD-043`
+//! adds the remaining control-flow statement forms
+//! (`if`/`for`/`while`/`loop`/`match`/`return`/`break`/`continue`) and
+//! the control-flow expression forms (`block_expr`/`if_expr`/
+//! `match_expr`) — see `cad_ast::item`'s and `cad_ast::expr`'s own doc
+//! comments for exact scope, and [`Parser::parse_block_expr`]'s doc
+//! comment for this task's `block_expr` scope decision.
 
 use cad_ast::{
-    Arg, BinaryOp, Block, Expr, Field, FnParam, Item, Literal, Program, Span, Spanned, Stmt, Type,
-    UnaryOp,
+    Arg, BinaryOp, Block, BlockExpr, ElseBranch, ElseClause, Expr, Field, FnParam, Item, Literal,
+    MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type, UnaryOp,
 };
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
 use cad_lexer::{Keyword, Token, TokenKind};
@@ -89,6 +93,9 @@ fn can_start_expression(kind: &TokenKind) -> bool {
             | TokenKind::LParen
             | TokenKind::Minus
             | TokenKind::Bang
+            | TokenKind::LBrace
+            | TokenKind::Keyword(Keyword::If)
+            | TokenKind::Keyword(Keyword::Match)
     )
 }
 
@@ -497,6 +504,9 @@ impl<'a> Parser<'a> {
                     span: open.join(end),
                 })
             }
+            TokenKind::LBrace => self.parse_block_expr().map(Expr::Block),
+            TokenKind::Keyword(Keyword::If) => self.parse_if_expr(),
+            TokenKind::Keyword(Keyword::Match) => self.parse_match_expr(),
             TokenKind::Keyword(Keyword::Pure) => {
                 // `pure` only ever prefixes `fn` (AICAD-042); it is never
                 // valid to encounter here, in expression position.
@@ -660,6 +670,14 @@ impl<'a> Parser<'a> {
                     span: start.join(end),
                 })
             }
+            TokenKind::Keyword(Keyword::If) => self.parse_if_stmt(),
+            TokenKind::Keyword(Keyword::For) => self.parse_for_stmt(),
+            TokenKind::Keyword(Keyword::While) => self.parse_while_stmt(),
+            TokenKind::Keyword(Keyword::Loop) => self.parse_loop_stmt(),
+            TokenKind::Keyword(Keyword::Match) => self.parse_match_stmt(),
+            TokenKind::Keyword(Keyword::Return) => self.parse_return_stmt(),
+            TokenKind::Keyword(Keyword::Break) => self.parse_break_stmt(),
+            TokenKind::Keyword(Keyword::Continue) => self.parse_continue_stmt(),
             _ => {
                 let expr = self.parse_expression()?;
                 let semi = self.expect(&TokenKind::Semicolon, "';'");
@@ -668,6 +686,372 @@ impl<'a> Parser<'a> {
                 Some(Stmt::Expr { expr, span })
             }
         }
+    }
+
+    // --- control flow (statement position) ------------------------------
+
+    /// `if_stmt = "if" expression block ["else" (block | if_stmt)]` —
+    /// `else` optional, unlike `parse_if_expr`.
+    fn parse_if_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'if'
+        let cond = self.parse_expression()?;
+        let then_branch = self.parse_block()?;
+        let mut end = then_branch.span;
+        let else_branch = if self
+            .eat(|k| *k == TokenKind::Keyword(Keyword::Else))
+            .is_some()
+        {
+            if self.peek_kind() == &TokenKind::Keyword(Keyword::If) {
+                let nested = self.parse_if_stmt()?;
+                end = nested.span();
+                Some(ElseClause::If(Box::new(nested)))
+            } else {
+                let block = self.parse_block()?;
+                end = block.span;
+                Some(ElseClause::Block(block))
+            }
+        } else {
+            None
+        };
+        Some(Stmt::If {
+            cond,
+            then_branch,
+            else_branch,
+            span: start.join(end),
+        })
+    }
+
+    /// `for_stmt = "for" identifier "in" expression block`.
+    fn parse_for_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'for'
+        let var = self.expect_ident("a loop variable name")?;
+        self.expect(&TokenKind::Keyword(Keyword::In), "'in'")?;
+        let iterable = self.parse_expression()?;
+        let body = self.parse_block()?;
+        let span = start.join(body.span);
+        Some(Stmt::For {
+            var,
+            iterable,
+            body,
+            span,
+        })
+    }
+
+    /// `while_stmt = "while" expression block`.
+    fn parse_while_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'while'
+        let cond = self.parse_expression()?;
+        let body = self.parse_block()?;
+        let span = start.join(body.span);
+        Some(Stmt::While { cond, body, span })
+    }
+
+    /// `loop_stmt = "loop" block`.
+    fn parse_loop_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'loop'
+        let body = self.parse_block()?;
+        let span = start.join(body.span);
+        Some(Stmt::Loop { body, span })
+    }
+
+    /// `match_stmt = "match" expression "{" { match_arm } "}"`.
+    fn parse_match_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'match'
+        let scrutinee = self.parse_expression()?;
+        self.expect(&TokenKind::LBrace, "'{'")?;
+        let arms = self.parse_match_arms();
+        let close = self.expect(&TokenKind::RBrace, "'}'");
+        let end = close
+            .map(|t| t.span)
+            .unwrap_or_else(|| arms.last().map(|a| a.span).unwrap_or(scrutinee.span()));
+        let span = start.join(end);
+        Some(Stmt::Match {
+            scrutinee,
+            arms,
+            span,
+        })
+    }
+
+    /// `return_stmt = "return" [expression] ";"`.
+    fn parse_return_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'return'
+        let value = if self.peek_kind() == &TokenKind::Semicolon {
+            None
+        } else {
+            self.parse_expression()
+        };
+        let semi = self.expect(&TokenKind::Semicolon, "';'");
+        let end = semi
+            .map(|t| t.span)
+            .unwrap_or_else(|| value.as_ref().map(|v| v.span()).unwrap_or(start));
+        Some(Stmt::Return {
+            value,
+            span: start.join(end),
+        })
+    }
+
+    /// `break_stmt = "break" ";"` — no value, exactly as the grammar
+    /// specifies.
+    fn parse_break_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'break'
+        let semi = self.expect(&TokenKind::Semicolon, "';'");
+        let end = semi.map(|t| t.span).unwrap_or(start);
+        Some(Stmt::Break {
+            span: start.join(end),
+        })
+    }
+
+    /// `continue_stmt = "continue" ";"`.
+    fn parse_continue_stmt(&mut self) -> Option<Stmt> {
+        let start = self.peek().span;
+        self.advance(); // 'continue'
+        let semi = self.expect(&TokenKind::Semicolon, "';'");
+        let end = semi.map(|t| t.span).unwrap_or(start);
+        Some(Stmt::Continue {
+            span: start.join(end),
+        })
+    }
+
+    // --- control flow (expression position) -----------------------------
+
+    /// `if_expr = "if" expression block_expr "else" (block_expr |
+    /// if_expr)` — `else` is mandatory here (unlike `parse_if_stmt`), per
+    /// the grammar: both arms must produce a value of a unifiable type.
+    fn parse_if_expr(&mut self) -> Option<Expr> {
+        let start = self.peek().span;
+        self.advance(); // 'if'
+        let cond = self.parse_expression()?;
+        let then_branch = self.parse_block_expr()?;
+        self.expect(&TokenKind::Keyword(Keyword::Else), "'else'")?;
+        let else_branch = if self.peek_kind() == &TokenKind::Keyword(Keyword::If) {
+            ElseBranch::If(Box::new(self.parse_if_expr()?))
+        } else {
+            ElseBranch::Block(self.parse_block_expr()?)
+        };
+        let end = else_branch.span();
+        Some(Expr::If {
+            cond: Box::new(cond),
+            then_branch,
+            else_branch: Box::new(else_branch),
+            span: start.join(end),
+        })
+    }
+
+    /// `match_expr = "match" expression "{" { match_arm } "}"` — same arm
+    /// shape as `parse_match_stmt`; whether every arm actually yields a
+    /// value is left to a later type-checking phase (see `cad_ast::Expr`'s
+    /// own doc comment on `Expr::Match`).
+    fn parse_match_expr(&mut self) -> Option<Expr> {
+        let start = self.peek().span;
+        self.advance(); // 'match'
+        let scrutinee = self.parse_expression()?;
+        self.expect(&TokenKind::LBrace, "'{'")?;
+        let arms = self.parse_match_arms();
+        let close = self.expect(&TokenKind::RBrace, "'}'");
+        let end = close
+            .map(|t| t.span)
+            .unwrap_or_else(|| arms.last().map(|a| a.span).unwrap_or(scrutinee.span()));
+        let span = start.join(end);
+        Some(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            span,
+        })
+    }
+
+    /// A match-arm `pattern`. See `cad_ast::Pattern`'s own doc comment
+    /// for exactly which shapes this covers.
+    fn parse_pattern(&mut self) -> Option<Pattern> {
+        let tok = self.peek();
+        match tok.kind.clone() {
+            TokenKind::Ident(name) => {
+                let span = tok.span;
+                self.advance();
+                if name == "_" {
+                    Some(Pattern::Wildcard(span))
+                } else {
+                    Some(Pattern::Ident(Spanned::new(name, span)))
+                }
+            }
+            TokenKind::BoolLiteral(b) => {
+                let span = tok.span;
+                self.advance();
+                Some(Pattern::Literal(Spanned::new(Literal::Bool(b), span)))
+            }
+            TokenKind::Number { text, unit } => {
+                let span = tok.span;
+                self.advance();
+                Some(Pattern::Literal(Spanned::new(
+                    Literal::Number { text, unit },
+                    span,
+                )))
+            }
+            TokenKind::Str(s) => {
+                let span = tok.span;
+                self.advance();
+                Some(Pattern::Literal(Spanned::new(Literal::Str(s), span)))
+            }
+            TokenKind::RawStr(s) => {
+                let span = tok.span;
+                self.advance();
+                Some(Pattern::Literal(Spanned::new(Literal::RawStr(s), span)))
+            }
+            _ => {
+                self.error(
+                    11,
+                    "EXPECTED_PATTERN",
+                    format!(
+                        "Expected a match pattern, found {}.",
+                        describe_token(&tok.kind)
+                    ),
+                    tok.span,
+                );
+                self.advance();
+                None
+            }
+        }
+    }
+
+    /// `{ match_arm* }`'s arms (already positioned just past the opening
+    /// `{`, mirroring `parse_struct_fields`/`parse_enum_variants`).
+    /// Shared verbatim by `parse_match_stmt` and `parse_match_expr` — the
+    /// arm shape (`pattern "=>" (expression "," | block)`) does not
+    /// depend on whether the enclosing `match` is used as a statement or
+    /// an expression.
+    fn parse_match_arms(&mut self) -> Vec<MatchArm> {
+        let mut arms = Vec::new();
+        while !self.at_end_of_braced_body() {
+            let before = self.pos;
+            if let Some(pattern) = self.parse_pattern()
+                && self.expect(&TokenKind::FatArrow, "'=>'").is_some()
+            {
+                if self.peek_kind() == &TokenKind::LBrace {
+                    if let Some(block) = self.parse_block_expr() {
+                        let span = pattern.span().join(block.span);
+                        arms.push(MatchArm {
+                            pattern,
+                            body: MatchArmBody::Block(block),
+                            span,
+                        });
+                        // The grammar's block-form arm needs no trailing
+                        // comma; tolerate one anyway (a harmless, common
+                        // stylistic choice) rather than treating it as an
+                        // error.
+                        self.eat(|k| *k == TokenKind::Comma);
+                    }
+                } else if let Some(expr) = self.parse_expression() {
+                    let span = pattern.span().join(expr.span());
+                    arms.push(MatchArm {
+                        pattern,
+                        body: MatchArmBody::Expr(expr),
+                        span,
+                    });
+                    self.expect(&TokenKind::Comma, "','");
+                }
+            }
+            if self.pos == before {
+                self.advance();
+            }
+        }
+        arms
+    }
+
+    /// `block_expr = "{" { statement } [ expression ] "}"`.
+    ///
+    /// **Scope decision.** Every element is first checked against a
+    /// statement start that can never be this block's trailing value —
+    /// `let`/`var`/`for`/`while`/`loop`/`return`/`break`/`continue`
+    /// (none are `expression` alternatives at all), `identifier "="`
+    /// (`assign_stmt`), and — this task's own deliberate choice — `if`/
+    /// `match` as well. If so, it is parsed via the ordinary
+    /// [`Parser::parse_stmt`] used by plain [`Block`]s, giving
+    /// statement-position `if`/`match` their `if_stmt`/`match_stmt`
+    /// grammar (`if`'s `else` optional) exactly as inside an ordinary
+    /// function body — never promoted to this block's value. Treating
+    /// `if`/`match` this way (rather than as candidates for the trailing
+    /// position) is deliberate, not an oversight: the only concrete
+    /// `if_expr` evidence anywhere
+    /// (`examples/assemblies/stage0_paper_example.aicad`'s `let wall = if
+    /// Product.motor == NEMA17 { 3mm } else { 4mm };`) uses `if_expr`
+    /// *directly* as a binding's value — reached through
+    /// [`Parser::parse_primary`], never nested inside a bare `{ }`
+    /// `block_expr` — so `block_expr` supporting `if`/`match` as its own
+    /// trailing value is unevidenced speculation this task does not need
+    /// to add. Everything else (literals, identifiers, calls, binary
+    /// expressions, a nested bare `{ }` block, ...) is expression-shaped
+    /// and parsed via [`Parser::parse_expression`]: if a `;` follows, it
+    /// becomes an ordinary discarded-value statement; if the block's
+    /// closing `}` follows directly with no `;`, it becomes this block's
+    /// `trailing` value and parsing stops (a trailing expression is
+    /// always last, per the grammar).
+    fn parse_block_expr(&mut self) -> Option<BlockExpr> {
+        let open = self.expect(&TokenKind::LBrace, "'{'")?;
+        let start = open.span;
+        let mut stmts = Vec::new();
+        let mut trailing = None;
+        while !self.at_end_of_braced_body() {
+            let before = self.pos;
+            let is_definite_stmt_start = matches!(
+                self.peek_kind(),
+                TokenKind::Keyword(Keyword::Let)
+                    | TokenKind::Keyword(Keyword::Var)
+                    | TokenKind::Keyword(Keyword::For)
+                    | TokenKind::Keyword(Keyword::While)
+                    | TokenKind::Keyword(Keyword::Loop)
+                    | TokenKind::Keyword(Keyword::Return)
+                    | TokenKind::Keyword(Keyword::Break)
+                    | TokenKind::Keyword(Keyword::Continue)
+                    | TokenKind::Keyword(Keyword::If)
+                    | TokenKind::Keyword(Keyword::Match)
+            ) || (matches!(self.peek_kind(), TokenKind::Ident(_))
+                && self.peek_next_is_bare_eq());
+            if is_definite_stmt_start {
+                if let Some(stmt) = self.parse_stmt() {
+                    stmts.push(stmt);
+                }
+            } else if let Some(expr) = self.parse_expression() {
+                if self.eat(|k| *k == TokenKind::Semicolon).is_some() {
+                    let span = expr.span();
+                    stmts.push(Stmt::Expr { expr, span });
+                } else if self.at_end_of_braced_body() {
+                    trailing = Some(Box::new(expr));
+                    break;
+                } else {
+                    let tok = self.peek();
+                    self.error(
+                        6,
+                        "UNEXPECTED_TOKEN",
+                        format!("Expected ';', found {}.", describe_token(&tok.kind)),
+                        tok.span,
+                    );
+                    let span = expr.span();
+                    stmts.push(Stmt::Expr { expr, span });
+                }
+            }
+            if self.pos == before {
+                self.advance();
+            }
+        }
+        let close = self.expect(&TokenKind::RBrace, "'}'");
+        let end = close.map(|t| t.span).unwrap_or_else(|| {
+            trailing
+                .as_ref()
+                .map(|e| e.span())
+                .or_else(|| stmts.last().map(Stmt::span))
+                .unwrap_or(start)
+        });
+        Some(BlockExpr {
+            stmts,
+            trailing,
+            span: start.join(end),
+        })
     }
 
     // --- declarations ----------------------------------------------------
@@ -1661,5 +2045,341 @@ mod decl_tests {
                 .count(),
             2
         );
+    }
+}
+
+/// `AICAD-043` tests: control-flow statements and expressions.
+#[cfg(test)]
+mod control_flow_tests {
+    use super::*;
+
+    fn program_ok(source: &str) -> Program {
+        let (program, diagnostics) = parse_program(source, "t.aicad");
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics for {source:?}: {diagnostics:?}"
+        );
+        program
+    }
+
+    fn fn_body(program: &Program) -> &Block {
+        match &program.items[0] {
+            Item::Fn { body, .. } => body,
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    // --- if/else (statement position) ------------------------------------
+
+    #[test]
+    fn parses_if_stmt_without_else() {
+        let program = program_ok("fn f() { if a { g(); } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::If { else_branch, .. } => assert!(else_branch.is_none()),
+            other => panic!("expected Stmt::If, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_if_else_stmt() {
+        let program = program_ok("fn f() { if a { g(); } else { h(); } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::If {
+                else_branch: Some(ElseClause::Block(_)),
+                ..
+            } => {}
+            other => panic!("expected Stmt::If with a block else, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_else_if_chain_stmt() {
+        let program = program_ok("fn f() { if a { g(); } else if b { h(); } else { k(); } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::If {
+                else_branch: Some(ElseClause::If(nested)),
+                ..
+            } => match nested.as_ref() {
+                Stmt::If {
+                    else_branch: Some(ElseClause::Block(_)),
+                    ..
+                } => {}
+                other => panic!("expected nested Stmt::If with a block else, got {other:?}"),
+            },
+            other => panic!("expected Stmt::If with an else-if, got {other:?}"),
+        }
+    }
+
+    // --- for/while/loop ----------------------------------------------------
+
+    #[test]
+    fn parses_for_stmt_matching_paper_example() {
+        // "for p in corner_points(...) { ... }" — the paper example's own
+        // syntax.
+        let program = program_ok("fn f() { for p in points { g(p); } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::For { var, .. } => assert_eq!(var.node, "p"),
+            other => panic!("expected Stmt::For, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_while_stmt() {
+        let program = program_ok("fn f() { while a < b { g(); } }");
+        assert!(matches!(fn_body(&program).stmts[0], Stmt::While { .. }));
+    }
+
+    #[test]
+    fn parses_loop_stmt() {
+        let program = program_ok("fn f() { loop { break; } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::Loop { body, .. } => assert!(matches!(body.stmts[0], Stmt::Break { .. })),
+            other => panic!("expected Stmt::Loop, got {other:?}"),
+        }
+    }
+
+    // --- match (statement position) --------------------------------------
+
+    #[test]
+    fn parses_match_stmt_with_expr_arms() {
+        // "match Product.material { Plastic => 3mm, Aluminum => 2mm, }"
+        // shape, from docs/plan/07's own canonical example.
+        let program = program_ok("fn f() { match material { Plastic => 1, Aluminum => 2, } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(arms[0].pattern, Pattern::Ident(_)));
+                assert!(matches!(arms[0].body, MatchArmBody::Expr(_)));
+            }
+            other => panic!("expected Stmt::Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_match_stmt_with_block_arm_and_wildcard() {
+        let program = program_ok("fn f() { match x { 1 => { g(); } _ => { h(); } } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::Match { arms, .. } => {
+                assert!(matches!(arms[0].pattern, Pattern::Literal(_)));
+                assert!(matches!(arms[0].body, MatchArmBody::Block(_)));
+                assert!(matches!(arms[1].pattern, Pattern::Wildcard(_)));
+            }
+            other => panic!("expected Stmt::Match, got {other:?}"),
+        }
+    }
+
+    // --- return/break/continue ---------------------------------------------
+
+    #[test]
+    fn parses_return_with_value() {
+        let program = program_ok("fn f() { return 1; }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::Return { value: Some(_), .. } => {}
+            other => panic!("expected Stmt::Return with a value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_return_with_no_value() {
+        let program = program_ok("fn f() { return; }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::Return { value: None, .. } => {}
+            other => panic!("expected Stmt::Return with no value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_return_list_literal_matching_paper_example() {
+        // The paper example's corner_points body: "return [ ... ];".
+        // (List literals are not this task's syntax to add — [1,2] is
+        // parsed as far as the array-index/list-literal grammar reaches,
+        // which is not yet implemented; this test uses a call instead to
+        // stay within this task's own scope while still matching
+        // "return <expr>;" shape.)
+        let program = program_ok("fn f() { return corner_points(size, inset); }");
+        assert!(matches!(
+            fn_body(&program).stmts[0],
+            Stmt::Return { value: Some(_), .. }
+        ));
+    }
+
+    #[test]
+    fn parses_break_and_continue() {
+        let program = program_ok("fn f() { loop { break; continue; } }");
+        match &fn_body(&program).stmts[0] {
+            Stmt::Loop { body, .. } => {
+                assert!(matches!(body.stmts[0], Stmt::Break { .. }));
+                assert!(matches!(body.stmts[1], Stmt::Continue { .. }));
+            }
+            other => panic!("expected Stmt::Loop, got {other:?}"),
+        }
+    }
+
+    // --- if/match (expression position) ------------------------------------
+
+    #[test]
+    fn parses_if_expr_matching_paper_example() {
+        // "let wall = if Product.motor == NEMA17 { 3mm } else { 4mm };"
+        // — the paper example's own syntax, verbatim (renamed `Product`
+        // access to a plain identifier condition to stay within already-
+        // parseable expression forms; the shape is identical).
+        let program = program_ok("let wall = if cond { 3mm } else { 4mm };");
+        match &program.items[0] {
+            Item::Let { value, .. } => match value {
+                Expr::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
+                    assert!(matches!(
+                        then_branch.trailing.as_deref(),
+                        Some(Expr::Literal(_))
+                    ));
+                    assert!(matches!(else_branch.as_ref(), ElseBranch::Block(_)));
+                }
+                other => panic!("expected Expr::If, got {other:?}"),
+            },
+            other => panic!("expected Item::Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_else_if_chain_expr() {
+        let program = program_ok("let x = if a { 1 } else if b { 2 } else { 3 };");
+        match &program.items[0] {
+            Item::Let {
+                value: Expr::If { else_branch, .. },
+                ..
+            } => assert!(matches!(else_branch.as_ref(), ElseBranch::If(_))),
+            other => panic!("expected Item::Let with Expr::If, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_match_expr() {
+        let program = program_ok("let x = match n { 1 => 10, _ => 0, };");
+        match &program.items[0] {
+            Item::Let {
+                value: Expr::Match { arms, .. },
+                ..
+            } => assert_eq!(arms.len(), 2),
+            other => panic!("expected Item::Let with Expr::Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_bare_block_expr_with_trailing_value() {
+        let program = program_ok("let x = { let a = 1; a + 1 };");
+        match &program.items[0] {
+            Item::Let {
+                value: Expr::Block(block),
+                ..
+            } => {
+                assert_eq!(block.stmts.len(), 1);
+                assert!(block.trailing.is_some());
+            }
+            other => panic!("expected Item::Let with Expr::Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn block_expr_with_no_trailing_expression_has_none_trailing() {
+        let program = program_ok("let x = { let a = 1; };");
+        match &program.items[0] {
+            Item::Let {
+                value: Expr::Block(block),
+                ..
+            } => assert!(block.trailing.is_none()),
+            other => panic!("expected Item::Let with Expr::Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn block_expr_allows_statement_position_if_without_else_mid_block() {
+        // Per parse_block_expr's own documented scope decision: an
+        // if-without-else used as a *non-tail* statement mid-block_expr
+        // still works, because it is parsed via the same `parse_stmt`
+        // dispatch (`if_stmt`, optional else) as an ordinary Block —
+        // this only becomes a limitation for such an `if` appearing
+        // specifically in *trailing* (tail) position.
+        let program = program_ok("let x = { if a { g(); } 1 };");
+        match &program.items[0] {
+            Item::Let {
+                value: Expr::Block(block),
+                ..
+            } => {
+                assert_eq!(block.stmts.len(), 1);
+                assert!(matches!(block.stmts[0], Stmt::If { .. }));
+                assert!(block.trailing.is_some());
+            }
+            other => panic!("expected Item::Let with Expr::Block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn if_expr_binds_as_a_primary_expression_in_binary_context() {
+        // "1 + if a { 1 } else { 2 }" exercises can_start_expression's
+        // inclusion of `if`/`match`/`{` as valid right-hand operands.
+        let program = program_ok("let x = 1 + if a { 1 } else { 2 };");
+        match &program.items[0] {
+            Item::Let {
+                value:
+                    Expr::Binary {
+                        op: BinaryOp::Add,
+                        rhs,
+                        ..
+                    },
+                ..
+            } => assert!(matches!(rhs.as_ref(), Expr::If { .. })),
+            other => panic!("expected Item::Let with Add(_, If), got {other:?}"),
+        }
+    }
+
+    // --- adversarial / negative tests --------------------------------------
+
+    #[test]
+    fn reports_if_expr_missing_mandatory_else() {
+        // "if a { 1 }" with no else is invalid in expression position
+        // (unlike if_stmt, where else is optional).
+        let (_, diagnostics) = parse_program("let x = if a { 1 };", "t.aicad");
+        assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn if_stmt_without_else_is_valid_even_though_if_expr_requires_one() {
+        // The same construct, used at statement position, needs no else.
+        let program = program_ok("fn f() { if a { g(); } }");
+        assert!(matches!(fn_body(&program).stmts[0], Stmt::If { .. }));
+    }
+
+    #[test]
+    fn reports_break_with_a_value_as_a_syntax_error() {
+        // `break_stmt` carries no value per the grammar; `break 1;` must
+        // be rejected (the `1` is an unexpected trailing token before the
+        // required `;`), not silently accepted as if it had a payload.
+        let (_, diagnostics) = parse_program("fn f() { loop { break 1; } }", "t.aicad");
+        assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reports_malformed_match_arm_missing_fat_arrow() {
+        let (_, diagnostics) = parse_program("fn f() { match x { 1 g(); } }", "t.aicad");
+        assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn parses_if_without_else_followed_by_another_statement() {
+        let program = program_ok("fn f() { if a { g(); } let y = 1; }");
+        assert_eq!(fn_body(&program).stmts.len(), 2);
+    }
+
+    #[test]
+    fn does_not_hang_on_deeply_unclosed_control_flow() {
+        // Missing every closing brace, nested three levels deep — each
+        // level's `parse_block`/`parse_match_arms` must still terminate
+        // (via `at_end_of_braced_body`'s `Eof` check) rather than looping
+        // forever waiting for a `}` that never arrives.
+        let (_, diagnostics) = parse_program("fn f() { while a { loop { match x {", "t.aicad");
+        assert!(!diagnostics.is_empty());
     }
 }

@@ -1,24 +1,23 @@
-//! Declaration/statement AST node types (`AICAD-042`).
+//! Declaration/statement AST node types.
 //!
-//! Scope of this task, exactly matching its title, "Implement
-//! declarations: let/const/param/fn/struct/enum/part": the `item`
-//! alternatives `let_decl`/`const_decl`/`param_decl`/`fn_decl`/
-//! `struct_decl`/`enum_decl`/`part_decl`, plus enough statement-level
-//! parsing (`let_stmt`/`var_stmt`/`assign_stmt`/`expr_stmt`) for `fn`/
-//! `part` bodies to be parseable at all. Deliberately **not** in scope
-//! (left for later tasks that own them, per `AGENTS.md` "No speculative
-//! future work"):
+//! History: `AICAD-042` ("Implement declarations:
+//! let/const/param/fn/struct/enum/part") added the `item` alternatives
+//! `let_decl`/`const_decl`/`param_decl`/`fn_decl`/`struct_decl`/
+//! `enum_decl`/`part_decl`, plus enough statement-level parsing
+//! (`let_stmt`/`var_stmt`/`assign_stmt`/`expr_stmt`) for `fn`/`part`
+//! bodies to be parseable at all. `AICAD-043` ("Implement control-flow
+//! syntax: if/for/while/match/return") adds the remaining `statement`
+//! alternatives (`if_stmt`/`for_stmt`/`while_stmt`/`loop_stmt`/
+//! `match_stmt`/`return_stmt`/`break_stmt`/`continue_stmt`) to `Stmt`
+//! below. Deliberately **still not** in scope (left for later tasks that
+//! own them, per `AGENTS.md` "No speculative future work"):
 //! - `interface_decl`/`assembly_decl`/`requirement_decl`/`test_decl`/
-//!   `import_decl` — not named by this task's title, and several use
+//!   `import_decl` — not named by either task's title, and several use
 //!   keywords `crates/cad-lexer` deliberately has not reserved yet
 //!   (`configuration`, `component`, `assembly`, `instance`, `mate`,
 //!   `joint`, `requirement`, `test`, `constraint`, `expose`, `query`,
 //!   `unsafe` are all still unreserved identifiers — see
 //!   `crates/cad-lexer/src/token.rs`'s own doc comment).
-//! - control-flow statements (`if_stmt`/`for_stmt`/`while_stmt`/
-//!   `loop_stmt`/`match_stmt`/`return_stmt`/`break_stmt`/`continue_stmt`)
-//!   and the control-flow expression forms (`block_expr`/`if_expr`/
-//!   `match_expr`) — explicitly `AICAD-043`'s own title.
 //! - enum variants carrying data (tuple/struct variants) — the only
 //!   evidence for enum syntax anywhere in frozen material
 //!   (`examples/assemblies/stage0_paper_example.aicad`:
@@ -34,7 +33,7 @@
 //!   DL-2's functional-core/no-in-place-mutation ruling: nothing in DL-2
 //!   or the grammar sketch describes mutating a field through assignment.
 
-use crate::{Expr, Span, Spanned};
+use crate::{Expr, MatchArm, Span, Spanned};
 
 /// A syntactic type reference as written in source (`: Length`,
 /// `: Vector2<Length>`, `-> List<Point2>`). Purely syntactic — no
@@ -122,6 +121,41 @@ pub enum Stmt {
     /// discarded (per DL-2, e.g. `body.cut(hole);` does not rebind
     /// `body`).
     Expr { expr: Expr, span: Span },
+    /// `if cond block [else (block | if_stmt)]` — `AICAD-043`. Unlike
+    /// expression-position `if` (`cad_ast::Expr::If`), `else` is
+    /// optional here, exactly as the grammar's `if_stmt` production
+    /// specifies (`["else" , (block | if_stmt)]`).
+    If {
+        cond: Expr,
+        then_branch: Block,
+        else_branch: Option<ElseClause>,
+        span: Span,
+    },
+    /// `for name in iterable block`.
+    For {
+        var: Spanned<String>,
+        iterable: Expr,
+        body: Block,
+        span: Span,
+    },
+    /// `while cond block`.
+    While { cond: Expr, body: Block, span: Span },
+    /// `loop block`.
+    Loop { body: Block, span: Span },
+    /// `match scrutinee { arm* }` used as a statement (value discarded).
+    Match {
+        scrutinee: Expr,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
+    /// `return [expr];`.
+    Return { value: Option<Expr>, span: Span },
+    /// `break;` — no value, exactly as the grammar's `break_stmt`
+    /// production specifies (`"break" , ";"`); no evidence anywhere
+    /// supports a value-carrying `break`.
+    Break { span: Span },
+    /// `continue;`.
+    Continue { span: Span },
 }
 
 impl Stmt {
@@ -130,9 +164,27 @@ impl Stmt {
             Stmt::Let { span, .. }
             | Stmt::Var { span, .. }
             | Stmt::Assign { span, .. }
-            | Stmt::Expr { span, .. } => *span,
+            | Stmt::Expr { span, .. }
+            | Stmt::If { span, .. }
+            | Stmt::For { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::Loop { span, .. }
+            | Stmt::Match { span, .. }
+            | Stmt::Return { span, .. }
+            | Stmt::Break { span }
+            | Stmt::Continue { span } => *span,
         }
     }
+}
+
+/// `if_stmt`'s `else` arm: either a plain `block`, or another `if_stmt`
+/// (an `else if` chain) — exactly the grammar's own
+/// `["else" , (block | if_stmt)]`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ElseClause {
+    Block(Block),
+    /// Always constructed from a nested `Stmt::If`.
+    If(Box<Stmt>),
 }
 
 /// `"{" { statement } "}"` — a plain statement block with no trailing

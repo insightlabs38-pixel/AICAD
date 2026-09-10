@@ -166,6 +166,29 @@ pub enum Expr {
         field: Spanned<String>,
         span: Span,
     },
+    /// A bare `{ ... }` used in expression position — `block_expr`
+    /// (`AICAD-043`).
+    Block(BlockExpr),
+    /// `if cond block_expr else (block_expr | if_expr)` — `if_expr`
+    /// (`AICAD-043`). Unlike statement-position `if` (`cad_ast::Stmt::If`,
+    /// where `else` is optional), the grammar requires `else` here so
+    /// both arms produce a value of a unifiable type.
+    If {
+        cond: Box<Expr>,
+        then_branch: BlockExpr,
+        else_branch: Box<ElseBranch>,
+        span: Span,
+    },
+    /// `match scrutinee { arm* }` used in expression position —
+    /// `match_expr` (`AICAD-043`). Whether every arm actually yields a
+    /// value of a unifiable type is a type-checking concern (the grammar's
+    /// own comment: "used in expression position when every arm yields a
+    /// value"), not something this parser enforces.
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -178,7 +201,98 @@ impl Expr {
             | Expr::Paren { span, .. }
             | Expr::Call { span, .. }
             | Expr::MethodCall { span, .. }
-            | Expr::Field { span, .. } => *span,
+            | Expr::Field { span, .. }
+            | Expr::If { span, .. }
+            | Expr::Match { span, .. } => *span,
+            Expr::Block(block) => block.span,
         }
     }
+}
+
+/// `"{" { statement } [ expression ] "}"` — a value-producing block
+/// (`AICAD-043`'s extension of `cad_ast::item::Block`'s same brace-
+/// delimited shape). `stmts` holds every statement except an optional
+/// final, non-semicolon-terminated `trailing` expression, which is the
+/// block's value (absent if the block ends with a statement, or is
+/// empty).
+///
+/// **Scope decision** (see `cad-parser`'s own `parse_block_expr` doc
+/// comment for the full rationale): every non-final element in `stmts` is
+/// parsed as an ordinary `statement` — including `if_stmt`/`match_stmt`
+/// with their statement-position grammar (`if`'s `else` optional, no
+/// semicolon) — so control flow used mid-`block_expr` for a side effect
+/// works exactly like it does in an ordinary `Block`. Only the *trailing*
+/// position is expression-shaped and therefore requires `if_expr`'s
+/// stricter grammar (`else` mandatory) if it happens to be an `if`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockExpr {
+    pub stmts: Vec<crate::Stmt>,
+    pub trailing: Option<Box<Expr>>,
+    pub span: Span,
+}
+
+/// `if_expr`'s `else` arm: either a plain `block_expr`, or another
+/// `if_expr` (an `else if` chain).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ElseBranch {
+    Block(BlockExpr),
+    /// Always constructed from a nested `Expr::If` — kept as `Expr`
+    /// rather than a narrower type since the grammar itself defines the
+    /// `else if` arm as `if_expr`, and `Expr::If` already *is* that.
+    If(Box<Expr>),
+}
+
+impl ElseBranch {
+    pub fn span(&self) -> Span {
+        match self {
+            ElseBranch::Block(block) => block.span,
+            ElseBranch::If(expr) => expr.span(),
+        }
+    }
+}
+
+/// A `match` arm pattern (`pattern` in the grammar — never spelled out
+/// there beyond its use inside `match_arm`). Scope decision: only the
+/// three shapes with concrete evidence or obvious universal necessity —
+/// a bare identifier (binds a name, or matches an enum-variant-shaped
+/// name; disambiguating those two readings is a binding-phase concern,
+/// not the parser's), a literal, and the wildcard `_` (needed for
+/// exhaustiveness in any real `match`, and a completely standard
+/// convention). No struct/tuple/enum-data patterns — no evidence
+/// anywhere supports enum variants carrying data at all (see
+/// `cad_ast::item`'s own scope note on unit-only enum variants), so a
+/// data-destructuring pattern shape would be pure speculation.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    Wildcard(Span),
+    Literal(Spanned<Literal>),
+    Ident(Spanned<String>),
+}
+
+impl Pattern {
+    pub fn span(&self) -> Span {
+        match self {
+            Pattern::Wildcard(span) => *span,
+            Pattern::Literal(lit) => lit.span,
+            Pattern::Ident(ident) => ident.span,
+        }
+    }
+}
+
+/// `match_arm = pattern "=>" ( expression "," | block )`. The block form
+/// uses [`BlockExpr`] (a strict superset of the grammar's plain `block`)
+/// rather than a second, plain-`Block`-typed arm shape, so the same
+/// `MatchArm` type serves both `match_stmt` (value discarded) and
+/// `match_expr` (value used) without needing two distinct arm types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchArmBody {
+    Expr(Expr),
+    Block(BlockExpr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: MatchArmBody,
+    pub span: Span,
 }
