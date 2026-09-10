@@ -18,11 +18,21 @@ and `Torque`/`Energy` intentionally share a vector, so there is no
 `DimensionVector -> Dimension` reverse lookup) and
 `project/reports/AICAD-047.md`.
 
-Not yet implemented here: concrete unit literals/conversions (`AICAD-048`);
-dimensional arithmetic *type-checking rules* — i.e. what an expression like
-`force * length` type-checks as, including how the Pressure/Stress and
-Torque/Energy multiplicity above gets resolved against an expected type
-(`AICAD-049`).
+Also implemented (`AICAD-048`): `UnitDef`/`UNITS`/`lookup`/`lookup_any` and
+the `to_canonical_*`/`from_canonical_*`/`convert_*` conversion functions in
+`src/registry.rs`, covering exactly RFC-0004 §4's frozen initial unit set
+(length, angle, mass, force, pressure/stress, temperature — 6 families, 32
+`(symbol, dimension)` entries since `Pa`/`kPa`/`MPa`/`GPa`/`psi`/`ksi` each
+register under both `Pressure` and `Stress`). Affine (temperature)
+conversion is absolute/delta-aware per RFC-0004 §7.
+
+Not yet implemented here: dimensional arithmetic *type-checking rules* —
+i.e. what an expression like `force * length` type-checks as, including how
+the Pressure/Stress and Torque/Energy multiplicity noted above gets
+resolved against an expected type (`AICAD-049`); wiring this registry into
+`cad-ast`/binding/type-checking (`AICAD-050`/`052`); units beyond RFC-0004
+§4's frozen initial set (the RFC's own "the standard library may expand
+this set without a grammar change" is future work, not this task's scope).
 
 Plan references: `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §3-6, §21;
 `rfcs/0004-units-type-system.md`.

@@ -1269,7 +1269,7 @@ tasks:
 - id: AICAD-048
   stage: 2
   title: Implement initial unit registry and conversions
-  status: todo
+  status: done
   depends_on:
   - AICAD-047
   plan_references:
