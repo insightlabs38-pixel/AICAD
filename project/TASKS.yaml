@@ -1403,7 +1403,7 @@ tasks:
 - id: AICAD-053
   stage: 2
   title: Implement structs/enums field and variant typing
-  status: todo
+  status: done
   depends_on:
   - AICAD-052
   plan_references:

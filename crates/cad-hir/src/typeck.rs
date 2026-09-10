@@ -1,17 +1,16 @@
-//! Type checking over typed HIR (`AICAD-052`), `docs/plan/02_LANGUAGE_AND_
-//! COMPILER.md` §17 phase 4 ("type + dimensional checking"). Fills in
-//! exactly the part of `crate::lower`'s own "Scope boundary" doc comment
-//! this task owns: numeric-literal-type (`Int`/`Float`) defaulting, and
-//! full type checking for `let`/`const`/`param`/`var` bindings, function
-//! declarations, function calls (arity, parameter types, return type),
-//! and literal expressions — reusing `cad_units`' dimensional arithmetic
-//! rules (DL-3) throughout rather than re-deriving them.
-//!
-//! `AICAD-053` extends [`Checker`] with struct/enum field and variant
-//! typing (struct-literal construction via call syntax, field access,
-//! enum-variant construction/matching) — deliberately **not** implemented
-//! here; see each relevant match arm's own comment for exactly where 053
-//! plugs in.
+//! Type checking over typed HIR — `AICAD-052` ("literals/bindings/
+//! functions/calls") and `AICAD-053` ("structs/enums field and variant
+//! typing"), `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 phase 4 ("type +
+//! dimensional checking"). Together these fill in exactly what
+//! `crate::lower`'s own "Scope boundary" doc comment deferred: numeric-
+//! literal-type (`Int`/`Float`) defaulting; full type checking for
+//! `let`/`const`/`param`/`var` bindings, function declarations, function
+//! calls (arity, parameter types, return type), and literal expressions
+//! (`AICAD-052`); and struct-literal construction (via ordinary call
+//! syntax — DL-2's functional core has no separate constructor syntax),
+//! field access, and enum-variant construction/matching (`AICAD-053`) —
+//! reusing `cad_units`' dimensional arithmetic rules (DL-3) throughout
+//! rather than re-deriving them.
 //!
 //! ## Key design decision: no scope stack needed
 //!
@@ -25,45 +24,67 @@
 //! needs one flat table, `Checker::binding_types` (indexed by
 //! `BindingId::index()`, mirroring `crate::lower::LowerResult::bindings`'s
 //! own indexing convention exactly), filled in as each declaration is
-//! encountered — no scope push/pop bookkeeping anywhere in this module.
+//! encountered — no scope push/pop bookkeeping anywhere in this module,
+//! including for `part`-nested items (walked recursively into the same
+//! flat tables).
 //!
-//! ## Two-pass structure (forward references)
+//! ## `CheckedType`: a superset of `HirType`
 //!
-//! A function may call a sibling function declared later in source
-//! (`crate::lower`'s own `forward_reference_between_sibling_fns_resolves_
-//! to_a_real_binding` test already exercises this at the binding-identity
-//! level). Type-checking a call needs the *callee's signature* (its
-//! parameter/return types) before the *calling* body can be checked, so
-//! [`check_program`] resolves every function's signature — and every
-//! item-level `param`'s own mandatory type — in one upfront pass
-//! ([`Checker::collect_signatures`]) before checking any body/value
-//! expression in ordinary source order ([`Checker::check_items`]).
+//! [`HirType`] (`= cad_units::OperandType`) covers exactly a scalar or
+//! dimensional *value* — everything `AICAD-052` alone needed. Struct/enum
+//! values (`AICAD-053`) are nominal types with no arithmetic meaning, so
+//! [`CheckedType`] wraps `HirType` (`CheckedType::Value`) alongside two
+//! new nominal cases, `CheckedType::Struct(BindingId)`/`::Enum(BindingId)`
+//! — the declaring struct/enum's own binding identity *is* its type
+//! identity, so no separate type-id allocation is needed. Every arithmetic/
+//! comparison-operator call site extracts the `Value` case (via
+//! `as_value`) before delegating to `cad_units`; a struct/enum operand
+//! there is simply not arithmetic-eligible (silently unresolved, matching
+//! this module's general `None`-is-not-an-error convention — see below).
+//!
+//! ## Two passes before any body/value is checked
+//!
+//! 1. [`Checker::register_type_names`]: every `struct`/`enum` declaration
+//!    (including inside `part`s) is indexed by name, *and* every enum
+//!    variant's own binding is immediately given its checked type
+//!    (`CheckedType::Enum(<owning enum's binding>)`) — a variant used as
+//!    a bare value (`let m = NEMA17;`) needs no further resolution once
+//!    this runs, since `HirExpr::Ident` always looks its type up through
+//!    the same `binding_types` table every other binding uses.
+//! 2. [`Checker::collect_struct_fields`]: every struct's own field list is
+//!    resolved (field type refs may name another struct/enum declared
+//!    anywhere in the program, forward or not — safe because pass 1
+//!    already indexed every type name first).
+//!
+//! Only then does [`Checker::collect_signatures`] (function/item-`param`
+//! signatures — needed before any *body* is checked, since a function may
+//! call a sibling declared later in source) and finally
+//! [`Checker::check_items`] (bodies/values, ordinary source order) run.
 //! Top-level `let`/`const` *values* are deliberately **not** given the
-//! same forward-reference treatment — consistent with `project/reports/
-//! AICAD-050.md`'s own already-recorded limitation ("no detection of
-//! circular top-level const/let value dependencies... a compile-time-
-//! evaluation concern, not [name binding's]"), a `let`/`const` referenced
-//! before its own declaration simply resolves to `None` (unresolved, not
-//! an error) rather than gaining new forward-reference machinery this
-//! task was not asked to add.
+//! same forward-reference treatment as function signatures — consistent
+//! with `project/reports/AICAD-050.md`'s own already-recorded limitation
+//! ("no detection of circular top-level const/let value dependencies... a
+//! compile-time-evaluation concern"): a `let`/`const` referenced before
+//! its own declaration simply resolves to `None` (unresolved, not an
+//! error) rather than gaining forward-reference machinery neither task
+//! was asked to add.
 //!
-//! ## Error recovery: `Option<HirType>`, not `Result`
+//! ## Error recovery: `Option<CheckedType>`, not `Result`
 //!
-//! Every type-computing method returns `Option<HirType>`, reusing exactly
-//! the convention `crate::types::HirType`'s own module doc comment already
-//! establishes for `HirExpr::Literal::ty`: "`None` is not an error, only
-//! 'not yet resolved'." A `None` propagates upward silently (no cascading
-//! diagnostic from a parent expression whose operand's type could not be
-//! determined, whether because of an already-reported error or because
-//! the operand is a genuinely not-yet-typeable shape, e.g. a method call
-//! or a struct/enum construct AICAD-053 has not reached yet) — this is
-//! how a type error deep in one operand does not multiply into unrelated
-//! diagnostics about everything built on top of it.
+//! Every type-computing method returns `Option<CheckedType>`, reusing
+//! exactly the convention `crate::types::HirType`'s own module doc comment
+//! already establishes for `HirExpr::Literal::ty`: "`None` is not an
+//! error, only 'not yet resolved'." A `None` propagates upward silently —
+//! no cascading diagnostic from a parent expression whose operand's type
+//! could not be determined, whether because of an already-reported error
+//! or because the operand is a genuinely not-yet-typeable shape (a method
+//! call — no method/interface-implementation declaration syntax exists
+//! anywhere in the language).
 //!
 //! ## Reuse, not re-derivation, of DL-3's dimensional rules
 //!
-//! Every arithmetic/comparison/negation type rule is delegated to
-//! `cad_units::{check_binary_arithmetic, check_comparison,
+//! Every arithmetic/comparison/negation type rule over *value* operands is
+//! delegated to `cad_units::{check_binary_arithmetic, check_comparison,
 //! check_unary_neg}` (`AICAD-049`) — this module never re-implements
 //! same-dimension-implicit-conversion, cross-dimension rejection, or
 //! affine absolute/delta rules itself. `cad_units::DimensionalArithmeticError`
@@ -96,7 +117,23 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub struct TypeCheckResult {
     pub diagnostics: Vec<Diagnostic>,
-    pub binding_types: Vec<Option<HirType>>,
+    pub binding_types: Vec<Option<CheckedType>>,
+}
+
+/// A checked expression/binding type — see module doc comment
+/// "`CheckedType`: a superset of `HirType`".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckedType {
+    /// An ordinary scalar or dimensional value (`AICAD-052`'s whole
+    /// domain).
+    Value(HirType),
+    /// A struct value, identified by its declaring `struct` item's own
+    /// `BindingId` (`AICAD-053`).
+    Struct(BindingId),
+    /// An enum value, identified by its declaring `enum` item's own
+    /// `BindingId` (`AICAD-053`) — not the matched *variant*'s binding;
+    /// every variant of one enum shares this same `CheckedType`.
+    Enum(BindingId),
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -104,14 +141,23 @@ pub struct TypeCheckResult {
 #[derive(Debug, Clone)]
 struct FnSignature {
     params: Vec<ParamSig>,
-    return_ty: Option<HirType>,
+    return_ty: Option<CheckedType>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct ParamSig {
     binding: BindingId,
-    ty: Option<HirType>,
+    ty: Option<CheckedType>,
     has_default: bool,
+}
+
+/// One resolved struct field — built once in [`Checker::
+/// collect_struct_fields`] and reused for every construction/field-access
+/// site (`AICAD-053`).
+#[derive(Debug, Clone)]
+struct FieldInfo {
+    name: String,
+    ty: Option<CheckedType>,
 }
 
 struct Checker<'a> {
@@ -119,15 +165,24 @@ struct Checker<'a> {
     file: &'a str,
     source: &'a str,
     diagnostics: Vec<Diagnostic>,
-    binding_types: Vec<Option<HirType>>,
+    binding_types: Vec<Option<CheckedType>>,
     fn_signatures: HashMap<BindingId, FnSignature>,
+    /// `struct`/`enum` name -> its own declaring item's `BindingId`
+    /// (`AICAD-053`), populated once by `register_type_names` before any
+    /// type reference is resolved — supports forward/mutual references
+    /// between struct/enum declarations, matching the same two-pass
+    /// declare-before-check shape `crate::lower`/`crate::binder` already
+    /// use for value-level names.
+    type_names: HashMap<String, BindingId>,
+    /// `struct`'s own `BindingId` -> its resolved field list (`AICAD-053`).
+    struct_fields: HashMap<BindingId, Vec<FieldInfo>>,
     /// The enclosing function's declared return type, if any — read by
     /// `HirStmt::Return` wherever it is encountered, however deeply
     /// nested inside `if`/`match`/block expressions (see module doc
     /// comment "no scope stack needed": this is the one piece of
     /// genuinely non-lexical context a nested `return` needs, so it lives
     /// as a field rather than a threaded parameter).
-    current_fn_return: Option<HirType>,
+    current_fn_return: Option<CheckedType>,
 }
 
 /// Type-checks one already-lowered program. `bindings` is `crate::lower::
@@ -147,8 +202,12 @@ pub fn check_program(
         diagnostics: Vec::new(),
         binding_types: vec![None; bindings.len()],
         fn_signatures: HashMap::new(),
+        type_names: HashMap::new(),
+        struct_fields: HashMap::new(),
         current_fn_return: None,
     };
+    checker.register_type_names(&program.items);
+    checker.collect_struct_fields(&program.items);
     checker.collect_signatures(&program.items);
     checker.check_items(&program.items);
     TypeCheckResult {
@@ -161,6 +220,10 @@ fn bool_ty() -> HirType {
     HirType::Scalar(PrimitiveType::Bool)
 }
 
+fn bool_checked() -> CheckedType {
+    CheckedType::Value(bool_ty())
+}
+
 fn to_arith_op(op: BinaryOp) -> ArithmeticOp {
     match op {
         BinaryOp::Add => ArithmeticOp::Add,
@@ -171,19 +234,29 @@ fn to_arith_op(op: BinaryOp) -> ArithmeticOp {
     }
 }
 
-fn expected_dimension(expected: Option<HirType>) -> Option<Dimension> {
+/// Extracts the `Value` case, if any — every `cad_units` arithmetic/
+/// comparison call site uses this to opt out cleanly of a struct/enum
+/// operand (see module doc comment "`CheckedType`: a superset of
+/// `HirType`").
+fn as_value(ty: Option<CheckedType>) -> Option<HirType> {
+    match ty {
+        Some(CheckedType::Value(t)) => Some(t),
+        _ => None,
+    }
+}
+
+fn expected_dimension(expected: Option<CheckedType>) -> Option<Dimension> {
     match expected {
-        Some(HirType::Dimensional { dimension, .. }) => Some(dimension),
+        Some(CheckedType::Value(HirType::Dimensional { dimension, .. })) => Some(dimension),
         _ => None,
     }
 }
 
 /// Assignability/argument-passing compatibility between an authoritative
-/// `expected` type and an `actual` one: exact agreement, either the same
-/// `PrimitiveType`, or the same `Dimension` **and** the same `AffineKind`
-/// (`None`/`None`, or matching `Some(_)`s — never `Absolute` accepted
-/// where `Delta` was produced or vice versa, per RFC-0004 §7's absolute/
-/// delta distinction).
+/// `expected` type and an `actual` one. Struct/enum agreement is nominal
+/// (the same declaring `BindingId`, never structural — two different
+/// `struct`s with identical field shapes are still different types);
+/// value agreement is [`value_types_compatible`]'s own rule.
 ///
 /// This does **not** reuse `cad_units::check_comparison` — that function
 /// is scoped to the numeric arithmetic/comparison *operators*
@@ -197,7 +270,20 @@ fn expected_dimension(expected: Option<HirType>) -> Option<Dimension> {
 /// and the comparison *operators* themselves, both fully delegated to
 /// `cad_units` elsewhere in this module (`Checker::check_binary`,
 /// `Checker::check_unary`).
-fn types_compatible(expected: HirType, actual: HirType) -> bool {
+fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
+    match (expected, actual) {
+        (CheckedType::Value(e), CheckedType::Value(a)) => value_types_compatible(e, a),
+        (CheckedType::Struct(e), CheckedType::Struct(a)) => e == a,
+        (CheckedType::Enum(e), CheckedType::Enum(a)) => e == a,
+        _ => false,
+    }
+}
+
+/// The `Value`-only half of [`types_compatible`]: same `PrimitiveType`, or
+/// the same `Dimension` **and** the same `AffineKind` (`None`/`None`, or
+/// matching `Some(_)`s — never `Absolute` accepted where `Delta` was
+/// produced or vice versa, per RFC-0004 §7's absolute/delta distinction).
+fn value_types_compatible(expected: HirType, actual: HirType) -> bool {
     match (expected, actual) {
         (HirType::Scalar(e), HirType::Scalar(a)) => e == a,
         (
@@ -222,6 +308,19 @@ impl<'a> Checker<'a> {
             Severity::Error => SeverityLetter::Error,
             Severity::Warning => SeverityLetter::Warning,
             Severity::Info => SeverityLetter::Info,
+        }
+    }
+
+    /// Human-readable name for a `CheckedType` in a diagnostic message —
+    /// a `Value`'s own `Display` for scalars/dimensions, or the
+    /// declaring struct/enum's own source name (looked up in
+    /// `self.bindings`, its own symbol table) for a nominal type.
+    fn describe(&self, ty: CheckedType) -> String {
+        match ty {
+            CheckedType::Value(t) => t.to_string(),
+            CheckedType::Struct(id) | CheckedType::Enum(id) => {
+                self.bindings[id.index()].name.clone()
+            }
         }
     }
 
@@ -273,32 +372,27 @@ impl<'a> Checker<'a> {
 
     // --- Type-name resolution ---
 
-    /// Resolves a syntactic `HirTypeRef` to a `HirType`, when it names a
-    /// primitive (`Int`, `Bool`, ...) or dimension (`Length`, ...).
+    /// Resolves a syntactic `HirTypeRef` to a `CheckedType`: a primitive
+    /// (`Int`, `Bool`, ...) or dimension (`Length`, ...) resolves to
+    /// `CheckedType::Value`; a name registered by `register_type_names`
+    /// resolves to `CheckedType::Struct`/`::Enum`; a name matching
+    /// **no** declaration at all (a genuine typo, e.g. `Frobnicator`) is
+    /// diagnosed as `UNKNOWN_TYPE_NAME`.
+    ///
     /// `HirTypeRef::Generic` (`Vector2<Length>`, ...) is never resolved —
     /// no generic/collection type system exists yet anywhere in this
     /// compiler (`cad_units`/`cad_types` cover only primitives and named
-    /// dimensions), so guessing one here would be exactly the speculative
-    /// invention `AGENTS.md` warns against; this returns `None` silently
-    /// (no diagnostic — a `Generic` reference is not a "wrong" name, just
-    /// not yet a typeable one).
-    ///
-    /// A `Named` reference that resolves to neither a primitive nor a
-    /// dimension is checked against `self.bindings` for an existing
-    /// `Struct`/`Enum` declaration: if one exists, this returns `None`
-    /// silently too (deliberately deferred to `AICAD-053`, which extends
-    /// this exact branch — see its own module-doc-comment note once that
-    /// task lands). Only a name matching **no** declaration at all (a
-    /// genuine typo, e.g. `Lenght`) is diagnosed as `UNKNOWN_TYPE_NAME` —
-    /// this distinction is what lets a struct/enum-typed parameter type-
-    /// check cleanly under `AICAD-052` alone without a false "unknown
-    /// type" diagnostic that `AICAD-053` would otherwise have to retract.
-    fn resolve_type_ref(&mut self, ty: &HirTypeRef) -> Option<HirType> {
+    /// dimensions, and struct/enum nominal identity has no generic-
+    /// parameter concept either), so guessing one here would be exactly
+    /// the speculative invention `AGENTS.md` warns against; this returns
+    /// `None` silently (no diagnostic — a `Generic` reference is not a
+    /// "wrong" name, just not yet a typeable one).
+    fn resolve_type_ref(&mut self, ty: &HirTypeRef) -> Option<CheckedType> {
         match ty {
             HirTypeRef::Generic { .. } => None,
             HirTypeRef::Named { name, span } => {
                 if let Some(prim) = PrimitiveType::from_name(name) {
-                    return Some(HirType::Scalar(prim));
+                    return Some(CheckedType::Value(HirType::Scalar(prim)));
                 }
                 if let Some(dim) = Dimension::from_name(name) {
                     // A bare type reference (unlike a literal) has no
@@ -312,12 +406,16 @@ impl<'a> Checker<'a> {
                     } else {
                         None
                     };
-                    return Some(HirType::dimensional(dim, affine));
+                    return Some(CheckedType::Value(HirType::dimensional(dim, affine)));
                 }
-                if self.bindings.iter().any(|b| {
-                    b.name == *name && matches!(b.kind, BindingKind::Struct | BindingKind::Enum)
-                }) {
-                    return None;
+                if let Some(&id) = self.type_names.get(name) {
+                    return Some(match &self.bindings[id.index()].kind {
+                        BindingKind::Struct => CheckedType::Struct(id),
+                        BindingKind::Enum => CheckedType::Enum(id),
+                        _ => unreachable!(
+                            "type_names only ever maps a name to the BindingId of the Struct/Enum item that declared it"
+                        ),
+                    });
                 }
                 self.diagnostics.push(self.diag(
                     420,
@@ -330,7 +428,65 @@ impl<'a> Checker<'a> {
         }
     }
 
-    // --- Pass 1: signatures ---
+    // --- Pass 0: type names + enum variant identity (AICAD-053) ---
+
+    fn register_type_names(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Struct { binding, name, .. } => {
+                    self.type_names.insert(name.clone(), *binding);
+                }
+                HirItem::Enum {
+                    binding,
+                    name,
+                    variants,
+                    ..
+                } => {
+                    self.type_names.insert(name.clone(), *binding);
+                    // A variant used as a bare value (`let m = NEMA17;`,
+                    // or as a match scrutinee) needs no further
+                    // resolution — `HirExpr::Ident` always looks its type
+                    // up through this same table, like every other
+                    // binding.
+                    for variant in variants {
+                        self.binding_types[variant.binding.index()] =
+                            Some(CheckedType::Enum(*binding));
+                    }
+                }
+                HirItem::Part { items, .. } => self.register_type_names(items),
+                HirItem::Let { .. }
+                | HirItem::Const { .. }
+                | HirItem::Param { .. }
+                | HirItem::Fn { .. }
+                | HirItem::Import { .. } => {}
+            }
+        }
+    }
+
+    // --- Pass 0.5: struct field types (AICAD-053) ---
+
+    fn collect_struct_fields(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Struct {
+                    binding, fields, ..
+                } => {
+                    let field_infos: Vec<FieldInfo> = fields
+                        .iter()
+                        .map(|f| FieldInfo {
+                            name: f.name.clone(),
+                            ty: self.resolve_type_ref(&f.ty),
+                        })
+                        .collect();
+                    self.struct_fields.insert(*binding, field_infos);
+                }
+                HirItem::Part { items, .. } => self.collect_struct_fields(items),
+                _ => {}
+            }
+        }
+    }
+
+    // --- Pass 1: function/param signatures ---
 
     fn collect_signatures(&mut self, items: &[HirItem]) {
         for item in items {
@@ -440,8 +596,10 @@ impl<'a> Checker<'a> {
                 self.check_block(body, None);
                 self.current_fn_return = previous_return;
             }
-            // Struct/enum field/variant typing is AICAD-053's job — see
-            // module doc comment.
+            // Fields/variants were already resolved in the type-name/
+            // struct-field passes above — nothing left to check here
+            // (struct fields and enum variants carry no value expressions
+            // of their own to type-check).
             HirItem::Struct { .. } | HirItem::Enum { .. } => {}
             HirItem::Part { items, .. } => self.check_items(items),
             HirItem::Import { .. } => {}
@@ -450,20 +608,20 @@ impl<'a> Checker<'a> {
 
     /// Checks `expr` against an authoritative `expected` type (a
     /// declared annotation, a parameter's own type, a function's return
-    /// type, ...), diagnosing a mismatch under `code`/`title` when both
-    /// resolve and disagree. Returns the authoritative type going
-    /// forward: `expected` when given — even after a reported mismatch,
-    /// recovering with the *declared* type avoids the disagreement
-    /// cascading into every later use of this binding — otherwise
-    /// whatever `expr` itself inferred to.
+    /// type, a struct field's own type, ...), diagnosing a mismatch under
+    /// `code`/`title` when both resolve and disagree. Returns the
+    /// authoritative type going forward: `expected` when given — even
+    /// after a reported mismatch, recovering with the *declared* type
+    /// avoids the disagreement cascading into every later use of this
+    /// binding — otherwise whatever `expr` itself inferred to.
     fn check_expected(
         &mut self,
         expr: &HirExpr,
-        expected: Option<HirType>,
+        expected: Option<CheckedType>,
         span: Span,
         code: u16,
         title: &str,
-    ) -> Option<HirType> {
+    ) -> Option<CheckedType> {
         let actual = self.check_expr(expr, expected);
         if let (Some(e), Some(a)) = (expected, actual)
             && !types_compatible(e, a)
@@ -471,7 +629,11 @@ impl<'a> Checker<'a> {
             self.diagnostics.push(self.diag(
                 code,
                 title,
-                format!("expected type {e}, found {a}"),
+                format!(
+                    "expected type {}, found {}",
+                    self.describe(e),
+                    self.describe(a)
+                ),
                 span,
             ));
         }
@@ -483,8 +645,8 @@ impl<'a> Checker<'a> {
     fn check_block(
         &mut self,
         block: &HirBlock,
-        expected_trailing: Option<HirType>,
-    ) -> Option<HirType> {
+        expected_trailing: Option<CheckedType>,
+    ) -> Option<CheckedType> {
         for stmt in &block.stmts {
             self.check_stmt(stmt);
         }
@@ -525,7 +687,7 @@ impl<'a> Checker<'a> {
                 else_branch,
                 ..
             } => {
-                let c = self.check_expr(cond, Some(bool_ty()));
+                let c = self.check_expr(cond, Some(bool_checked()));
                 self.check_bool_condition(c, cond.span());
                 self.check_block(then_branch, None);
                 if let Some(else_stmt) = else_branch {
@@ -535,14 +697,15 @@ impl<'a> Checker<'a> {
             HirStmt::For { iterable, body, .. } => {
                 // No collection/iterator type system exists yet
                 // (`cad_units`/`cad_types` cover only primitives/
-                // dimensions) — the loop variable's own binding type
-                // stays unresolved; `iterable`'s subexpressions are still
+                // dimensions, and structs/enums have no element-type
+                // concept) — the loop variable's own binding type stays
+                // unresolved; `iterable`'s subexpressions are still
                 // checked for their own independent diagnostics.
                 self.check_expr(iterable, None);
                 self.check_block(body, None);
             }
             HirStmt::While { cond, body, .. } => {
-                let c = self.check_expr(cond, Some(bool_ty()));
+                let c = self.check_expr(cond, Some(bool_checked()));
                 self.check_bool_condition(c, cond.span());
                 self.check_block(body, None);
             }
@@ -564,7 +727,10 @@ impl<'a> Checker<'a> {
                         self.diagnostics.push(self.diag(
                             419,
                             "RETURN_TYPE_MISMATCH",
-                            format!("function must return a value of type {rt}, but this 'return;' supplies none"),
+                            format!(
+                                "function must return a value of type {}, but this 'return;' supplies none",
+                                self.describe(rt)
+                            ),
                             *span,
                         ));
                     }
@@ -583,14 +749,14 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_bool_condition(&mut self, ty: Option<HirType>, span: Span) {
+    fn check_bool_condition(&mut self, ty: Option<CheckedType>, span: Span) {
         if let Some(t) = ty
-            && t != bool_ty()
+            && t != bool_checked()
         {
             self.diagnostics.push(self.diag(
                 412,
                 "CONDITION_NOT_BOOL",
-                format!("expected a Bool condition, found {t}"),
+                format!("expected a Bool condition, found {}", self.describe(t)),
                 span,
             ));
         }
@@ -598,7 +764,7 @@ impl<'a> Checker<'a> {
 
     // --- Expressions ---
 
-    fn check_expr(&mut self, expr: &HirExpr, expected: Option<HirType>) -> Option<HirType> {
+    fn check_expr(&mut self, expr: &HirExpr, expected: Option<CheckedType>) -> Option<CheckedType> {
         match expr {
             HirExpr::Literal { value, span, .. } => self.check_literal(value, expected, *span),
             HirExpr::Ident { binding, .. } => binding.and_then(|b| self.binding_types[b.index()]),
@@ -607,12 +773,13 @@ impl<'a> Checker<'a> {
                 self.check_binary(*op, lhs, rhs, expected, *span)
             }
             HirExpr::Call { callee, args, span } => self.check_call(callee, args, *span),
-            // Field access against a struct's own field list is
-            // AICAD-053's job — see module doc comment. `receiver` is
-            // still walked for its own independent diagnostics.
-            HirExpr::Field { receiver, .. } => {
-                self.check_expr(receiver, None);
-                None
+            HirExpr::Field {
+                receiver,
+                field,
+                span,
+            } => {
+                let receiver_ty = self.check_expr(receiver, None);
+                self.check_field_access(receiver_ty, field, *span)
             }
             HirExpr::Block(block) => self.check_block(block, expected),
             HirExpr::If {
@@ -621,7 +788,7 @@ impl<'a> Checker<'a> {
                 else_branch,
                 span,
             } => {
-                let c = self.check_expr(cond, Some(bool_ty()));
+                let c = self.check_expr(cond, Some(bool_checked()));
                 self.check_bool_condition(c, cond.span());
                 let then_ty = self.check_block(then_branch, expected);
                 let else_ty = self.check_expr(else_branch, expected.or(then_ty));
@@ -638,20 +805,22 @@ impl<'a> Checker<'a> {
     fn check_literal(
         &mut self,
         lit: &HirLiteral,
-        expected: Option<HirType>,
+        expected: Option<CheckedType>,
         span: Span,
-    ) -> Option<HirType> {
+    ) -> Option<CheckedType> {
         match lit {
-            HirLiteral::Bool(_) => Some(HirType::Scalar(PrimitiveType::Bool)),
+            HirLiteral::Bool(_) => Some(CheckedType::Value(HirType::Scalar(PrimitiveType::Bool))),
             HirLiteral::Str(_) | HirLiteral::RawStr(_) => {
-                Some(HirType::Scalar(PrimitiveType::String))
+                Some(CheckedType::Value(HirType::Scalar(PrimitiveType::String)))
             }
-            HirLiteral::Number { text, unit: None } => {
-                Some(default_numeric_literal_type(text, expected))
-            }
+            HirLiteral::Number { text, unit: None } => Some(CheckedType::Value(
+                default_numeric_literal_type(text, as_value(expected)),
+            )),
             HirLiteral::Number {
                 unit: Some(symbol), ..
-            } => self.resolve_unit_literal(symbol, expected, span),
+            } => self
+                .resolve_unit_literal(symbol, as_value(expected), span)
+                .map(CheckedType::Value),
         }
     }
 
@@ -664,7 +833,10 @@ impl<'a> Checker<'a> {
         let mut candidates = cad_units::lookup_any(symbol);
         let first = candidates.next();
         let second = candidates.next();
-        let expected_dim = expected_dimension(expected);
+        let expected_dim = match expected {
+            Some(HirType::Dimensional { dimension, .. }) => Some(dimension),
+            _ => None,
+        };
         match (first, second) {
             (None, _) => {
                 if let Some(dim) = expected_dim
@@ -685,9 +857,10 @@ impl<'a> Checker<'a> {
                 // Ambiguous (e.g. "Pa" matches both Pressure and Stress) —
                 // resolve only when an expected dimension is explicitly
                 // supplied by surrounding context (an annotation, a
-                // parameter/return type, ...) and that symbol is actually
-                // registered under it; never guess otherwise (AGENTS.md
-                // "ambiguity is an error, never an arbitrary selection").
+                // parameter/return/field type, ...) and that symbol is
+                // actually registered under it; never guess otherwise
+                // (AGENTS.md "ambiguity is an error, never an arbitrary
+                // selection").
                 if let Some(dim) = expected_dim
                     && cad_units::lookup(symbol, dim).is_some()
                 {
@@ -706,12 +879,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_unary(&mut self, op: UnaryOp, operand: &HirExpr, span: Span) -> Option<HirType> {
+    fn check_unary(&mut self, op: UnaryOp, operand: &HirExpr, span: Span) -> Option<CheckedType> {
         match op {
             UnaryOp::Neg => {
-                let operand_ty = self.check_expr(operand, None)?;
+                let operand_ty = as_value(self.check_expr(operand, None))?;
                 match check_unary_neg(operand_ty) {
-                    Ok(result) => Some(result),
+                    Ok(result) => Some(CheckedType::Value(result)),
                     Err(err) => {
                         self.push_unit_error(err, span);
                         None
@@ -719,9 +892,9 @@ impl<'a> Checker<'a> {
                 }
             }
             UnaryOp::Not => {
-                let operand_ty = self.check_expr(operand, Some(bool_ty()));
+                let operand_ty = self.check_expr(operand, Some(bool_checked()));
                 self.check_bool_condition(operand_ty, operand.span());
-                Some(bool_ty())
+                Some(bool_checked())
             }
         }
     }
@@ -731,16 +904,16 @@ impl<'a> Checker<'a> {
         op: BinaryOp,
         lhs: &HirExpr,
         rhs: &HirExpr,
-        expected: Option<HirType>,
+        expected: Option<CheckedType>,
         span: Span,
-    ) -> Option<HirType> {
+    ) -> Option<CheckedType> {
         match op {
             BinaryOp::And | BinaryOp::Or => {
-                let l = self.check_expr(lhs, Some(bool_ty()));
-                let r = self.check_expr(rhs, Some(bool_ty()));
+                let l = self.check_expr(lhs, Some(bool_checked()));
+                let r = self.check_expr(rhs, Some(bool_checked()));
                 self.check_bool_condition(l, lhs.span());
                 self.check_bool_condition(r, rhs.span());
-                Some(bool_ty())
+                Some(bool_checked())
             }
             BinaryOp::Eq
             | BinaryOp::NotEq
@@ -751,12 +924,37 @@ impl<'a> Checker<'a> {
             | BinaryOp::GtEq => {
                 let l = self.check_expr(lhs, None);
                 let r = self.check_expr(rhs, None);
-                if let (Some(l), Some(r)) = (l, r)
-                    && let Err(err) = check_comparison(op.as_str(), l, r)
-                {
-                    self.push_unit_error(err, span);
+                if let (Some(lt), Some(rt)) = (l, r) {
+                    match (lt, rt) {
+                        (CheckedType::Value(lv), CheckedType::Value(rv)) => {
+                            if let Err(err) = check_comparison(op.as_str(), lv, rv) {
+                                self.push_unit_error(err, span);
+                            }
+                        }
+                        // A struct/enum operand on either side: DL-3's
+                        // same-dimension rule does not apply (there is no
+                        // dimension), so this checker's own nominal
+                        // `types_compatible` decides instead — this is
+                        // what makes `motor == NEMA17`-shaped enum-
+                        // variant comparisons (the paper example's own
+                        // evidenced pattern) type-check (`AICAD-053`).
+                        _ => {
+                            if !types_compatible(lt, rt) {
+                                self.diagnostics.push(self.diag(
+                                    437,
+                                    "COMPARISON_TYPE_MISMATCH",
+                                    format!(
+                                        "cannot compare {} and {}",
+                                        self.describe(lt),
+                                        self.describe(rt)
+                                    ),
+                                    span,
+                                ));
+                            }
+                        }
+                    }
                 }
-                Some(bool_ty())
+                Some(bool_checked())
             }
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
                 let arith_op = to_arith_op(op);
@@ -769,17 +967,18 @@ impl<'a> Checker<'a> {
                     // dimension than the result, so only the *result* is
                     // hinted (via `expected_dim`, below).
                     ArithmeticOp::Add | ArithmeticOp::Sub => (
-                        self.check_expr(lhs, expected),
-                        self.check_expr(rhs, expected),
+                        as_value(self.check_expr(lhs, expected)),
+                        as_value(self.check_expr(rhs, expected)),
                     ),
-                    ArithmeticOp::Mul | ArithmeticOp::Div => {
-                        (self.check_expr(lhs, None), self.check_expr(rhs, None))
-                    }
+                    ArithmeticOp::Mul | ArithmeticOp::Div => (
+                        as_value(self.check_expr(lhs, None)),
+                        as_value(self.check_expr(rhs, None)),
+                    ),
                 };
                 match (l, r) {
                     (Some(l), Some(r)) => {
                         match check_binary_arithmetic(arith_op, l, r, expected_dim) {
-                            Ok(result) => Some(result),
+                            Ok(result) => Some(CheckedType::Value(result)),
                             Err(err) => {
                                 self.push_unit_error(err, span);
                                 None
@@ -792,7 +991,12 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_call(&mut self, callee: &HirCallee, args: &[HirArg], span: Span) -> Option<HirType> {
+    fn check_call(
+        &mut self,
+        callee: &HirCallee,
+        args: &[HirArg],
+        span: Span,
+    ) -> Option<CheckedType> {
         match callee {
             // No method/trait/geometry-API declaration syntax exists
             // anywhere in the language yet (no `impl` blocks, no
@@ -814,27 +1018,40 @@ impl<'a> Checker<'a> {
                     }
                     return None;
                 };
-                if self.bindings[binding.index()].kind != BindingKind::Fn {
-                    // A callee resolving to a non-`Fn` binding (a struct
-                    // name used as a constructor call — AICAD-053 — or
-                    // any other kind) has no signature this task checks
-                    // against; arguments are still walked.
-                    for arg in args {
-                        self.check_arg_expr(arg);
+                match &self.bindings[binding.index()].kind {
+                    BindingKind::Fn => {
+                        let Some(sig) = self.fn_signatures.get(binding).cloned() else {
+                            // Defensive: every `Fn`-kind binding always
+                            // gets a signature in `collect_signatures`.
+                            // Never panic on an unexpected shape
+                            // (AGENTS.md).
+                            for arg in args {
+                                self.check_arg_expr(arg);
+                            }
+                            return None;
+                        };
+                        self.check_call_args(name, args, &sig, span);
+                        sig.return_ty
                     }
-                    return None;
+                    // Struct-literal construction via ordinary call
+                    // syntax (DL-2 has no separate constructor syntax) —
+                    // `AICAD-053`.
+                    BindingKind::Struct => {
+                        self.check_struct_construction(*binding, name, args, span)
+                    }
+                    // Any other callee kind (a plain `let`/`var`/`const`,
+                    // an enum/enum-variant, ...) has no signature this
+                    // checker knows how to verify a call against —
+                    // arguments are still walked, but no "not callable"
+                    // diagnostic is raised (a documented known limitation,
+                    // not evidenced scope for either task).
+                    _ => {
+                        for arg in args {
+                            self.check_arg_expr(arg);
+                        }
+                        None
+                    }
                 }
-                let Some(sig) = self.fn_signatures.get(binding).cloned() else {
-                    // Defensive: every `Fn`-kind binding always gets a
-                    // signature in `collect_signatures`. Never panic on
-                    // an unexpected shape (AGENTS.md).
-                    for arg in args {
-                        self.check_arg_expr(arg);
-                    }
-                    return None;
-                };
-                self.check_call_args(name, args, &sig, span);
-                sig.return_ty
             }
         }
     }
@@ -942,14 +1159,166 @@ impl<'a> Checker<'a> {
         }
     }
 
+    // --- Structs (AICAD-053) ---
+
+    /// Type-checks a struct-literal construction (`Point(x = 1mm, y =
+    /// 2mm)`), the functional-call-syntax shape DL-2's mutation-semantics
+    /// ruling implies (no separate constructor syntax exists — the
+    /// grammar has none, and inventing one would be exactly the
+    /// speculative syntax `AGENTS.md` warns against). Mirrors
+    /// `check_call_args`'s positional/named matching almost exactly,
+    /// against the struct's own field list instead of a function's
+    /// parameter list — struct fields, unlike parameters, never carry a
+    /// default value (`crate::hir::HirField` has no `default` slot at
+    /// all), so every field must be supplied exactly once.
+    fn check_struct_construction(
+        &mut self,
+        struct_binding: BindingId,
+        struct_name: &str,
+        args: &[HirArg],
+        span: Span,
+    ) -> Option<CheckedType> {
+        let fields = self
+            .struct_fields
+            .get(&struct_binding)
+            .cloned()
+            .unwrap_or_default();
+        let mut filled = vec![false; fields.len()];
+        let mut next_positional = 0usize;
+        for arg in args {
+            match arg {
+                HirArg::Positional(expr) => {
+                    if next_positional < fields.len() {
+                        let idx = next_positional;
+                        next_positional += 1;
+                        filled[idx] = true;
+                        let expected = fields[idx].ty;
+                        self.check_expected(
+                            expr,
+                            expected,
+                            expr.span(),
+                            433,
+                            "STRUCT_FIELD_TYPE_MISMATCH",
+                        );
+                    } else {
+                        self.diagnostics.push(self.diag(
+                            435,
+                            "TOO_MANY_STRUCT_FIELDS",
+                            format!(
+                                "'{struct_name}' has {} field(s), but more were supplied",
+                                fields.len()
+                            ),
+                            span,
+                        ));
+                        self.check_expr(expr, None);
+                    }
+                }
+                HirArg::Named {
+                    name,
+                    name_span,
+                    value,
+                } => match fields.iter().position(|f| f.name == *name) {
+                    Some(idx) => {
+                        if filled[idx] {
+                            self.diagnostics.push(self.diag(
+                                432,
+                                "DUPLICATE_STRUCT_FIELD",
+                                format!("field '{name}' is already supplied"),
+                                *name_span,
+                            ));
+                        }
+                        filled[idx] = true;
+                        let expected = fields[idx].ty;
+                        self.check_expected(
+                            value,
+                            expected,
+                            value.span(),
+                            433,
+                            "STRUCT_FIELD_TYPE_MISMATCH",
+                        );
+                    }
+                    None => {
+                        self.diagnostics.push(self.diag(
+                            431,
+                            "UNKNOWN_STRUCT_FIELD",
+                            format!("'{struct_name}' has no field named '{name}'"),
+                            *name_span,
+                        ));
+                        self.check_expr(value, None);
+                    }
+                },
+            }
+        }
+        for (idx, was_filled) in filled.iter().enumerate() {
+            if !was_filled {
+                self.diagnostics.push(self.diag(
+                    430,
+                    "MISSING_STRUCT_FIELD",
+                    format!(
+                        "missing field '{}' in construction of '{struct_name}'",
+                        fields[idx].name
+                    ),
+                    span,
+                ));
+            }
+        }
+        Some(CheckedType::Struct(struct_binding))
+    }
+
+    /// Type-checks `receiver.field` (`AICAD-053`) — `receiver_ty` is
+    /// already checked by the caller (`Checker::check_expr`'s `Field`
+    /// arm). A struct receiver resolves to that field's own declared
+    /// type (`UNKNOWN_STRUCT_FIELD` if no such field exists); any other
+    /// *resolved* receiver type (a scalar/dimensional value, or an enum
+    /// value — neither has fields) is `FIELD_ACCESS_ON_NON_STRUCT`; an
+    /// unresolved receiver (`None`) stays silently unresolved, matching
+    /// this module's general error-recovery convention.
+    fn check_field_access(
+        &mut self,
+        receiver_ty: Option<CheckedType>,
+        field: &str,
+        span: Span,
+    ) -> Option<CheckedType> {
+        match receiver_ty {
+            Some(CheckedType::Struct(id)) => {
+                let fields = self.struct_fields.get(&id).cloned().unwrap_or_default();
+                match fields.iter().find(|f| f.name == field) {
+                    Some(f) => f.ty,
+                    None => {
+                        self.diagnostics.push(self.diag(
+                            431,
+                            "UNKNOWN_STRUCT_FIELD",
+                            format!("struct has no field named '{field}'"),
+                            span,
+                        ));
+                        None
+                    }
+                }
+            }
+            Some(other) => {
+                self.diagnostics.push(self.diag(
+                    436,
+                    "FIELD_ACCESS_ON_NON_STRUCT",
+                    format!(
+                        "cannot access field '{field}' on a value of type {}",
+                        self.describe(other)
+                    ),
+                    span,
+                ));
+                None
+            }
+            None => None,
+        }
+    }
+
     // --- match (shared by statement- and expression-position match) ---
 
     fn check_match(
         &mut self,
         scrutinee: &HirExpr,
         arms: &[HirMatchArm],
-        expected: Option<HirType>,
-    ) -> Option<HirType> {
+        expected: Option<CheckedType>,
+    ) -> Option<CheckedType> {
         let scrutinee_ty = self.check_expr(scrutinee, None);
         let mut result = None;
         for arm in arms {
@@ -964,18 +1333,18 @@ impl<'a> Checker<'a> {
         &mut self,
         scrutinee: &HirExpr,
         arms: &[HirMatchArm],
-        expected: Option<HirType>,
+        expected: Option<CheckedType>,
         _span: Span,
-    ) -> Option<HirType> {
+    ) -> Option<CheckedType> {
         self.check_match(scrutinee, arms, expected)
     }
 
     fn unify_value_type(
         &mut self,
-        acc: Option<HirType>,
-        new: Option<HirType>,
+        acc: Option<CheckedType>,
+        new: Option<CheckedType>,
         span: Span,
-    ) -> Option<HirType> {
+    ) -> Option<CheckedType> {
         match (acc, new) {
             (Some(a), Some(b)) => {
                 if types_compatible(a, b) {
@@ -984,7 +1353,11 @@ impl<'a> Checker<'a> {
                     self.diagnostics.push(self.diag(
                         424,
                         "BRANCH_TYPE_MISMATCH",
-                        format!("branches produce incompatible types: {a} and {b}"),
+                        format!(
+                            "branches produce incompatible types: {} and {}",
+                            self.describe(a),
+                            self.describe(b)
+                        ),
                         span,
                     ));
                     Some(a)
@@ -997,12 +1370,7 @@ impl<'a> Checker<'a> {
     }
 
     /// Binds a match-arm pattern against the scrutinee's checked type.
-    /// `HirPattern::Variant` (matching a known enum variant) is
-    /// AICAD-053's job (needs the variant's enclosing enum resolved
-    /// against the scrutinee's own type, which this task does not build
-    /// the machinery for — see module doc comment); it is walked here
-    /// only far enough to not panic.
-    fn bind_pattern(&mut self, pattern: &HirPattern, scrutinee_ty: Option<HirType>) {
+    fn bind_pattern(&mut self, pattern: &HirPattern, scrutinee_ty: Option<CheckedType>) {
         match pattern {
             HirPattern::Wildcard { .. } => {}
             HirPattern::Literal { value, span } => {
@@ -1013,7 +1381,11 @@ impl<'a> Checker<'a> {
                     self.diagnostics.push(self.diag(
                         425,
                         "PATTERN_TYPE_MISMATCH",
-                        format!("pattern has type {l}, but the matched value has type {s}"),
+                        format!(
+                            "pattern has type {}, but the matched value has type {}",
+                            self.describe(l),
+                            self.describe(s)
+                        ),
                         *span,
                     ));
                 }
@@ -1021,12 +1393,44 @@ impl<'a> Checker<'a> {
             HirPattern::Binding { binding, .. } => {
                 self.binding_types[binding.index()] = scrutinee_ty;
             }
-            HirPattern::Variant { .. } => {}
+            // Matches a known enum variant (`AICAD-053`) — checked
+            // against the *scrutinee's own* type, not merely "some enum":
+            // `variant`'s `BindingKind::EnumVariant::enum_name` names the
+            // enum it actually belongs to (resolved through
+            // `self.type_names`, the same table `resolve_type_ref` uses),
+            // and that must match the scrutinee's enum identity exactly.
+            HirPattern::Variant { variant, span, .. } => {
+                let BindingKind::EnumVariant { enum_name } = &self.bindings[variant.index()].kind
+                else {
+                    // Structurally unreachable: `crate::lower` only ever
+                    // produces `HirPattern::Variant` for a binding it
+                    // resolved to an `EnumVariant`-kind symbol. Never
+                    // panic on an unexpected shape regardless (AGENTS.md).
+                    return;
+                };
+                let owning_enum = self.type_names.get(enum_name).copied();
+                match scrutinee_ty {
+                    Some(CheckedType::Enum(scrutinee_enum))
+                        if Some(scrutinee_enum) == owning_enum => {}
+                    Some(actual) => {
+                        self.diagnostics.push(self.diag(
+                            434,
+                            "VARIANT_ENUM_MISMATCH",
+                            format!(
+                                "this pattern matches a variant of a different enum than the matched value's type ({})",
+                                self.describe(actual)
+                            ),
+                            *span,
+                        ));
+                    }
+                    None => {}
+                }
+            }
         }
     }
 }
 
-/// The one minimal Int/vs/Float literal-type-defaulting rule this task
+/// The one minimal Int/vs/Float literal-type-defaulting rule `AICAD-052`
 /// adds (`crate::lower`'s own "Scope boundary" explicitly assigns this
 /// exact question here): a numeral's raw text (`"5"`, `"5.5"`,
 /// `"1.5e-3"` — never anything else, per `crates/cad-lexer::Lexer::
@@ -1107,6 +1511,10 @@ mod tests {
         *binding
     }
 
+    fn value(ty: HirType) -> CheckedType {
+        CheckedType::Value(ty)
+    }
+
     // --- Numeric-literal-type defaulting ---
 
     #[test]
@@ -1115,7 +1523,7 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::Scalar(PrimitiveType::Int))
+            Some(value(HirType::Scalar(PrimitiveType::Int)))
         );
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
@@ -1126,7 +1534,7 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::Scalar(PrimitiveType::Float))
+            Some(value(HirType::Scalar(PrimitiveType::Float)))
         );
     }
 
@@ -1136,7 +1544,7 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::Scalar(PrimitiveType::Float))
+            Some(value(HirType::Scalar(PrimitiveType::Float)))
         );
     }
 
@@ -1146,7 +1554,7 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::Scalar(PrimitiveType::Float))
+            Some(value(HirType::Scalar(PrimitiveType::Float)))
         );
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
@@ -1168,7 +1576,7 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::dimensional(Stress, None))
+            Some(value(HirType::dimensional(Stress, None)))
         );
     }
 
@@ -1192,7 +1600,7 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::dimensional(Length, None))
+            Some(value(HirType::dimensional(Length, None)))
         );
     }
 
@@ -1236,10 +1644,10 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::dimensional(
+            Some(value(HirType::dimensional(
                 cad_types::Dimension::Temperature,
                 Some(AffineKind::Delta)
-            ))
+            )))
         );
     }
 
@@ -1392,7 +1800,7 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(HirType::dimensional(Length, None))
+            Some(value(HirType::dimensional(Length, None)))
         );
     }
 
@@ -1416,7 +1824,7 @@ mod tests {
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E423"]);
     }
 
-    // --- Match: bindings and literal patterns (variant/enum typing is AICAD-053) ---
+    // --- Match: bindings and literal patterns ---
 
     #[test]
     fn match_binding_captures_the_scrutinee_value_type() {
@@ -1426,10 +1834,10 @@ mod tests {
         let HirItem::Fn { body, .. } = &lowered.program.items[0] else {
             panic!("expected Fn item");
         };
-        let HirStmt::Let { value, .. } = &body.stmts[0] else {
+        let HirStmt::Let { value: expr, .. } = &body.stmts[0] else {
             panic!("expected Let stmt");
         };
-        let HirExpr::Match { arms, .. } = value else {
+        let HirExpr::Match { arms, .. } = expr else {
             panic!("expected Match expr");
         };
         let HirPattern::Binding { binding, .. } = &arms[0].pattern else {
@@ -1437,7 +1845,7 @@ mod tests {
         };
         assert_eq!(
             checked.binding_types[binding.index()],
-            Some(HirType::dimensional(Length, None))
+            Some(value(HirType::dimensional(Length, None)))
         );
     }
 
@@ -1477,30 +1885,199 @@ mod tests {
     }
 
     #[test]
-    fn field_access_is_left_unresolved_by_aicad_052() {
-        let (_lowered, checked) = check("struct P { x: Int } fn f(p: P) -> Int { return p.x; }");
-        // AICAD-053 extends this; AICAD-052 must not panic or misreport.
-        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-    }
-
-    #[test]
-    fn struct_typed_parameter_does_not_trigger_unknown_type_name() {
-        let (_lowered, checked) = check("struct P { x: Int } fn f(p: P) -> Int { return 1; }");
-        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
-    }
-
-    #[test]
     fn genuinely_unknown_type_name_is_reported() {
         let (_lowered, checked) = check("fn f(p: Frobnicator) -> Int { return 1; }");
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E420"]);
     }
 
     #[test]
-    fn calling_a_struct_name_does_not_crash_the_checker() {
-        // Struct-literal-construction-via-call-syntax typing is
-        // AICAD-053's job; AICAD-052 must tolerate it without panicking.
-        let (_lowered, checked) =
-            check("struct P { x: Int } fn f() -> Int { P(x = 1); return 1; }");
+    fn calling_a_non_fn_non_struct_binding_does_not_crash_the_checker() {
+        let (_lowered, checked) = check("let x = 1; fn f() -> Int { x(); return 1; }");
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    // --- Struct field/construction typing (AICAD-053) ---
+
+    #[test]
+    fn struct_typed_parameter_resolves_to_struct_type() {
+        let (lowered, checked) = check("struct P { x: Int } fn f(p: P) -> Int { return 1; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Struct {
+            binding: struct_id, ..
+        } = &lowered.program.items[0]
+        else {
+            panic!("expected Struct item");
+        };
+        let HirItem::Fn { params, .. } = &lowered.program.items[1] else {
+            panic!("expected Fn item");
+        };
+        assert_eq!(
+            checked.binding_types[params[0].binding.index()],
+            Some(CheckedType::Struct(*struct_id))
+        );
+    }
+
+    #[test]
+    fn field_access_resolves_the_fields_own_type() {
+        let (_lowered, checked) =
+            check("struct P { x: Length } fn f(p: P) -> Length { return p.x; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn field_access_on_unknown_field_is_reported() {
+        let (_lowered, checked) =
+            check("struct P { x: Length } fn f(p: P) -> Length { return p.y; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E431"]);
+    }
+
+    #[test]
+    fn field_access_on_a_non_struct_receiver_is_reported() {
+        let (_lowered, checked) = check("fn f(x: Length) -> Int { return x.y; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E436"]);
+    }
+
+    #[test]
+    fn nested_struct_field_access_resolves_through_two_levels() {
+        let (_lowered, checked) = check(
+            "struct Inner { v: Length } struct Outer { i: Inner } fn f(o: Outer) -> Length { return o.i.v; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn struct_construction_with_named_args_type_checks() {
+        let (_lowered, checked) = check(
+            "struct P { x: Int, y: Int } fn f() -> Int { let p = P(x = 1, y = 2); return p.x; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn struct_construction_with_positional_args_type_checks() {
+        let (_lowered, checked) =
+            check("struct P { x: Int, y: Int } fn f() -> Int { let p = P(1, 2); return p.x; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn struct_construction_result_has_the_struct_type() {
+        let (lowered, checked) =
+            check("struct P { x: Int } fn f() -> Int { let p = P(x = 1); return p.x; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Struct {
+            binding: struct_id, ..
+        } = &lowered.program.items[0]
+        else {
+            panic!("expected Struct item");
+        };
+        let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
+            panic!("expected Fn item");
+        };
+        let HirStmt::Let { binding, .. } = &body.stmts[0] else {
+            panic!("expected Let stmt");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(CheckedType::Struct(*struct_id))
+        );
+    }
+
+    #[test]
+    fn struct_construction_missing_field_is_reported() {
+        let (_lowered, checked) =
+            check("struct P { x: Int, y: Int } fn f() -> Int { P(x = 1); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E430"]);
+    }
+
+    #[test]
+    fn struct_construction_unknown_field_is_reported() {
+        let (_lowered, checked) =
+            check("struct P { x: Int } fn f() -> Int { P(x = 1, z = 2); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E431"]);
+    }
+
+    #[test]
+    fn struct_construction_duplicate_field_is_reported() {
+        let (_lowered, checked) =
+            check("struct P { x: Int } fn f() -> Int { P(x = 1, x = 2); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E432"]);
+    }
+
+    #[test]
+    fn struct_construction_field_type_mismatch_is_reported() {
+        let (_lowered, checked) =
+            check("struct P { x: Length } fn f() -> Int { P(x = true); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E433"]);
+    }
+
+    #[test]
+    fn struct_construction_too_many_fields_is_reported() {
+        let (_lowered, checked) = check("struct P { x: Int } fn f() -> Int { P(1, 2); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E435"]);
+    }
+
+    // --- Enum variant construction/matching typing (AICAD-053) ---
+
+    #[test]
+    fn enum_variant_used_as_a_value_has_the_enum_type() {
+        let (lowered, checked) = check("enum MotorSize { NEMA17, NEMA23 } let m = NEMA17;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Enum {
+            binding: enum_id, ..
+        } = &lowered.program.items[0]
+        else {
+            panic!("expected Enum item");
+        };
+        let b = let_binding(&lowered, 1);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(CheckedType::Enum(*enum_id))
+        );
+    }
+
+    #[test]
+    fn enum_variant_equality_comparison_type_checks() {
+        let (_lowered, checked) = check(
+            "enum MotorSize { NEMA17, NEMA23 } fn f(m: MotorSize) -> Bool { return m == NEMA17; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn comparing_variants_of_different_enums_is_reported() {
+        let (_lowered, checked) =
+            check("enum A { X } enum B { Y } fn f() -> Bool { return X == Y; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E437"]);
+    }
+
+    #[test]
+    fn match_on_enum_variant_patterns_type_checks() {
+        let (_lowered, checked) = check(
+            "enum MotorSize { NEMA17, NEMA23 } fn f(m: MotorSize) -> Int { match m { NEMA17 => { return 1; } NEMA23 => { return 2; } } return 0; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn match_variants_of_two_unrelated_enums_each_type_check_on_their_own() {
+        let (_lowered, checked) = check(
+            "enum A { X } enum B { Y } fn f(a: A) -> Int { match a { X => { return 1; } } return 0; } fn g(b: B) -> Int { match b { Y => { return 1; } } return 0; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn match_variant_pattern_against_mismatched_scrutinee_enum_is_reported() {
+        // Two enums sharing one variant *name* — `crate::lower`'s own
+        // documented duplicate-declaration behavior ("the second mint
+        // simply overwrites the first in this pass's own scope map")
+        // means the pattern `Shared` resolves to `B::Shared` (declared
+        // last), while `a`'s declared type is `A` — a genuine cross-enum
+        // mismatch this task's own machinery must catch.
+        let (_lowered, checked) = check(
+            "enum A { Shared } enum B { Shared } fn f(a: A) -> Int { match a { Shared => { return 1; } } return 0; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E434"]);
     }
 }
