@@ -3,15 +3,19 @@
 //! test corpus, plus (starting with the parser tasks, `AICAD-041`
 //! onward) the AICAD abstract syntax tree node types themselves.
 //!
-//! **Scope of this task (`AICAD-039`):** only the span/position model
-//! lives here so far. `cad-lexer`'s tokens (`AICAD-039`/`AICAD-040`) and
-//! the real AST node types (`Expr`, `Stmt`, `Item`, ... — `AICAD-041`
-//! through `AICAD-045`) both need a shared notion of "a range of source
-//! text", so that model is built first and shared, rather than each
-//! consumer inventing its own. Defining the AST node enums themselves
-//! before the parser that produces them exists would risk guessing their
-//! shape wrong (`AGENTS.md` "No speculative future work") — those types
-//! are added when the parser tasks that need them are reached.
+//! **Scope of `AICAD-039`:** only the span/position model (this file)
+//! existed after that task. `AICAD-041` (expression parser and
+//! precedence) added [`Ident`] and the `expr` module. Each node type is
+//! added by the parser task that first needs to produce it, per
+//! `AGENTS.md` "No speculative future work" — see each module's own docs
+//! for exactly which grammar productions it covers and which are left for
+//! a later task in this batch.
+
+mod expr;
+mod ident;
+
+pub use expr::{Arg, BinaryOp, Expr, ExprKind, UnaryOp};
+pub use ident::Ident;
 
 /// A half-open byte-offset range into one source file: `[start, end)`.
 ///

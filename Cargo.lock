@@ -88,6 +88,11 @@ version = "0.0.0"
 [[package]]
 name = "cad-parser"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-lexer",
+]
 
 [[package]]
 name = "cad-provenance"
