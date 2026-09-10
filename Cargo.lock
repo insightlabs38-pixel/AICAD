@@ -129,6 +129,9 @@ version = "0.0.0"
 [[package]]
 name = "cad-units"
 version = "0.0.0"
+dependencies = [
+ "cad-types",
+]
 
 [[package]]
 name = "cad-validation"
