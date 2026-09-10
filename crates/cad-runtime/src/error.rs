@@ -181,10 +181,17 @@ pub enum RuntimeError {
         name: String,
         span: Span,
     },
-    /// A HIR node this task does not execute yet — conditional (`if`/
-    /// `match`) and loop (`for`/`while`/`loop`/`break`/`continue`)
-    /// execution are `AICAD-055`/`AICAD-056`'s own scheduled scope per the
-    /// fixed Stage-2 batch order; struct/enum field access and
+    /// A `match`'s scrutinee matched no arm. `cad_hir::typeck` does not
+    /// verify match exhaustiveness (`project/reports/AICAD-053.md`'s own
+    /// documented limitation), so a type-checked program can still reach
+    /// this at run time — reported cleanly rather than silently producing
+    /// `Value::Unit` or panicking.
+    NonExhaustiveMatch {
+        span: Span,
+    },
+    /// A HIR node this task does not execute yet — loop (`for`/`while`/
+    /// `loop`/`break`/`continue`) execution is `AICAD-056`'s own scheduled
+    /// scope per the fixed Stage-2 batch order; struct field access and
     /// construction have no runtime value representation yet (see
     /// `crate::value`'s module doc comment). Reported as a structured
     /// diagnostic, never a panic, so a program that happens to exercise
@@ -220,6 +227,7 @@ impl RuntimeError {
             RuntimeError::MissingArgument { .. } => "RUNTIME-E115".to_string(),
             RuntimeError::MissingReturn { .. } => "RUNTIME-E116".to_string(),
             RuntimeError::Unsupported { .. } => "RUNTIME-E117".to_string(),
+            RuntimeError::NonExhaustiveMatch { .. } => "RUNTIME-E118".to_string(),
         }
     }
 
@@ -242,7 +250,8 @@ impl RuntimeError {
             | RuntimeError::UnknownNamedArgument { span, .. }
             | RuntimeError::MissingArgument { span, .. }
             | RuntimeError::MissingReturn { span, .. }
-            | RuntimeError::Unsupported { span, .. } => *span,
+            | RuntimeError::Unsupported { span, .. }
+            | RuntimeError::NonExhaustiveMatch { span } => *span,
         }
     }
 
@@ -266,6 +275,7 @@ impl RuntimeError {
             RuntimeError::MissingArgument { .. } => "MISSING_ARGUMENT",
             RuntimeError::MissingReturn { .. } => "MISSING_RETURN",
             RuntimeError::Unsupported { .. } => "UNSUPPORTED_CONSTRUCT",
+            RuntimeError::NonExhaustiveMatch { .. } => "NON_EXHAUSTIVE_MATCH",
         }
     }
 
@@ -320,6 +330,9 @@ impl RuntimeError {
             ),
             RuntimeError::Unsupported { construct, .. } => {
                 format!("execution of {construct} is not implemented yet")
+            }
+            RuntimeError::NonExhaustiveMatch { .. } => {
+                "no `match` arm matched this value".to_string()
             }
         }
     }

@@ -61,21 +61,41 @@ pub struct NumberValue {
     pub ty: OperandType,
 }
 
-/// A value produced by evaluating one HIR expression (`AICAD-054`).
+/// A value produced by evaluating one HIR expression (`AICAD-054`,
+/// `AICAD-055`).
 ///
-/// Deliberately does **not** yet have a `Struct`/`Enum` instance variant:
-/// constructing a struct/enum value (`HirCallee::Fn` resolving to a
-/// `BindingKind::Struct` binding, or an `HirExpr::Ident` naming an
-/// `EnumVariant` binding — both already fully *type-checked* by
-/// `AICAD-053`) has no runtime representation yet. This is a genuine,
-/// documented scope boundary of this task ("function execution and
-/// lexical scopes"), not an oversight — see this crate's module doc
-/// comment "Known limitations".
+/// Deliberately does **not** yet have a `Struct` instance variant:
+/// constructing one (`HirCallee::Fn` resolving to a `BindingKind::Struct`
+/// binding — already fully *type-checked* by `AICAD-053`) has no runtime
+/// representation yet. This is a genuine, documented scope boundary (no
+/// Stage-2 batch task title yet owns giving struct construction a runtime
+/// value — see `crate::interp`'s module doc comment "Known limitations"),
+/// not an oversight: no test in this crate's own suite needs it (no
+/// struct-*pattern* destructuring exists in the language at all —
+/// `project/reports/AICAD-053.md`'s own documented limitation — so
+/// `AICAD-055`'s match execution has no forcing need for one either).
+///
+/// [`Value::EnumVariant`] *is* implemented (`AICAD-055`), because match
+/// execution's own `HirPattern::Variant` arm has a direct, unavoidable
+/// need for it — RFC-0001's own frozen grammar example (`match Product.
+/// material { Plastic => 3mm, Aluminum => 2mm, }`) and `AICAD-053`'s own
+/// evidenced pattern (`Product.motor == NEMA17`) both match/compare
+/// against bare enum-variant values, and nothing else in either construct
+/// requires a full enum *type* identity beyond the variant's own already-
+/// unique `BindingId` (`cad_hir::typeck`'s own nominal-typing convention:
+/// "the declaring item's own `BindingId` is its type identity").
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Number(NumberValue),
     Bool(bool),
     Str(String),
+    /// An enum variant value, identified by its own declaring
+    /// `cad_hir::ids::BindingId` (`BindingKind::EnumVariant`) — not the
+    /// owning enum's `BindingId` (matching `cad_hir::typeck::CheckedType::
+    /// Enum`'s own choice not to allocate a separate type identity: two
+    /// variants are equal exactly when they are the same variant, which a
+    /// bare `BindingId` comparison already answers).
+    EnumVariant(cad_hir::ids::BindingId),
     /// The value of a block with no trailing expression, or of a
     /// `return;`/implicit-`Unit`-typed function completion. Not a source-
     /// level type (RFC-0001's grammar has no `Unit`/`()` type spelling) —
@@ -93,6 +113,7 @@ impl Value {
             Value::Number(_) => "Number",
             Value::Bool(_) => "Bool",
             Value::Str(_) => "String",
+            Value::EnumVariant(_) => "enum variant",
             Value::Unit => "Unit",
         }
     }

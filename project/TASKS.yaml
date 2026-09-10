@@ -1457,7 +1457,7 @@ tasks:
 - id: AICAD-055
   stage: 2
   title: Implement conditional and match execution
-  status: todo
+  status: done
   depends_on:
   - AICAD-054
   plan_references:

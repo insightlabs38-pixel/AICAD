@@ -26,24 +26,37 @@
 //! exhaustion specifically (`AICAD-058` is what actually bounds resource
 //! use; this task only guarantees *clean failure*, not *bounded* failure).
 //!
-//! ## Scope: what this task executes, and what it does not
+//! ## Scope: what this crate executes, and what it does not
 //!
-//! Executed: literal/identifier/unary/binary-arithmetic/binary-comparison
-//! expressions, block expressions (including a nested `return` correctly
-//! unwinding through arbitrary expression nesting — see [`Signal::
-//! Return`]), and ordinary function calls with lexical parameter/local
-//! binding (`let`/`var`/`=`-reassignment), matching this task's own title.
+//! Executed (`AICAD-054`): literal/identifier/unary/binary-arithmetic/
+//! binary-comparison expressions, block expressions (including a nested
+//! `return` correctly unwinding through arbitrary expression nesting —
+//! see [`Signal::Return`]), and ordinary function calls with lexical
+//! parameter/local binding (`let`/`var`/`=`-reassignment).
+//!
+//! Also executed (`AICAD-055`): `if`/`else`/`else if` (expression and
+//! statement position — [`Interpreter::eval_expr`]'s `HirExpr::If` arm and
+//! [`Interpreter::exec_stmt`]'s `HirStmt::If` arm) and `match` (expression
+//! and statement position, sharing one [`Interpreter::eval_match`] — every
+//! [`cad_hir::hir::HirPattern`] variant except struct destructuring, which
+//! does not exist anywhere in the language yet per `project/reports/
+//! AICAD-053.md`'s own documented limitation). A bare enum-variant value
+//! now has a runtime representation ([`crate::value::Value::EnumVariant`])
+//! purely because `match`'s own `HirPattern::Variant` arm has a direct,
+//! unavoidable need for one — see that type's own doc comment. `cad_hir::
+//! typeck` does not verify match exhaustiveness, so a non-matching
+//! scrutinee is a real, reachable [`crate::error::RuntimeError::
+//! NonExhaustiveMatch`], not a panic.
 //!
 //! Deliberately **not** executed yet (each returns [`crate::error::
 //! RuntimeError::Unsupported`], never a panic, so a program exercising one
 //! of these fails cleanly rather than silently or incorrectly):
-//! `if`/`match` (`AICAD-055`), `for`/`while`/`loop`/`break`/`continue`
-//! (`AICAD-056`), struct/enum construction and field access (no scheduled
-//! task yet explicitly owns runtime struct/enum *values* — see this
-//! crate's top-level doc comment "Known limitations"), and method calls
-//! (no method/interface-implementation declaration syntax exists anywhere
-//! in the language, matching `cad_hir::typeck::check_call`'s own identical
-//! finding).
+//! `for`/`while`/`loop`/`break`/`continue` (`AICAD-056`), struct
+//! construction and field access (no scheduled task yet explicitly owns a
+//! runtime struct *value* — see this crate's top-level doc comment "Known
+//! limitations"), and method calls (no method/interface-implementation
+//! declaration syntax exists anywhere in the language, matching
+//! `cad_hir::typeck::check_call`'s own identical finding).
 //!
 //! ## Known limitation: ambiguous derived-dimension arithmetic
 //!
@@ -71,8 +84,8 @@ use crate::error::RuntimeError;
 use crate::value::{NumberValue, Value};
 use cad_ast::Span;
 use cad_hir::hir::{
-    BinaryOp, HirArg, HirBlock, HirCallee, HirExpr, HirItem, HirLiteral, HirProgram, HirStmt,
-    UnaryOp,
+    BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem, HirLiteral, HirMatchArm,
+    HirPattern, HirProgram, HirStmt, UnaryOp,
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::HirType;
@@ -457,11 +470,27 @@ impl<'a> Interpreter<'a> {
                 };
                 Err(Signal::Return(v))
             }
-            HirStmt::If { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "an `if` statement",
-                span: *span,
+            HirStmt::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                if self.eval_bool(frame, cond)? {
+                    self.exec_block(frame, then_branch)?;
+                } else {
+                    match else_branch {
+                        Some(HirElseStmt::Block(block)) => {
+                            self.exec_block(frame, block)?;
+                        }
+                        // Always constructed from a nested `HirStmt::If`
+                        // (`crate::hir::HirElseStmt`'s own doc comment).
+                        Some(HirElseStmt::If(nested)) => self.exec_stmt(frame, nested)?,
+                        None => {}
+                    }
+                }
+                Ok(())
             }
-            .into()),
             HirStmt::For { span, .. } => Err(RuntimeError::Unsupported {
                 construct: "a `for` loop",
                 span: *span,
@@ -477,11 +506,13 @@ impl<'a> Interpreter<'a> {
                 span: *span,
             }
             .into()),
-            HirStmt::Match { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "a `match` statement",
-                span: *span,
+            HirStmt::Match {
+                scrutinee, arms, ..
+            } => {
+                let value = self.eval_expr(frame, scrutinee)?;
+                self.eval_match(frame, &value, arms, stmt.span())?;
+                Ok(())
             }
-            .into()),
             HirStmt::Break { span } => Err(RuntimeError::Unsupported {
                 construct: "`break`",
                 span: *span,
@@ -507,6 +538,16 @@ impl<'a> Interpreter<'a> {
                     name: name.clone(),
                     span: *span,
                 })?;
+                // An enum variant is never "stored" as a value anywhere
+                // (unlike `let`/`const`/`param`) — it is intrinsically
+                // self-valued the moment it is named, exactly like a
+                // literal. Checked before the frame/globals lookup below.
+                if matches!(
+                    self.bindings[binding.index()].kind,
+                    BindingKind::EnumVariant { .. }
+                ) {
+                    return Ok(Value::EnumVariant(binding));
+                }
                 if let Some(v) = frame.get(&binding) {
                     return Ok(v.clone());
                 }
@@ -528,16 +569,28 @@ impl<'a> Interpreter<'a> {
             }
             .into()),
             HirExpr::Block(block) => self.exec_block(frame, block),
-            HirExpr::If { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "an `if` expression",
-                span: *span,
+            HirExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                if self.eval_bool(frame, cond)? {
+                    self.exec_block(frame, then_branch)
+                } else {
+                    // Always `HirExpr::Block` or a nested `HirExpr::If`
+                    // (`crate::hir`'s own module doc comment "Value-
+                    // semantics unification") — an ordinary recursive
+                    // `eval_expr` call handles both.
+                    self.eval_expr(frame, else_branch)
+                }
             }
-            .into()),
-            HirExpr::Match { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "a `match` expression",
-                span: *span,
+            HirExpr::Match {
+                scrutinee, arms, ..
+            } => {
+                let value = self.eval_expr(frame, scrutinee)?;
+                self.eval_match(frame, &value, arms, expr.span())
             }
-            .into()),
         }
     }
 
@@ -744,6 +797,20 @@ impl<'a> Interpreter<'a> {
                 .into()),
             },
             (Value::Str(ls), Value::Str(rs)) => Ok(Value::Bool(compare_ord(op, ls, rs))),
+            // Nominal equality (`cad_hir::typeck`'s own established
+            // convention): two variants are equal exactly when they are
+            // the same declared variant, the direct evidence being
+            // `AICAD-053`'s own `Product.motor == NEMA17` pattern.
+            (Value::EnumVariant(la), Value::EnumVariant(ra)) => match op {
+                BinaryOp::Eq | BinaryOp::ApproxEq => Ok(Value::Bool(la == ra)),
+                BinaryOp::NotEq => Ok(Value::Bool(la != ra)),
+                _ => Err(RuntimeError::NotOrderable {
+                    kind: "enum variant",
+                    op: op.as_str(),
+                    span,
+                }
+                .into()),
+            },
             (Value::Unit, Value::Unit) => match op {
                 BinaryOp::Eq | BinaryOp::ApproxEq => Ok(Value::Bool(true)),
                 BinaryOp::NotEq => Ok(Value::Bool(false)),
@@ -761,6 +828,83 @@ impl<'a> Interpreter<'a> {
             }
             .into()),
         }
+    }
+
+    /// Evaluates a `match`'s arms in source order against an already-
+    /// evaluated `scrutinee`, executing (and returning the value of) the
+    /// first arm whose pattern matches — shared by both `HirExpr::Match`
+    /// (the returned value is the match expression's own value) and
+    /// `HirStmt::Match` (the caller discards it, exactly like any other
+    /// statement's expression). A pattern-introduced binding (`HirPattern::
+    /// Binding`) is inserted into `frame` before the arm body runs, using
+    /// the same flat, never-popped frame every other local binding uses
+    /// (module doc comment "no scope stack needed") — safe because
+    /// lowering already scoped that binding's `BindingId` to be visible
+    /// only within its own arm.
+    ///
+    /// `cad_hir::typeck` does not verify match exhaustiveness
+    /// (`project/reports/AICAD-053.md`'s own documented limitation), so a
+    /// type-checked program can still reach a scrutinee no arm matches —
+    /// handled as `RuntimeError::NonExhaustiveMatch` rather than silently
+    /// producing `Value::Unit` or panicking.
+    fn eval_match(
+        &mut self,
+        frame: &mut Frame,
+        scrutinee: &Value,
+        arms: &[HirMatchArm],
+        span: Span,
+    ) -> EvalResult<Value> {
+        for arm in arms {
+            if self.pattern_matches(frame, &arm.pattern, scrutinee)? {
+                return self.eval_expr(frame, &arm.body);
+            }
+        }
+        Err(RuntimeError::NonExhaustiveMatch { span }.into())
+    }
+
+    /// Tests one pattern against an already-evaluated scrutinee value,
+    /// binding `HirPattern::Binding`'s own fresh name into `frame` when it
+    /// matches (unconditionally — a bare binding pattern always matches).
+    fn pattern_matches(
+        &self,
+        frame: &mut Frame,
+        pattern: &HirPattern,
+        scrutinee: &Value,
+    ) -> EvalResult<bool> {
+        match pattern {
+            HirPattern::Wildcard { .. } => Ok(true),
+            HirPattern::Binding { binding, .. } => {
+                frame.insert(*binding, scrutinee.clone());
+                Ok(true)
+            }
+            HirPattern::Variant { variant, .. } => {
+                Ok(matches!(scrutinee, Value::EnumVariant(id) if id == variant))
+            }
+            HirPattern::Literal { value, span } => {
+                let pattern_value = self.eval_literal(value, None, *span)?;
+                Ok(values_equal(&pattern_value, scrutinee))
+            }
+        }
+    }
+}
+
+/// Structural equality between two runtime values for
+/// `Interpreter::pattern_matches`'s own `HirPattern::Literal` arm — not a
+/// general-purpose `PartialEq` (dimensional operands still deserve
+/// `cad_units::check_comparison`'s own dimension-mismatch diagnostic via
+/// `Interpreter::eval_comparison` at every other comparison site; a
+/// literal *pattern*, per `crate::hir::HirPattern::Literal`'s own doc
+/// comment, is never itself a unit-suffixed dimensional literal in
+/// practice — matching a `Bool`/`String`/unitless-`Number` scrutinee is
+/// the only shape `cad_ast`'s pattern grammar actually produces).
+fn values_equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.ty == y.ty && x.magnitude == y.magnitude,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::EnumVariant(x), Value::EnumVariant(y)) => x == y,
+        (Value::Unit, Value::Unit) => true,
+        _ => false,
     }
 }
 
@@ -1131,13 +1275,160 @@ mod tests {
         assert_eq!(diag_code(&err), "RUNTIME-E102");
     }
 
+    // --- Conditional execution (AICAD-055) ---
+
+    #[test]
+    fn if_expression_takes_the_then_branch() {
+        let lowered =
+            compiled("fn f(x: Float) -> Float { return if x > 0.0 { 1.0 } else { -1.0 }; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![number(5.0)]).unwrap();
+        assert_number_eq(result, 1.0);
+    }
+
+    #[test]
+    fn if_expression_takes_the_else_branch() {
+        let lowered =
+            compiled("fn f(x: Float) -> Float { return if x > 0.0 { 1.0 } else { -1.0 }; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![number(-5.0)]).unwrap();
+        assert_number_eq(result, -1.0);
+    }
+
+    #[test]
+    fn else_if_chain() {
+        let lowered = compiled(
+            "fn sign(x: Float) -> Float { \
+                 return if x > 0.0 { 1.0 } else if x < 0.0 { -1.0 } else { 0.0 }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("sign", vec![number(3.0)]).unwrap(), 1.0);
+        assert_number_eq(
+            interp.call_by_name("sign", vec![number(-3.0)]).unwrap(),
+            -1.0,
+        );
+        assert_number_eq(interp.call_by_name("sign", vec![number(0.0)]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn if_statement_with_early_return_short_circuits_recursion() {
+        // Now that `if` executes (`AICAD-055`), genuine terminating
+        // recursion is expressible — though bounding call depth is
+        // `AICAD-058`'s own scheduled scope, not this task's.
+        let lowered = compiled(
+            "fn fact(n: Float) -> Float { \
+                 if n <= 1.0 { return 1.0; } \
+                 return n * fact(n - 1.0); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("fact", vec![number(5.0)]).unwrap();
+        assert_number_eq(result, 120.0);
+    }
+
+    #[test]
+    fn if_statement_with_no_else_falls_through() {
+        let lowered = compiled(
+            "fn f(x: Float) -> Float { \
+                 var y = 0.0; \
+                 if x > 0.0 { y = 1.0; } \
+                 return y; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![number(-1.0)]).unwrap(), 0.0);
+        assert_number_eq(interp.call_by_name("f", vec![number(1.0)]).unwrap(), 1.0);
+    }
+
+    // --- Match execution (AICAD-055) ---
+
+    #[test]
+    fn match_expression_on_enum_variant() {
+        let lowered = compiled(
+            "enum Material { Plastic, Aluminum } \
+             fn thickness(m: Material) -> Length { \
+                 return match m { Plastic => 3mm, Aluminum => 2mm, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let plastic = interp.call_by_name("thickness", {
+            let material_binding = lowered
+                .bindings
+                .iter()
+                .find(|b| b.name == "Plastic")
+                .unwrap()
+                .id;
+            vec![Value::EnumVariant(material_binding)]
+        });
+        assert_number_eq(plastic.unwrap(), 0.003);
+    }
+
+    #[test]
+    fn match_statement_with_binding_pattern() {
+        let lowered = compiled(
+            "fn describe(x: Float) -> Float { \
+                 match x { \
+                     0.0 => { return 0.0; } \
+                     y => { return y * 2.0; } \
+                 } \
+                 return -1.0; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(
+            interp.call_by_name("describe", vec![number(0.0)]).unwrap(),
+            0.0,
+        );
+        assert_number_eq(
+            interp.call_by_name("describe", vec![number(4.0)]).unwrap(),
+            8.0,
+        );
+    }
+
+    #[test]
+    fn match_wildcard_pattern() {
+        let lowered = compiled(
+            "fn f(x: Float) -> Float { \
+                 return match x { 1.0 => 100.0, _ => -1.0, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![number(1.0)]).unwrap(), 100.0);
+        assert_number_eq(interp.call_by_name("f", vec![number(2.0)]).unwrap(), -1.0);
+    }
+
+    #[test]
+    fn non_exhaustive_match_is_a_clean_error() {
+        // No *source* program that type-checks can omit an arm `cad_hir::
+        // typeck` would catch (it does not verify exhaustiveness at all —
+        // `project/reports/AICAD-053.md`'s own documented limitation), so
+        // this really can happen for a compiled program; constructed here
+        // via a literal pattern that simply excludes the runtime value
+        // actually passed in.
+        let lowered = compiled("fn f(x: Float) -> Float { return match x { 1.0 => 100.0, }; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![number(2.0)]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E118");
+    }
+
     // --- Unsupported constructs fail cleanly, never panic ---
 
     #[test]
-    fn unsupported_if_statement_is_a_clean_error() {
-        let lowered = compiled("fn f(x: Float) -> Float { if x > 0.0 { return x; } return 0.0; }");
+    fn unsupported_for_loop_is_a_clean_error() {
+        // No collection/iterator type exists yet (`AICAD-056`'s own
+        // scheduled scope), so `iterable` is a placeholder plain
+        // expression — `cad_hir::typeck::check_expr`'s own `HirStmt::For`
+        // handling does not require it to be any particular type (see
+        // that module's own doc comment on this exact statement).
+        let lowered = compiled(
+            "fn f() -> Float { \
+                 for i in 0.0 { } \
+                 return 0.0; \
+             }",
+        );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
-        let err = interp.call_by_name("f", vec![number(1.0)]).unwrap_err();
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E117");
     }
 
