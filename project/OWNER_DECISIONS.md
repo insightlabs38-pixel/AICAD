@@ -28,7 +28,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D2 Mutation semantics | RESOLVED — DL-2 |
 | D3 Sketch entity/object model | open |
 | D4 Type/units semantics | RESOLVED — DL-3 |
-| D5 Determinism-equivalence contract | open |
+| D5 Determinism-equivalence contract | RESOLVED (v1 policy) — DL-12 |
 | D6 Kernel abstraction boundary | RESOLVED — DL-5 |
 | D7 Reference resolution/fallback policy | PARTIALLY RESOLVED — DL-8 |
 | D8 OCAF vs. kernel-independent graph | PARTIALLY RESOLVED (directional) — DL-9 |
@@ -135,6 +135,20 @@ not be resolved implicitly.
 
 ## D5. Canonical-state / deterministic-equivalence contract
 
+**Status: RESOLVED (v1 policy) — see `project/DECISION_LOG.md#DL-12`.**
+Determinism is layered (Level 1 language/compiler exact-and-byte-identical-
+where-defined; Level 2 same locked kernel environment, semantic/numerical
+verification, no byte-identical B-rep requirement; Level 3 supported
+cross-platform, versioned dimension-aware equivalence profile; Level 4
+different kernel version, compatibility not identity), with a versioned
+dimension-aware comparison profile (linear/area/volume/center-of-mass
+tolerances parameterized by characteristic scale `S`) whose *shape* is
+frozen but whose concrete v1 numeric constants remain to be derived from
+Stage-1 evidence and documented during Stage 2 (not yet done as of this
+ruling — track under Stage-2 `crates/cad-validation` work, escalating the
+derived constants here if Stage-2 evidence does not make them obvious).
+Original question/context kept below for record.
+
 **Question:** What does "equivalent geometry and validation results" mean
 in testable terms across kernel/platform versions? What tolerance/comparison
 method defines pass/fail for the determinism benchmark?
@@ -145,14 +159,14 @@ against claiming bit-identical B-rep across kernel/platform versions);
 `docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md` §9. See
 `project/reports/ORIENTATION_PASS.md` §6 (contradiction 5).
 
-**Status:** Open. The two documents do not contradict each other outright,
-but neither defines the actual comparison tolerance, and this is an
-AGENTS.md escalation trigger ("change the canonical-state/determinism
-contract").
+**Prior framing (superseded — see resolution above):** The two documents do
+not contradict each other outright, but neither defines the actual
+comparison tolerance, and this is an AGENTS.md escalation trigger ("change
+the canonical-state/determinism contract").
 
-**Blocking impact:** Not required for Stage 0-1, but should be settled
-before Stage 2's deterministic evaluator work matures and well before the
-Stage 8/13 determinism benchmarks.
+**Blocking impact:** The concrete v1 tolerance constants (not the policy
+shape, which is now resolved) should be settled during Stage 2, before the
+Stage 8/13 determinism benchmarks mature.
 
 ---
 

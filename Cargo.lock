@@ -65,6 +65,10 @@ version = "0.0.0"
 [[package]]
 name = "cad-lexer"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+]
 
 [[package]]
 name = "cad-lsp"

@@ -999,7 +999,7 @@ tasks:
 - id: AICAD-038
   stage: 2
   title: Create cad-diagnostics crate and JSON-schema conformance tests
-  status: todo
+  status: done
   depends_on:
   - AICAD-037
   plan_references:
@@ -1026,7 +1026,7 @@ tasks:
 - id: AICAD-039
   stage: 2
   title: Create cad-ast and cad-lexer with token/span model
-  status: todo
+  status: done
   depends_on:
   - AICAD-038
   plan_references:
@@ -1053,7 +1053,7 @@ tasks:
 - id: AICAD-040
   stage: 2
   title: Implement numeric literals with engineering-unit suffix tokenization
-  status: todo
+  status: done
   depends_on:
   - AICAD-039
   plan_references:
