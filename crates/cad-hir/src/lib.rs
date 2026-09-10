@@ -17,15 +17,21 @@
 //!   and [`lower::LowerResult`]. See its module doc comment for exactly
 //!   what this task's "skeleton" scope does and does not cover, and its
 //!   relationship to `cad_compiler::binder` (`AICAD-050`).
+//! - [`typeck`]: [`typeck::check_program`] (`AICAD-052`) — the type
+//!   checker that fills in what `lower`'s own "Scope boundary" deferred:
+//!   numeric-literal-type defaulting, and full type checking for
+//!   literals/bindings/functions/calls. See its own module doc comment
+//!   for the struct/enum field/variant typing `AICAD-053` adds on top.
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §5;
-//! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (phase 7);
+//! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (phases 4 and 7);
 //! `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §15 (control flow);
 //! `rfcs/0004-units-type-system.md` §8-9.
 
 pub mod hir;
 pub mod ids;
 pub mod lower;
+pub mod typeck;
 pub mod types;
 
 pub use hir::{
@@ -35,4 +41,5 @@ pub use hir::{
 };
 pub use ids::{Binding, BindingId, BindingKind};
 pub use lower::{LowerResult, lower_program};
+pub use typeck::{TypeCheckResult, check_program};
 pub use types::{HirType, HirTypeRef};
