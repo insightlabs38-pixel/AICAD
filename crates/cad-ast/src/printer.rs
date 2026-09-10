@@ -43,7 +43,7 @@
 
 use crate::{
     Arg, Block, BlockExpr, ElseBranch, ElseClause, Expr, Field, FnParam, ImportPath, Item, Literal,
-    MatchArm, MatchArmBody, Pattern, Program, Stmt, Type,
+    MatchArm, MatchArmBody, Pattern, Program, Spanned, Stmt, Type,
 };
 
 const INDENT_UNIT: &str = "    ";
@@ -137,6 +137,7 @@ impl Printer {
             Item::Fn {
                 is_pure,
                 name,
+                type_params,
                 params,
                 return_ty,
                 body,
@@ -147,6 +148,7 @@ impl Printer {
                 }
                 self.write("fn ");
                 self.write(&name.node);
+                self.print_type_params(type_params);
                 self.write("(");
                 self.print_fn_params(params);
                 self.write(")");
@@ -157,15 +159,27 @@ impl Printer {
                 self.write(" ");
                 self.print_block(body);
             }
-            Item::Struct { name, fields, .. } => {
+            Item::Struct {
+                name,
+                type_params,
+                fields,
+                ..
+            } => {
                 self.write("struct ");
                 self.write(&name.node);
+                self.print_type_params(type_params);
                 self.write(" ");
                 self.print_field_list(fields);
             }
-            Item::Enum { name, variants, .. } => {
+            Item::Enum {
+                name,
+                type_params,
+                variants,
+                ..
+            } => {
                 self.write("enum ");
                 self.write(&name.node);
+                self.print_type_params(type_params);
                 self.write(" ");
                 self.print_brace_list(variants.len(), |p, i| p.write(&variants[i].node));
             }
@@ -215,6 +229,23 @@ impl Printer {
                 self.write(">");
             }
         }
+    }
+
+    /// Prints a declaration's own `<T, U>` generic type-parameter list
+    /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`) — nothing at all
+    /// for an ordinary, non-generic declaration.
+    fn print_type_params(&mut self, type_params: &[Spanned<String>]) {
+        if type_params.is_empty() {
+            return;
+        }
+        self.write("<");
+        for (i, param) in type_params.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write(&param.node);
+        }
+        self.write(">");
     }
 
     fn print_fn_params(&mut self, params: &[FnParam]) {

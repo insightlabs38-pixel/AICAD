@@ -22,7 +22,21 @@
    `crates/cad-parser`'s `list_literal_*`/`*range*` tests; negative test:
    `range_operator_is_not_chainable`/`reports_missing_closing_bracket_in_
    list_literal`). Both are ordinary `expression` alternatives — no new
-   statement/declaration syntax, no compiler intrinsic. *)
+   statement/declaration syntax, no compiler intrinsic.
+
+   Patched again (`AICAD-057B`) to add `type_params` to `fn_decl` (and,
+   informally — this file has never formally defined `struct_decl`/
+   `enum_decl` productions at all, only referenced them from `item`,
+   above — to `struct_decl`/`enum_decl` in the same shape), per the owner
+   ruling recorded at `project/OWNER_DECISIONS.md#D17`/`project/
+   DECISION_LOG.md#DL-14` (positive test: `crates/cad-parser`'s
+   `parses_generic_struct_with_one_type_parameter`/
+   `parses_generic_struct_with_two_type_parameters`/
+   `parses_generic_enum`/`parses_generic_function`; negative test:
+   `reports_missing_closing_angle_bracket_on_type_param_list`/
+   `reports_non_identifier_in_type_param_list`). An ordinary, additive
+   optional type-parameter list on three existing declaration forms — no
+   bounds, no variance, no defaults, no new expression/statement syntax. *)
 
 program        = { item } ;
 item           = let_decl | const_decl | param_decl
@@ -50,10 +64,19 @@ return_stmt    = "return" , [ expression ] , ";" ;
 break_stmt     = "break" , ";" ;
 continue_stmt  = "continue" , ";" ;
 
-fn_decl        = [ "pure" ] , "fn" , identifier , "(" , [ params ] , ")" ,
-                 [ "->" , type ] , block ;
+fn_decl        = [ "pure" ] , "fn" , identifier , [ type_params ] ,
+                 "(" , [ params ] , ")" , [ "->" , type ] , block ;
 params         = param , { "," , param } ;
 param          = identifier , ":" , type , [ "=" , expression ] ;
+
+type_params    = "<" , identifier , { "," , identifier } , [","] , ">" ;
+                 (* `project/OWNER_DECISIONS.md#D17`. Also accepted, in the
+                    same shape, right after the declared name of a
+                    (currently informally-specified) struct_decl/enum_decl.
+                    Each parameter is a bare identifier only — no bounds
+                    (`T: Interface`), defaults, variance, or lifetime
+                    syntax; deliberately out of Stage-2 scope per that
+                    ruling. *)
 
 expression     = range_expr ;
 range_expr     = or_expr , [ ( ".." | "..=" ) , or_expr ] ;

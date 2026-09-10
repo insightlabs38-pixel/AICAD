@@ -37,7 +37,7 @@ pub mod types;
 pub use hir::{
     BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr, HirField,
     HirImportPath, HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam, HirPattern,
-    HirProgram, HirStmt, UnaryOp,
+    HirProgram, HirStmt, HirTypeParam, UnaryOp,
 };
 pub use ids::{Binding, BindingId, BindingKind};
 pub use lower::{LowerResult, lower_program};

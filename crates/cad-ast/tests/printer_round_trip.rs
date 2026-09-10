@@ -69,6 +69,16 @@ fn round_trips_struct_and_enum() {
 }
 
 #[test]
+fn round_trips_generic_declarations() {
+    // AICAD-057B, project/OWNER_DECISIONS.md#D17: generic type-parameter
+    // lists on struct/enum/fn declarations.
+    assert_round_trips("struct Box<T> { value: T }");
+    assert_round_trips("struct Pair<T, U> { first: T, second: U }");
+    assert_round_trips("enum Container<T> { Empty }");
+    assert_round_trips("fn identity<T>(value: T) -> T { return value; }");
+}
+
+#[test]
 fn round_trips_part_with_nested_items() {
     assert_round_trips(
         "part Bracket { param width: Length = 80mm; let wall = width; fn area() -> Length { wall; } }",

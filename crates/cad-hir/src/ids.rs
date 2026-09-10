@@ -80,6 +80,18 @@ pub enum BindingKind {
     /// A fresh name introduced by a non-variant match-arm pattern
     /// identifier (`crate::hir::HirPattern::Binding`).
     MatchBinding,
+    /// A generic type parameter declared on a `fn`/`struct`/`enum`
+    /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`) — `T` in `fn
+    /// identity<T>(...)`/`struct Pair<T, U> { ... }`. Unlike every other
+    /// `BindingKind`, this is a *type*-namespace name, not a value-level
+    /// one: `crate::lower::Lowerer` mints its `BindingId` but never
+    /// inserts it into the ordinary value-lookup `scopes` chain (nothing
+    /// in an expression ever resolves a bare `T` as a value), and
+    /// `crate::typeck::Checker` resolves it only through its own
+    /// per-declaration `active_type_params` table, mirroring how
+    /// `BindingKind::Struct`/`Enum` names live in `Checker::type_names`
+    /// rather than the value-binding table.
+    TypeParam,
 }
 
 /// One declaration lowering created: its kind, source name, and the span

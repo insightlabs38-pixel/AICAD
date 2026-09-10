@@ -1573,7 +1573,7 @@ tasks:
 - id: AICAD-057B
   stage: 2
   title: Implement generic parameter/type-application syntax plus AST/HIR representation
-  status: todo
+  status: done
   depends_on:
   - AICAD-057A
   plan_references:

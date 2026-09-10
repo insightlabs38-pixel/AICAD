@@ -461,6 +461,19 @@ pub struct HirEnumVariant {
     pub span: Span,
 }
 
+/// One generic type parameter declared on a `fn`/`struct`/`enum`
+/// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`). `binding` is this
+/// parameter's own newly minted id (kind `BindingKind::TypeParam`) —
+/// what a `HirTypeRef::Named` referring to it resolves to inside the
+/// declaring item's own field/parameter/return types, via `crate::
+/// typeck::Checker`'s `active_type_params` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirTypeParam {
+    pub binding: BindingId,
+    pub name: String,
+    pub span: Span,
+}
+
 /// One name a selective `import ...::{Name}` brings into scope. `binding`
 /// is this name's own newly minted id (kind `BindingKind::Import`) —
 /// `crates/cad-compiler/src/binder.rs`'s own module doc comment: bound
@@ -523,6 +536,9 @@ pub enum HirItem {
         binding: BindingId,
         name: String,
         is_pure: bool,
+        /// Empty for an ordinary, non-generic function (`AICAD-057B`,
+        /// `project/OWNER_DECISIONS.md#D17`).
+        type_params: Vec<HirTypeParam>,
         params: Vec<HirParam>,
         return_ty: Option<HirTypeRef>,
         body: HirBlock,
@@ -531,12 +547,18 @@ pub enum HirItem {
     Struct {
         binding: BindingId,
         name: String,
+        /// Empty for an ordinary, non-generic struct (`AICAD-057B`,
+        /// `project/OWNER_DECISIONS.md#D17`).
+        type_params: Vec<HirTypeParam>,
         fields: Vec<HirField>,
         span: Span,
     },
     Enum {
         binding: BindingId,
         name: String,
+        /// Empty for an ordinary, non-generic enum (`AICAD-057B`,
+        /// `project/OWNER_DECISIONS.md#D17`).
+        type_params: Vec<HirTypeParam>,
         variants: Vec<HirEnumVariant>,
         span: Span,
     },

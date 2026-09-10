@@ -1210,6 +1210,37 @@ impl<'a> Parser<'a> {
         variants
     }
 
+    /// `["<" type_param { "," type_param } [","] ">"]` — an optional
+    /// generic type-parameter list on a `fn`/`struct`/`enum` declaration,
+    /// positioned right after the declared name (`AICAD-057B`,
+    /// `project/OWNER_DECISIONS.md#D17`). Returns an empty `Vec` (no
+    /// diagnostic) when no `<` follows — an ordinary, non-generic
+    /// declaration is not an error. Each type parameter is a bare
+    /// identifier only: no bounds (`T: Interface`), no defaults, no
+    /// variance/lifetime syntax — all explicitly out of D17's Stage-2
+    /// scope.
+    fn parse_type_params(&mut self) -> Vec<Spanned<String>> {
+        if self.eat(|k| *k == TokenKind::Lt).is_none() {
+            return Vec::new();
+        }
+        let mut params = Vec::new();
+        loop {
+            if self.peek_kind() == &TokenKind::Gt {
+                break;
+            }
+            let Some(name) = self.expect_ident("a type parameter name") else {
+                break;
+            };
+            params.push(name);
+            if self.eat(|k| *k == TokenKind::Comma).is_some() {
+                continue;
+            }
+            break;
+        }
+        self.expect(&TokenKind::Gt, "'>'");
+        params
+    }
+
     /// One `item`, restricted to this task's scope — see `cad_ast::item`'s
     /// own doc comment for exactly what that is and is not.
     pub fn parse_item(&mut self) -> Option<Item> {
@@ -1270,6 +1301,7 @@ impl<'a> Parser<'a> {
                     self.expect(&TokenKind::Keyword(Keyword::Fn), "'fn'")?;
                 }
                 let name = self.expect_ident("a function name")?;
+                let type_params = self.parse_type_params();
                 self.expect(&TokenKind::LParen, "'('")?;
                 let params = self.parse_fn_params();
                 self.expect(&TokenKind::RParen, "')'");
@@ -1283,6 +1315,7 @@ impl<'a> Parser<'a> {
                 Some(Item::Fn {
                     is_pure,
                     name,
+                    type_params,
                     params,
                     return_ty,
                     body,
@@ -1293,6 +1326,7 @@ impl<'a> Parser<'a> {
                 let start = tok.span;
                 self.advance();
                 let name = self.expect_ident("a struct name")?;
+                let type_params = self.parse_type_params();
                 self.expect(&TokenKind::LBrace, "'{'")?;
                 let fields = self.parse_struct_fields();
                 let close = self.expect(&TokenKind::RBrace, "'}'");
@@ -1301,6 +1335,7 @@ impl<'a> Parser<'a> {
                     .unwrap_or_else(|| fields.last().map(|f| f.span).unwrap_or(name.span));
                 Some(Item::Struct {
                     name,
+                    type_params,
                     fields,
                     span: start.join(end),
                 })
@@ -1309,6 +1344,7 @@ impl<'a> Parser<'a> {
                 let start = tok.span;
                 self.advance();
                 let name = self.expect_ident("an enum name")?;
+                let type_params = self.parse_type_params();
                 self.expect(&TokenKind::LBrace, "'{'")?;
                 let variants = self.parse_enum_variants();
                 let close = self.expect(&TokenKind::RBrace, "'}'");
@@ -1317,6 +1353,7 @@ impl<'a> Parser<'a> {
                     .unwrap_or_else(|| variants.last().map(|v| v.span).unwrap_or(name.span));
                 Some(Item::Enum {
                     name,
+                    type_params,
                     variants,
                     span: start.join(end),
                 })
@@ -2199,6 +2236,105 @@ mod decl_tests {
         }
     }
 
+    // --- AICAD-057B: generic type-parameter declarations
+    //     (project/OWNER_DECISIONS.md#D17) ----------------------------
+
+    #[test]
+    fn parses_generic_struct_with_one_type_parameter() {
+        let program = program_ok("struct Box<T> { value: T }");
+        match &program.items[0] {
+            Item::Struct {
+                name,
+                type_params,
+                fields,
+                ..
+            } => {
+                assert_eq!(name.node, "Box");
+                assert_eq!(type_params.len(), 1);
+                assert_eq!(type_params[0].node, "T");
+                assert_eq!(fields[0].name.node, "value");
+            }
+            other => panic!("expected Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_generic_struct_with_two_type_parameters() {
+        let program = program_ok("struct Pair<T, U> { first: T, second: U }");
+        match &program.items[0] {
+            Item::Struct { type_params, .. } => {
+                assert_eq!(
+                    type_params
+                        .iter()
+                        .map(|p| p.node.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["T", "U"]
+                );
+            }
+            other => panic!("expected Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_generic_enum() {
+        let program = program_ok("enum Container<T> { Empty }");
+        match &program.items[0] {
+            Item::Enum {
+                name,
+                type_params,
+                variants,
+                ..
+            } => {
+                assert_eq!(name.node, "Container");
+                assert_eq!(type_params.len(), 1);
+                assert_eq!(type_params[0].node, "T");
+                assert_eq!(variants.len(), 1);
+            }
+            other => panic!("expected Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_generic_function() {
+        let program = program_ok("fn identity<T>(value: T) -> T { return value; }");
+        match &program.items[0] {
+            Item::Fn {
+                type_params,
+                params,
+                ..
+            } => {
+                assert_eq!(type_params.len(), 1);
+                assert_eq!(type_params[0].node, "T");
+                assert_eq!(params[0].name.node, "value");
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordinary_non_generic_declarations_still_parse_with_an_empty_type_param_list() {
+        let program = program_ok(
+            "struct Point2 { x: Length, y: Length } enum MotorSize { NEMA17 } fn f() { }",
+        );
+        for item in &program.items {
+            match item {
+                Item::Struct { type_params, .. }
+                | Item::Enum { type_params, .. }
+                | Item::Fn { type_params, .. } => assert!(type_params.is_empty()),
+                other => panic!("unexpected item: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn generic_type_parameter_list_allows_a_trailing_comma() {
+        let program = program_ok("struct Pair<T, U,> { first: T, second: U }");
+        match &program.items[0] {
+            Item::Struct { type_params, .. } => assert_eq!(type_params.len(), 2),
+            other => panic!("expected Struct, got {other:?}"),
+        }
+    }
+
     #[test]
     fn parses_part_decl_with_nested_items() {
         // A cut-down shape of the paper example's `part Bracket { ... }`,
@@ -2326,6 +2462,18 @@ mod decl_tests {
                 .iter()
                 .any(|d| d.code.as_string() == "PARSE-E006")
         );
+    }
+
+    #[test]
+    fn reports_missing_closing_angle_bracket_on_type_param_list() {
+        let (_, diagnostics) = parse_program("struct Box<T { value: T }", "t.aicad");
+        assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn reports_non_identifier_in_type_param_list() {
+        let (_, diagnostics) = parse_program("struct Box<5mm> { value: Int }", "t.aicad");
+        assert!(!diagnostics.is_empty());
     }
 
     #[test]

@@ -89,6 +89,7 @@
 use crate::hir::{
     HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr, HirField, HirImportPath,
     HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam, HirPattern, HirProgram, HirStmt,
+    HirTypeParam,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
@@ -136,8 +137,18 @@ pub fn lower_program(program: &Program, file: &str, source: &str) -> LowerResult
 /// "Duplicate-declaration detection").
 enum DeclaredItem {
     Simple(BindingId),
+    /// A `fn`/`struct` declaration, carrying its own generic type
+    /// parameters' newly minted ids in declaration order (empty for an
+    /// ordinary, non-generic declaration) — `AICAD-057B`, `project/
+    /// OWNER_DECISIONS.md#D17`.
+    Generic {
+        own: BindingId,
+        type_params: Vec<BindingId>,
+    },
     Enum {
         own: BindingId,
+        /// Same as `Generic::type_params` — see its own doc comment.
+        type_params: Vec<BindingId>,
         variants: Vec<BindingId>,
     },
     Import {
@@ -190,6 +201,44 @@ impl<'a> Lowerer<'a> {
         id
     }
 
+    /// Mints a fresh `BindingId` (`BindingKind::TypeParam`) for each
+    /// generic type parameter declared on one `fn`/`struct`/`enum`
+    /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`), diagnosing a
+    /// duplicate name within that same declaration's own list (`struct
+    /// Foo<T, T>`). Deliberately does **not** use `mint`/`self.scopes`:
+    /// type parameters are a type-namespace name, not a value-level one
+    /// (`crate::binder`'s own module doc comment already assigns "type-
+    /// name resolution" entirely to the type checker), so they never
+    /// belong in the value-lookup scope chain `resolve`/`resolve_or_
+    /// diagnose` walk — inserting them there would let a type parameter
+    /// shadow, or be shadowed by, an unrelated value binding, which
+    /// nothing in D17 authorizes.
+    fn mint_type_params(&mut self, type_params: &[Spanned<String>]) -> Vec<BindingId> {
+        let mut seen: HashMap<&str, Span> = HashMap::new();
+        let mut ids = Vec::with_capacity(type_params.len());
+        for param in type_params {
+            if let Some(&first_span) = seen.get(param.node.as_str()) {
+                self.diagnostics.push(duplicate_type_parameter_diagnostic(
+                    self.file,
+                    self.source,
+                    param,
+                    first_span,
+                ));
+            } else {
+                seen.insert(param.node.as_str(), param.span);
+            }
+            let id = BindingId::new(self.bindings.len() as u32);
+            self.bindings.push(Binding {
+                id,
+                name: param.node.clone(),
+                kind: BindingKind::TypeParam,
+                span: param.span,
+            });
+            ids.push(id);
+        }
+        ids
+    }
+
     fn resolve(&self, name: &str) -> Option<BindingId> {
         self.scopes
             .iter()
@@ -234,10 +283,28 @@ impl<'a> Lowerer<'a> {
             Item::Let { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Let)),
             Item::Const { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Const)),
             Item::Param { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Param)),
-            Item::Fn { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Fn)),
-            Item::Struct { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Struct)),
-            Item::Enum { name, variants, .. } => {
+            Item::Fn {
+                name, type_params, ..
+            } => {
+                let own = self.mint(name, BindingKind::Fn);
+                let type_params = self.mint_type_params(type_params);
+                DeclaredItem::Generic { own, type_params }
+            }
+            Item::Struct {
+                name, type_params, ..
+            } => {
+                let own = self.mint(name, BindingKind::Struct);
+                let type_params = self.mint_type_params(type_params);
+                DeclaredItem::Generic { own, type_params }
+            }
+            Item::Enum {
+                name,
+                type_params,
+                variants,
+                ..
+            } => {
                 let own = self.mint(name, BindingKind::Enum);
+                let type_params = self.mint_type_params(type_params);
                 let variant_ids = variants
                     .iter()
                     .map(|variant| {
@@ -251,6 +318,7 @@ impl<'a> Lowerer<'a> {
                     .collect();
                 DeclaredItem::Enum {
                     own,
+                    type_params,
                     variants: variant_ids,
                 }
             }
@@ -316,12 +384,16 @@ impl<'a> Lowerer<'a> {
                 Item::Fn {
                     is_pure,
                     name,
+                    type_params,
                     params,
                     return_ty,
                     body,
                     span,
                 },
-                DeclaredItem::Simple(binding),
+                DeclaredItem::Generic {
+                    own: binding,
+                    type_params: type_param_ids,
+                },
             ) => {
                 self.push_scope();
                 let params = self.lower_fn_params(params);
@@ -331,40 +403,54 @@ impl<'a> Lowerer<'a> {
                     binding,
                     name: name.node.clone(),
                     is_pure: *is_pure,
+                    type_params: lower_type_params(type_params, &type_param_ids),
                     params,
                     return_ty: return_ty.as_ref().map(lower_type),
                     body,
                     span: *span,
                 }
             }
-            (Item::Struct { name, fields, span }, DeclaredItem::Simple(binding)) => {
-                HirItem::Struct {
-                    binding,
-                    name: name.node.clone(),
-                    fields: fields
-                        .iter()
-                        .map(|field| HirField {
-                            name: field.name.node.clone(),
-                            ty: lower_type(&field.ty),
-                            span: field.span,
-                        })
-                        .collect(),
-                    span: *span,
-                }
-            }
+            (
+                Item::Struct {
+                    name,
+                    type_params,
+                    fields,
+                    span,
+                },
+                DeclaredItem::Generic {
+                    own: binding,
+                    type_params: type_param_ids,
+                },
+            ) => HirItem::Struct {
+                binding,
+                name: name.node.clone(),
+                type_params: lower_type_params(type_params, &type_param_ids),
+                fields: fields
+                    .iter()
+                    .map(|field| HirField {
+                        name: field.name.node.clone(),
+                        ty: lower_type(&field.ty),
+                        span: field.span,
+                    })
+                    .collect(),
+                span: *span,
+            },
             (
                 Item::Enum {
                     name,
+                    type_params,
                     variants,
                     span,
                 },
                 DeclaredItem::Enum {
                     own,
+                    type_params: type_param_ids,
                     variants: variant_ids,
                 },
             ) => HirItem::Enum {
                 binding: own,
                 name: name.node.clone(),
+                type_params: lower_type_params(type_params, &type_param_ids),
                 variants: variants
                     .iter()
                     .zip(variant_ids)
@@ -918,6 +1004,46 @@ fn unresolved_binding_diagnostic(file: &str, source: &str, name: &Spanned<String
     )
 }
 
+/// `AICAD-057B`, `project/OWNER_DECISIONS.md#D17`: a `fn`/`struct`/`enum`
+/// declared the same generic type-parameter name twice (`struct Foo<T,
+/// T>`).
+fn duplicate_type_parameter_diagnostic(
+    file: &str,
+    source: &str,
+    duplicate: &Spanned<String>,
+    first_span: Span,
+) -> Diagnostic {
+    let line_index = cad_ast::LineIndex::new(source);
+    let first_start = line_index.line_column(source, first_span.start);
+    diagnostic(
+        445,
+        Severity::Error,
+        "DUPLICATE_TYPE_PARAMETER",
+        format!(
+            "type parameter '{}' is declared more than once (first declared at line {}, column {}).",
+            duplicate.node, first_start.line, first_start.column
+        ),
+        file,
+        source,
+        duplicate.span,
+    )
+}
+
+/// Zips a declaration's own syntactic type-parameter names with the fresh
+/// `BindingId`s `Lowerer::mint_type_params` already minted for them, in
+/// the same order, into the HIR-layer `HirTypeParam` list.
+fn lower_type_params(type_params: &[Spanned<String>], ids: &[BindingId]) -> Vec<HirTypeParam> {
+    type_params
+        .iter()
+        .zip(ids)
+        .map(|(param, &binding)| HirTypeParam {
+            binding,
+            name: param.node.clone(),
+            span: param.span,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1461,5 +1587,88 @@ mod tests {
         };
         assert_eq!(result.bindings[binding.index()].id, *binding);
         assert_eq!(result.bindings[binding.index()].name, "a");
+    }
+
+    // --- AICAD-057B: generic type-parameter lowering
+    //     (project/OWNER_DECISIONS.md#D17) ------------------------------
+
+    #[test]
+    fn generic_struct_type_params_mint_bindings_with_type_param_kind() {
+        let result = lower("struct Pair<T, U> { first: T, second: U }");
+        let HirItem::Struct { type_params, .. } = &result.program.items[0] else {
+            panic!("expected Struct item");
+        };
+        assert_eq!(type_params.len(), 2);
+        assert_eq!(type_params[0].name, "T");
+        assert_eq!(type_params[1].name, "U");
+        for param in type_params {
+            assert_eq!(
+                result.bindings[param.binding.index()].kind,
+                BindingKind::TypeParam
+            );
+        }
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn generic_enum_type_params_are_lowered() {
+        let result = lower("enum Container<T> { Empty }");
+        let HirItem::Enum { type_params, .. } = &result.program.items[0] else {
+            panic!("expected Enum item");
+        };
+        assert_eq!(type_params.len(), 1);
+        assert_eq!(type_params[0].name, "T");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn generic_fn_type_params_are_lowered() {
+        let result = lower("fn identity<T>(value: T) -> T { return value; }");
+        let HirItem::Fn { type_params, .. } = &result.program.items[0] else {
+            panic!("expected Fn item");
+        };
+        assert_eq!(type_params.len(), 1);
+        assert_eq!(type_params[0].name, "T");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn ordinary_non_generic_declarations_lower_with_an_empty_type_param_list() {
+        let result = lower("struct Point2 { x: Length } fn f() { }");
+        let HirItem::Struct { type_params, .. } = &result.program.items[0] else {
+            panic!("expected Struct item");
+        };
+        assert!(type_params.is_empty());
+        let HirItem::Fn { type_params, .. } = &result.program.items[1] else {
+            panic!("expected Fn item");
+        };
+        assert!(type_params.is_empty());
+    }
+
+    #[test]
+    fn duplicate_type_parameter_name_is_reported() {
+        let result = lower("struct Foo<T, T> { a: T }");
+        assert_eq!(codes(&result.diagnostics), vec!["TYPE-E445"]);
+        let HirItem::Struct { type_params, .. } = &result.program.items[0] else {
+            panic!("expected Struct item");
+        };
+        // Both occurrences still each mint their own binding — lowering
+        // recovers rather than dropping the second one.
+        assert_eq!(type_params.len(), 2);
+    }
+
+    #[test]
+    fn type_parameter_names_are_never_inserted_into_the_value_scope() {
+        // `T` used as a type parameter must not shadow, or be confused
+        // with, an ordinary value-level name — it never enters `Lowerer::
+        // scopes` at all (see `Lowerer::mint_type_params`'s own doc
+        // comment). A same-named value identifier used inside the
+        // function body still resolves as an ordinary undefined-name
+        // question, completely independent of the type parameter.
+        let result = lower("fn identity<T>(value: T) -> T { T; return value; }");
+        // `T;` as an *expression* is an undefined value identifier — the
+        // type parameter `T` never leaks into value-identifier
+        // resolution.
+        assert_eq!(codes(&result.diagnostics), vec!["TYPE-E410"]);
     }
 }

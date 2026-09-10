@@ -97,7 +97,7 @@
 
 use crate::hir::{
     BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem, HirLiteral, HirMatchArm,
-    HirPattern, HirProgram, HirStmt, UnaryOp,
+    HirPattern, HirProgram, HirStmt, HirTypeParam, UnaryOp,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
@@ -153,6 +153,21 @@ pub enum CheckedType {
     /// `Checker::check_iterable_element_type`. Same `Copy`-preservation
     /// rationale as [`CheckedType::List`].
     Range(HirType),
+    /// A reference to a generic type parameter declared on the `fn`/
+    /// `struct`/`enum` currently being checked (`AICAD-057B`, `project/
+    /// OWNER_DECISIONS.md#D17`), identified by that parameter's own
+    /// `BindingId` — e.g. `T` inside `fn identity<T>(value: T) -> T`'s own
+    /// signature. This is a placeholder/opaque type only: two
+    /// `TypeParam`s are compatible exactly when they name the same
+    /// declared parameter (`types_compatible`), never when they merely
+    /// *could* unify to the same concrete type — substituting a concrete
+    /// type for a type parameter at a call site (`identity(5mm)` binding
+    /// `T = Length`) is generic instantiation/inference, `AICAD-057D`'s
+    /// job, not this one's. Only ever produced by `resolve_type_ref`
+    /// while `Checker::active_type_params` has an entry for the name
+    /// (i.e. while checking the very declaration that introduced it) —
+    /// never appears as, say, a call argument's inferred type.
+    TypeParam(BindingId),
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -195,6 +210,16 @@ struct Checker<'a> {
     type_names: HashMap<String, BindingId>,
     /// `struct`'s own `BindingId` -> its resolved field list (`AICAD-053`).
     struct_fields: HashMap<BindingId, Vec<FieldInfo>>,
+    /// Type-parameter name -> its own `BindingId`, populated by
+    /// `with_type_params` for exactly the duration of resolving *one*
+    /// generic `fn`/`struct`'s own field/parameter/return types
+    /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`) — the type-
+    /// namespace analogue of `type_names`, but lexically scoped to a
+    /// single declaration rather than global, since two different generic
+    /// declarations may each declare their own unrelated `T`. Empty
+    /// outside that window (in particular, always empty while checking
+    /// ordinary non-generic declarations or any expression body).
+    active_type_params: HashMap<String, BindingId>,
     /// The enclosing function's declared return type, if any — read by
     /// `HirStmt::Return` wherever it is encountered, however deeply
     /// nested inside `if`/`match`/block expressions (see module doc
@@ -223,6 +248,7 @@ pub fn check_program(
         fn_signatures: HashMap::new(),
         type_names: HashMap::new(),
         struct_fields: HashMap::new(),
+        active_type_params: HashMap::new(),
         current_fn_return: None,
     };
     checker.register_type_names(&program.items);
@@ -296,6 +322,7 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::Enum(e), CheckedType::Enum(a)) => e == a,
         (CheckedType::List(e), CheckedType::List(a)) => value_types_compatible(e, a),
         (CheckedType::Range(e), CheckedType::Range(a)) => value_types_compatible(e, a),
+        (CheckedType::TypeParam(e), CheckedType::TypeParam(a)) => e == a,
         _ => false,
     }
 }
@@ -344,6 +371,7 @@ impl<'a> Checker<'a> {
             }
             CheckedType::List(elem) => format!("List<{elem}>"),
             CheckedType::Range(elem) => format!("Range<{elem}>"),
+            CheckedType::TypeParam(id) => self.bindings[id.index()].name.clone(),
         }
     }
 
@@ -413,6 +441,29 @@ impl<'a> Checker<'a> {
     /// invention `AGENTS.md` warns against; every other `Generic`
     /// reference returns `None` silently (no diagnostic — not yet a
     /// typeable one, not a "wrong" name).
+    /// Runs `f` with `type_params` active in `self.active_type_params`
+    /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`), restoring
+    /// whatever was active beforehand (always empty in practice today,
+    /// since generic declarations never nest — kept as a save/restore
+    /// rather than an unconditional clear so nesting stays safe if a
+    /// later task ever introduces it).
+    fn with_type_params<T>(
+        &mut self,
+        type_params: &[HirTypeParam],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = std::mem::replace(
+            &mut self.active_type_params,
+            type_params
+                .iter()
+                .map(|p| (p.name.clone(), p.binding))
+                .collect(),
+        );
+        let result = f(self);
+        self.active_type_params = previous;
+        result
+    }
+
     fn resolve_type_ref(&mut self, ty: &HirTypeRef) -> Option<CheckedType> {
         match ty {
             HirTypeRef::Generic { name, args, span } if name == "List" && args.len() == 1 => {
@@ -455,6 +506,17 @@ impl<'a> Checker<'a> {
             }
             HirTypeRef::Generic { .. } => None,
             HirTypeRef::Named { name, span } => {
+                // `AICAD-057B`, `project/OWNER_DECISIONS.md#D17`: a name
+                // matching the generic declaration currently being
+                // checked's own type-parameter list takes precedence
+                // over everything else — `struct Pair<T, U> { first: T;
+                // ... }` must resolve `T` to that parameter, not fail with
+                // `UNKNOWN_TYPE_NAME` (no primitive/dimension/struct/enum
+                // is plausibly named `T`/`U` in practice, so this ordering
+                // has no observed effect on any non-generic program).
+                if let Some(&id) = self.active_type_params.get(name) {
+                    return Some(CheckedType::TypeParam(id));
+                }
                 if let Some(prim) = PrimitiveType::from_name(name) {
                     return Some(CheckedType::Value(HirType::Scalar(prim)));
                 }
@@ -533,15 +595,20 @@ impl<'a> Checker<'a> {
         for item in items {
             match item {
                 HirItem::Struct {
-                    binding, fields, ..
+                    binding,
+                    type_params,
+                    fields,
+                    ..
                 } => {
-                    let field_infos: Vec<FieldInfo> = fields
-                        .iter()
-                        .map(|f| FieldInfo {
-                            name: f.name.clone(),
-                            ty: self.resolve_type_ref(&f.ty),
-                        })
-                        .collect();
+                    let field_infos: Vec<FieldInfo> = self.with_type_params(type_params, |this| {
+                        fields
+                            .iter()
+                            .map(|f| FieldInfo {
+                                name: f.name.clone(),
+                                ty: this.resolve_type_ref(&f.ty),
+                            })
+                            .collect()
+                    });
                     self.struct_fields.insert(*binding, field_infos);
                 }
                 HirItem::Part { items, .. } => self.collect_struct_fields(items),
@@ -557,23 +624,27 @@ impl<'a> Checker<'a> {
             match item {
                 HirItem::Fn {
                     binding,
+                    type_params,
                     params,
                     return_ty,
                     ..
                 } => {
-                    let param_sigs: Vec<ParamSig> = params
-                        .iter()
-                        .map(|p| {
-                            let ty = self.resolve_type_ref(&p.ty);
-                            self.binding_types[p.binding.index()] = ty;
-                            ParamSig {
-                                binding: p.binding,
-                                ty,
-                                has_default: p.default.is_some(),
-                            }
-                        })
-                        .collect();
-                    let return_ty = return_ty.as_ref().and_then(|t| self.resolve_type_ref(t));
+                    let (param_sigs, return_ty) = self.with_type_params(type_params, |this| {
+                        let param_sigs: Vec<ParamSig> = params
+                            .iter()
+                            .map(|p| {
+                                let ty = this.resolve_type_ref(&p.ty);
+                                this.binding_types[p.binding.index()] = ty;
+                                ParamSig {
+                                    binding: p.binding,
+                                    ty,
+                                    has_default: p.default.is_some(),
+                                }
+                            })
+                            .collect();
+                        let return_ty = return_ty.as_ref().and_then(|t| this.resolve_type_ref(t));
+                        (param_sigs, return_ty)
+                    });
                     self.fn_signatures.insert(
                         *binding,
                         FnSignature {
@@ -638,27 +709,38 @@ impl<'a> Checker<'a> {
             }
             HirItem::Fn {
                 binding,
+                type_params,
                 params,
                 body,
                 ..
             } => {
-                for p in params {
-                    if let Some(default) = &p.default {
-                        let expected = self.binding_types[p.binding.index()];
-                        self.check_expected(
-                            default,
-                            expected,
-                            default.span(),
-                            418,
-                            "ARGUMENT_TYPE_MISMATCH",
-                        );
+                self.with_type_params(type_params, |this| {
+                    for p in params {
+                        if let Some(default) = &p.default {
+                            let expected = this.binding_types[p.binding.index()];
+                            this.check_expected(
+                                default,
+                                expected,
+                                default.span(),
+                                418,
+                                "ARGUMENT_TYPE_MISMATCH",
+                            );
+                        }
                     }
-                }
-                let return_ty = self.fn_signatures.get(binding).and_then(|s| s.return_ty);
-                let previous_return = self.current_fn_return;
-                self.current_fn_return = return_ty;
-                self.check_block(body, None);
-                self.current_fn_return = previous_return;
+                    let return_ty = this.fn_signatures.get(binding).and_then(|s| s.return_ty);
+                    let previous_return = this.current_fn_return;
+                    this.current_fn_return = return_ty;
+                    // `T` (and any other of this function's own type
+                    // parameters) stays resolvable while checking the
+                    // body too — e.g. a `let y: T = value;` local
+                    // annotation — not only the signature itself
+                    // (`AICAD-057B`); the body is not otherwise given any
+                    // special generic treatment here (no instantiation/
+                    // inference happens for calls inside it — that is
+                    // `AICAD-057D`'s job).
+                    this.check_block(body, None);
+                    this.current_fn_return = previous_return;
+                });
             }
             // Fields/variants were already resolved in the type-name/
             // struct-field passes above — nothing left to check here
@@ -2495,5 +2577,86 @@ mod tests {
     fn for_over_a_non_iterable_expression_is_rejected() {
         let (_lowered, checked) = check("fn f() -> Int { for x in 5 { } return 0; }");
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E443"]);
+    }
+
+    // --- AICAD-057B: generic type-parameter resolution
+    //     (project/OWNER_DECISIONS.md#D17) ------------------------------
+
+    #[test]
+    fn generic_struct_with_one_type_parameter_type_checks_cleanly() {
+        let (_lowered, checked) = check("struct Box<T> { value: T }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_struct_with_two_type_parameters_type_checks_cleanly() {
+        let (_lowered, checked) = check("struct Pair<T, U> { first: T, second: U }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_enum_type_checks_cleanly() {
+        let (_lowered, checked) = check("enum Container<T> { Empty }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_function_with_matching_param_and_return_type_parameter_type_checks_cleanly() {
+        let (_lowered, checked) = check("fn identity<T>(value: T) -> T { return value; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_function_body_can_reference_its_own_type_parameter_in_a_let_annotation() {
+        let (_lowered, checked) =
+            check("fn identity<T>(value: T) -> T { let y: T = value; return y; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn two_different_generic_declarations_use_independent_type_parameters() {
+        // Both declare a parameter named "T", but they must not be
+        // treated as the same type — each declaration's own `T` is scoped
+        // to it alone.
+        let (lowered, checked) = check("struct A<T> { x: T } struct B<T> { y: T }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Struct { type_params: a, .. } = &lowered.program.items[0] else {
+            panic!("expected Struct item");
+        };
+        let HirItem::Struct { type_params: b, .. } = &lowered.program.items[1] else {
+            panic!("expected Struct item");
+        };
+        assert_ne!(a[0].binding, b[0].binding);
+    }
+
+    #[test]
+    fn mismatched_generic_function_type_parameters_are_reported() {
+        // `b`'s declared type is `U`, not `T` — returning it where `T` is
+        // expected is a genuine type mismatch, proving `CheckedType::
+        // TypeParam` actually distinguishes declared parameters rather
+        // than acting as a universal wildcard.
+        let (_lowered, checked) = check("fn f<T, U>(a: T, b: U) -> T { return b; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    #[test]
+    fn duplicate_type_parameter_name_is_reported_by_type_checking_too() {
+        // The diagnostic itself is raised during lowering (`AICAD-057B`'s
+        // own `cad_hir::lower` test), but a program carrying it must still
+        // reach `check_program` without panicking — both mistakenly-
+        // duplicated bindings still get a `CheckedType`.
+        let (program, parse_diagnostics) =
+            cad_parser::parse_program("struct Foo<T, T> { a: T }", "test.aicad");
+        assert!(parse_diagnostics.is_empty());
+        let lowered =
+            crate::lower::lower_program(&program, "test.aicad", "struct Foo<T, T> { a: T }");
+        assert_eq!(codes(&lowered.diagnostics), vec!["TYPE-E445"]);
+        let checked = check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            "struct Foo<T, T> { a: T }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
 }

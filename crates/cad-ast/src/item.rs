@@ -30,7 +30,15 @@
 //!   now would be exactly the kind of speculative syntax `AGENTS.md`
 //!   warns against. Adding it later (`AICAD-053`'s "enums field and
 //!   variant typing" or a dedicated grammar update) is a small additive
-//!   grammar change, not a redesign.
+//!   grammar change, not a redesign. **Update (`AICAD-057B`,
+//!   `project/OWNER_DECISIONS.md#D17`/`project/DECISION_LOG.md#DL-14`):**
+//!   this remains true for variant *payloads* specifically (`AICAD-057C`'s
+//!   job) — but `Item::Fn`/`Item::Struct`/`Item::Enum` now each carry an
+//!   ordinary `type_params: Vec<Spanned<String>>` list (`struct
+//!   Pair<T, U> { ... }`, `enum Optional<T> { ... }`, `fn identity<T>(...)`)
+//!   per the owner's D17 ruling, which is no longer speculative syntax —
+//!   see that ruling for the exact authorized shape and scope limits
+//!   (no bounds/higher-kinded types/variance/specialization here).
 //! - `assign_stmt`'s target stays a bare identifier, exactly as the
 //!   grammar specifies (`assign_stmt = identifier "=" expression ";"`) —
 //!   no field-assignment target (`a.b = x;`), which is consistent with
@@ -232,25 +240,37 @@ pub enum Item {
         default: Option<Expr>,
         span: Span,
     },
-    /// `["pure"] fn name(params) [-> Type] block`.
+    /// `["pure"] fn name ["<" type_param { "," type_param } [","] ">"]
+    /// (params) [-> Type] block`. `type_params` is empty for an ordinary,
+    /// non-generic function (`AICAD-057B`, `project/OWNER_DECISIONS.md
+    /// #D17`).
     Fn {
         is_pure: bool,
         name: Spanned<String>,
+        type_params: Vec<Spanned<String>>,
         params: Vec<FnParam>,
         return_ty: Option<Type>,
         body: Block,
         span: Span,
     },
-    /// `struct name { field, field, ... }`.
+    /// `struct name ["<" type_param { "," type_param } [","] ">"]
+    /// { field, field, ... }`. `type_params` is empty for an ordinary,
+    /// non-generic struct (`AICAD-057B`, `project/OWNER_DECISIONS.md
+    /// #D17`).
     Struct {
         name: Spanned<String>,
+        type_params: Vec<Spanned<String>>,
         fields: Vec<Field>,
         span: Span,
     },
-    /// `enum name { Variant, Variant, ... }` — unit variants only, see
-    /// module doc comment.
+    /// `enum name ["<" type_param { "," type_param } [","] ">"]
+    /// { Variant, Variant, ... }` — unit variants only, see module doc
+    /// comment (`AICAD-057C` adds tuple/record payload variants).
+    /// `type_params` is empty for an ordinary, non-generic enum
+    /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`).
     Enum {
         name: Spanned<String>,
+        type_params: Vec<Spanned<String>>,
         variants: Vec<Spanned<String>>,
         span: Span,
     },
