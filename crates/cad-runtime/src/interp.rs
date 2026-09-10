@@ -78,6 +78,29 @@
 //! numeric-scalar runtime representation cannot observe it — see that
 //! method's doc comment for why this is safe, not a gap).
 //!
+//! Also executed/hardened (`AICAD-057`): recursion (self- and mutual-
+//! recursive function calls need no new HIR shape at all — ordinary
+//! `HirExpr::Call` already covers a function calling itself or a sibling,
+//! `Interpreter::new`'s own up-front `fns` index already resolves either
+//! direction regardless of declaration order) and error propagation
+//! through the call stack (a [`crate::error::RuntimeError`] raised at any
+//! call depth, through any control-flow construct this crate executes,
+//! unwinds to the top as exactly one diagnostic via the same
+//! `Signal::Error`/`?` mechanism every other construct already uses — no
+//! new plumbing needed). New: [`Interpreter::enter_call`]/[`Interpreter::
+//! exit_call`] enforce a recursion-depth budget
+//! ([`RuntimeError::RecursionLimitExceeded`]) — seeded here after a *real*
+//! native Rust stack overflow was reproduced empirically while writing
+//! this task's own tests (see [`DEFAULT_MAX_CALL_DEPTH`]'s own doc comment
+//! for the exact measurement); a minimal placeholder for `AICAD-058`'s own
+//! scheduled resource-budget scope, mirroring [`Interpreter::
+//! consume_iteration_budget`]'s identical role for `for` loops. A source-
+//! visible `Result<T,E>` value (`Ok`/`Err` construction and matching) is
+//! **not** implemented — escalated as `project/OWNER_DECISIONS.md#D17`
+//! (AICAD enum variants cannot carry data, and AICAD has no user-defined
+//! generic types, at all, independent of this crate; see that entry for
+//! the full reasoning).
+//!
 //! Deliberately **not** executed yet (each returns [`crate::error::
 //! RuntimeError::Unsupported`], never a panic, so a program exercising one
 //! of these fails cleanly rather than silently or incorrectly): struct
@@ -188,6 +211,16 @@ pub struct Interpreter<'a> {
     /// minimal placeholder for `AICAD-058`'s own full resource-budget
     /// scope, not that task's complete contract.
     iterations_remaining: u64,
+    /// The current dynamic function-call depth (0 at top level, +1 for
+    /// every [`Interpreter::run_fn_body`] currently on the Rust call
+    /// stack) — see [`Interpreter::enter_call`]'s own doc comment.
+    call_depth: u64,
+    /// The call-depth limit [`Interpreter::enter_call`] enforces — see
+    /// [`RuntimeError::RecursionLimitExceeded`]'s own doc comment for why
+    /// this exists and why it is a deliberately minimal placeholder for
+    /// `AICAD-058`'s own full resource-budget scope, exactly like
+    /// [`Interpreter::iterations_remaining`].
+    max_call_depth: u64,
 }
 
 /// The default `for`-loop iteration budget a fresh [`Interpreter`] starts
@@ -198,6 +231,38 @@ pub struct Interpreter<'a> {
 /// a smaller one (tests exercising [`RuntimeError::IterationBudgetExceeded`]
 /// itself, or a future `AICAD-058` caller).
 pub const DEFAULT_ITERATION_BUDGET: u64 = 10_000_000;
+
+/// The default recursion-depth limit a fresh [`Interpreter`] starts with.
+///
+/// Chosen from direct empirical measurement in this crate's own debug-
+/// profile test environment, not a round guess: each AICAD-level function
+/// call recurses through several native Rust frames (`eval_expr` ->
+/// `call`/`call_by_values` -> `run_fn_body` -> `exec_block` -> `exec_stmt`
+/// -> `eval_expr` -> ...), and an unoptimized debug build's own per-frame
+/// stack usage turned out to be far larger than a first guess assumed — a
+/// self-recursive test at 120 levels deep reliably produced a *real* Rust
+/// stack overflow (`SIGABRT`, not a catchable `Result`) on an initial,
+/// much higher placeholder limit, while 100 levels deep reliably
+/// succeeded, discovered while writing this task's own tests (see
+/// `project/reports/AICAD-057.md`'s own decision record for the full
+/// measurement). Since the exact safe threshold depends on build profile
+/// (debug vs. release), OS thread stack size, and this evaluator's own
+/// future stack-frame footprint (a later change adding more per-frame
+/// locals could shrink the safe margin further without warning), this
+/// default is set well below the observed danger zone rather than close
+/// to it — the entire purpose of [`RuntimeError::RecursionLimitExceeded`]
+/// is to raise a clean, structured failure comfortably before a real stack
+/// overflow (`AGENTS.md` "Execution safety": "Recursion... must fail with
+/// structured diagnostics rather than crashing the host process"), which
+/// no `Result`/diagnostic can ever recover from once it actually happens.
+/// `moderately_deep_self_recursion_succeeds_within_the_default_budget`'s
+/// own 50-level test (run under this exact default, not an overridden
+/// one) exists specifically to catch a future regression that erodes this
+/// margin. See [`Interpreter::with_max_call_depth`] to configure a
+/// different one (tests needing a smaller limit; a future `AICAD-058`
+/// caller wanting a real, environment-calibrated limit — e.g. a release
+/// build with a known larger thread stack could safely raise this).
+pub const DEFAULT_MAX_CALL_DEPTH: u64 = 64;
 
 impl<'a> Interpreter<'a> {
     pub fn new(
@@ -215,6 +280,8 @@ impl<'a> Interpreter<'a> {
             fns,
             globals: HashMap::new(),
             iterations_remaining: DEFAULT_ITERATION_BUDGET,
+            call_depth: 0,
+            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
         }
     }
 
@@ -225,6 +292,17 @@ impl<'a> Interpreter<'a> {
     /// to configure a real, externally-supplied budget.
     pub fn with_iteration_budget(mut self, budget: u64) -> Interpreter<'a> {
         self.iterations_remaining = budget;
+        self
+    }
+
+    /// Overrides this interpreter's recursion-depth limit (default
+    /// [`DEFAULT_MAX_CALL_DEPTH`]). Exists for tests that need a smaller
+    /// limit to observe [`RuntimeError::RecursionLimitExceeded`] quickly,
+    /// and for a future `AICAD-058` caller to configure a real,
+    /// environment-calibrated limit (see [`DEFAULT_MAX_CALL_DEPTH`]'s own
+    /// doc comment for why the default itself is conservative).
+    pub fn with_max_call_depth(mut self, max_call_depth: u64) -> Interpreter<'a> {
+        self.max_call_depth = max_call_depth;
         self
     }
 
@@ -496,7 +574,8 @@ impl<'a> Interpreter<'a> {
         else {
             unreachable!("run_fn_body is only ever called with an HirItem::Fn")
         };
-        match self.exec_block(&mut frame, body) {
+        self.enter_call(*span)?;
+        let result = match self.exec_block(&mut frame, body) {
             Ok(_completed_without_return) => {
                 if return_ty.is_some() {
                     Err(RuntimeError::MissingReturn {
@@ -518,7 +597,32 @@ impl<'a> Interpreter<'a> {
             Err(Signal::Break(span)) => Err(RuntimeError::BreakOutsideLoop { span }.into()),
             Err(Signal::Continue(span)) => Err(RuntimeError::ContinueOutsideLoop { span }.into()),
             Err(err @ Signal::Error(_)) => Err(err),
+        };
+        self.exit_call();
+        result
+    }
+
+    /// Charges one function-call level against this interpreter's
+    /// recursion-depth limit (`AICAD-057`) — the single choke point both
+    /// [`Interpreter::call`] (a real `HirExpr::Call` site) and
+    /// [`Interpreter::call_by_values`] (the `call_by_name` convenience
+    /// entry point) ultimately share, so every function invocation is
+    /// charged exactly once regardless of which path reached it. Always
+    /// paired with [`Interpreter::exit_call`] before `run_fn_body` returns
+    /// — on *every* exit path, `Ok` or `Err` alike, so a deeply recursive
+    /// call chain that fails partway through still leaves `call_depth`
+    /// correctly balanced for whatever the caller does next (proven by
+    /// `recursion_limit_is_restored_after_an_error_unwinds`).
+    fn enter_call(&mut self, span: Span) -> EvalResult<()> {
+        if self.call_depth >= self.max_call_depth {
+            return Err(RuntimeError::RecursionLimitExceeded { span }.into());
         }
+        self.call_depth += 1;
+        Ok(())
+    }
+
+    fn exit_call(&mut self) {
+        self.call_depth -= 1;
     }
 
     /// Executes every statement in `block`, then evaluates its trailing
@@ -1575,8 +1679,10 @@ mod tests {
     #[test]
     fn if_statement_with_early_return_short_circuits_recursion() {
         // Now that `if` executes (`AICAD-055`), genuine terminating
-        // recursion is expressible — though bounding call depth is
-        // `AICAD-058`'s own scheduled scope, not this task's.
+        // recursion is expressible. `AICAD-057` gives it a real, minimal
+        // recursion-depth budget (see the dedicated "Recursion / error
+        // propagation" test section below); `AICAD-058` is expected to
+        // generalize it into the full resource-budget contract.
         let lowered = compiled(
             "fn fact(n: Float) -> Float { \
                  if n <= 1.0 { return 1.0; } \
@@ -2034,6 +2140,162 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
             .with_iteration_budget(3);
         assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 3.0);
+    }
+
+    // --- Recursion / error propagation (AICAD-057) ---
+
+    #[test]
+    fn mutual_recursion_terminates_correctly() {
+        // Two functions calling each other — genuinely different from
+        // `AICAD-055`'s own self-recursive `fact`/`sign` tests, and only
+        // expressible at all because `Interpreter::new` already indexes
+        // every `fn` up front (module doc comment), so `is_even` can call
+        // `is_odd` even though `is_odd` is declared after it.
+        let lowered = compiled(
+            "fn is_even(n: Int) -> Bool { \
+                 if n == 0 { return true; } \
+                 return is_odd(n - 1); \
+             } \
+             fn is_odd(n: Int) -> Bool { \
+                 if n == 0 { return false; } \
+                 return is_even(n - 1); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_eq!(
+            interp.call_by_name("is_even", vec![number(10.0)]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            interp.call_by_name("is_odd", vec![number(10.0)]).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            interp.call_by_name("is_even", vec![number(7.0)]).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn moderately_deep_self_recursion_succeeds_within_the_default_budget() {
+        // 50 levels deep, under `Interpreter::new`'s own real default
+        // budget (`DEFAULT_MAX_CALL_DEPTH`, 64) — not an overridden one —
+        // proving the *default* does not reject ordinary recursive
+        // programs. Deliberately kept well below both that default and
+        // this crate's own empirically-observed native-stack-overflow
+        // danger zone (see `DEFAULT_MAX_CALL_DEPTH`'s own doc comment):
+        // this test's job is to catch a future regression that erodes the
+        // safety margin, not to probe exactly where the real overflow is.
+        let lowered = compiled(
+            "fn count_down(n: Int) -> Int { \
+                 if n <= 0 { return 0; } \
+                 return 1 + count_down(n - 1); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(
+            interp
+                .call_by_name("count_down", vec![number(50.0)])
+                .unwrap(),
+            50.0,
+        );
+    }
+
+    #[test]
+    fn recursion_limit_exceeded_is_a_clean_error_not_a_stack_overflow() {
+        // Configured to a tiny budget so the test stays fast and does not
+        // depend on the real (2,000-deep) default — `f` recurses
+        // unconditionally (no base case), so without a limit this would
+        // either run forever or crash the host process with a native
+        // stack overflow; with the limit, it fails cleanly instead
+        // (`AGENTS.md` "Execution safety").
+        let lowered = compiled("fn f(n: Int) -> Int { return 1 + f(n + 1); }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_max_call_depth(10);
+        let err = interp.call_by_name("f", vec![number(0.0)]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E124");
+    }
+
+    #[test]
+    fn recursion_limit_is_restored_after_an_error_unwinds() {
+        // Proves `Interpreter::enter_call`/`exit_call` stay correctly
+        // balanced even when a call chain fails partway through: the
+        // first call exhausts the (tiny) budget and fails, but a
+        // completely unrelated *second* call on the same `Interpreter`
+        // must still succeed — if `call_depth` were left incremented after
+        // the first call's error unwound, this second call would
+        // spuriously fail too.
+        let lowered = compiled(
+            "fn unconditional(n: Int) -> Int { return 1 + unconditional(n + 1); } \
+             fn trivial() -> Int { return 42; }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_max_call_depth(5);
+        let err = interp
+            .call_by_name("unconditional", vec![number(0.0)])
+            .unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E124");
+        assert_number_eq(interp.call_by_name("trivial", vec![]).unwrap(), 42.0);
+    }
+
+    #[test]
+    fn runtime_error_propagates_through_several_levels_of_call_nesting() {
+        // A `DivisionByZero` raised four call-levels deep (d -> c -> b ->
+        // a) must surface as exactly that error at the top, never
+        // swallowed, never a panic, and never misreported as some other
+        // failure picked up along the way.
+        let lowered = compiled(
+            "fn a() -> Float { return b(); } \
+             fn b() -> Float { return c(); } \
+             fn c() -> Float { return d(); } \
+             fn d() -> Float { return 1.0 / 0.0; }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("a", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E106");
+    }
+
+    #[test]
+    fn runtime_error_propagates_out_of_nested_control_flow_and_calls() {
+        // The failing call is itself nested inside a `for` loop inside an
+        // `if` inside a function several levels deep in the call chain —
+        // proving error propagation composes correctly across every
+        // control-flow construct this crate executes, not just a bare
+        // `return`.
+        let lowered = compiled(
+            "fn fails() -> Float { return 1.0 / 0.0; } \
+             fn middle() -> Float { \
+                 var total = 0.0; \
+                 for i in 0..3 { \
+                     if i == 1 { total = total + fails(); } \
+                 } \
+                 return total; \
+             } \
+             fn outer() -> Float { return middle(); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("outer", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E106");
+    }
+
+    #[test]
+    fn recursive_computation_correctly_propagates_a_successful_result() {
+        // The complementary positive case to the error-propagation tests
+        // above: a value computed at the deepest level of a recursive call
+        // chain must correctly propagate all the way back out through
+        // every intermediate `return`.
+        let lowered = compiled(
+            "fn sum_to(n: Int) -> Int { \
+                 if n <= 0 { return 0; } \
+                 return n + sum_to(n - 1); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // 10 + 9 + ... + 1 + 0 = 55
+        assert_number_eq(
+            interp.call_by_name("sum_to", vec![number(10.0)]).unwrap(),
+            55.0,
+        );
     }
 
     // --- Unsupported constructs fail cleanly, never panic ---

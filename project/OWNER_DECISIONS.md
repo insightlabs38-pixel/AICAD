@@ -40,6 +40,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D14 File extension/branding | RESOLVED — DL-4 |
 | D15 Plugin runtime (WASM vs. external) | open |
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
+| D17 Result<T,E>/data-carrying enum variants | open |
 
 ---
 
@@ -492,6 +493,103 @@ end-to-end proof may need to iterate over geometry query results per
 `docs/plan/02_LANGUAGE_AND_COMPILER.md` §"All major collections should be
 iterable", which this decision's `List<T>`/`Range<T>` foundation can now
 support.
+
+---
+
+## D17. `Result<T,E>` construction syntax (data-carrying enum variants + user-defined generics)
+
+**Question:** `AICAD-057` ("Implement recursion and Result/error
+propagation") needs to give the language a real `Result<T,E>` value a
+program can construct (`Ok(value)`) and match (`Ok(x) => ...`/`Err(e) =>
+...`) — but no `.aicad` source program can do either today, for two
+independent, more fundamental reasons than `D16`'s collection-syntax gap:
+
+1. **AICAD enum variants cannot carry data at all.** `cad-ast`'s own enum-
+   declaration parser (`Parser::parse_enum_variants`) returns
+   `Vec<Spanned<String>>` — bare variant names only, confirmed by direct
+   inspection, and `cad_ast::item`'s own module doc comment independently
+   records the identical finding ("no evidence anywhere supports enum
+   variants carrying data at all"). `Result<T,E>` (`Ok(T)` / `Err(E)`) is
+   structurally a two-variant tagged union where *each variant carries a
+   payload* — a different, larger kind of enum than anything approved so
+   far (every existing AICAD enum, including the paper example's
+   `MotorType`, is unit-variants-only).
+2. **AICAD has no user-defined generic types or functions at all.**
+   `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §12's own `fn
+   mount<T: MotorMount>(...)` example is listed as a still-to-support
+   future feature, not implemented syntax — confirmed against
+   `cad-parser`'s `parse_type`/function-declaration parsing, neither of
+   which accepts a type-parameter list anywhere. `D16` special-cased
+   exactly two built-in generic names (`List`, `Range`) inside
+   `cad_hir::typeck::resolve_type_ref` specifically *because* no general
+   generic-type system exists — `Result<T,E>` as a *user-visible, fully
+   general* two-parameter generic type is a different, larger question
+   `D16` explicitly did not answer (see that entry's own "Blocking
+   impact": "`AICAD-057` remains its own, separate scope").
+
+Both are `AGENTS.md` owner-escalation triggers in their own right
+("change public language syntax or semantics beyond an approved RFC" for
+new enum-variant-payload/generic-type-parameter grammar; "select between
+major unresolved architecture alternatives" for how generics/data-carrying
+enums should work at all), and both are listed verbatim as `AICAD-057`'s
+own `project/TASKS.yaml` `escalate_if` conditions.
+
+**What `AICAD-057` implemented without needing this ruling:** recursion
+(self- and mutual-recursive function calls, already expressible via
+ordinary function-call syntax with no new grammar) and error propagation
+through the call stack (a `RuntimeError` raised at any depth, through any
+control-flow construct, correctly unwinds to the top as one diagnostic,
+never silently swallowed) — both real WP-04 execution-layer requirements
+with zero syntax gap, plus a new recursion-depth budget
+(`RuntimeError::RecursionLimitExceeded`) satisfying `AGENTS.md`'s
+"Recursion... must fail with structured diagnostics rather than crashing
+the host process" (a *native Rust stack overflow* was actually reproduced
+during this task's own testing at a surprisingly shallow depth in this
+crate's debug-build environment — see `project/reports/AICAD-057.md` and
+`crates/cad-runtime/src/interp.rs`'s own `DEFAULT_MAX_CALL_DEPTH` doc
+comment for the exact empirical finding). See that report for the full
+scope split.
+
+Live options for `Result<T,E>` itself, none decided here:
+1. Add general data-carrying enum-variant syntax (`enum Name { Variant(T),
+   ... }`) plus general user-defined generic type parameters (`enum
+   Result<T,E> { Ok(T), Err(E) }`, `fn f<T>(...)`), then define `Result<T,
+   E>` as an ordinary standard-library enum built from those two features
+   — broadest, most general-purpose, but the largest new-syntax surface
+   (touches declaration grammar, typed HIR, pattern matching, and the type
+   checker's whole nominal-type story at once).
+2. Special-case `Result<T,E>`/`Ok`/`Err` narrowly (mirroring `D16`'s own
+   `List`/`Range` special-casing inside `resolve_type_ref`) without
+   general user-defined generics or general data-carrying enums — smaller
+   surface, but does not generalize to any other future data-carrying type
+   (`Optional<T>` next, from the same §9 collection list) without
+   repeating the same special-case exercise.
+3. Defer `Result<T,E>` entirely for Stage 2 and scope `AICAD-057` to
+   recursion + call-stack error propagation only (already implemented,
+   see above) — `Result<T,E>` becomes explicit future work, tracked here
+   rather than silently dropped.
+
+**Plan references:** `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §9
+(`Result<T,E>` in the required-collections list), §12 (`fn mount<T:
+MotorMount>` generics example, unimplemented); `docs/plan/
+04_HIGH_LEVEL_MODELING_API.md` ("`try_*` forms can expose `Result<T,E>`
+explicitly" — a future high-level API detail, not concrete syntax);
+`cad_ast::item`'s own module doc comment (unit-only enum variants);
+`AGENTS.md` escalation triggers "change public language syntax or
+semantics beyond an approved RFC" and "select between major unresolved
+architecture alternatives"; `project/TASKS.yaml`'s `AICAD-057` entry
+lists both as its own `escalate_if` conditions verbatim.
+
+**Status:** Open, raised by `AICAD-057` (`project/reports/AICAD-057.md`).
+Blocks giving `Result<T,E>` a real, source-constructible value; does not
+block recursion or call-stack error propagation, which `AICAD-057`
+completed without needing it.
+
+**Blocking impact:** `AICAD-057` (`Result<T,E>` construction/matching
+only — see above); any later task that assumes a source-visible
+`Result<T,E>`/`Optional<T>` value or general user-defined generic/data-
+carrying enum exists should check this entry first rather than assume one
+does.
 
 ---
 

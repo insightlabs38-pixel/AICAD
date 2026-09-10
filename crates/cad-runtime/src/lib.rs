@@ -11,9 +11,13 @@
 //! collections/iterators") added `while`/`loop`/`break`/`continue`, then
 //! (after `project/OWNER_DECISIONS.md#D16`'s owner ruling on collection/
 //! iterator construction syntax) `List<T>`/`Range<Int>`/`Range<UInt>`
-//! values and `for`-loop execution over them (see `project/reports/
-//! AICAD-054.md`, `AICAD-055.md`, `AICAD-056.md` for each task's exact
-//! scope, decisions, and known limitations). See [`interp`]'s own module
+//! values and `for`-loop execution over them; `AICAD-057` ("Implement
+//! recursion and Result/error propagation") hardened recursion with a real
+//! recursion-depth budget and added dedicated call-stack error-propagation
+//! coverage (see `project/reports/AICAD-054.md` through `AICAD-057.md` for
+//! each task's exact scope, decisions, and known limitations —
+//! `AICAD-057`'s own `Result<T,E>` half is escalated as `project/
+//! OWNER_DECISIONS.md#D17`, not implemented). See [`interp`]'s own module
 //! doc comment for the full design: what is executed now, what remains
 //! deliberately unimplemented, and the one documented `expected`-type-
 //! context gap left for ambiguous derived-dimension arithmetic.

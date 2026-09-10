@@ -254,6 +254,21 @@ pub enum RuntimeError {
     IterationBudgetExceeded {
         span: Span,
     },
+    /// A function call's own dynamic nesting depth exceeded
+    /// [`crate::interp::Interpreter`]'s configured recursion-depth limit
+    /// (`AICAD-057`). `AGENTS.md`'s "Execution safety" requires
+    /// "Recursion/resource exhaustion must fail with structured
+    /// diagnostics rather than crashing the host process" — a real Rust
+    /// stack overflow (which unbounded native recursion in this tree-
+    /// walking evaluator would eventually cause) is not something any
+    /// `Result`/diagnostic can recover from, so this limit exists
+    /// specifically to raise a clean, structured failure well before that
+    /// point. A minimal, provisional placeholder for `AICAD-058`'s own
+    /// scheduled "execution resource-budget accounting" — same rationale
+    /// as [`RuntimeError::IterationBudgetExceeded`].
+    RecursionLimitExceeded {
+        span: Span,
+    },
 }
 
 impl RuntimeError {
@@ -287,6 +302,7 @@ impl RuntimeError {
             RuntimeError::NotIterable { .. } => "RUNTIME-E121".to_string(),
             RuntimeError::RangeNotIterable { .. } => "RUNTIME-E122".to_string(),
             RuntimeError::IterationBudgetExceeded { .. } => "RUNTIME-E123".to_string(),
+            RuntimeError::RecursionLimitExceeded { .. } => "RUNTIME-E124".to_string(),
         }
     }
 
@@ -315,7 +331,8 @@ impl RuntimeError {
             | RuntimeError::ContinueOutsideLoop { span }
             | RuntimeError::NotIterable { span, .. }
             | RuntimeError::RangeNotIterable { span }
-            | RuntimeError::IterationBudgetExceeded { span } => *span,
+            | RuntimeError::IterationBudgetExceeded { span }
+            | RuntimeError::RecursionLimitExceeded { span } => *span,
         }
     }
 
@@ -345,6 +362,7 @@ impl RuntimeError {
             RuntimeError::NotIterable { .. } => "NOT_ITERABLE",
             RuntimeError::RangeNotIterable { .. } => "RANGE_NOT_ITERABLE",
             RuntimeError::IterationBudgetExceeded { .. } => "ITERATION_BUDGET_EXCEEDED",
+            RuntimeError::RecursionLimitExceeded { .. } => "RECURSION_LIMIT_EXCEEDED",
         }
     }
 
@@ -419,6 +437,9 @@ impl RuntimeError {
             }
             RuntimeError::IterationBudgetExceeded { .. } => {
                 "'for' loop exceeded its execution iteration budget".to_string()
+            }
+            RuntimeError::RecursionLimitExceeded { .. } => {
+                "function call exceeded this interpreter's recursion-depth limit".to_string()
             }
         }
     }
