@@ -40,7 +40,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D14 File extension/branding | RESOLVED — DL-4 |
 | D15 Plugin runtime (WASM vs. external) | open |
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
-| D17 Result<T,E>/data-carrying enum variants | open |
+| D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
 
 ---
 
@@ -580,16 +580,36 @@ semantics beyond an approved RFC" and "select between major unresolved
 architecture alternatives"; `project/TASKS.yaml`'s `AICAD-057` entry
 lists both as its own `escalate_if` conditions verbatim.
 
-**Status:** Open, raised by `AICAD-057` (`project/reports/AICAD-057.md`).
-Blocks giving `Result<T,E>` a real, source-constructible value; does not
-block recursion or call-stack error propagation, which `AICAD-057`
-completed without needing it.
+**Status: RESOLVED (option 1 — general generics + general data-carrying
+enums) — see `project/DECISION_LOG.md#DL-14`.** The owner selected option 1
+above, not the narrow `D16`-style special case (option 2) or deferral
+(option 3): Stage 2 adds the minimum *general* language machinery for
+ordinary generic algebraic data types and generic functions (type
+parameters on `struct`/`enum`/`fn` declarations, `Name<T,U>` type
+application at declaration sites, tuple/record enum-variant payloads,
+corresponding destructuring patterns, nominal-enum match-exhaustiveness
+checking, and call-site generic instantiation/inference for the approved
+subset), and `Result<T,E>`/`Optional<T>` are then defined as ordinary
+prelude enums built from that machinery — no `Result`-specific compiler
+semantics beyond ordinary prelude registration. Higher-kinded types,
+variance, specialization, generic metaprogramming, variadic generics,
+dependent types, generic associated types, and lifetime parameters remain
+out of scope; interface/trait bounds (`T: MotorMount`) remain deferred
+until the interface system exists, unless a later Stage-2 coverage-audit
+finding shows otherwise (`project/reports/AICAD-057A.md` found no such
+requirement). No `?`-operator or other new propagation syntax is
+authorized — `Result` values are propagated with ordinary `match` for now.
+See `project/DECISION_LOG.md#DL-14` for the full ruling text and the fixed
+remediation task sequence (`AICAD-057A`..`AICAD-057F`) it prescribes before
+the original `AICAD-057` resumes.
 
-**Blocking impact:** `AICAD-057` (`Result<T,E>` construction/matching
-only — see above); any later task that assumes a source-visible
-`Result<T,E>`/`Optional<T>` value or general user-defined generic/data-
-carrying enum exists should check this entry first rather than assume one
-does.
+**Blocking impact:** Resolved; implementation proceeds via
+`AICAD-057B`(generics syntax/AST/HIR) -> `AICAD-057C` (data-carrying enums/
+patterns/exhaustiveness) -> `AICAD-057D` (generic instantiation/inference)
+-> `AICAD-057E` (`Result<T,E>`/`Optional<T>` as ordinary prelude generics)
+-> `AICAD-057F` (adversarial generality proof) -> original `AICAD-057`
+resumes -> `AICAD-058` -> the `STAGE2-C_EXECUTION` checkpoint, in that fixed
+order (`project/TASKS.yaml`, `project/SESSION_HANDOFF.md`).
 
 ---
 

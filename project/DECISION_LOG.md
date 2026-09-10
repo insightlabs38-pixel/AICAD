@@ -598,3 +598,140 @@ them; do not add entries here unilaterally.
   type exists should re-check this entry's explicit scope limit before
   extending it.
 - Supersedes: none (first ruling on D16).
+
+---
+
+## DL-14: D17 — generics, data-carrying enums, and Result/Optional
+
+- Date: 2026-09-10
+- Resolves: `OWNER_DECISIONS.md#D17`.
+- Decision: `AICAD-057` must not special-case `Result<T,E>`. Stage 2 is
+  authorized to add the minimum *general* language machinery for ordinary
+  generic algebraic data types and generic functions:
+  - **Data-carrying enums.** AICAD enums support three general variant
+    forms — `Unit`, `Tuple(T1, T2)`, `Record { x: T1, y: T2 }` — as
+    ordinary language constructs, not `Result`-specific machinery.
+    Variants are constructors usable as expressions. Pattern matching
+    supports corresponding destructuring (`Unit => ...`, `Tuple(a, b) =>
+    ...`, `Record { x, y } => ...`); pattern bindings have normal lexical
+    scope and are typed from the matched variant. For nominal enum types,
+    the compiler must diagnose non-exhaustive matches unless a wildcard or
+    otherwise-exhaustive pattern is present.
+  - **Generic types.** User-defined structs and enums may declare type
+    parameters (`struct Pair<T, U> { ... }`, `enum Optional<T> { Some(T),
+    None }`, `enum Result<T, E> { Ok(T), Err(E) }`); type application uses
+    `Name<T, U>`. Generic parameters are compile-time type parameters, not
+    runtime dynamic types.
+  - **Generic functions.** Functions may declare ordinary type parameters
+    (`fn identity<T>(value: T) -> T { return value; }`). Stage 2 must
+    support ordinary call-site instantiation and type inference when type
+    parameters are determinable unambiguously from arguments/expected
+    types; explicit type arguments may also be supported if the approved
+    grammar requires them.
+  - **Scope limit.** Stage 2 does *not* need higher-kinded types, variance
+    annotations, specialization, generic metaprogramming, variadic
+    generics, dependent types, generic associated types, or Rust-style
+    lifetime parameters. Interface/trait bounds (`T: MotorMount`) may
+    remain deferred until the interface system exists, unless the Stage-2
+    coverage audit demonstrates they are required by the Stage-2 gate —
+    `project/reports/AICAD-057A.md` found no such requirement. The generic
+    foundation must be designed so bounds can be added later without
+    replacing the generic type model.
+  - **Result/Optional.** `Result<T,E>` and `Optional<T>` are ordinary
+    generic prelude/library types built using the same enum/generic
+    machinery available to user code (conceptually `enum Result<T, E> {
+    Ok(T), Err(E) }`, `enum Optional<T> { Some(T), None }`). The compiler/
+    runtime must not contain `Result`-specific semantic machinery beyond
+    ordinary prelude registration/loading. Optimized internal
+    representations are permitted provided observable language semantics
+    remain identical to ordinary generic enum values.
+  - **Result propagation.** Stage 2 does not add a `?` operator or other
+    new propagation syntax merely to complete `AICAD-057`. `Result` values
+    are propagated explicitly via ordinary `match` (`match operation() {
+    Ok(value) => ..., Err(error) => return Err(error), }`); ergonomic
+    propagation syntax requires a later, separate language decision.
+  - **`List`/`Range` cleanup.** `D16`'s `List<T>`/`Range<T>` may retain
+    optimized runtime representations, but their type-application handling
+    should use the new general generic-type machinery wherever practical
+    rather than permanently accumulating name-specific generic parsing/
+    type-resolution special cases. No general compiler-intrinsic facility
+    is authorized.
+  - **Recursion policy (clarification, not new scope).** AICAD does not
+    define 64 calls as a language-level recursion limit. The existing
+    `DEFAULT_MAX_CALL_DEPTH = 64` (`AICAD-057`,
+    `crates/cad-runtime/src/interp.rs`) is a conservative *implementation
+    safety ceiling* for the Stage-2 tree-walking evaluator, distinct from
+    any future language-level resource budget (`AICAD-058`). A user may
+    request a stricter recursion budget but may not raise execution beyond
+    the engine-safe ceiling; a native host stack overflow is never an
+    acceptable AICAD program outcome. A future runtime may support
+    substantially deeper recursion (e.g. by moving call state onto an
+    explicit interpreter/VM stack) without changing AICAD language
+    semantics; that migration is not authorized as part of this
+    remediation unless evidence shows it is necessary for the Stage-2 gate.
+  - **Fixed remediation sequence**, required before the original
+    `AICAD-057` resumes: `AICAD-057A` (Stage-2 coverage audit — this
+    entry's own trigger, `project/reports/AICAD-057A.md`) ->
+    `AICAD-057B` (generic parameter/type-application syntax plus AST/HIR
+    representation) -> `AICAD-057C` (general data-carrying enum variants,
+    constructors, destructuring patterns, nominal-enum-match exhaustiveness)
+    -> `AICAD-057D` (generic instantiation/inference/type checking for the
+    approved subset) -> `AICAD-057E` (`Result<T,E>`/`Optional<T>` via the
+    ordinary generic-enum machinery) -> `AICAD-057F` (adversarial
+    integration pass proving the machinery is general, not hard-coded for
+    `Result`) -> original `AICAD-057` -> `AICAD-058` -> the
+    `STAGE2-C_EXECUTION` checkpoint. `AICAD-059` may not begin before that
+    checkpoint passes.
+  - **Required remediation tests (minimum):** generic struct with one type
+    parameter; generic struct with two type parameters; generic enum;
+    generic function; successful inferred generic call; ambiguous generic
+    call -> diagnostic; wrong number of type arguments -> diagnostic; unit/
+    tuple/record enum variants; payload construction; tuple destructuring;
+    record destructuring; payload binding has correct type; non-exhaustive
+    enum match -> diagnostic; `Result<Int,String>`; `Result<Length,
+    SomeErrorType>`; `Optional<Length>`; explicit successful `Result`
+    match; explicit `Err` propagation through nested function calls; nested
+    generic types (`Optional<Result<Int,E>>`); a user-defined generic enum
+    whose name is not `Result`/`Optional`/`List`/`Range`, proving the
+    machinery generalizes. No `?` syntax; no general compiler-intrinsic
+    mechanism.
+- Rationale: Owner ruling, in direct response to `AICAD-057`'s own
+  escalation (`project/reports/AICAD-057.md`, `OWNER_DECISIONS.md#D17`'s
+  original text) that `Result<T,E>` construction needs either general
+  data-carrying enums + generics, a `D16`-style narrow special case, or
+  deferral. The owner judged the narrow special case (option 2) would not
+  generalize to `Optional<T>` next and would accumulate unprincipled
+  special cases in `cad_hir::typeck::resolve_type_ref`, and that deferral
+  (option 3) would leave `AICAD-057` permanently incomplete, so authorized
+  the general mechanism (option 1) instead, scoped tightly to what
+  `Result`/`Optional`/ordinary user ADTs need and explicitly excluding
+  interface bounds, higher-kinded types, and every other item `AGENTS.md`
+  would otherwise treat as scope creep. The owner additionally required a
+  Stage-2 coverage audit (`AICAD-057A`) first, since `D16`'s and `D17`'s
+  back-to-back escalations both stemmed from `project/TASKS.yaml`'s
+  Stage-2 task list never having enumerated the full general-language
+  surface `docs/plan/` assumes, and directed that the audit classify gaps
+  rather than silently widen Stage 2 to match the long-term language plan.
+- Alternatives considered: narrow `Result`-only special-casing mirroring
+  `D16`'s `List`/`Range` treatment inside `resolve_type_ref` (rejected —
+  does not generalize to `Optional<T>`, accumulates special cases,
+  contradicts "prefer library/std-package features over new compiler
+  intrinsics" once a second data-carrying type is needed); deferring
+  `Result<T,E>` for all of Stage 2 (rejected — leaves `AICAD-057`
+  permanently incomplete and blocks `AICAD-063`'s end-to-end proof from
+  ever using typed error handling); adding a `?` propagation operator now
+  (rejected — explicit non-goal, "does not add a `?` operator... merely to
+  complete AICAD-057"); rewriting the evaluator into an explicit-stack VM
+  now to raise the recursion ceiling (rejected — explicit non-goal unless
+  the Stage-2 gate needs it; tracked as future architectural work instead).
+- Affected RFCs/tasks: `AICAD-057A` (this decision's own trigger, coverage
+  audit); `AICAD-057B`/`057C`/`057D`/`057E`/`057F` (new remediation tasks,
+  added to `project/TASKS.yaml` by `AICAD-057A`); `AICAD-057` (resumes only
+  after `057B`-`057F` pass); `AICAD-058` (must keep the language resource
+  budget distinct from the engine-safety recursion ceiling this decision
+  clarifies); `AICAD-059`/`STAGE2-C_EXECUTION` checkpoint (blocked until
+  the full remediation sequence and original `AICAD-057` complete); `D16`
+  (`List<T>`/`Range<T>` type-application handling should migrate onto this
+  decision's general generic machinery where practical, per "List/Range
+  cleanup" above, without being forced to before `AICAD-057F`).
+- Supersedes: none (first ruling on D17).

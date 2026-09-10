@@ -1513,7 +1513,7 @@ tasks:
   title: Implement recursion and Result/error propagation
   status: todo
   depends_on:
-  - AICAD-056
+  - AICAD-057F
   plan_references:
   - docs/plan/02_LANGUAGE_AND_COMPILER.md
   - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
@@ -1528,6 +1528,178 @@ tasks:
   - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
   - run task-specific tests/benchmarks; record exact commands and outputs
   report: project/reports/AICAD-057.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+  notes: >
+    Recursion and call-stack error propagation are already implemented
+    (see project/reports/AICAD-057.md, first session). Result<T,E>
+    construction/matching is blocked on OWNER_DECISIONS.md#D17
+    (DECISION_LOG.md#DL-14) until the AICAD-057A..AICAD-057F remediation
+    sequence completes; depends_on repointed to AICAD-057F by AICAD-057A
+    to encode this in the task graph itself, per the owner's explicit
+    instruction "Only after AICAD-057A through AICAD-057F are complete
+    may the original AICAD-057 resume."
+- id: AICAD-057A
+  stage: 2
+  title: Stage-2 coverage audit (generics/enums/Result/Optional/collections/closures/generators/interfaces)
+  status: done
+  depends_on:
+  - AICAD-056
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/21_FEATURE_INVENTORY.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Every capability the owner's D17 ruling names is directly inspected against the current implementation and classified
+    REQUIRED-BEFORE-STAGE2-GATE/REQUIRED-LATER/OPTIONAL-FUTURE/ALREADY-SATISFIED; only REQUIRED-BEFORE-STAGE2-GATE gaps
+    are added as new remediation tasks; Stage 2 is not silently widened to match the long-term language plan.
+  required_checks:
+  - run task-specific tests/benchmarks; record exact commands and outputs (planning-only task; no Rust source changed)
+  report: project/reports/AICAD-057A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-057B
+  stage: 2
+  title: Implement generic parameter/type-application syntax plus AST/HIR representation
+  status: todo
+  depends_on:
+  - AICAD-057A
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - struct/enum/fn declarations can declare an ordinary generic type-parameter list per OWNER_DECISIONS.md#D17/DECISION_LOG.md#DL-14;
+    Name<T,U> type application resolves against declared parameters in AST/HIR; no interface/trait bounds, higher-kinded types,
+    variance, specialization, variadic generics, dependent types, generic associated types, or lifetime parameters are introduced;
+    the design keeps an explicit extension point for a future bound list without replacing the generic type model.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-057B.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-057C
+  stage: 2
+  title: Implement data-carrying enum variants, constructors, destructuring patterns, and match exhaustiveness
+  status: todo
+  depends_on:
+  - AICAD-057B
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Enums support Unit/Tuple(T1,T2)/Record{x,y} variants per OWNER_DECISIONS.md#D17/DECISION_LOG.md#DL-14; variants are usable as
+    constructor expressions; match supports corresponding tuple/record destructuring with normal lexical scope and variant-derived
+    binding types; nominal-enum matches missing a variant (without a wildcard/exhaustive pattern) are a diagnostic, not silently
+    accepted.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-057C.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-057D
+  stage: 2
+  title: Implement generic instantiation/inference/type checking for the approved Stage-2 generic subset
+  status: todo
+  depends_on:
+  - AICAD-057C
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Call-site type-parameter instantiation/inference works when type parameters are determinable unambiguously from arguments/expected
+    types; an ambiguous generic call produces a diagnostic rather than an arbitrary selection; a wrong number of explicit type
+    arguments produces a diagnostic; covers generic structs, generic enums, and generic functions.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-057D.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-057E
+  stage: 2
+  title: Define and execute Result<T,E> and Optional<T> using the ordinary generic enum machinery
+  status: todo
+  depends_on:
+  - AICAD-057D
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - Result<T,E> (Ok(T)/Err(E)) and Optional<T> (Some(T)/None) exist as ordinary prelude generic enums with no Result-specific
+    compiler/runtime semantics beyond prelude registration; Result values are propagated with ordinary match, not a new ? operator
+    or other propagation syntax; nested generics such as Optional<Result<Int,E>> type-check and execute correctly.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-057E.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+- id: AICAD-057F
+  stage: 2
+  title: Adversarial integration pass proving generic/enum machinery is general, not Result-specific
+  status: todo
+  depends_on:
+  - AICAD-057E
+  plan_references:
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - A user-defined generic enum whose name is not Result/Optional/List/Range exercises the same generic/pattern/exhaustiveness
+    machinery end to end; the full OWNER_DECISIONS.md#D17/DECISION_LOG.md#DL-14 required-test list passes; no ? syntax and no
+    general compiler-intrinsic facility were added anywhere in AICAD-057B..057F.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-057F.md
   escalate_if:
   - public syntax/semantics must change beyond an approved RFC
   - a stage gate/benchmark/test would need weakening
