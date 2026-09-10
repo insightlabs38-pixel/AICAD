@@ -9,11 +9,15 @@
 //! syntax: if/for/while/match/return") adds the remaining `statement`
 //! alternatives (`if_stmt`/`for_stmt`/`while_stmt`/`loop_stmt`/
 //! `match_stmt`/`return_stmt`/`break_stmt`/`continue_stmt`) to `Stmt`
-//! below. Deliberately **still not** in scope (left for later tasks that
-//! own them, per `AGENTS.md` "No speculative future work"):
-//! - `interface_decl`/`assembly_decl`/`requirement_decl`/`test_decl`/
-//!   `import_decl` — not named by either task's title, and several use
-//!   keywords `crates/cad-lexer` deliberately has not reserved yet
+//! below. `AICAD-044` ("Implement module/import syntax and loader
+//! skeleton") adds `import_decl` (`Item::Import`/`ImportPath` below) —
+//! see `ImportPath`'s own doc comment for the exact two forms
+//! implemented and their evidence. Deliberately **still not** in scope
+//! (left for later tasks that own them, per `AGENTS.md` "No speculative
+//! future work"):
+//! - `interface_decl`/`assembly_decl`/`requirement_decl`/`test_decl` —
+//!   not named by any task's title yet, and several use keywords
+//!   `crates/cad-lexer` deliberately has not reserved yet
 //!   (`configuration`, `component`, `assembly`, `instance`, `mate`,
 //!   `joint`, `requirement`, `test`, `constraint`, `expose`, `query`,
 //!   `unsafe` are all still unreserved identifiers — see
@@ -256,6 +260,18 @@ pub enum Item {
         items: Vec<Item>,
         span: Span,
     },
+    /// `import path [ "::" "{" name , { "," name } [","] "}" ] ";"` — see
+    /// [`ImportPath`]'s doc comment for the two `path` forms.
+    /// `names: None` imports the whole module; `Some(names)` is a
+    /// selective import of just those symbols (`import
+    /// std.fasteners::{ISO4762};`). Resolving `names` against the target
+    /// module's actual exported symbols is name-binding's job
+    /// (`AICAD-050`+), not this task's — this is a syntactic node only.
+    Import {
+        path: ImportPath,
+        names: Option<Vec<Spanned<String>>>,
+        span: Span,
+    },
 }
 
 impl Item {
@@ -267,7 +283,57 @@ impl Item {
             | Item::Fn { span, .. }
             | Item::Struct { span, .. }
             | Item::Enum { span, .. }
-            | Item::Part { span, .. } => *span,
+            | Item::Part { span, .. }
+            | Item::Import { span, .. } => *span,
+        }
+    }
+}
+
+/// The target of an `import` declaration (`Item::Import::path`).
+///
+/// Exactly the two forms `docs/plan/02_LANGUAGE_AND_COMPILER.md` §10
+/// evidences and nothing broader (no aliasing/`as`, no glob `*` import,
+/// neither of which any plan/RFC section shows):
+///
+/// ```text
+/// import std.fasteners::{ISO4762};   // Package
+/// import robotics.cycloidal;         // Package, whole-module
+/// import ./housing;                  // Relative
+/// ```
+///
+/// Resolving a `Package` path against an actual package registry/lockfile
+/// is out of scope for `AICAD-044` — Stage 2 has no package/dependency
+/// system yet (that is `docs/plan/12_PACKAGES_PLUGINS_EXTENSIONS.md`'s
+/// job, not scheduled before Stage 5+ per `project/TASKS.yaml`). The
+/// module-loader skeleton (`crates/cad-compiler`) resolves `Relative`
+/// paths to files on disk (with cyclic-import detection) and records
+/// `Package` paths as recognized-but-unresolved external references
+/// rather than inventing an unevidenced resolution scheme.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportPath {
+    /// `std.fasteners`, `robotics.cycloidal` — a dotted package-namespace
+    /// path, at least one segment.
+    Package {
+        segments: Vec<Spanned<String>>,
+        span: Span,
+    },
+    /// `./housing`, `../lib/housing` — a filesystem path relative to the
+    /// importing file's own directory. `up_levels` counts leading `../`
+    /// steps (0 for a bare `./...` path); `segments` is the remaining
+    /// `/`-separated path, at least one segment, with no file extension
+    /// (the loader appends `.aicad`, per `DECISION_LOG.md#DL-4`'s
+    /// canonical source extension).
+    Relative {
+        up_levels: u32,
+        segments: Vec<Spanned<String>>,
+        span: Span,
+    },
+}
+
+impl ImportPath {
+    pub fn span(&self) -> Span {
+        match self {
+            ImportPath::Package { span, .. } | ImportPath::Relative { span, .. } => *span,
         }
     }
 }

@@ -13,11 +13,14 @@
 //! the control-flow expression forms (`block_expr`/`if_expr`/
 //! `match_expr`) — see `cad_ast::item`'s and `cad_ast::expr`'s own doc
 //! comments for exact scope, and [`Parser::parse_block_expr`]'s doc
-//! comment for this task's `block_expr` scope decision.
+//! comment for this task's `block_expr` scope decision. `AICAD-044` adds
+//! `import_decl` parsing ([`Parser::parse_import_path`]) — see
+//! `cad_ast::item::ImportPath`'s own doc comment for the two forms
+//! implemented.
 
 use cad_ast::{
-    Arg, BinaryOp, Block, BlockExpr, ElseBranch, ElseClause, Expr, Field, FnParam, Item, Literal,
-    MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type, UnaryOp,
+    Arg, BinaryOp, Block, BlockExpr, ElseBranch, ElseClause, Expr, Field, FnParam, ImportPath,
+    Item, Literal, MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type, UnaryOp,
 };
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
 use cad_lexer::{Keyword, Token, TokenKind};
@@ -1274,12 +1277,38 @@ impl<'a> Parser<'a> {
                     span: start.join(end),
                 })
             }
+            TokenKind::Keyword(Keyword::Import) => {
+                let start = tok.span;
+                self.advance();
+                let path = self.parse_import_path()?;
+                let mut end = path.span();
+                let names = if self.eat(|k| *k == TokenKind::ColonColon).is_some() {
+                    self.expect(&TokenKind::LBrace, "'{'")?;
+                    let names = self.parse_import_names();
+                    let close = self.expect(&TokenKind::RBrace, "'}'");
+                    end = close
+                        .map(|t| t.span)
+                        .unwrap_or_else(|| names.last().map(|n| n.span).unwrap_or(end));
+                    Some(names)
+                } else {
+                    None
+                };
+                let semi = self.expect(&TokenKind::Semicolon, "';'");
+                if let Some(semi) = semi {
+                    end = semi.span;
+                }
+                Some(Item::Import {
+                    path,
+                    names,
+                    span: start.join(end),
+                })
+            }
             _ => {
                 self.error(
                     10,
                     "EXPECTED_ITEM",
                     format!(
-                        "Expected a declaration (let/const/param/fn/struct/enum/part), found {}.",
+                        "Expected a declaration (let/const/param/fn/struct/enum/part/import), found {}.",
                         describe_token(&tok.kind)
                     ),
                     tok.span,
@@ -1288,6 +1317,93 @@ impl<'a> Parser<'a> {
                 None
             }
         }
+    }
+
+    /// `import_path = relative_path | package_path ;` — dispatches purely
+    /// on whether the token right after `import` is `.` (relative) or an
+    /// identifier (package), which is unambiguous: no package-path
+    /// segment can itself start with `.`.
+    ///
+    /// `relative_path = ( ".." "/" )* "." "/" identifier , { "/" identifier } ;`
+    /// (`../../foo/bar`, `./housing` — no lexer token exists for `..` as a
+    /// single unit, see `cad_ast::item::ImportPath`'s doc comment, so this
+    /// walks `Dot`/`Slash` tokens directly rather than adding one).
+    ///
+    /// `package_path = identifier , { "." identifier } ;` (`std.fasteners`).
+    fn parse_import_path(&mut self) -> Option<ImportPath> {
+        let start = self.peek().span;
+        if self.peek_kind() == &TokenKind::Dot {
+            let mut up_levels: u32 = 0;
+            loop {
+                if self.peek_kind() != &TokenKind::Dot {
+                    break;
+                }
+                let second = self.tokens.get(self.pos + 1).map(|t| &t.kind);
+                let third = self.tokens.get(self.pos + 2).map(|t| &t.kind);
+                if matches!(second, Some(TokenKind::Dot)) && matches!(third, Some(TokenKind::Slash))
+                {
+                    self.advance();
+                    self.advance();
+                    self.advance();
+                    up_levels += 1;
+                    continue;
+                }
+                if matches!(second, Some(TokenKind::Slash)) {
+                    self.advance();
+                    self.advance();
+                    break;
+                }
+                let tok = self.peek();
+                self.error(
+                    12,
+                    "MALFORMED_IMPORT_PATH",
+                    format!(
+                        "Expected './' or '../' in a relative import path, found {}.",
+                        describe_token(&tok.kind)
+                    ),
+                    tok.span,
+                );
+                return None;
+            }
+            let mut segments = vec![self.expect_ident("a path segment")?];
+            while self.eat(|k| *k == TokenKind::Slash).is_some() {
+                segments.push(self.expect_ident("a path segment")?);
+            }
+            let end = segments.last().map(|s| s.span).unwrap_or(start);
+            Some(ImportPath::Relative {
+                up_levels,
+                segments,
+                span: start.join(end),
+            })
+        } else {
+            let mut segments = vec![self.expect_ident("a module path segment")?];
+            while self.eat(|k| *k == TokenKind::Dot).is_some() {
+                segments.push(self.expect_ident("a module path segment")?);
+            }
+            let end = segments.last().map(|s| s.span).unwrap_or(start);
+            Some(ImportPath::Package {
+                segments,
+                span: start.join(end),
+            })
+        }
+    }
+
+    /// Selective-import symbol list (already positioned just past the
+    /// opening `{` of `import path::{...}`). Same shape/recovery as
+    /// [`Parser::parse_enum_variants`].
+    fn parse_import_names(&mut self) -> Vec<Spanned<String>> {
+        let mut names = Vec::new();
+        while !self.at_end_of_braced_body() {
+            let Some(name) = self.expect_ident("an imported symbol name") else {
+                break;
+            };
+            names.push(name);
+            if self.eat(|k| *k == TokenKind::Comma).is_some() {
+                continue;
+            }
+            break;
+        }
+        names
     }
 
     /// `program = { item }`.
@@ -2045,6 +2161,234 @@ mod decl_tests {
                 .count(),
             2
         );
+    }
+}
+
+/// `AICAD-044` tests: `import_decl` parsing. See
+/// `cad_ast::item::ImportPath`'s doc comment for the two forms and their
+/// plan evidence (`docs/plan/02_LANGUAGE_AND_COMPILER.md` §10).
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    fn program_ok(source: &str) -> Program {
+        let (program, diagnostics) = parse_program(source, "t.aicad");
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics for {source:?}: {diagnostics:?}"
+        );
+        program
+    }
+
+    fn segment_names(segments: &[Spanned<String>]) -> Vec<&str> {
+        segments.iter().map(|s| s.node.as_str()).collect()
+    }
+
+    #[test]
+    fn parses_whole_module_package_import() {
+        // "import robotics.cycloidal;" — plan doc §10's own example.
+        let program = program_ok("import robotics.cycloidal;");
+        match &program.items[0] {
+            Item::Import { path, names, .. } => {
+                assert!(names.is_none());
+                match path {
+                    ImportPath::Package { segments, .. } => {
+                        assert_eq!(segment_names(segments), vec!["robotics", "cycloidal"]);
+                    }
+                    other => panic!("expected ImportPath::Package, got {other:?}"),
+                }
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_single_segment_package_import() {
+        let program = program_ok("import robotics;");
+        match &program.items[0] {
+            Item::Import {
+                path: ImportPath::Package { segments, .. },
+                ..
+            } => assert_eq!(segment_names(segments), vec!["robotics"]),
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_selective_package_import() {
+        // "import std.fasteners::{ISO4762};" — plan doc §10's own example.
+        let program = program_ok("import std.fasteners::{ISO4762};");
+        match &program.items[0] {
+            Item::Import { path, names, .. } => {
+                match path {
+                    ImportPath::Package { segments, .. } => {
+                        assert_eq!(segment_names(segments), vec!["std", "fasteners"]);
+                    }
+                    other => panic!("expected ImportPath::Package, got {other:?}"),
+                }
+                let names = names.as_ref().expect("expected a selective import list");
+                assert_eq!(segment_names(names), vec!["ISO4762"]);
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_selective_import_with_multiple_names_and_trailing_comma() {
+        let program = program_ok("import std.fasteners::{ISO4762, ISO7380,};");
+        match &program.items[0] {
+            Item::Import { names, .. } => {
+                let names = names.as_ref().unwrap();
+                assert_eq!(segment_names(names), vec!["ISO4762", "ISO7380"]);
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_empty_selective_import_list() {
+        // Syntactically permitted (no semantic check that a selective
+        // import names at least one symbol is this task's job); locks in
+        // current recovery-loop behavior on an immediately-closed brace.
+        let program = program_ok("import std.fasteners::{};");
+        match &program.items[0] {
+            Item::Import { names, .. } => assert_eq!(names.as_ref().unwrap().len(), 0),
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_current_dir_relative_import() {
+        // "import ./housing;" — plan doc §10's own example.
+        let program = program_ok("import ./housing;");
+        match &program.items[0] {
+            Item::Import {
+                path:
+                    ImportPath::Relative {
+                        up_levels,
+                        segments,
+                        ..
+                    },
+                names,
+                ..
+            } => {
+                assert_eq!(*up_levels, 0);
+                assert_eq!(segment_names(segments), vec!["housing"]);
+                assert!(names.is_none());
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multi_segment_relative_import() {
+        let program = program_ok("import ./lib/housing;");
+        match &program.items[0] {
+            Item::Import {
+                path:
+                    ImportPath::Relative {
+                        up_levels,
+                        segments,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(*up_levels, 0);
+                assert_eq!(segment_names(segments), vec!["lib", "housing"]);
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_single_parent_relative_import() {
+        let program = program_ok("import ../housing;");
+        match &program.items[0] {
+            Item::Import {
+                path:
+                    ImportPath::Relative {
+                        up_levels,
+                        segments,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(*up_levels, 1);
+                assert_eq!(segment_names(segments), vec!["housing"]);
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_multiple_parent_relative_import() {
+        let program = program_ok("import ../../a/b;");
+        match &program.items[0] {
+            Item::Import {
+                path:
+                    ImportPath::Relative {
+                        up_levels,
+                        segments,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(*up_levels, 2);
+                assert_eq!(segment_names(segments), vec!["a", "b"]);
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reports_malformed_relative_import_prefix() {
+        // ".foo" is neither "./..." nor "../..." — a bare '.' followed by
+        // an identifier is not a valid relative-path prefix.
+        let (_, diagnostics) = parse_program("import .foo;", "t.aicad");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "PARSE-E012"),
+            "expected PARSE-E012, got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn reports_missing_semicolon_after_import() {
+        let (_, diagnostics) = parse_program("import robotics.cycloidal", "t.aicad");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "PARSE-E006"),
+            "expected PARSE-E006, got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn reports_missing_segment_after_dot_in_package_path() {
+        let (_, diagnostics) = parse_program("import std.;", "t.aicad");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "PARSE-E007"),
+            "expected PARSE-E007, got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn does_not_confuse_for_in_with_a_relative_import() {
+        // Regression guard: "for x in y" must still parse as a for-loop,
+        // not be mistaken for anything import-related — Keyword::In and
+        // this task's Dot-based relative-path dispatch never interact,
+        // but this locks in that for-loops are unaffected by this task's
+        // parse_item change.
+        let program = program_ok("fn f() { for x in items { x; } }");
+        match &program.items[0] {
+            Item::Fn { body, .. } => {
+                assert!(matches!(body.stmts[0], Stmt::For { .. }));
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
     }
 }
 

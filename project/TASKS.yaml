@@ -1161,7 +1161,7 @@ tasks:
 - id: AICAD-044
   stage: 2
   title: Implement module/import syntax and loader skeleton
-  status: todo
+  status: done
   depends_on:
   - AICAD-043
   plan_references:

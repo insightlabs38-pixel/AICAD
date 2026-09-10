@@ -6,8 +6,9 @@
 //! History: `AICAD-039` established only the span/position model.
 //! `AICAD-041` added the first real AST node types (`expr` module).
 //! `AICAD-042` added declaration/statement node types (`item` module).
-//! `AICAD-043` adds control-flow node types to both modules — see each
-//! module's own doc comment for its exact scope.
+//! `AICAD-043` adds control-flow node types to both modules. `AICAD-044`
+//! adds `import_decl` node types (`item::ImportPath`/`Item::Import`) —
+//! see each module's own doc comment for its exact scope.
 
 mod expr;
 mod item;
@@ -15,7 +16,7 @@ mod item;
 pub use expr::{
     Arg, BinaryOp, BlockExpr, ElseBranch, Expr, Literal, MatchArm, MatchArmBody, Pattern, UnaryOp,
 };
-pub use item::{Block, ElseClause, Field, FnParam, Item, Program, Stmt, Type};
+pub use item::{Block, ElseClause, Field, FnParam, ImportPath, Item, Program, Stmt, Type};
 
 /// A half-open byte-offset range into one source file: `[start, end)`.
 ///
