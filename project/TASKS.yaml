@@ -999,7 +999,7 @@ tasks:
 - id: AICAD-038
   stage: 2
   title: Create cad-diagnostics crate and JSON-schema conformance tests
-  status: todo
+  status: done
   depends_on:
   - AICAD-037
   plan_references:

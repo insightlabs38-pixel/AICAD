@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aicad.dev/schemas/diagnostic.schema.json",
+  "title": "AICAD Diagnostic",
+  "description": "Canonical shape of every diagnostic AICAD surfaces to a human or agent, frozen by RFC-0005 (docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md §11). Field/code stability policy is NOT covered by this schema — see project/OWNER_DECISIONS.md D10 (open). Note: this schema's own 'pattern' keyword on 'code' is documentation only; crates/cad-diagnostics's validator (crate::schema) does not evaluate 'pattern' — crates/cad-diagnostics's DiagnosticCode::parse is the authoritative check.",
+  "type": "object",
+  "required": ["code", "severity", "category", "title", "message", "candidates", "suggestions"],
+  "properties": {
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z]+-[EWI][0-9]{3}$",
+      "description": "FAMILY-[EWI]### per docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md §10 / RFC-0005 §2."
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["error", "warning", "info"]
+    },
+    "category": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string",
+      "description": "A stable machine-referenceable title, e.g. AMBIGUOUS_REFERENCE."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable explanation. Must never require an OCCT-specific concept to understand (RFC-0005 §5)."
+    },
+    "source": {
+      "type": ["object", "null"],
+      "required": ["file", "start", "end"],
+      "properties": {
+        "file": { "type": "string" },
+        "start": {
+          "type": "object",
+          "required": ["line", "column"],
+          "properties": {
+            "line": { "type": "integer" },
+            "column": { "type": "integer" }
+          }
+        },
+        "end": {
+          "type": "object",
+          "required": ["line", "column"],
+          "properties": {
+            "line": { "type": "integer" },
+            "column": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "entity": {
+      "type": ["string", "null"],
+      "description": "Dotted semantic-entity path, e.g. housing.mounting_face."
+    },
+    "expected": {
+      "description": "Free-form expected-value payload; shape is diagnostic-code-specific."
+    },
+    "observed": {
+      "description": "Free-form observed-value payload; shape is diagnostic-code-specific."
+    },
+    "candidates": {
+      "type": "array"
+    },
+    "suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["confidence"],
+        "properties": {
+          "confidence": {
+            "type": "string",
+            "enum": ["machine_applicable", "likely_fix", "informational"]
+          }
+        }
+      }
+    },
+    "backend_details": {
+      "description": "Backend-specific (e.g. OCCT) debugging detail. Never the sole explanation of a diagnostic's message/title/suggestions (RFC-0005 §5)."
+    }
+  }
+}
