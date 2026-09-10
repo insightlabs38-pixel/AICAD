@@ -7,8 +7,12 @@
 //! `AICAD-044` ("module/import syntax and loader skeleton") adds the
 //! first real piece of that pipeline: [`loader`], which resolves an
 //! entry file's `import ./relative` graph into parsed [`loader::Module`]s.
-//! Every later pipeline phase (binding, type checking, HIR lowering, ...)
-//! is a separate, later task's job — this crate stays a thin composition
-//! layer, per `AGENTS.md` "No speculative future work".
+//! `AICAD-050` ("name binding/scopes/symbol table") adds [`binder`], §17
+//! phase 3 — see its own module doc comment for exactly how far it goes
+//! (one already-parsed program at a time, not yet wired to [`loader`]'s
+//! multi-file graph). Every later pipeline phase (type checking, HIR
+//! lowering, ...) is a separate, later task's job — this crate stays a
+//! thin composition layer, per `AGENTS.md` "No speculative future work".
 
+pub mod binder;
 pub mod loader;
