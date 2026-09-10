@@ -1,5 +1,17 @@
 # Stage-1 Owner Gate Packet
 
+**Read alongside `project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md`**
+(an independent adversarial re-review performed after this packet was
+written). That review reproduces this packet's evidence and reaches the
+same substance, but narrows one claim in §2.3/§8 below: the "two
+disclosed layers" of STEP verification independently confirm the
+exported file's *structure* (entity counts, ISO-10303-21 grammar), not
+its re-imported *geometry* (volume, bounding box, coordinates) — the
+only check of re-imported geometric properties is Layer 1, which both
+this packet and the independent review agree is not independent (same
+OCCT bridge both directions). Read §2.3 below with that distinction in
+mind rather than as full independent geometric verification.
+
 Prepared by AICAD-037, per `project/gates/README.md` and
 `AICAD_AGENT_OPERATING_MODEL.md` §8. **This packet recommends; it does
 not approve.** Per `AGENTS.md` "Stage gates": "The agent may prepare gate

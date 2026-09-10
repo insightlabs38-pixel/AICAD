@@ -27,7 +27,12 @@ extern "C" {
 /* Status codes returned by every aicad_occt_* function. */
 typedef enum aicad_occt_status {
   AICAD_OCCT_OK = 0,
-  /* A pointer/argument the caller passed is null or out of range. */
+  /* A pointer/argument the caller passed is null or out of range, OR
+   * (owner-authorized context-lifetime-safety fix) the `context` pointer
+   * passed is non-null but no longer live -- either it was never a
+   * context this bridge created, or it addresses one that has since been
+   * destroyed by aicad_occt_context_destroy. See that function's own doc
+   * comment for the exact safety contract this covers. */
   AICAD_OCCT_ERR_INVALID_ARGUMENT = 1,
   /* The handle's slot never existed in this context's shape table. */
   AICAD_OCCT_ERR_INVALID_HANDLE = 2,
@@ -78,10 +83,28 @@ typedef struct aicad_occt_context aicad_occt_context_t;
 /* Creates a new kernel context. `*out_context` is set on success only. */
 aicad_occt_status_t aicad_occt_context_create(aicad_occt_context_t** out_context);
 
-/* Destroys a context and every shape it still owns. Using any handle
- * from this context afterward is undefined at the process level (the
- * context itself, not just a slot, is gone) -- callers must not retain
- * handles past context destruction. */
+/* Destroys a context, releasing every shape it still owns. This
+ * function's own memory-safety contract (owner-authorized fix,
+ * see project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md's "Context
+ * lifetime safety fix" section):
+ *
+ * - `context` itself is NEVER freed by this call or any other -- every
+ *   context this bridge ever creates lives for the remainder of the
+ *   process. Only the (potentially large) geometry it owns is released
+ *   here.
+ * - A second call to this function with the same (now-destroyed)
+ *   `context` pointer is well-defined: it does not dereference freed
+ *   memory (there is none) and deterministically returns
+ *   AICAD_OCCT_ERR_INVALID_ARGUMENT, never a crash or a double-free.
+ * - Any other function called afterward with this same `context`
+ *   pointer likewise returns AICAD_OCCT_ERR_INVALID_ARGUMENT
+ *   deterministically, rather than being undefined behavior.
+ * - This safety property covers exactly one thing: a pointer value THIS
+ *   BRIDGE ITSELF previously handed out via aicad_occt_context_create,
+ *   used again after being destroyed. It does not, and no design built
+ *   on an opaque C pointer can, make a wholly fabricated/foreign pointer
+ *   value safe to pass here -- that remains the caller's responsibility,
+ *   identical to any other opaque-handle C API (e.g. FILE*). */
 aicad_occt_status_t aicad_occt_context_destroy(aicad_occt_context_t* context);
 
 /* Releases one shape handle. After this call the handle is stale: any

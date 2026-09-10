@@ -17,15 +17,31 @@ its own claims.
   (`git status --short` empty) both before and after this review; `git
   fetch origin --prune` confirmed this is the current tip of `origin/main`
   before any work began.
-- **No patch commit was made.** This review found no BLOCKER or MAJOR
-  defect that was both (a) real and (b) safely patchable within the
-  patch policy's constraints (see Findings). One long-standing open item
-  (native-code sanitizer coverage, "G2") was *closed with new evidence*
-  by this review (see "Sanitizer results" below), but that required no
-  source change — only running tools already available in this
-  environment. Consequently there is no post-patch commit and no
-  second-pass re-review; all findings below apply directly to
-  `a296891`.
+- **Two rounds of patches were made on top of the reviewed commit.**
+  Round 1 (self-initiated, after this review's own first pass
+  under-applied its own patch policy): a documentation cross-reference
+  (Finding 1), a missing report stub (Finding 5), and two new permanent
+  test files closing the test-coverage gaps identified as Findings 3 and
+  4 — all squarely inside AGENTS.md's "Autonomously allowed" list
+  ("unit/integration/property/fuzz tests," "benchmark fixtures and
+  adversarial cases," "documentation synchronized to implemented
+  behavior"), none changing public semantics, weakening a test/gate,
+  choosing an open owner decision, or adding a trusted boundary. Round 2
+  (owner-authorized, not self-initiated): Finding 2 — the
+  double-context-destroy use-after-free this review had correctly
+  identified but declined to fix unilaterally (fixing it properly
+  required an internal architecture decision this review was not
+  positioned to make on its own) — was fixed under an explicit owner
+  decision authorizing exactly that architecture change, with specific
+  required behaviors and a required design-alternatives comparison. See
+  "Context lifetime safety fix" below for the full record: original
+  defect, alternatives considered, selected design, rationale, benchmark
+  result, regression tests, sanitizer result, and the post-fix
+  second-pass audit result this triggered for Audits 2, 3, and 10. Both
+  rounds are committed together with the rest of this review's fixes, on
+  top of `a296891`; all findings below describe what was true of
+  `a296891` itself unless a finding's own text says it was subsequently
+  fixed.
 - **Environment used for verification** (independently confirmed, not
   assumed from prior reports): Ubuntu 24.04 container, `g++`/`clang++`
   13.3.0, CMake 3.28.3, `cargo`/`rustc` 1.98.1 (`rust-toolchain.toml`),
@@ -98,20 +114,28 @@ re-ran 20 more in `--release`, which exercises different optimizer
 codegen for the same race, with the same result: 0 failures.)
 
 An **original, independent adversarial concurrency probe** (not present
-in the batch's own evidence) was written and run against the five
+in the batch's own evidence) was written and run against six
 kernel operations the batch's own concurrency investigation did *not*
 stress-test — `shell`, `offset`, `sweep`, `loft`, `tessellate`, and the
 topology-exploration functions — using the same methodology AICAD-036
 used to find the fillet defect (independent contexts on independent
 `std::thread::scope` threads, validity-checked, not merely
-success-checked). 8 threads × 40 rounds per operation (320 concurrent
+success-checked). 8 threads x 40 rounds per operation (320 concurrent
 builds per operation, 1920 total), release mode: **0 failures across
 all six operations.** This is bounded, not exhaustive, evidence (see
-"Threading findings" below for what it does and does not establish); the
-probe file was not committed (no defect was found, so per the patch
-policy nothing needed to be added — consistent with the project's own
-precedent in AICAD-036 of not committing throwaway isolation
-experiments).
+"Threading findings" below for what it does and does not establish).
+This review's first pass did not commit the probe (reasoning, at the
+time, that AICAD-036's own precedent of not committing throwaway
+isolation experiments applied) — on reflection, and after a direct
+question about whether permitted coverage-adding work had actually been
+done, that was too conservative: AGENTS.md's "Autonomously allowed" list
+permits adding tests/adversarial cases regardless of whether they find a
+bug, so the probe was recreated and committed as
+`crates/cad-occt-bridge/tests/concurrency_probe.rs` (see "Patches
+applied" below). Final test totals after all patches: 125 Rust tests
+(23 + 84 + 9 + 6 + 3, up from the 117 shown above) and 37/37 native
+`abi_boundary_test` checks (up from 22) — see "Patches applied" and
+"Context lifetime safety fix" below for the exact breakdown.
 
 ### Sanitizer results (new evidence this review contributes)
 
@@ -230,30 +254,299 @@ between). This is safe as actually used, but it is safe **only** because
 a correct design given DL-5's crate-boundary contract, not an
 accidentally-safe one.
 
-**MINOR — double-context-destroy has no native test coverage.**
-`abi_boundary_test.cpp` tests double-*release-shape* explicitly (line 75:
-"releasing an already-released handle is rejected as STALE_HANDLE, not a
-double-free") but there is no equivalent test for calling
-`aicad_occt_context_destroy` twice on the same pointer. Reading
-`CheckContext`/`context_destroy` directly: after `delete context`, a
-second call reads `context->owning_thread` on freed memory before its
-null-check even applies (the null-check only guards a null pointer, not
-a dangling one) — a genuine use-after-free **at the raw C ABI level**.
-This is not reachable through the safe Rust API (`OcctContext`'s Drop
-runs at most once, by construction), so it is not a defect in
-`cad-occt-bridge`'s actual public surface, only an untested edge of the
-native ABI's own documented contract ("callers must not retain handles
-past context destruction" — reasonably read to extend to the context
-pointer itself, though the header does not say so as explicitly as it
-does for shape handles). Recommend adding this as a documented
-NOT-supported case (either an explicit doc-comment sentence, or ideally
-a defensive "already destroyed" sentinel if cheap) during hardening mode.
-Severity: **MINOR** (no live attack surface through the crate's own
-public API; a documentation/test-coverage gap, not a functional defect).
+**MINOR, now FIXED — double-context-destroy was a genuine native
+use-after-free.** `abi_boundary_test.cpp` tested double-*release-shape*
+explicitly (line 75: "releasing an already-released handle is rejected
+as STALE_HANDLE, not a double-free") but had no equivalent test for
+calling `aicad_occt_context_destroy` twice on the same pointer. Reading
+the original `CheckContext`/`context_destroy`: after `delete context`, a
+second call read `context->owning_thread` on freed memory before its
+null-check even applied — a genuine use-after-free **at the raw C ABI
+level**, not reachable through the safe Rust API (`OcctContext`'s Drop
+runs at most once, by construction) but a real defect in the native ABI
+itself. This review's first pass correctly declined to fix it
+unilaterally (a correct fix requires an internal architecture decision —
+how context memory is owned/reclaimed — that a self-initiated audit
+patch should not make alone). An explicit owner decision subsequently
+authorized exactly that architecture change; it has now been implemented,
+tested, and sanitizer-verified. **See "Context lifetime safety fix"
+below for the complete record.**
 
-**Audit 2 conclusion**: no BLOCKER or MAJOR finding. The generation-based
-handle design is sound and independently verified; exception containment
-is complete for every reachable path this review found.
+**Audit 2 conclusion (post-fix)**: no BLOCKER or MAJOR finding. The
+generation-based *shape*-handle design was already sound; the
+context-pointer-level gap identified above is now closed by the same
+class of guarantee (a never-freed control block with an atomically-checked
+liveness flag, rather than shape-table slot reuse — see below for why
+the two cases warranted different mechanisms). Exception containment
+remains complete for every reachable path this review found.
+
+## Context lifetime safety fix (owner-authorized architecture change)
+
+This section is required content per the owner decision that authorized
+this fix (message received mid-review, after this review's first pass
+had already published Finding 2 as an accepted, unfixed limitation).
+Everything below happened *after* the rest of this document's findings
+were first written; the fix is committed together with this section.
+
+### Original defect
+
+`struct aicad_occt_context` was a plain heap-allocated object
+(`new aicad_occt_context()` in `aicad_occt_context_create`, `delete
+context` in `aicad_occt_context_destroy`). `CheckContext` — called first
+by every other bridge function — read `context->owning_thread` with no
+liveness check at all. Consequences, all real and all verified by this
+fix's own new regression tests (see below) against the *pre-fix* code
+before it was replaced:
+- **Double-destroy**: a second `aicad_occt_context_destroy(context)`
+  call dereferenced already-freed memory to read `context->owning_thread`,
+  then called `delete` a second time on already-freed memory — a
+  textbook double-free, undefined behavior.
+- **Use-after-destroy for any other operation**: e.g.
+  `aicad_occt_create_box(context, ...)` on a destroyed `context` hit the
+  identical use-after-free in `CheckContext` before any of the function's
+  own argument validation ran.
+- Both were unreachable through `cad-occt-bridge`'s safe Rust API
+  (`OcctContext`'s `Drop` runs at most once by Rust ownership, and every
+  `Shape<'ctx>` borrows `'ctx` so the borrow checker forbids dropping a
+  context while any shape from it is still alive) — the defect lived
+  entirely in the native ABI's own contract, reachable only by a caller
+  using the raw C functions directly (or by a future, different safe
+  wrapper that did not reproduce `cad-occt-bridge`'s own careful
+  ownership modeling).
+
+### Alternatives considered
+
+1. **Stable context control block with live/destroyed state, memory
+   reused via a slot+generation free-list (mirroring `ShapeTable`
+   exactly)** — rejected. `ShapeTable`'s free-list works because a shape
+   *handle* is a separate `{context_id, slot, generation}` value the
+   caller carries independently of any pointer; a stale handle is
+   detected by comparing the caller's carried `generation` against the
+   slot's current one. A context *handle* is nothing but the raw
+   `aicad_occt_context_t*` pointer itself — there is no separate
+   generation value the caller carries alongside it. If a destroyed
+   context's memory were recycled for a *different*, legitimately-live
+   new context, a caller's stale pointer to the old context would, after
+   reuse, address a real, live `aicad_occt_context` — indistinguishable
+   from the caller's own context by any check this design could perform,
+   silently aliasing someone else's kernel session. This is exactly the
+   "released IDs alias newly created geometry" hazard the audit brief
+   asks to rule out, and slot-reuse-for-contexts would reintroduce it at
+   the context level even while fixing the double-free.
+2. **Process-wide live-context registry, `std::unordered_set<void*>` (or
+   similar) checked by pointer identity on every call, protected by a
+   mutex** — rejected as unnecessarily costly. This would work
+   (liveness becomes a lookup keyed by pointer value, safe even for a
+   completely foreign pointer, unlike this fix's own approach — see
+   "What this does not fix" below), but it puts a process-wide mutex
+   acquisition on literally every single bridge call (`CheckContext` is
+   the first thing every function does), directly contradicting the
+   owner decision's own "prefer avoiding a globally contended lock on
+   every bridge call when an equally safe simpler design exists."
+   Multiple independent kernel contexts, each meant to be usable
+   concurrently from independent threads (Stage-1's own concurrency
+   model), would now contend on one global lock for an operation
+   (liveness-checking) that has nothing to do with any shared geometry
+   state.
+3. **Generational/opaque context handle backed by a registry/slab,
+   where the value returned to the caller is a `{slot, generation}` pair
+   disguised as a pointer (e.g. via pointer tagging or an integer cast to
+   a pointer-sized value)** — rejected as more complex than necessary
+   for no additional safety benefit over option 4 below, and fragile
+   (pointer tagging assumes spare bits are available in real pointer
+   values, which is platform-dependent and not guaranteed by the C++
+   standard); would also change the opaque type's actual nature in a way
+   that could surprise a future maintainer expecting `aicad_occt_context_t*`
+   to behave like an ordinary (if opaque) object pointer.
+4. **Selected: a stable, permanently-live control block per context,
+   *never reused* for a different context, with a single atomic `live`
+   flag as the sole safety-critical field, and no per-call lock.** Every
+   context created by `aicad_occt_context_create` gets its own
+   `aicad_occt_context` object, allocated via `emplace_back()` into a
+   process-wide `std::deque<aicad_occt_context>` (chosen specifically
+   because `std::deque::emplace_back` never relocates or invalidates the
+   address of an already-constructed element, unlike `std::vector` —
+   this is the one property this design needs from its container).
+   `live` starts `false` on construction; `aicad_occt_context_create`
+   sets it `true` (release ordering) only after `id`/`owning_thread` are
+   fully initialized and *before* the pointer is ever handed to a
+   caller — so no reader can observe a partially-initialized live
+   context. `aicad_occt_context_destroy` clears it `false` via
+   `compare_exchange_strong` (acq_rel ordering) — the CAS guarantees
+   *exactly one* caller ever wins and releases `context->shapes`'s
+   actual geometry memory, no matter how many threads call destroy
+   concurrently on the same pointer. The `aicad_occt_context` object's
+   own (small, fixed-size) memory is never freed for the life of the
+   process; the registry's own mutex is taken only inside `Allocate()`
+   (i.e. only at context-creation time), never on the per-call hot path.
+
+### Rationale for the selected design
+
+- It is the least complex option that fully closes the in-scope defect:
+  no per-call lock, no pointer tagging, no second generation-tracking
+  scheme layered on top of a scheme (slot reuse) that does not fit a
+  bare-pointer handle.
+- It reuses a property this codebase already trusts and has already
+  tested extensively for `ShapeTable` — "never actually free memory a
+  caller might still hold a stale pointer to; make the *liveness check
+  itself* the safety mechanism" — applied at the coarser, much
+  lower-frequency granularity of context creation/destruction rather
+  than per-shape-operation, where the memory-never-reused property is
+  actually *easier* to guarantee soundly (context creation happens
+  orders of magnitude less often than shape creation in any realistic
+  workload, per `docs/plan`'s own architecture — a kernel context is a
+  session-scoped resource, not a per-operation one).
+- Never freeing a context's own small control block sounds like it
+  trades a use-after-free for a leak, but it does not: the owning
+  `std::deque` itself is a function-local `static`, so its destructor —
+  and every context object inside it — runs during ordinary C++ static
+  teardown at process exit. This review's own valgrind runs (below)
+  confirm zero leaked bytes, including after 2000+ context create/destroy
+  cycles in one process.
+
+### What this fix does and does not cover
+
+- **Does cover** (verified by the new regression tests below): a context
+  pointer this bridge itself issued via `aicad_occt_context_create`,
+  used again — by any function, from any thread — after
+  `aicad_occt_context_destroy` was called on it, including a second
+  `destroy` call itself. All such uses now return
+  `AICAD_OCCT_ERR_INVALID_ARGUMENT` deterministically; none dereference
+  freed memory, because nothing is ever freed.
+- **Does not, and cannot, cover**: a wholly fabricated or foreign
+  pointer value that was never returned by `aicad_occt_context_create`
+  at all. Dereferencing such a pointer to read `live` is unavoidably
+  undefined behavior in any design built on an opaque raw-pointer C ABI
+  — the identical, universally-accepted limitation every such API has
+  (the C standard library's own `FILE*`, e.g. passed to `fclose`,
+  carries the same limitation). This bridge had this property before the
+  fix and still has it after; the fix narrows, rather than eliminates,
+  the space of unsafe caller behavior, and does so for precisely the
+  defect class the owner decision described.
+
+### Implementation
+
+`native/occt_bridge/src/aicad_occt_bridge.cpp`: `struct aicad_occt_context`
+now holds `std::atomic<bool> live{false}` plus the pre-existing `id`/
+`owning_thread`/`shapes` fields; a new file-local `ContextRegistry`
+class (a mutex-guarded `std::deque<aicad_occt_context>`, `Allocate()`
+the only operation) backs `aicad_occt_context_create`; `CheckContext`
+gained one `live.load(acquire)` check before its existing thread-affinity
+check; `aicad_occt_context_destroy` gained the same load plus a
+`compare_exchange_strong` before releasing `context->shapes`.
+`native/occt_bridge/include/aicad_occt_bridge.h`: rewrote
+`aicad_occt_context_destroy`'s and `AICAD_OCCT_ERR_INVALID_ARGUMENT`'s
+own doc comments to state the new, actually-true safety contract instead
+of the old "undefined at the process level" claim. No function
+signature changed; `crates/cad-occt-bridge`'s FFI bindings and safe
+wrapper required no changes at all.
+
+### Regression tests added
+
+All in `native/occt_bridge/tests/abi_boundary_test.cpp` (native — the
+defect and its fix live entirely below the safe Rust API, so native
+tests are the correct and only place these belong), covering every
+category the owner decision specified:
+
+| Required case | Test |
+|---|---|
+| create → destroy | pre-existing `"context_destroy succeeds"`, reconfirmed |
+| create → destroy → destroy | `"destroying an already-destroyed context is rejected cleanly, not a double-free"` |
+| create → destroy → ordinary operation | `"create_box on a destroyed context is rejected cleanly, not a crash"` |
+| stale context with shape/resource operation | `"a shape query against a destroyed context is rejected cleanly, not a crash"` |
+| resource destruction after context destruction | `"releasing a shape whose context has been destroyed is rejected cleanly, not a crash"` |
+| two independent contexts | `"live_ctx remains fully usable after an unrelated context was destroyed"` + `"live_ctx's own shape is unaffected by doomed_ctx's destruction"` |
+| resource/context relationship across the wrong context | pre-existing `FOREIGN_CONTEXT` test, reconfirmed, plus new `"using a live handle against a destroyed context is rejected cleanly, not mistaken for live"` |
+| repeated create/destroy cycles | `"repeated-cycle: 2000 create/destroy cycles all succeed cleanly"` + `"...the very first (long-destroyed) context is still safely rejected, never aliased onto a later cycle's context"` |
+
+All pass: `./abi_boundary_test` → 37/37 checks PASSED (up from 22 before
+this fix, both counts verified directly against the test binary's own
+output, not estimated); the full native suite remains 18/18 (`ctest
+--test-dir native/occt_bridge/build`).
+
+### Benchmark result
+
+Per the owner decision's own requirement ("if the chosen design changes
+hot-path behavior, add a focused microbenchmark... record the measured
+cost"): added to `native/occt_bridge/tests/lifecycle_test.cpp`. Measured
+on this review's own container (not a guarantee for other hardware, but
+a real, reproduced number, not an estimate):
+
+```
+benchmark: one uncontended atomic load+store ~= 1.21 ns; one full
+aicad_occt_shape_is_valid call (context-liveness check + real OCCT
+work) ~= 668874.17 ns -- the fix's own atomic check is ~0.0% of one
+ordinary call's total cost
+```
+
+The fix's new per-call cost is one uncontended atomic load (`~1.2 ns`),
+against an ordinary bridge call's own OCCT-side work (`~669 µs` for
+`BRepCheck_Analyzer`, chosen deliberately as one of this bridge's
+*cheaper* operations — most geometry-constructing calls cost
+substantially more). The atomic check is roughly **five orders of
+magnitude** cheaper than the call it guards; this is not a "small but
+real" cost worth trading away for a different design, it is immeasurably
+small in context. No hot-path mutex was added at all (the registry's own
+mutex is only touched by `Allocate()`, i.e. only at context-creation
+time).
+
+### Sanitizer result (post-fix)
+
+Fresh, full-suite runs, performed after this fix (superseding, not
+merely repeating, this review's earlier pre-fix sanitizer runs):
+
+```
+$ valgrind --leak-check=full ./<each of 17 native test binaries>
+ERROR SUMMARY: 0 errors from 0 contexts   (every binary)
+definitely/indirectly lost: 0 bytes       (every binary, including
+                                            abi_boundary_test's own new
+                                            2000-cycle regression test)
+
+$ (GCC ASan+UBSan rebuild) ctest --output-on-failure
+100% tests passed, 0 tests failed out of 18
+(zero ASan/UBSan reports of any kind, across the full suite)
+```
+
+The 2000-create/destroy-cycle regression test's own valgrind run showed
+`0 bytes definitely lost` — direct evidence the never-freed-control-block
+design does not leak in practice: everything is reclaimed at normal
+process exit via the registry's own `static` destructor, matching this
+fix's own "Rationale" claim rather than merely asserting it.
+
+### Post-fix second-pass audit result
+
+Per the second-pass requirement's own spirit (triggered here by an
+owner-authorized architecture patch rather than a self-discovered
+BLOCKER/MAJOR, but treated the same way): the three audit sections this
+fix actually touches were re-run against the patched code, not assumed
+unaffected.
+
+- **Audit 2 (FFI/ownership/lifetime)** — re-run: all pre-existing checks
+  (invalid handle, stale shape handle, foreign context, wrong thread)
+  plus all 8 new lifetime checks above pass; fresh valgrind and ASan/UBSan
+  both clean. Conclusion updated above: Finding 2 is now FIXED, not just
+  documented.
+- **Audit 3 (threading)** — re-run: `aicad_occt_context` still declares
+  no `unsafe impl Send`/`Sync` (unaffected — the new `std::atomic<bool>`
+  field doesn't change this at the Rust FFI boundary, which never sees
+  the native struct's layout); the new `ContextRegistry` mutex is
+  confirmed, by direct code reading, to be taken only inside `Allocate()`
+  — never inside `CheckContext` or any per-shape operation — so the
+  "conservative baseline" (no silently-promised arbitrary concurrent
+  shared access, no needless lock contention) is preserved, not
+  weakened. The benchmark above is the concrete evidence for "negligible
+  hot-path cost," not an assumption.
+- **Audit 10 (sanitizers)** — re-run in full: see "Sanitizer result"
+  above. Both valgrind and ASan/UBSan are clean on the patched code,
+  including the new regression tests that specifically exercise the
+  previously-unsafe paths.
+
+No other audit section (1, 4–9, 11, 12) touches context lifetime
+management, so none required re-running; this was confirmed by checking
+that the fix's diff is confined to context creation/destruction/liveness
+checking and does not alter shape-table behavior, geometry operations,
+STEP handling, or anything outside `aicad_occt_bridge.cpp`'s own context
+plumbing and its header's doc comments.
 
 ## Threading findings (Audit 3)
 
@@ -601,42 +894,70 @@ later-stage architecture.
 
 ## Findings summary (all severities)
 
-| # | Severity | Area | File(s) | Summary |
-|---|---|---|---|---|
-| 1 | MAJOR | STEP independence framing | `project/gates/stage-1-gate.md` §2.3/§8 | The composite "two disclosed layers" claim can be read as independently verifying re-imported *geometry*, but only file-*structure*/entity-counts are independently verified; the only geometry (volume/bbox) comparison is the non-independent self-round-trip. Individual task reports already disclose this accurately; the gate-packet-level summary does not surface it as sharply. |
-| 2 | MINOR | FFI test coverage | `native/occt_bridge/src/aicad_occt_bridge.cpp` (`aicad_occt_context_destroy`), `tests/abi_boundary_test.cpp` | Double-context-destroy is untested (unlike double-shape-release, which is tested) and is a genuine native use-after-free if a caller violates the documented single-destroy contract. Not reachable through the safe Rust API. |
-| 3 | MINOR | Concurrency coverage breadth | `adversarial_sweep.rs`, AICAD-036 investigation scope | `sweep`/`loft`/`shell`/`offset`/`tessellate`/topology-exploration were never stress-tested for the fillet-class OCCT-global-state defect before this review; this review's own bounded probe found nothing, but one bounded run cannot prove absence of a narrow, geometry-specific race. |
-| 4 | MINOR | Adversarial-case coverage | `adversarial_sweep.rs` | Degenerate/non-G1 sweep spines and mismatched-section-count lofts are documented and correctly rejected by the implementation but are not exercised by the bounded adversarial harness. |
-| 5 | MINOR | Process/documentation | `project/TASKS.yaml` (AICAD-037 `report:` path), `project/reports/` | `project/reports/AICAD-037.md` does not exist even though the ticket specifies that path; `SESSION_HANDOFF.md` explains the substitution but the file itself is silently absent. |
-| 6 | NOTE | Sanitizer coverage (now closed) | native test suite | G2 (no valgrind since Batch 1A) is closed by this review's fresh valgrind + new ASan/UBSan runs, both clean. Recorded here for traceability, not as an open item. |
-| 7 | NOTE | Exception-path coverage | native bridge, all operations | G1 (no confirmed genuine `Standard_Failure` throw reached by any test) remains open; this review did not find a new way to trigger one either, consistent with the batch's own honest disclosure. Non-blocking. |
-| 8 | NOTE | Determinism/performance baselines | `benchmarks/performance/` | Not yet established; correctly out of Stage-1's own ticket scope (`OWNER_DECISIONS.md` D5 remains open and non-blocking for Stage 1, per RFC-0002 §9). |
+| # | Severity | Area | File(s) | Summary | Outcome |
+|---|---|---|---|---|---|
+| 1 | MAJOR | STEP independence framing | `project/gates/stage-1-gate.md` §2.3/§8 | The composite "two disclosed layers" claim can be read as independently verifying re-imported *geometry*, but only file-*structure*/entity-counts are independently verified; the only geometry (volume/bbox) comparison is the non-independent self-round-trip. Individual task reports already disclose this accurately; the gate-packet-level summary does not surface it as sharply. | **Mitigated** — a cross-reference note was added to the top of `stage-1-gate.md` pointing here and stating the narrower claim explicitly; the original evidence is left intact, not rewritten. |
+| 2 | MINOR → real defect | FFI lifetime safety | `native/occt_bridge/src/aicad_occt_bridge.cpp` (`aicad_occt_context_destroy`/`CheckContext`), `tests/abi_boundary_test.cpp` | Double-context-destroy, and any operation on a destroyed context, dereferenced freed memory — a genuine native use-after-free, not reachable through the safe Rust API. | **Fixed** (owner-authorized architecture change) — see "Context lifetime safety fix." 15 new regression tests added; fresh valgrind + ASan/UBSan clean. |
+| 3 | MINOR | Concurrency coverage breadth | `adversarial_sweep.rs`, AICAD-036 investigation scope | `sweep`/`loft`/`shell`/`offset`/`tessellate`/topology-exploration were never stress-tested for the fillet-class OCCT-global-state defect before this review. | **Addressed** — `crates/cad-occt-bridge/tests/concurrency_probe.rs` added (6 permanent tests, 320 concurrent builds each); still bounded, not exhaustive (see that file's own doc comment). |
+| 4 | MINOR | Adversarial-case coverage | `adversarial_sweep.rs` | Degenerate/non-G1 sweep spines and mismatched-section-count lofts were documented and correctly rejected by the implementation but not exercised by the bounded adversarial harness. | **Addressed** — 2 new tests added to `adversarial_sweep.rs` (`degenerate_sweep_spines_never_panic_or_return_internal`, `mismatched_loft_sections_never_panic_or_return_internal`). |
+| 5 | MINOR | Process/documentation | `project/TASKS.yaml` (AICAD-037 `report:` path), `project/reports/` | `project/reports/AICAD-037.md` did not exist even though the ticket specifies that path. | **Fixed** — stub added, pointing to the gate packet and this review. |
+| 6 | NOTE | Sanitizer coverage (now closed) | native test suite | G2 (no valgrind since Batch 1A) is closed by this review's fresh valgrind + new ASan/UBSan runs, both clean, both re-confirmed after the Finding-2 fix. | Closed. |
+| 7 | NOTE | Exception-path coverage | native bridge, all operations | G1 (no confirmed genuine `Standard_Failure` throw reached by any test) remains open; this review did not find a new way to trigger one either, consistent with the batch's own honest disclosure. | Non-blocking, still open. |
+| 8 | NOTE | Determinism/performance baselines | `benchmarks/performance/` | Not yet established; correctly out of Stage-1's own ticket scope (`OWNER_DECISIONS.md` D5 remains open and non-blocking for Stage 1, per RFC-0002 §9). | Non-blocking, still open. |
 
-No BLOCKER findings.
+No BLOCKER findings, before or after patching.
 
 ## Patches applied
 
-None. No finding above met the patch-policy bar of "a clear
-implementation bug, safely patchable within already-approved
-architecture" — findings 2–5 are coverage/documentation gaps
-appropriate for hardening-mode work or a trivial doc fix, not defects
-with a failing-test-first fix cycle available; finding 1 is a
-recommendation about how a claim is framed, not a code change. Per the
-patch policy, coverage gaps that would require *new* test infrastructure
-or campaign design (findings 2–4) are exactly the kind of work the
-active scheduled-task brief already assigns to "Stage-1 hardening mode,"
-not to an audit session — adding them here would exceed this review's
-own scope of verifying, not extending, Stage 1.
+Two rounds, both on top of `a296891`, both committed together with this
+document's final revision:
+
+**Round 1 (self-initiated coverage/documentation work)**:
+- `project/reports/AICAD-037.md` — added (Finding 5).
+- `project/gates/stage-1-gate.md` — added a cross-reference note at the
+  top, no other text changed (Finding 1).
+- `crates/cad-occt-bridge/tests/concurrency_probe.rs` — added, 6 tests
+  (Finding 3).
+- `crates/cad-occt-bridge/tests/adversarial_sweep.rs` — 2 tests added,
+  plus a missing `Direction3` import fixed (Finding 4).
+None of these met the "clear implementation bug" bar the patch policy
+reserves its five-step fix cycle for — they are documentation and
+test-coverage additions, which AGENTS.md's "Autonomously allowed" list
+permits directly. All were rerun after adding: `cargo fmt`/`clippy -D
+warnings` clean, full `cargo test --workspace` clean (125 Rust tests
+total, up from 117), native `ctest` unaffected (18/18).
+
+**Round 2 (owner-authorized architecture fix)**:
+- `native/occt_bridge/include/aicad_occt_bridge.h` — rewrote
+  `aicad_occt_context_destroy`'s and `AICAD_OCCT_ERR_INVALID_ARGUMENT`'s
+  doc comments to state the new (now-true) safety contract.
+- `native/occt_bridge/src/aicad_occt_bridge.cpp` — the context lifetime
+  fix itself (Finding 2). See "Context lifetime safety fix" above for
+  the full defect/design/rationale/evidence record; that section is
+  this patch's own required documentation, not a duplicate of it.
+- `native/occt_bridge/tests/abi_boundary_test.cpp` — 15 new regression
+  checks (see that section's own table).
+- `native/occt_bridge/tests/lifecycle_test.cpp` — a microbenchmark
+  measuring the fix's own hot-path cost.
+This one *was* a clear implementation bug (a genuine use-after-free),
+but fixing it correctly required an internal architecture decision this
+review was not positioned to make unilaterally under the patch policy's
+own "does not... select between major unresolved architecture
+alternatives" boundary — hence the owner authorization, the required
+design-alternatives comparison, and the required regression-test/
+sanitizer/benchmark evidence, all completed as specified.
 
 ## Second-pass requirement
 
-Not triggered — no BLOCKER or MAJOR-and-safely-patchable finding exists.
-(Finding 1, the one MAJOR, is a framing/disclosure recommendation with no
-safe code patch available inside this review's own scope — rephrasing an
-owner-facing gate document's summary language is itself an editorial/
-communication judgment call for the gate's author or the owner, not a
-"fix the failing test" cycle this review can run through the patch
-policy's five-step loop.)
+**Triggered by the owner-authorized Round 2 patch** (a real code fix,
+unlike Round 1's documentation/coverage additions) and completed: Audits
+2, 3, and 10 were re-run against the patched code specifically because
+this patch touches context creation/destruction/liveness-checking, which
+those three audits' own conclusions depend on. See "Post-fix second-pass
+audit result" under "Context lifetime safety fix" above for the detailed
+re-run results (all clean); Audits 1, 4–9, 11, 12 do not depend on
+context lifetime management and were confirmed, by reading the patch's
+own diff, to be untouched by it.
 
 ## Known kernel limitations (carried forward, independently reconfirmed)
 
@@ -671,49 +992,69 @@ the gate packet's own §7.
 
 ## Recommendation
 
-**PASS WITH CONDITIONS.**
+**PASS.**
+
+This supersedes this review's own first-pass recommendation of PASS WITH
+CONDITIONS, issued once, after the patches above, on the basis of the
+patched repository's own evidence — not a retained assumption from the
+pre-patch pass.
 
 The Stage-1 kernel substrate is architecturally correct against its own
-frozen contract (RFC-0002 §3/§4, DL-5): this review found zero OCCT-type
-leakage above the adapter boundary, a sound generation-based handle
-design with no aliasing defect, complete exception containment across
-every one of 1955 lines of native implementation, a type-level
-(`!Send`/`!Sync`) and runtime-checked single-thread-affine concurrency
-contract that holds up under fresh adversarial testing (including this
-review's own original 1920-call concurrent probe against previously-
-untested operations), zero silent healing/repair anywhere in the
-codebase, a genuinely nontrivial and correctly-verified demonstration
-part (independently re-derived by hand, not merely re-run), and zero
-Stage-2+ scope creep (directly confirmed across all 25 other crates).
-Fresh valgrind and — new to this review — ASan/UBSan runs are both
-clean, closing the batch's own long-standing G2 item with stronger
-evidence than existed before this review.
+frozen contract (RFC-0002 §3/§4, DL-5): zero OCCT-type leakage above the
+adapter boundary, a sound generation-based *shape*-handle design with no
+aliasing defect, and — as of the fix documented in "Context lifetime
+safety fix" — a sound *context*-lifetime model with the identical
+never-alias guarantee extended to context pointers themselves, closing
+the one genuine implementation defect (Finding 2) this review found.
+Exception containment is complete across every reachable path in the
+native implementation. The concurrency contract (`!Send`/`!Sync` at the
+type level, runtime-checked single-thread-affinity, no process-wide lock
+on any per-call hot path even after the fix — confirmed by a measured
+~1.2 ns per-call cost against OCCT's own ~669 µs) holds up under fresh
+adversarial testing, including this review's own original 1920-call
+concurrent probe (now permanently committed as `concurrency_probe.rs`)
+against operations the batch's own investigation never stress-tested.
+Zero silent healing/repair exists anywhere in the codebase. The Stage-1
+demonstration part is genuinely nontrivial and its verification is
+analytic/exact, independently re-derived by hand and confirmed correct,
+not merely re-run. Zero Stage-2+ scope creep was found across all 25
+non-kernel crates. Fresh valgrind and ASan/UBSan runs — the latter newly
+introduced by this review — are clean across the entire native suite,
+both before and after the Finding-2 fix, closing the batch's own
+long-standing G2 item with direct evidence rather than a re-flagged gap.
 
-The reason this is not an unconditional PASS is Finding 1 (STEP
-verification framing) and the cluster of MINOR coverage gaps (Findings
-2–4): none of these indicate the kernel substrate is unsafe to build on,
-but they mean the owner should not read Stage 1's own gate packet as
-having independently verified *geometric* round-trip fidelity through
-STEP (only file-structural fidelity is independently verified), and
-should expect the concurrency-safety and sweep/loft-adversarial evidence
-to still be bounded rather than exhaustive when Stage 2 begins exercising
-this kernel substrate more heavily.
+Every finding this review raised has now been fixed or mitigated with
+concrete, verified evidence, not merely re-classified as acceptable:
+Finding 1 (STEP-verification framing) is mitigated by an explicit
+cross-reference correcting the composite claim without rewriting the
+original evidence; Finding 2 (the context-lifetime use-after-free) is
+fixed under an owner-authorized architecture change with a full
+alternatives comparison, 15 new regression tests, a measured negligible
+performance cost, and clean post-fix sanitizer runs; Findings 3 and 4
+(concurrency and sweep/loft adversarial coverage gaps) are addressed
+with 8 new permanent tests; Finding 5 (the missing report stub) is
+fixed. The three remaining NOTEs (G1's unreached exception path,
+determinism/performance baselines) are genuinely non-blocking: they were
+correctly out of Stage-1's own ticket scope before this review and
+remain so — nothing found during this review's patching work changed
+that assessment.
 
-**Conditions recommended before or during Stage 2** (advisory; this
-review does not authorize Stage 2 or record an owner decision):
-
-1. Before treating Stage 1's STEP evidence as covering geometric (not
-   just structural) round-trip fidelity, either extend independent
-   verification to recompute at least one geometric invariant outside
-   OCCT, or explicitly narrow the claim in `project/gates/stage-1-gate.md`'s
-   own summary language (Finding 1).
-2. During Stage-1 hardening mode (already scheduled per
-   `SESSION_HANDOFF.md`), extend the concurrent-stress methodology to
-   `sweep`/`loft`/`shell`/`offset`/`tessellate`/topology-exploration using
-   non-trivial fixtures, and add sweep/loft-specific degenerate-input
-   cases to the adversarial harness (Findings 2–4).
-3. Add the missing `project/reports/AICAD-037.md` stub for tooling
-   consistency (Finding 5) — trivial, non-blocking.
+**Non-blocking follow-ups still worth doing in Stage-1 hardening mode or
+early Stage 2** (informational, not conditions on this PASS):
+- Extend the concurrent-stress methodology in `concurrency_probe.rs` to
+  non-trivial (not bare-primitive) fixtures over a longer campaign, the
+  way `AICAD-036`'s own fillet investigation eventually needed to, to
+  further narrow (bounded evidence can narrow risk but never fully
+  eliminate it) the residual risk of an undiscovered OCCT-global-state
+  race in an operation this review did not happen to construct the right
+  adversarial fixture for.
+- If Stage 2 or a later stage needs to cite STEP round-trip fidelity as
+  more than structurally verified, extend independent verification to
+  recompute at least one geometric invariant outside OCCT (Finding 1's
+  underlying gap is mitigated, i.e. honestly disclosed, but not closed).
+- G1 (exception-path reachability) and determinism/performance
+  baselining remain open, exactly as the batch's own gate packet already
+  disclosed; no new urgency was found here.
 
 This recommendation is advisory only. Per `AGENTS.md` and
 `project/CURRENT_STAGE.md`, Stage 2 (`AICAD-038` onward) remains blocked
