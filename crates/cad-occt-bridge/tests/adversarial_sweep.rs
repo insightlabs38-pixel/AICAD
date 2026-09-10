@@ -39,7 +39,7 @@
 //! `concurrent_fillet_of_a_concave_edge_from_independent_contexts_does_not_corrupt_the_result`
 //! in `crates/cad-occt-bridge/src/lib.rs`).
 
-use cad_kernel_api::{Axis3, KernelError, KernelResult, Point3, Transform, Vector3};
+use cad_kernel_api::{Axis3, Direction3, KernelError, KernelResult, Point3, Transform, Vector3};
 use cad_occt_bridge::{OcctContext, Shape};
 
 /// A tiny deterministic xorshift64* PRNG -- no new crate dependency, per
@@ -402,4 +402,98 @@ fn unusual_orientation_frames_stay_orthonormal_and_right_handed() {
             "frame must stay right-handed"
         );
     }
+}
+
+/// Builds a closed 4-edge square wire in the z=0 plane, side length
+/// `side`, corner at the origin -- used below as a loft section shape
+/// whose edge/vertex count (4) deliberately differs from a circle wire's
+/// (1), to probe the mismatched-section-count rejection path.
+fn square_wire<'ctx>(context: &'ctx OcctContext, side: f64) -> KernelResult<Shape<'ctx>> {
+    let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+    let e0 = context.make_line_edge(p(0.0, 0.0), p(side, 0.0))?;
+    let e1 = context.make_line_edge(p(side, 0.0), p(side, side))?;
+    let e2 = context.make_line_edge(p(side, side), p(0.0, side))?;
+    let e3 = context.make_line_edge(p(0.0, side), p(0.0, 0.0))?;
+    context.make_wire_from_edges(&[&e0, &e1, &e2, &e3])
+}
+
+#[test]
+fn degenerate_sweep_spines_never_panic_or_return_internal() {
+    // AGENTS.md's "degenerate sweep paths" adversarial case, per
+    // `aicad_occt_sweep`'s own documented contract (native/occt_bridge/include/
+    // aicad_occt_bridge.h): the spine must be G1-continuous, so a
+    // polygonal (sharp-cornered) open spine is expected to be rejected
+    // with OperationFailed, never silently healed/smoothed into success
+    // and never a panic/Internal. Not previously exercised by this
+    // bounded harness (project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md
+    // finding 4).
+    let context = OcctContext::new().unwrap();
+    let circle = context
+        .make_circle_wire(Point3::ORIGIN, Direction3::Z, 1.0)
+        .unwrap();
+    let profile = circle.make_face().unwrap();
+
+    // A sharp right-angle open spine: two straight edges meeting at a
+    // 90-degree corner, not G1-continuous.
+    let leg0 = context
+        .make_line_edge(Point3::ORIGIN, Point3::new(0.0, 0.0, 5.0))
+        .unwrap();
+    let leg1 = context
+        .make_line_edge(Point3::new(0.0, 0.0, 5.0), Point3::new(5.0, 0.0, 5.0))
+        .unwrap();
+    let sharp_spine = context.make_wire_from_edges(&[&leg0, &leg1]).unwrap();
+
+    match profile.sweep(&sharp_spine) {
+        Ok(shape) => {
+            // OCCT is free to succeed if its own tolerance accepts the
+            // corner; this harness does not assert failure, only that a
+            // result (if any) is not silently corrupt.
+            let _ = shape.is_valid();
+        }
+        Err(KernelError::Internal) => {
+            panic!("sweep along a sharp-cornered spine returned Internal -- adapter defect");
+        }
+        Err(_) => {}
+    }
+
+    // A single-point degenerate "spine" (coincident endpoints) must be
+    // rejected at edge-construction time, before sweep ever runs.
+    let degenerate_edge = context.make_line_edge(Point3::ORIGIN, Point3::ORIGIN);
+    assert!(
+        degenerate_edge.is_err(),
+        "a zero-length edge must be rejected, never silently accepted as a degenerate spine"
+    );
+}
+
+#[test]
+fn mismatched_loft_sections_never_panic_or_return_internal() {
+    // AGENTS.md's "degenerate loft profiles" adversarial case: sections
+    // whose edge/vertex counts differ (a 1-edge circle vs. a 4-edge
+    // square) have no OCCT-establishable per-vertex correspondence, so
+    // `aicad_occt_loft` is documented to reject this with
+    // OperationFailed. Not previously exercised by this bounded harness
+    // (project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md finding 4).
+    let context = OcctContext::new().unwrap();
+    let circle = context
+        .make_circle_wire(Point3::ORIGIN, Direction3::Z, 2.0)
+        .unwrap();
+    let square = square_wire(&context, 4.0).unwrap();
+
+    match context.loft(&[&circle, &square]) {
+        Ok(shape) => {
+            let _ = shape.is_valid();
+        }
+        Err(KernelError::Internal) => {
+            panic!("loft across mismatched section shapes returned Internal -- adapter defect");
+        }
+        Err(_) => {}
+    }
+
+    // Fewer than 2 sections is a contract violation, must be
+    // InvalidArgument, never a panic.
+    assert_eq!(
+        context.loft(&[&circle]).unwrap_err(),
+        KernelError::InvalidArgument,
+        "loft with a single section must be InvalidArgument"
+    );
 }

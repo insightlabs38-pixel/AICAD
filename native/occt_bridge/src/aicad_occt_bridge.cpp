@@ -60,6 +60,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <deque>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -190,16 +191,73 @@ uint64_t NextContextId() {
 
 }  // namespace
 
+// Owner-authorized context lifetime-safety fix (see
+// project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md, "Context
+// lifetime safety fix" section, for the full alternatives comparison and
+// rationale this design was chosen from).
+//
+// `aicad_occt_context`'s own memory is now NEVER individually freed --
+// every context ever created lives inside `ContextRegistry`'s
+// process-wide `std::deque` for the remainder of the process
+// (`std::deque::emplace_back` never relocates or invalidates the
+// address of an already-constructed element, unlike `std::vector`,
+// which is exactly the stable-address property this fix needs). This
+// makes dereferencing a destroyed context pointer to read `live` a
+// well-defined, standard-legal memory access -- not the use-after-free
+// a `delete`-based design produces -- for the in-scope defect class: a
+// pointer value this bridge itself once handed out, used again after
+// its own `aicad_occt_context_destroy` call. It does not, and no design
+// built on an opaque raw-pointer C ABI can, make a wholly fabricated/
+// foreign pointer value safe to dereference (the C standard library's
+// own `FILE*` has the identical, universally-accepted limitation for
+// e.g. `fclose`); this bridge already had, and still has, that same
+// inherent property for garbage pointers -- unchanged by this fix.
+//
+// `live` is the sole safety-critical field: set exactly once (true, at
+// create, before the pointer is ever handed to a caller -- no concurrent
+// reader can exist yet) and cleared exactly once (false, by whichever
+// caller's `aicad_occt_context_destroy` wins an atomic compare-exchange
+// race), using acquire/release ordering. This lets every ordinary bridge
+// call check liveness with a single lock-free atomic load in
+// `CheckContext` -- no process-wide mutex on the per-call hot path (the
+// registry's own mutex is taken only inside `Allocate`, i.e. only at
+// context-creation time, not on every geometry call).
 struct aicad_occt_context {
-  uint64_t id = NextContextId();
-  std::thread::id owning_thread = std::this_thread::get_id();
+  std::atomic<bool> live{false};
+  uint64_t id = 0;
+  std::thread::id owning_thread{};
   ShapeTable shapes;
 };
 
 namespace {
 
+class ContextRegistry {
+ public:
+  aicad_occt_context* Allocate() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    records_.emplace_back();
+    return &records_.back();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::deque<aicad_occt_context> records_;
+};
+
+ContextRegistry& GlobalContextRegistry() {
+  static ContextRegistry registry;
+  return registry;
+}
+
 aicad_occt_status_t CheckContext(aicad_occt_context_t* context) {
   if (context == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  // Safe even if `context` was returned by a PRIOR
+  // `aicad_occt_context_create` call and has since been destroyed: its
+  // memory is never freed (see the type's own doc comment above), so
+  // this load is well-defined and simply observes `false`.
+  if (!context->live.load(std::memory_order_acquire)) {
     return AICAD_OCCT_ERR_INVALID_ARGUMENT;
   }
   if (std::this_thread::get_id() != context->owning_thread) {
@@ -271,7 +329,19 @@ aicad_occt_status_t aicad_occt_context_create(aicad_occt_context_t** out_context
     return AICAD_OCCT_ERR_INVALID_ARGUMENT;
   }
   try {
-    *out_context = new aicad_occt_context();
+    aicad_occt_context_t* context = GlobalContextRegistry().Allocate();
+    context->id = NextContextId();
+    context->owning_thread = std::this_thread::get_id();
+    // `context->shapes` is already a freshly-default-constructed, empty
+    // ShapeTable from `emplace_back()` -- no prior occupant to reset,
+    // unlike a reused slot in `ShapeTable` itself (this registry never
+    // reuses a context's own memory for a different context, precisely
+    // so a caller's dangling pointer from one context can never alias a
+    // later, different, legitimately-live context -- see this fix's
+    // design-comparison notes for why slot reuse, which IS used for
+    // shapes, is deliberately NOT used here).
+    context->live.store(true, std::memory_order_release);
+    *out_context = context;
     return AICAD_OCCT_OK;
   } catch (...) {
     *out_context = nullptr;
@@ -283,12 +353,29 @@ aicad_occt_status_t aicad_occt_context_destroy(aicad_occt_context_t* context) {
   if (context == nullptr) {
     return AICAD_OCCT_ERR_INVALID_ARGUMENT;
   }
-  const aicad_occt_status_t status = CheckContext(context);
-  if (status != AICAD_OCCT_OK) {
-    return status;
+  // Well-defined even for an already-destroyed context (see the type's
+  // own doc comment): its memory is never freed, so this is an ordinary
+  // atomic load, not a use-after-free.
+  if (!context->live.load(std::memory_order_acquire)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (std::this_thread::get_id() != context->owning_thread) {
+    return AICAD_OCCT_ERR_WRONG_THREAD;
   }
   try {
-    delete context;
+    bool expected = true;
+    if (!context->live.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+      // Lost a race with a concurrent destroy call that violates the
+      // documented single-thread-affine contract (Stage-1 kernel policy
+      // #9) -- still a clean, deterministic rejection, never a
+      // double-free: this bridge never calls `delete` on a context's own
+      // memory at all, ever.
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    // Release the owned geometry memory now (this IS individually
+    // freed/reset); only the small, fixed-size `aicad_occt_context`
+    // control block itself is kept alive forever, per this fix's design.
+    context->shapes = ShapeTable();
     return AICAD_OCCT_OK;
   } catch (...) {
     return AICAD_OCCT_ERR_INTERNAL;

@@ -13,7 +13,12 @@
 //  3. multiple kernel contexts are safe to use concurrently from
 //     multiple real OS threads, each confined to its own context, which
 //     is the concurrency pattern the single-thread-affine design (Stage-1
-//     kernel policy #9) is actually meant to support.
+//     kernel policy #9) is actually meant to support;
+//  4. the per-call cost of the context-lifetime-safety fix's own atomic
+//     `live` check (see project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md's
+//     "Context lifetime safety fix" section) is negligible relative to
+//     an ordinary bridge call's own OCCT-side work -- a measured,
+//     recorded number, not an assumption.
 //
 // Run under valgrind (see native/occt_bridge/README.md) for leak/error
 // evidence covering the full context-create -> many shape cycles ->
@@ -22,6 +27,7 @@
 #include "aicad_occt_bridge.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -172,6 +178,62 @@ int main() {
 
     Check(g_thread_failures.load() == 0, "concurrency: zero failures across all worker threads");
     std::printf("concurrency: %d threads x %d shapes/thread completed\n", kThreadCount, kShapesPerThread);
+  }
+
+  // --- 4. Microbenchmark: cost of the context-lifetime-safety fix's own
+  // atomic `live` check, per the owner-authorized fix's own requirement
+  // ("if the chosen design changes hot-path behavior, add a focused
+  // microbenchmark... record the measured cost"). This is diagnostic
+  // (printed, not asserted against a hard threshold -- absolute timing
+  // is machine-dependent), isolating two numbers: the raw cost of one
+  // uncontended atomic load/store pair (what `CheckContext`/`context_destroy`
+  // now do on every call), and the cost of one ordinary cheap bridge call
+  // end to end (which now includes that atomic load as a small fraction
+  // of its own OCCT-side work). ---
+  {
+    using clock = std::chrono::steady_clock;
+    constexpr int kIterations = 1'000'000;
+
+    std::atomic<bool> probe{true};
+    bool sink = false;
+    const auto atomic_start = clock::now();
+    for (int i = 0; i < kIterations; ++i) {
+      sink = probe.load(std::memory_order_acquire);
+      probe.store(sink, std::memory_order_release);
+    }
+    const auto atomic_end = clock::now();
+    const double atomic_ns_per_op =
+        std::chrono::duration<double, std::nano>(atomic_end - atomic_start).count() /
+        (2.0 * kIterations);  // one load + one store per iteration
+
+    aicad_occt_context_t* bench_ctx = nullptr;
+    Check(aicad_occt_context_create(&bench_ctx) == AICAD_OCCT_OK, "benchmark: context_create succeeds");
+    aicad_shape_handle_t bench_box = AICAD_NULL_SHAPE_HANDLE;
+    Check(aicad_occt_create_box(bench_ctx, 1.0, 1.0, 1.0, &bench_box) == AICAD_OCCT_OK,
+          "benchmark: create_box succeeds");
+
+    constexpr int kCallIterations = 2'000;
+    int valid_count = 0;
+    const auto call_start = clock::now();
+    for (int i = 0; i < kCallIterations; ++i) {
+      int is_valid = 0;
+      aicad_occt_shape_is_valid(bench_ctx, bench_box, &is_valid);
+      valid_count += is_valid;
+    }
+    const auto call_end = clock::now();
+    const double call_ns_per_op =
+        std::chrono::duration<double, std::nano>(call_end - call_start).count() /
+        static_cast<double>(kCallIterations);
+
+    Check(valid_count == kCallIterations, "benchmark: every is_valid call in the loop reported valid");
+    Check(aicad_occt_context_destroy(bench_ctx) == AICAD_OCCT_OK, "benchmark: context_destroy succeeds");
+
+    std::printf(
+        "benchmark: one uncontended atomic load+store ~= %.2f ns; one full "
+        "aicad_occt_shape_is_valid call (context-liveness check + real OCCT "
+        "work) ~= %.2f ns -- the fix's own atomic check is ~%.1f%% of one "
+        "ordinary call's total cost\n",
+        atomic_ns_per_op, call_ns_per_op, 100.0 * atomic_ns_per_op / call_ns_per_op);
   }
 
   if (g_failures > 0) {
