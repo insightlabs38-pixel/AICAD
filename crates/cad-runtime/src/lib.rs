@@ -14,13 +14,25 @@
 //! values and `for`-loop execution over them; `AICAD-057` ("Implement
 //! recursion and Result/error propagation") hardened recursion with a real
 //! recursion-depth budget and added dedicated call-stack error-propagation
-//! coverage (see `project/reports/AICAD-054.md` through `AICAD-057.md` for
-//! each task's exact scope, decisions, and known limitations —
-//! `AICAD-057`'s own `Result<T,E>` half is escalated as `project/
-//! OWNER_DECISIONS.md#D17`, not implemented). See [`interp`]'s own module
-//! doc comment for the full design: what is executed now, what remains
-//! deliberately unimplemented, and the one documented `expected`-type-
-//! context gap left for ambiguous derived-dimension arithmetic.
+//! coverage; `Result<T,E>`/`Optional<T>` construction/matching/propagation
+//! (`AICAD-057`'s own original, then-unimplemented other half) was
+//! escalated as `project/OWNER_DECISIONS.md#D17`, resolved by the owner
+//! (`project/DECISION_LOG.md#DL-14`), and implemented by `AICAD-057B`-`F`
+//! as an ordinary generic prelude enum in `crates/cad-hir`, not by any
+//! change to this crate — `project/reports/AICAD-057.md`'s own closure
+//! section re-confirms both halves of that task's original scope;
+//! `AICAD-058` ("Implement execution resource-budget accounting") unified
+//! the two independent ad-hoc budgets `AICAD-056`/`AICAD-057` each
+//! introduced as their own placeholder into one [`interp::ResourceBudget`]
+//! (closing a real gap along the way: `while`/`loop` had no iteration
+//! bound at all before this task, only `for` did) and added
+//! [`interp::Interpreter::resource_usage`] for the "accounting" half
+//! proper (see `project/reports/AICAD-054.md` through `AICAD-058.md` for
+//! each task's exact scope, decisions, and known limitations). See
+//! [`interp`]'s own module doc comment for the full design: what is
+//! executed now, what remains deliberately unimplemented, and the one
+//! documented `expected`-type-context gap left for ambiguous
+//! derived-dimension arithmetic.
 //!
 //! - [`value`][]: [`value::Value`]/[`value::NumberValue`]/
 //!   [`value::RangeValue`] — the runtime value representation, and why
@@ -31,8 +43,12 @@
 //!   [`interp::Interpreter::exec_for`]'s own doc comment).
 //! - [`error`][]: [`error::RuntimeError`] — every way execution can fail to
 //!   produce a value, and its `cad_diagnostics::Diagnostic` conversion
-//!   under RFC-0005's `RUNTIME` family.
-//! - [`interp`][]: [`interp::Interpreter`] — the evaluator itself.
+//!   under RFC-0005's `RUNTIME` family (or the dedicated `BUDGET` family
+//!   for the two resource-budget-exceeded variants, `AICAD-058`).
+//! - [`interp`][]: [`interp::Interpreter`] — the evaluator itself, and
+//!   [`interp::ResourceBudget`]/[`interp::ResourceUsage`] — the resource
+//!   limits it enforces and the accounting snapshot of what a run actually
+//!   consumed.
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §2.2;
 //! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (execution sits between

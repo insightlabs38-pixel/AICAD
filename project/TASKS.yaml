@@ -1713,7 +1713,7 @@ tasks:
 - id: AICAD-058
   stage: 2
   title: Implement execution resource-budget accounting
-  status: todo
+  status: done
   depends_on:
   - AICAD-057
   plan_references:
@@ -1730,6 +1730,18 @@ tasks:
   - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
   - run task-specific tests/benchmarks; record exact commands and outputs
   report: project/reports/AICAD-058.md
+  notes: >
+    Unified AICAD-056's for-loop iteration budget and AICAD-057's
+    recursion-depth budget into one Interpreter::ResourceBudget, closing a
+    real gap along the way (while/loop had no iteration bound at all
+    before this task); added Interpreter::resource_usage() as the
+    "accounting" half; moved IterationBudgetExceeded/RecursionLimitExceeded
+    from RUNTIME-E123/E124 to the dedicated BUDGET-E001/E002 family
+    docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md already reserves for this.
+    max_cpu_time/max_memory/max_geometry_ops/max_faces/max_solids
+    deliberately deferred (no wall-clock/allocation hook or Geometry IR
+    exists yet to measure them against) - see project/reports/AICAD-058.md
+    decision 3.
   escalate_if:
   - public syntax/semantics must change beyond an approved RFC
   - a stage gate/benchmark/test would need weakening

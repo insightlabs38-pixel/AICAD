@@ -1,11 +1,27 @@
 //! Runtime error diagnostics (`AICAD-054`) — every way execution can fail
 //! to produce a value, and how each converts to a `cad_diagnostics::
-//! Diagnostic` under RFC-0005's `RUNTIME` family. Mirrors `cad_hir::
-//! typeck`'s own established pattern exactly (a plain local error enum
-//! with a stable `code()`, converted to a `Diagnostic` only once a caller
-//! has the source span/text to attach — see that module's doc comment
-//! "Reuse, not re-derivation" for the precedent this follows for
-//! `cad_units::DimensionalArithmeticError` specifically).
+//! Diagnostic`. Mirrors `cad_hir::typeck`'s own established pattern
+//! exactly (a plain local error enum with a stable `code()`, converted to
+//! a `Diagnostic` only once a caller has the source span/text to attach —
+//! see that module's doc comment "Reuse, not re-derivation" for the
+//! precedent this follows for `cad_units::DimensionalArithmeticError`
+//! specifically).
+//!
+//! Every variant here carries RFC-0005's `RUNTIME` diagnostic family
+//! **except** [`RuntimeError::IterationBudgetExceeded`]/[`RuntimeError::
+//! RecursionLimitExceeded`], which carry the dedicated `BUDGET` family
+//! instead (`AICAD-058`; `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md` §10's
+//! own diagnostic-code taxonomy reserves `BUDGET-E###` as a family
+//! distinct from `RUNTIME-E###`, and `cad_diagnostics::
+//! DIAGNOSTIC_FAMILIES` has listed `"BUDGET"` since `AICAD-038`, unused by
+//! any concrete diagnostic until this task). Before `AICAD-058`, both were
+//! coded `RUNTIME-E123`/`RUNTIME-E124` — their own introducing tasks
+//! (`AICAD-056`, `AICAD-057`) explicitly documented this as a placeholder
+//! pending this task's own full resource-budget scope, not a stability
+//! commitment; per `project/OWNER_DECISIONS.md` D10 every diagnostic code
+//! in this codebase is still provisional pre-1.0 in any case. See
+//! [`RuntimeError::category`] for the corresponding `"resource-budget"`
+//! vs. `"execution"` diagnostic category split.
 //!
 //! Every variant here is reachable only in one of two ways: (1) a
 //! genuinely out-of-scope HIR shape for this task (`Unsupported` — `if`/
@@ -240,32 +256,38 @@ pub enum RuntimeError {
     RangeNotIterable {
         span: Span,
     },
-    /// A `for` loop's own iteration count exceeded [`crate::interp::
-    /// Interpreter`]'s configured iteration budget. A minimal, provisional
-    /// placeholder for `AICAD-058`'s own scheduled "execution resource-
-    /// budget accounting" — this task's own required scope is only "every
-    /// iteration participates in the approved execution resource-budget
-    /// accounting" for `for` loops specifically (`project/
-    /// OWNER_DECISIONS.md#D16`'s FOR-LOOP SEMANTICS section); `AICAD-058`
-    /// is expected to generalize/replace this with the full budget
-    /// contract (recursion depth, other resource categories) `AGENTS.md`'s
-    /// "Execution safety" describes. Reported as a structured diagnostic,
-    /// never an unbounded hang or an uncontrolled `abort`.
+    /// A `for`/`while`/`loop` construct's own combined iteration count
+    /// (one shared pool across all three, `AICAD-058`) exceeded
+    /// [`crate::interp::Interpreter`]'s configured [`crate::interp::
+    /// ResourceBudget::max_iterations`]. Originally introduced by
+    /// `AICAD-056` for `for` loops only (`project/OWNER_DECISIONS.md#D16`'s
+    /// FOR-LOOP SEMANTICS section: "every iteration participates in the
+    /// approved execution resource-budget accounting") as an explicitly
+    /// documented placeholder; `AICAD-058` generalized it to also cover
+    /// `while`/`loop` (previously **unbounded** — a real gap, not a
+    /// stylistic gap) under the one coherent [`crate::interp::
+    /// ResourceBudget`] contract `AGENTS.md`'s "Execution safety" describes.
+    /// Reported as a structured diagnostic, never an unbounded hang or an
+    /// uncontrolled `abort`. Carries the dedicated `BUDGET` diagnostic
+    /// family (`BUDGET-E001`), not `RUNTIME`, and category
+    /// `"resource-budget"` — see this module's own doc comment.
     IterationBudgetExceeded {
         span: Span,
     },
     /// A function call's own dynamic nesting depth exceeded
-    /// [`crate::interp::Interpreter`]'s configured recursion-depth limit
-    /// (`AICAD-057`). `AGENTS.md`'s "Execution safety" requires
-    /// "Recursion/resource exhaustion must fail with structured
-    /// diagnostics rather than crashing the host process" — a real Rust
-    /// stack overflow (which unbounded native recursion in this tree-
-    /// walking evaluator would eventually cause) is not something any
-    /// `Result`/diagnostic can recover from, so this limit exists
-    /// specifically to raise a clean, structured failure well before that
-    /// point. A minimal, provisional placeholder for `AICAD-058`'s own
-    /// scheduled "execution resource-budget accounting" — same rationale
-    /// as [`RuntimeError::IterationBudgetExceeded`].
+    /// [`crate::interp::Interpreter`]'s configured [`crate::interp::
+    /// ResourceBudget::max_call_depth`] (`AICAD-057`). `AGENTS.md`'s
+    /// "Execution safety" requires "Recursion/resource exhaustion must
+    /// fail with structured diagnostics rather than crashing the host
+    /// process" — a real Rust stack overflow (which unbounded native
+    /// recursion in this tree-walking evaluator would eventually cause) is
+    /// not something any `Result`/diagnostic can recover from, so this
+    /// limit exists specifically to raise a clean, structured failure well
+    /// before that point. Unified under [`crate::interp::ResourceBudget`]
+    /// by `AICAD-058`, same rationale as [`RuntimeError::
+    /// IterationBudgetExceeded`]. Carries the dedicated `BUDGET`
+    /// diagnostic family (`BUDGET-E002`), not `RUNTIME`, and category
+    /// `"resource-budget"` — see this module's own doc comment.
     RecursionLimitExceeded {
         span: Span,
     },
@@ -301,8 +323,21 @@ impl RuntimeError {
             RuntimeError::ContinueOutsideLoop { .. } => "RUNTIME-E120".to_string(),
             RuntimeError::NotIterable { .. } => "RUNTIME-E121".to_string(),
             RuntimeError::RangeNotIterable { .. } => "RUNTIME-E122".to_string(),
-            RuntimeError::IterationBudgetExceeded { .. } => "RUNTIME-E123".to_string(),
-            RuntimeError::RecursionLimitExceeded { .. } => "RUNTIME-E124".to_string(),
+            RuntimeError::IterationBudgetExceeded { .. } => "BUDGET-E001".to_string(),
+            RuntimeError::RecursionLimitExceeded { .. } => "BUDGET-E002".to_string(),
+        }
+    }
+
+    /// The diagnostic `category` field (RFC-0005) this error reports under
+    /// — `"resource-budget"` for the two budget-exceeded variants
+    /// (`AICAD-058`, matching their dedicated `BUDGET` code family), and
+    /// `"execution"` for every other variant, unchanged from before this
+    /// task.
+    fn category(&self) -> &'static str {
+        match self {
+            RuntimeError::IterationBudgetExceeded { .. }
+            | RuntimeError::RecursionLimitExceeded { .. } => "resource-budget",
+            _ => "execution",
         }
     }
 
@@ -436,7 +471,8 @@ impl RuntimeError {
                     .to_string()
             }
             RuntimeError::IterationBudgetExceeded { .. } => {
-                "'for' loop exceeded its execution iteration budget".to_string()
+                "'for'/'while'/'loop' exceeded this interpreter's shared iteration budget"
+                    .to_string()
             }
             RuntimeError::RecursionLimitExceeded { .. } => {
                 "function call exceeded this interpreter's recursion-depth limit".to_string()
@@ -446,10 +482,11 @@ impl RuntimeError {
 
     /// Builds this error's `cad_diagnostics::Diagnostic`, exactly mirroring
     /// `cad_hir::typeck`'s own `diag`/`diag_from_unit_error` helpers
-    /// (family `RUNTIME` — or `UNIT`, wrapped verbatim, for
-    /// `DimensionalArithmetic` — category `"execution"`, severity always
-    /// `Error`: every variant here represents execution being unable to
-    /// produce a value at all, never a mere warning).
+    /// (family `RUNTIME`/`BUDGET` — or `UNIT`, wrapped verbatim, for
+    /// `DimensionalArithmetic` — see [`RuntimeError::category`] for the
+    /// category, severity always `Error`: every variant here represents
+    /// execution being unable to produce a value at all, never a mere
+    /// warning).
     pub fn to_diagnostic(&self, file: &str, source: &str) -> Diagnostic {
         let span = self.span();
         let line_index = LineIndex::new(source);
@@ -460,7 +497,7 @@ impl RuntimeError {
         Diagnostic::new(
             code,
             Severity::Error,
-            "execution",
+            self.category(),
             self.title(),
             self.message(),
         )

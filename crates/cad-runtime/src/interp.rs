@@ -67,9 +67,9 @@
 //! already rejects every other shape, including a dimensional
 //! `Range<Length>`, at compile time). `iterable` is evaluated exactly
 //! once, each iteration draws down [`Interpreter::consume_iteration_budget`]
-//! (a minimal placeholder for `AICAD-058`'s own scheduled resource-budget
-//! scope — see [`crate::error::RuntimeError::IterationBudgetExceeded`]'s
-//! own doc comment), and `break`/`continue`/`return` inside the loop body
+//! (shared, since `AICAD-058`, with `while`/`loop`'s own iterations — see
+//! this module's own doc comment "Also executed/hardened (`AICAD-058`)"),
+//! and `break`/`continue`/`return` inside the loop body
 //! behave exactly like they already do for `while`/`loop`. See
 //! [`Interpreter::exec_for`]'s own doc comment for the full design,
 //! including the one runtime/type-checker nuance it documents (the
@@ -92,14 +92,46 @@
 //! ([`RuntimeError::RecursionLimitExceeded`]) — seeded here after a *real*
 //! native Rust stack overflow was reproduced empirically while writing
 //! this task's own tests (see [`DEFAULT_MAX_CALL_DEPTH`]'s own doc comment
-//! for the exact measurement); a minimal placeholder for `AICAD-058`'s own
-//! scheduled resource-budget scope, mirroring [`Interpreter::
-//! consume_iteration_budget`]'s identical role for `for` loops. A source-
-//! visible `Result<T,E>` value (`Ok`/`Err` construction and matching) is
-//! **not** implemented — escalated as `project/OWNER_DECISIONS.md#D17`
-//! (AICAD enum variants cannot carry data, and AICAD has no user-defined
-//! generic types, at all, independent of this crate; see that entry for
-//! the full reasoning).
+//! for the exact measurement). `Result<T,E>` construction/matching/
+//! propagation, escalated here as `project/OWNER_DECISIONS.md#D17`, was
+//! later resolved by the owner (`project/DECISION_LOG.md#DL-14`) and
+//! implemented as an ordinary generic prelude enum by `AICAD-057B`-`F`
+//! (`crates/cad-hir`'s own module docs), not by any change to this crate;
+//! `project/reports/AICAD-057.md`'s own closure section re-confirms both
+//! halves of this task's original scope are satisfied.
+//!
+//! Also executed/hardened (`AICAD-058`, "Implement execution resource-
+//! budget accounting"): [`Interpreter::consume_iteration_budget`] — the
+//! `for`-loop-only iteration budget `AICAD-056` introduced as its own
+//! explicitly-documented placeholder — now also gates `while` and `loop`
+//! (`HirStmt::While`/`HirStmt::Loop` in [`Interpreter::exec_stmt`]),
+//! closing a real gap: before this task, `while true { }` or a bare
+//! `loop { }` had **no** iteration bound at all and could hang this
+//! evaluator forever, since only `for` participated. All three loop kinds
+//! now share one pool via [`ResourceBudget::max_iterations`], not a
+//! separate counter per construct. [`ResourceBudget`] also replaces the
+//! two independent ad-hoc builders `AICAD-056`/`AICAD-057` each added
+//! (`with_iteration_budget`/`with_max_call_depth`) with the one coherent
+//! configuration surface `project/reports/AICAD-057.md`'s own decision
+//! record predicted this task would need to build, and
+//! [`Interpreter::resource_usage`] adds the "accounting" half proper: a
+//! post-hoc, or mid-run, snapshot of how much of the configured budget a
+//! run has actually consumed (iterations consumed, peak call depth
+//! reached), independent of whether that run ultimately succeeded or
+//! failed with a budget-exceeded error. Both [`RuntimeError::
+//! IterationBudgetExceeded`] and [`RuntimeError::RecursionLimitExceeded`]
+//! moved from the generic `RUNTIME` diagnostic family to the dedicated
+//! `BUDGET` family `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md` §10 already
+//! reserves for exactly this (`cad_diagnostics::DIAGNOSTIC_FAMILIES`
+//! already listed `"BUDGET"` since `AICAD-038`, unused until now) — see
+//! `crate::error`'s own module doc comment for why this is a deliberate
+//! code change, not an accidental one. `docs/plan/02_LANGUAGE_AND_
+//! COMPILER.md` §15's own `max_cpu_time`/`max_memory`/`max_geometry_ops`/
+//! `max_faces`/`max_solids` budget categories are deliberately **not**
+//! added here — see [`ResourceBudget`]'s own doc comment for why (no
+//! wall-clock/allocation hook or Geometry IR exists yet to measure any of
+//! them against; `AICAD-059`, the next batch, is the earliest any
+//! geometry-op-shaped budget could mean anything).
 //!
 //! Deliberately **not** executed yet (each returns [`crate::error::
 //! RuntimeError::Unsupported`], never a panic, so a program exercising one
@@ -205,31 +237,107 @@ pub struct Interpreter<'a> {
     /// Top-level `let`/`const`/`param` values, populated by
     /// [`Interpreter::run_top_level`].
     globals: Frame,
-    /// Remaining `for`-loop iterations this interpreter run may still
-    /// perform before [`RuntimeError::IterationBudgetExceeded`] — see
-    /// that variant's own doc comment for why this is a deliberately
-    /// minimal placeholder for `AICAD-058`'s own full resource-budget
-    /// scope, not that task's complete contract.
-    iterations_remaining: u64,
+    /// Every loop iteration (`for`/`while`/`loop` alike, `AICAD-058`) this
+    /// interpreter run has performed so far, charged against
+    /// [`ResourceBudget::max_iterations`] — see
+    /// [`Interpreter::consume_iteration_budget`].
+    iterations_consumed: u64,
     /// The current dynamic function-call depth (0 at top level, +1 for
     /// every [`Interpreter::run_fn_body`] currently on the Rust call
     /// stack) — see [`Interpreter::enter_call`]'s own doc comment.
     call_depth: u64,
-    /// The call-depth limit [`Interpreter::enter_call`] enforces — see
-    /// [`RuntimeError::RecursionLimitExceeded`]'s own doc comment for why
-    /// this exists and why it is a deliberately minimal placeholder for
-    /// `AICAD-058`'s own full resource-budget scope, exactly like
-    /// [`Interpreter::iterations_remaining`].
-    max_call_depth: u64,
+    /// The highest [`Interpreter::call_depth`] this interpreter run has
+    /// reached so far — `AICAD-058`'s own resource-*accounting* half
+    /// (distinct from `call_depth` itself, which unwinds back down as
+    /// calls return): see [`Interpreter::resource_usage`].
+    peak_call_depth: u64,
+    /// The resource limits this interpreter enforces (`AICAD-058`) — see
+    /// [`ResourceBudget`]'s own doc comment for why one struct now governs
+    /// every category rather than two independent ad-hoc fields.
+    budget: ResourceBudget,
 }
 
-/// The default `for`-loop iteration budget a fresh [`Interpreter`] starts
-/// with — generous enough that no test/ordinary program in this crate's
-/// own suite could plausibly hit it by accident, while still being a real,
-/// finite bound (`AGENTS.md` "Execution safety": bounded, not merely
-/// "very large"). See [`Interpreter::with_iteration_budget`] to configure
-/// a smaller one (tests exercising [`RuntimeError::IterationBudgetExceeded`]
-/// itself, or a future `AICAD-058` caller).
+/// The single coherent configuration surface for every execution resource
+/// limit this crate enforces (`AICAD-058`, "Implement execution
+/// resource-budget accounting", `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_
+/// FLOW.md` §16: "Runtime budgets protect against accidental
+/// nontermination"; `docs/plan/02_LANGUAGE_AND_COMPILER.md` §15
+/// "Execution budgets"). Replaces the two independent ad-hoc builders
+/// (`with_iteration_budget`/`with_max_call_depth`) `AICAD-056`/`AICAD-057`
+/// each introduced as their own explicitly-documented "minimal placeholder
+/// for `AICAD-058`'s own full resource-budget scope" — see
+/// `project/reports/AICAD-057.md`'s own decision record for why unifying
+/// them was left to this task.
+///
+/// Deliberately covers only the two resource categories this tree-walking
+/// evaluator can itself exhaust today (loop iterations, call-stack depth).
+/// `docs/plan/02_LANGUAGE_AND_COMPILER.md` §15's own `execution { ... }`
+/// block also names `max_cpu_time`/`max_memory`/`max_geometry_ops`/
+/// `max_faces`/`max_solids` — wall-clock/memory accounting and every
+/// geometry-op-shaped budget category require capabilities (a wall-clock/
+/// allocation hook, a Geometry IR to count operations against) that do not
+/// exist anywhere in this crate or its callers yet (Geometry IR is
+/// `AICAD-059`, the next batch); adding budget fields for capabilities
+/// that cannot yet be measured or enforced would be exactly the "public
+/// API ... owned by a later task" `AGENTS.md`'s "No speculative future
+/// work" section says to wait for, not this task's job to guess at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceBudget {
+    /// The total number of loop-body iterations (across every `for`/
+    /// `while`/`loop` construct combined, sharing one pool — not a
+    /// separate budget per construct or per loop) this interpreter run may
+    /// perform before [`RuntimeError::IterationBudgetExceeded`].
+    pub max_iterations: u64,
+    /// The maximum dynamic function-call nesting depth before
+    /// [`RuntimeError::RecursionLimitExceeded`] — see
+    /// [`DEFAULT_MAX_CALL_DEPTH`]'s own doc comment for why this exists
+    /// and how its default was chosen.
+    pub max_call_depth: u64,
+}
+
+impl Default for ResourceBudget {
+    /// [`DEFAULT_ITERATION_BUDGET`]/[`DEFAULT_MAX_CALL_DEPTH`] — the same
+    /// defaults a fresh [`Interpreter`] already started with before this
+    /// task, preserved exactly (this task generalizes the *contract*, not
+    /// the shipped default values themselves).
+    fn default() -> ResourceBudget {
+        ResourceBudget {
+            max_iterations: DEFAULT_ITERATION_BUDGET,
+            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
+        }
+    }
+}
+
+/// A snapshot of how much of an [`Interpreter`]'s [`ResourceBudget`] a run
+/// has actually consumed so far (`AICAD-058`'s own "accounting" half,
+/// distinct from enforcement) — see [`Interpreter::resource_usage`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceUsage {
+    /// Total loop iterations performed so far (see
+    /// [`ResourceBudget::max_iterations`]).
+    pub iterations_consumed: u64,
+    /// The configured iteration budget this run started with, unchanged
+    /// across the run — repeated here so a caller can compute a remaining/
+    /// consumed ratio without also holding onto the original
+    /// [`ResourceBudget`] it configured the interpreter with.
+    pub max_iterations: u64,
+    /// The deepest dynamic call nesting this run has reached so far (may
+    /// be less than the current [`Interpreter::call_depth`] would suggest
+    /// only in that it never decreases — a completed, unwound call chain's
+    /// peak stays recorded after the calls themselves return).
+    pub peak_call_depth: u64,
+    /// The configured call-depth limit this run started with.
+    pub max_call_depth: u64,
+}
+
+/// The default `for`/`while`/`loop` iteration budget a fresh [`Interpreter`]
+/// starts with — generous enough that no test/ordinary program in this
+/// crate's own suite could plausibly hit it by accident, while still being
+/// a real, finite bound (`AGENTS.md` "Execution safety": bounded, not
+/// merely "very large"). See [`ResourceBudget::max_iterations`] to
+/// configure a smaller one (tests exercising [`RuntimeError::
+/// IterationBudgetExceeded`] itself, or a real caller wanting a tighter
+/// budget).
 pub const DEFAULT_ITERATION_BUDGET: u64 = 10_000_000;
 
 /// The default recursion-depth limit a fresh [`Interpreter`] starts with.
@@ -258,10 +366,10 @@ pub const DEFAULT_ITERATION_BUDGET: u64 = 10_000_000;
 /// `moderately_deep_self_recursion_succeeds_within_the_default_budget`'s
 /// own 50-level test (run under this exact default, not an overridden
 /// one) exists specifically to catch a future regression that erodes this
-/// margin. See [`Interpreter::with_max_call_depth`] to configure a
-/// different one (tests needing a smaller limit; a future `AICAD-058`
-/// caller wanting a real, environment-calibrated limit — e.g. a release
-/// build with a known larger thread stack could safely raise this).
+/// margin. See [`ResourceBudget::max_call_depth`] to configure a different
+/// one (tests needing a smaller limit; a real caller wanting a real,
+/// environment-calibrated limit — e.g. a release build with a known larger
+/// thread stack could safely raise this).
 pub const DEFAULT_MAX_CALL_DEPTH: u64 = 64;
 
 impl<'a> Interpreter<'a> {
@@ -279,31 +387,40 @@ impl<'a> Interpreter<'a> {
             source,
             fns,
             globals: HashMap::new(),
-            iterations_remaining: DEFAULT_ITERATION_BUDGET,
+            iterations_consumed: 0,
             call_depth: 0,
-            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
+            peak_call_depth: 0,
+            budget: ResourceBudget::default(),
         }
     }
 
-    /// Overrides this interpreter's `for`-loop iteration budget (default
-    /// [`DEFAULT_ITERATION_BUDGET`]). Exists for tests that need to
-    /// observe [`RuntimeError::IterationBudgetExceeded`] without actually
-    /// running ten million iterations, and for a future `AICAD-058` caller
-    /// to configure a real, externally-supplied budget.
-    pub fn with_iteration_budget(mut self, budget: u64) -> Interpreter<'a> {
-        self.iterations_remaining = budget;
+    /// Overrides this interpreter's [`ResourceBudget`] (default
+    /// [`ResourceBudget::default`]). Exists for tests that need a smaller
+    /// limit to observe [`RuntimeError::IterationBudgetExceeded`]/
+    /// [`RuntimeError::RecursionLimitExceeded`] without running the real
+    /// (generous) defaults, and for a real caller wanting a tighter or
+    /// environment-calibrated budget (see [`DEFAULT_MAX_CALL_DEPTH`]'s own
+    /// doc comment for why the shipped default is conservative rather than
+    /// close to this evaluator's actual native-stack ceiling).
+    pub fn with_resource_budget(mut self, budget: ResourceBudget) -> Interpreter<'a> {
+        self.budget = budget;
         self
     }
 
-    /// Overrides this interpreter's recursion-depth limit (default
-    /// [`DEFAULT_MAX_CALL_DEPTH`]). Exists for tests that need a smaller
-    /// limit to observe [`RuntimeError::RecursionLimitExceeded`] quickly,
-    /// and for a future `AICAD-058` caller to configure a real,
-    /// environment-calibrated limit (see [`DEFAULT_MAX_CALL_DEPTH`]'s own
-    /// doc comment for why the default itself is conservative).
-    pub fn with_max_call_depth(mut self, max_call_depth: u64) -> Interpreter<'a> {
-        self.max_call_depth = max_call_depth;
-        self
+    /// A snapshot of how much of this interpreter's [`ResourceBudget`] the
+    /// run so far has actually consumed (`AICAD-058`'s "accounting" half —
+    /// distinct from [`Interpreter::with_resource_budget`]'s enforcement
+    /// half). Safe to call at any point during or after execution
+    /// (`call_by_name`/`call_by_values`/`run_top_level`); reflects
+    /// whatever partial progress a run made even if it ultimately failed
+    /// with a budget-exceeded error.
+    pub fn resource_usage(&self) -> ResourceUsage {
+        ResourceUsage {
+            iterations_consumed: self.iterations_consumed,
+            max_iterations: self.budget.max_iterations,
+            peak_call_depth: self.peak_call_depth,
+            max_call_depth: self.budget.max_call_depth,
+        }
     }
 
     /// Evaluates every top-level `let`/`const`/`param` item's value
@@ -625,21 +742,26 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Charges one function-call level against this interpreter's
-    /// recursion-depth limit (`AICAD-057`) — the single choke point both
-    /// [`Interpreter::call`] (a real `HirExpr::Call` site) and
-    /// [`Interpreter::call_by_values`] (the `call_by_name` convenience
-    /// entry point) ultimately share, so every function invocation is
-    /// charged exactly once regardless of which path reached it. Always
-    /// paired with [`Interpreter::exit_call`] before `run_fn_body` returns
-    /// — on *every* exit path, `Ok` or `Err` alike, so a deeply recursive
-    /// call chain that fails partway through still leaves `call_depth`
-    /// correctly balanced for whatever the caller does next (proven by
-    /// `recursion_limit_is_restored_after_an_error_unwinds`).
+    /// [`ResourceBudget::max_call_depth`] (`AICAD-057`/`AICAD-058`) — the
+    /// single choke point both [`Interpreter::call`] (a real `HirExpr::
+    /// Call` site) and [`Interpreter::call_by_values`] (the `call_by_name`
+    /// convenience entry point) ultimately share, so every function
+    /// invocation is charged exactly once regardless of which path reached
+    /// it. Always paired with [`Interpreter::exit_call`] before
+    /// `run_fn_body` returns — on *every* exit path, `Ok` or `Err` alike,
+    /// so a deeply recursive call chain that fails partway through still
+    /// leaves `call_depth` correctly balanced for whatever the caller does
+    /// next (proven by `recursion_limit_is_restored_after_an_error_
+    /// unwinds`). Also updates `peak_call_depth` (`AICAD-058`'s own
+    /// accounting half — see [`Interpreter::resource_usage`]), which is
+    /// never decremented back down by [`Interpreter::exit_call`], unlike
+    /// `call_depth` itself.
     fn enter_call(&mut self, span: Span) -> EvalResult<()> {
-        if self.call_depth >= self.max_call_depth {
+        if self.call_depth >= self.budget.max_call_depth {
             return Err(RuntimeError::RecursionLimitExceeded { span }.into());
         }
         self.call_depth += 1;
+        self.peak_call_depth = self.peak_call_depth.max(self.call_depth);
         Ok(())
     }
 
@@ -721,8 +843,19 @@ impl<'a> Interpreter<'a> {
                 span,
                 ..
             } => self.exec_for(frame, *binding, iterable, body, *span),
-            HirStmt::While { cond, body, .. } => {
+            HirStmt::While {
+                cond, body, span, ..
+            } => {
                 while self.eval_bool(frame, cond)? {
+                    // `AICAD-058`: every `while` iteration now participates
+                    // in the same shared iteration budget `for` already
+                    // did — before this task, `while true { }` (or any
+                    // non-terminating condition) had no bound at all and
+                    // could hang this evaluator forever, the exact
+                    // "accidental nontermination" `docs/plan/
+                    // 03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §16 says
+                    // runtime budgets must protect against.
+                    self.consume_iteration_budget(*span)?;
                     match self.exec_block(frame, body) {
                         Ok(_) => {}
                         Err(Signal::Break(_)) => break,
@@ -732,7 +865,11 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(())
             }
-            HirStmt::Loop { body, .. } => loop {
+            HirStmt::Loop { body, span, .. } => loop {
+                // Same rationale as `While` above — a bare `loop { }` has
+                // no condition at all, so without this it was even more
+                // trivially unbounded than `while`.
+                self.consume_iteration_budget(*span)?;
                 match self.exec_block(frame, body) {
                     Ok(_) => {}
                     Err(Signal::Break(_)) => return Ok(()),
@@ -879,17 +1016,19 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// Charges one `for`-loop iteration against this interpreter's
-    /// remaining budget — see [`Interpreter::iterations_remaining`]'s own
-    /// doc comment for exactly what this does and does not guarantee.
+    /// Charges one loop-body iteration against this interpreter's
+    /// [`ResourceBudget::max_iterations`] — shared by `for`/`while`/`loop`
+    /// alike (`AICAD-058`; only `for` participated before this task, a
+    /// real gap this task closes: `while`/`loop` had no iteration bound at
+    /// all — see this module's own doc comment "Also executed/hardened
+    /// (`AICAD-058`)"). See [`Interpreter::resource_usage`] for the
+    /// accounting half of this same budget.
     fn consume_iteration_budget(&mut self, span: Span) -> EvalResult<()> {
-        match self.iterations_remaining.checked_sub(1) {
-            Some(remaining) => {
-                self.iterations_remaining = remaining;
-                Ok(())
-            }
-            None => Err(RuntimeError::IterationBudgetExceeded { span }.into()),
+        if self.iterations_consumed >= self.budget.max_iterations {
+            return Err(RuntimeError::IterationBudgetExceeded { span }.into());
         }
+        self.iterations_consumed += 1;
+        Ok(())
     }
 
     fn eval_expr(&mut self, frame: &mut Frame, expr: &HirExpr) -> EvalResult<Value> {
@@ -2447,11 +2586,8 @@ mod tests {
 
     #[test]
     fn for_loop_iteration_budget_exceeded_is_a_clean_error() {
-        // A minimal, provisional placeholder for `AICAD-058`'s own full
-        // resource-budget scope (`RuntimeError::IterationBudgetExceeded`'s
-        // own doc comment) — configured to a tiny budget here so the test
-        // itself stays fast and does not depend on the real (10 million)
-        // default.
+        // Configured to a tiny budget here so the test itself stays fast
+        // and does not depend on the real (10 million) default.
         let lowered = compiled(
             "fn f() -> Int { \
                  var total = 0; \
@@ -2460,9 +2596,12 @@ mod tests {
              }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
-            .with_iteration_budget(3);
+            .with_resource_budget(ResourceBudget {
+                max_iterations: 3,
+                ..ResourceBudget::default()
+            });
         let err = interp.call_by_name("f", vec![]).unwrap_err();
-        assert_eq!(diag_code(&err), "RUNTIME-E123");
+        assert_eq!(diag_code(&err), "BUDGET-E001");
     }
 
     #[test]
@@ -2475,8 +2614,147 @@ mod tests {
              }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
-            .with_iteration_budget(3);
+            .with_resource_budget(ResourceBudget {
+                max_iterations: 3,
+                ..ResourceBudget::default()
+            });
         assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 3.0);
+    }
+
+    // --- Execution resource-budget accounting (AICAD-058) ---
+
+    #[test]
+    fn while_loop_iteration_budget_exceeded_is_a_clean_error() {
+        // Before `AICAD-058`, `while` participated in no iteration budget
+        // at all — this would have hung the test process forever instead
+        // of returning a clean `Err`. `cond` is always true, so only the
+        // budget itself can ever stop this loop.
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 while true { total = total + 1; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_resource_budget(ResourceBudget {
+                max_iterations: 3,
+                ..ResourceBudget::default()
+            });
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "BUDGET-E001");
+    }
+
+    #[test]
+    fn bare_loop_iteration_budget_exceeded_is_a_clean_error() {
+        // Same rationale as the `while` case, for a bare `loop { }` (no
+        // condition at all — even more trivially unbounded before this
+        // task than `while true { }` was).
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 loop { total = total + 1; } \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_resource_budget(ResourceBudget {
+                max_iterations: 3,
+                ..ResourceBudget::default()
+            });
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "BUDGET-E001");
+    }
+
+    #[test]
+    fn while_loop_within_budget_still_succeeds_and_break_stops_it() {
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 while true { total = total + 1; if total == 3 { break; } } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_resource_budget(ResourceBudget {
+                max_iterations: 100,
+                ..ResourceBudget::default()
+            });
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn iteration_budget_is_shared_across_for_and_while_not_a_separate_pool_each() {
+        // Two `for` iterations plus two `while` iterations against a
+        // budget of 3 must fail partway through the `while` — proving the
+        // two constructs draw from one shared pool, not two independent
+        // ones (each would individually stay under a per-construct budget
+        // of 3, so this would wrongly succeed if the pools were separate).
+        let lowered = compiled(
+            "fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..2 { total = total + 1; } \
+                 while total < 4 { total = total + 1; } \
+                 return total; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
+            .with_resource_budget(ResourceBudget {
+                max_iterations: 3,
+                ..ResourceBudget::default()
+            });
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "BUDGET-E001");
+    }
+
+    #[test]
+    fn resource_usage_accounts_for_iterations_and_peak_call_depth() {
+        let lowered = compiled(
+            "fn count_down(n: Int) -> Int { \
+                 if n <= 0 { return 0; } \
+                 return 1 + count_down(n - 1); \
+             } \
+             fn f() -> Int { \
+                 var total = 0; \
+                 for i in 0..5 { total = total + i; } \
+                 return count_down(4); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 4.0);
+        let usage = interp.resource_usage();
+        assert_eq!(usage.iterations_consumed, 5);
+        assert_eq!(usage.max_iterations, DEFAULT_ITERATION_BUDGET);
+        // `f` itself (depth 1) calls `count_down` 5 times deep (depths 2-6).
+        assert_eq!(usage.peak_call_depth, 6);
+        assert_eq!(usage.max_call_depth, DEFAULT_MAX_CALL_DEPTH);
+    }
+
+    #[test]
+    fn resource_usage_peak_call_depth_does_not_decrease_after_calls_return() {
+        // `enter_call`/`exit_call` keep `call_depth` itself balanced back
+        // to 0 once every call returns (proven separately by
+        // `recursion_limit_is_restored_after_an_error_unwinds`); this test
+        // proves `peak_call_depth` is a genuinely different, monotonic
+        // counter that does not unwind back down with it.
+        let lowered = compiled(
+            "fn count_down(n: Int) -> Int { \
+                 if n <= 0 { return 0; } \
+                 return 1 + count_down(n - 1); \
+             } \
+             fn trivial() -> Int { return 42; }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(
+            interp
+                .call_by_name("count_down", vec![number(9.0)])
+                .unwrap(),
+            9.0,
+        );
+        assert_eq!(interp.resource_usage().peak_call_depth, 10);
+        // A second, unrelated, non-recursive call afterwards must not
+        // reset (or further raise) the recorded peak.
+        assert_number_eq(interp.call_by_name("trivial", vec![]).unwrap(), 42.0);
+        assert_eq!(interp.resource_usage().peak_call_depth, 10);
     }
 
     // --- Recursion / error propagation (AICAD-057) ---
@@ -2548,9 +2826,12 @@ mod tests {
         // (`AGENTS.md` "Execution safety").
         let lowered = compiled("fn f(n: Int) -> Int { return 1 + f(n + 1); }");
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
-            .with_max_call_depth(10);
+            .with_resource_budget(ResourceBudget {
+                max_call_depth: 10,
+                ..ResourceBudget::default()
+            });
         let err = interp.call_by_name("f", vec![number(0.0)]).unwrap_err();
-        assert_eq!(diag_code(&err), "RUNTIME-E124");
+        assert_eq!(diag_code(&err), "BUDGET-E002");
     }
 
     #[test]
@@ -2567,11 +2848,14 @@ mod tests {
              fn trivial() -> Int { return 42; }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "")
-            .with_max_call_depth(5);
+            .with_resource_budget(ResourceBudget {
+                max_call_depth: 5,
+                ..ResourceBudget::default()
+            });
         let err = interp
             .call_by_name("unconditional", vec![number(0.0)])
             .unwrap_err();
-        assert_eq!(diag_code(&err), "RUNTIME-E124");
+        assert_eq!(diag_code(&err), "BUDGET-E002");
         assert_number_eq(interp.call_by_name("trivial", vec![]).unwrap(), 42.0);
     }
 
