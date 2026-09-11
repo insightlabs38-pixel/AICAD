@@ -122,7 +122,14 @@ pub struct TypeCheckResult {
 
 /// A checked expression/binding type — see module doc comment
 /// "`CheckedType`: a superset of `HirType`".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy` (unlike every prior revision of this type) — the new
+/// [`CheckedType::Instantiated`] variant (`AICAD-057D`) carries a
+/// `Vec<CheckedType>`, which cannot be `Copy`. Every call site that used
+/// to rely on an implicit copy now clones explicitly instead; this is a
+/// mechanical consequence of the new variant, not a semantic change to
+/// any existing case.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckedType {
     /// An ordinary scalar or dimensional value (`AICAD-052`'s whole
     /// domain).
@@ -168,17 +175,45 @@ pub enum CheckedType {
     /// (i.e. while checking the very declaration that introduced it) —
     /// never appears as, say, a call argument's inferred type.
     TypeParam(BindingId),
+    /// A genuine instantiation of a user-defined generic `struct`/`enum`
+    /// (`AICAD-057D`, `project/OWNER_DECISIONS.md#D17`) — `Pair<Length,
+    /// Mass>`, produced by [`Checker::resolve_generic_type_application`].
+    /// `base` is the declaring `struct`/`enum` item's own `BindingId`
+    /// (the same identity [`CheckedType::Struct`]/[`CheckedType::Enum`]
+    /// use); `args` are the resolved, already-substituted type arguments
+    /// in declared order — never themselves an unsubstituted
+    /// `TypeParam` unless a *further-enclosing* generic declaration's own
+    /// parameter was named as an argument (e.g. a generic struct's own
+    /// field typed `Pair<T, Int>`), in which case the outer parameter's
+    /// identity is preserved until an instantiation of *that* enclosing
+    /// declaration substitutes it too ([`substitute_type`]). Two
+    /// `Instantiated`s are compatible only when they name the same
+    /// `base` and every argument pairwise agrees ([`types_compatible`]) —
+    /// nominal, not structural, exactly like `Struct`/`Enum`.
+    Instantiated {
+        base: BindingId,
+        args: Vec<CheckedType>,
+    },
 }
 
 /// One function's checked signature — built once in [`Checker::
 /// collect_signatures`] and reused for every call site.
 #[derive(Debug, Clone)]
 struct FnSignature {
+    /// This function's own declared type parameters, in declaration
+    /// order (`AICAD-057D`) — empty for an ordinary, non-generic
+    /// function. `params`/`return_ty` below are the function's *raw*,
+    /// unsubstituted signature (may contain `CheckedType::TypeParam`
+    /// referencing one of these); [`Checker::check_generic_call`]
+    /// substitutes a concrete binding per call, never mutating this
+    /// stored signature itself (so every call site starts from the same
+    /// raw declaration).
+    type_params: Vec<BindingId>,
     params: Vec<ParamSig>,
     return_ty: Option<CheckedType>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ParamSig {
     binding: BindingId,
     ty: Option<CheckedType>,
@@ -234,6 +269,15 @@ struct Checker<'a> {
     /// exhaustiveness check to know the complete variant set a `match`
     /// over that enum must cover.
     enum_variants: HashMap<BindingId, Vec<BindingId>>,
+    /// `struct`/`enum`'s own `BindingId` -> its declared type-parameter
+    /// `BindingId`s, in declaration order (`AICAD-057D`, `project/
+    /// OWNER_DECISIONS.md#D17`) — empty for an ordinary, non-generic
+    /// struct/enum. Populated once by `register_type_names`, alongside
+    /// `type_names`; used both to arity-check a `Name<Args>` type
+    /// reference ([`Checker::resolve_generic_type_application`]) and to
+    /// build the substitution map for one particular instantiation
+    /// ([`Checker::instantiation_subst`]).
+    type_params_of: HashMap<BindingId, Vec<BindingId>>,
     /// Type-parameter name -> its own `BindingId`, populated by
     /// `with_type_params` for exactly the duration of resolving *one*
     /// generic `fn`/`struct`'s own field/parameter/return types
@@ -274,6 +318,7 @@ pub fn check_program(
         struct_fields: HashMap::new(),
         variant_shapes: HashMap::new(),
         enum_variants: HashMap::new(),
+        type_params_of: HashMap::new(),
         active_type_params: HashMap::new(),
         current_fn_return: None,
     };
@@ -350,6 +395,17 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::List(e), CheckedType::List(a)) => value_types_compatible(e, a),
         (CheckedType::Range(e), CheckedType::Range(a)) => value_types_compatible(e, a),
         (CheckedType::TypeParam(e), CheckedType::TypeParam(a)) => e == a,
+        // Nominal, not structural (`AICAD-057D`): the same declaring
+        // struct/enum `base`, with every type argument pairwise
+        // compatible in declared order.
+        (
+            CheckedType::Instantiated { base: eb, args: ea },
+            CheckedType::Instantiated { base: ab, args: aa },
+        ) => {
+            eb == ab
+                && ea.len() == aa.len()
+                && ea.into_iter().zip(aa).all(|(e, a)| types_compatible(e, a))
+        }
         _ => false,
     }
 }
@@ -372,6 +428,92 @@ fn value_types_compatible(expected: HirType, actual: HirType) -> bool {
             },
         ) => ed == ad && ea == aa,
         _ => false,
+    }
+}
+
+/// Substitutes every [`CheckedType::TypeParam`] occurrence in `ty` per
+/// `subst`, recursing into a nested [`CheckedType::Instantiated`]'s own
+/// type arguments — the only place one `CheckedType` nests another
+/// (`List`/`Range` wrap a plain [`HirType`], which has no type-parameter
+/// concept at all). A `TypeParam` with no entry in `subst` is left
+/// exactly as-is (`AICAD-057D`) — this happens for a still-ambiguous
+/// parameter already diagnosed elsewhere ([`Checker::check_generic_call`]
+/// returns `None` before ever substituting in that case, so in practice
+/// this only matters for a *partial* substitution map, e.g. one function
+/// parameter's own unrelated type parameter while substituting another).
+/// Used both for genuine generic-type instantiation (a `Name<Args>` type
+/// reference's own field/variant-payload types) and generic-function
+/// call-site inference.
+fn substitute_type(ty: CheckedType, subst: &HashMap<BindingId, CheckedType>) -> CheckedType {
+    match ty {
+        CheckedType::TypeParam(id) => subst
+            .get(&id)
+            .cloned()
+            .unwrap_or(CheckedType::TypeParam(id)),
+        CheckedType::Instantiated { base, args } => CheckedType::Instantiated {
+            base,
+            args: args
+                .into_iter()
+                .map(|a| substitute_type(a, subst))
+                .collect(),
+        },
+        other => other,
+    }
+}
+
+/// [`substitute_type`] lifted over `Option` — every field/parameter/
+/// return type in this module is already `Option<CheckedType>` (`None`
+/// meaning "not yet resolved", per the module doc comment), so this is
+/// the shape every real call site actually needs.
+fn substitute_opt(
+    ty: Option<CheckedType>,
+    subst: &HashMap<BindingId, CheckedType>,
+) -> Option<CheckedType> {
+    ty.map(|t| substitute_type(t, subst))
+}
+
+/// Attempts to unify a function's own **declared** (raw, not-yet-
+/// substituted) parameter/return type `pattern` — which may mention one
+/// of that function's own [`CheckedType::TypeParam`]s anywhere in its
+/// structure — against the caller-observed concrete type `actual`,
+/// recording any newly-observed `TypeParam -> CheckedType` binding into
+/// `subst` (`AICAD-057D`, `project/OWNER_DECISIONS.md#D17`, call-site
+/// generic instantiation/inference). Returns `false` on a structural
+/// shape mismatch, or when `pattern`'s type parameter is already bound to
+/// a *different*, incompatible concrete type — e.g. `fn pair_of<T>(a: T,
+/// b: T)` called with a `Length` then a `Mass` (AGENTS.md: "typed units,
+/// never silent coercion" — this must never silently pick one or
+/// silently coerce). The caller is responsible for turning a `false`
+/// result (or an unresolved type parameter still absent from `subst`
+/// afterward) into an actual diagnostic; this function only performs the
+/// structural walk.
+fn unify_type_param(
+    pattern: &CheckedType,
+    actual: &CheckedType,
+    subst: &mut HashMap<BindingId, CheckedType>,
+) -> bool {
+    match pattern {
+        CheckedType::TypeParam(id) => match subst.get(id) {
+            Some(existing) => types_compatible(existing.clone(), actual.clone()),
+            None => {
+                subst.insert(*id, actual.clone());
+                true
+            }
+        },
+        CheckedType::Instantiated {
+            base: pb,
+            args: pargs,
+        } => match actual {
+            CheckedType::Instantiated {
+                base: ab,
+                args: aargs,
+            } if pb == ab && pargs.len() == aargs.len() => pargs
+                .iter()
+                .zip(aargs.iter())
+                .all(|(p, a)| unify_type_param(p, a, subst)),
+            _ => false,
+        },
+        other => types_compatible(other.clone(), actual.clone()),
     }
 }
 
@@ -399,6 +541,11 @@ impl<'a> Checker<'a> {
             CheckedType::List(elem) => format!("List<{elem}>"),
             CheckedType::Range(elem) => format!("Range<{elem}>"),
             CheckedType::TypeParam(id) => self.bindings[id.index()].name.clone(),
+            CheckedType::Instantiated { base, args } => {
+                let name = self.bindings[base.index()].name.clone();
+                let arg_strs: Vec<String> = args.into_iter().map(|a| self.describe(a)).collect();
+                format!("{name}<{}>", arg_strs.join(", "))
+            }
         }
     }
 
@@ -531,7 +678,16 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            HirTypeRef::Generic { .. } => None,
+            // Any other `Name<Args>` — `Pair<Length, Mass>`, ... —
+            // against a user-defined generic `struct`/`enum`
+            // (`AICAD-057D`, `project/OWNER_DECISIONS.md#D17`); the gap
+            // `AICAD-057B`'s and `AICAD-057C`'s own "Known limitations"
+            // sections both explicitly deferred here. `List`/`Range`
+            // never reach this arm (handled by their own dedicated arms
+            // above).
+            HirTypeRef::Generic { name, args, span } => {
+                self.resolve_generic_type_application(name, args, *span)
+            }
             HirTypeRef::Named { name, span } => {
                 // `AICAD-057B`, `project/OWNER_DECISIONS.md#D17`: a name
                 // matching the generic declaration currently being
@@ -581,21 +737,115 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Resolves `Name<Args>` against a user-defined generic `struct`/
+    /// `enum` (`AICAD-057D`, `project/OWNER_DECISIONS.md#D17`) — called
+    /// only from `resolve_type_ref`'s catch-all `Generic` arm, i.e. only
+    /// once `name` has already failed the dedicated `List`/`Range` arms
+    /// above. A `name` matching no declared struct/enum at all falls
+    /// through to `None` exactly as before this task (still "not yet a
+    /// typeable one, not a wrong name" — this module's own established
+    /// convention for a `Generic` reference this compiler does not, and
+    /// may never, know how to resolve — e.g. a plan-level sketch such as
+    /// `Vector2<Length>` with no matching declaration anywhere in the
+    /// program). A wrong number of supplied type arguments against a
+    /// *known* struct/enum, unlike an unknown name, is a genuine error —
+    /// diagnosed, never silently accepted or silently truncated/padded
+    /// (AGENTS.md: "ambiguity is an error, never an arbitrary
+    /// selection").
+    fn resolve_generic_type_application(
+        &mut self,
+        name: &str,
+        args: &[HirTypeRef],
+        span: Span,
+    ) -> Option<CheckedType> {
+        let base = *self.type_names.get(name)?;
+        let declared_params = self.type_params_of.get(&base).cloned().unwrap_or_default();
+        if args.len() < declared_params.len() {
+            self.diagnostics.push(self.diag(
+                457,
+                "TOO_FEW_TYPE_ARGUMENTS",
+                format!(
+                    "'{name}' takes {} type argument(s), but only {} were supplied",
+                    declared_params.len(),
+                    args.len()
+                ),
+                span,
+            ));
+            return None;
+        }
+        if args.len() > declared_params.len() {
+            self.diagnostics.push(self.diag(
+                458,
+                "TOO_MANY_TYPE_ARGUMENTS",
+                format!(
+                    "'{name}' takes {} type argument(s), but {} were supplied",
+                    declared_params.len(),
+                    args.len()
+                ),
+                span,
+            ));
+            return None;
+        }
+        let mut resolved_args = Vec::with_capacity(args.len());
+        for arg in args {
+            resolved_args.push(self.resolve_type_ref(arg)?);
+        }
+        Some(CheckedType::Instantiated {
+            base,
+            args: resolved_args,
+        })
+    }
+
+    /// Builds the `TypeParam -> CheckedType` substitution map for one
+    /// particular instantiation of `base` (a struct/enum's own
+    /// `BindingId`) with type arguments `args`, by zipping `base`'s own
+    /// declared type-parameter `BindingId`s (`type_params_of`) against
+    /// `args` in declared order (`AICAD-057D`). Empty when `base` is not
+    /// generic at all (`type_params_of` has no entry, or an empty one) —
+    /// `substitute_type`/`substitute_opt` are then a no-op, which is
+    /// exactly correct for an ordinary non-generic struct/enum.
+    fn instantiation_subst(
+        &self,
+        base: BindingId,
+        args: &[CheckedType],
+    ) -> HashMap<BindingId, CheckedType> {
+        self.type_params_of
+            .get(&base)
+            .into_iter()
+            .flatten()
+            .copied()
+            .zip(args.iter().cloned())
+            .collect()
+    }
+
     // --- Pass 0: type names + enum variant identity (AICAD-053) ---
 
     fn register_type_names(&mut self, items: &[HirItem]) {
         for item in items {
             match item {
-                HirItem::Struct { binding, name, .. } => {
+                HirItem::Struct {
+                    binding,
+                    name,
+                    type_params,
+                    ..
+                } => {
                     self.type_names.insert(name.clone(), *binding);
+                    // This struct's own declared type-parameter identity
+                    // (`AICAD-057D`) — empty for an ordinary, non-generic
+                    // struct.
+                    self.type_params_of
+                        .insert(*binding, type_params.iter().map(|p| p.binding).collect());
                 }
                 HirItem::Enum {
                     binding,
                     name,
+                    type_params,
                     variants,
                     ..
                 } => {
                     self.type_names.insert(name.clone(), *binding);
+                    self.type_params_of
+                        .insert(*binding, type_params.iter().map(|p| p.binding).collect());
                     // A variant used as a bare value (`let m = NEMA17;`,
                     // or as a match scrutinee) needs no further
                     // resolution — `HirExpr::Ident` always looks its type
@@ -714,7 +964,7 @@ impl<'a> Checker<'a> {
                             .iter()
                             .map(|p| {
                                 let ty = this.resolve_type_ref(&p.ty);
-                                this.binding_types[p.binding.index()] = ty;
+                                this.binding_types[p.binding.index()] = ty.clone();
                                 ParamSig {
                                     binding: p.binding,
                                     ty,
@@ -728,6 +978,10 @@ impl<'a> Checker<'a> {
                     self.fn_signatures.insert(
                         *binding,
                         FnSignature {
+                            // This function's own declared type
+                            // parameters, in order (`AICAD-057D`) — empty
+                            // for an ordinary, non-generic function.
+                            type_params: type_params.iter().map(|p| p.binding).collect(),
                             params: param_sigs,
                             return_ty,
                         },
@@ -777,7 +1031,7 @@ impl<'a> Checker<'a> {
                 binding, default, ..
             } => {
                 if let Some(default) = default {
-                    let expected = self.binding_types[binding.index()];
+                    let expected = self.binding_types[binding.index()].clone();
                     self.check_expected(
                         default,
                         expected,
@@ -797,7 +1051,7 @@ impl<'a> Checker<'a> {
                 self.with_type_params(type_params, |this| {
                     for p in params {
                         if let Some(default) = &p.default {
-                            let expected = this.binding_types[p.binding.index()];
+                            let expected = this.binding_types[p.binding.index()].clone();
                             this.check_expected(
                                 default,
                                 expected,
@@ -807,8 +1061,11 @@ impl<'a> Checker<'a> {
                             );
                         }
                     }
-                    let return_ty = this.fn_signatures.get(binding).and_then(|s| s.return_ty);
-                    let previous_return = this.current_fn_return;
+                    let return_ty = this
+                        .fn_signatures
+                        .get(binding)
+                        .and_then(|s| s.return_ty.clone());
+                    let previous_return = this.current_fn_return.clone();
                     this.current_fn_return = return_ty;
                     // `T` (and any other of this function's own type
                     // parameters) stays resolvable while checking the
@@ -848,9 +1105,9 @@ impl<'a> Checker<'a> {
         code: u16,
         title: &str,
     ) -> Option<CheckedType> {
-        let actual = self.check_expr(expr, expected);
-        if let (Some(e), Some(a)) = (expected, actual)
-            && !types_compatible(e, a)
+        let actual = self.check_expr(expr, expected.clone());
+        if let (Some(e), Some(a)) = (expected.clone(), actual.clone())
+            && !types_compatible(e.clone(), a.clone())
         {
             self.diagnostics.push(self.diag(
                 code,
@@ -901,7 +1158,7 @@ impl<'a> Checker<'a> {
                 self.binding_types[binding.index()] = final_ty;
             }
             HirStmt::Assign { target, value, .. } => {
-                let expected = target.and_then(|b| self.binding_types[b.index()]);
+                let expected = target.and_then(|b| self.binding_types[b.index()].clone());
                 self.check_expected(value, expected, value.span(), 423, "ASSIGN_TYPE_MISMATCH");
             }
             HirStmt::Expr { expr, .. } => {
@@ -953,11 +1210,11 @@ impl<'a> Checker<'a> {
             }
             HirStmt::Return { value, span } => match value {
                 Some(v) => {
-                    let expected = self.current_fn_return;
+                    let expected = self.current_fn_return.clone();
                     self.check_expected(v, expected, v.span(), 419, "RETURN_TYPE_MISMATCH");
                 }
                 None => {
-                    if let Some(rt) = self.current_fn_return {
+                    if let Some(rt) = self.current_fn_return.clone() {
                         self.diagnostics.push(self.diag(
                             419,
                             "RETURN_TYPE_MISMATCH",
@@ -1001,12 +1258,14 @@ impl<'a> Checker<'a> {
     fn check_expr(&mut self, expr: &HirExpr, expected: Option<CheckedType>) -> Option<CheckedType> {
         match expr {
             HirExpr::Literal { value, span, .. } => self.check_literal(value, expected, *span),
-            HirExpr::Ident { binding, .. } => binding.and_then(|b| self.binding_types[b.index()]),
+            HirExpr::Ident { binding, .. } => {
+                binding.and_then(|b| self.binding_types[b.index()].clone())
+            }
             HirExpr::Unary { op, operand, span } => self.check_unary(*op, operand, *span),
             HirExpr::Binary { op, lhs, rhs, span } => {
                 self.check_binary(*op, lhs, rhs, expected, *span)
             }
-            HirExpr::Call { callee, args, span } => self.check_call(callee, args, *span),
+            HirExpr::Call { callee, args, span } => self.check_call(callee, args, expected, *span),
             HirExpr::Field {
                 receiver,
                 field,
@@ -1024,8 +1283,8 @@ impl<'a> Checker<'a> {
             } => {
                 let c = self.check_expr(cond, Some(bool_checked()));
                 self.check_bool_condition(c, cond.span());
-                let then_ty = self.check_block(then_branch, expected);
-                let else_ty = self.check_expr(else_branch, expected.or(then_ty));
+                let then_ty = self.check_block(then_branch, expected.clone());
+                let else_ty = self.check_expr(else_branch, expected.or(then_ty.clone()));
                 self.unify_value_type(then_ty, else_ty, *span)
             }
             HirExpr::Match {
@@ -1044,7 +1303,7 @@ impl<'a> Checker<'a> {
                 binding,
                 fields,
                 span,
-            } => self.check_record_literal(name, *binding, fields, *span),
+            } => self.check_record_literal(name, *binding, fields, expected, *span),
         }
     }
 
@@ -1090,10 +1349,11 @@ impl<'a> Checker<'a> {
         }
         let mut elem_ty: Option<CheckedType> = None;
         for element in elements {
-            let Some(this_ty) = self.check_expr(element, expected_elem.or(elem_ty)) else {
+            let Some(this_ty) = self.check_expr(element, expected_elem.clone().or(elem_ty.clone()))
+            else {
                 continue;
             };
-            let CheckedType::Value(_) = this_ty else {
+            let CheckedType::Value(_) = &this_ty else {
                 self.diagnostics.push(self.diag(
                     444,
                     "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
@@ -1105,10 +1365,10 @@ impl<'a> Checker<'a> {
                 ));
                 continue;
             };
-            match elem_ty.or(expected_elem) {
+            match elem_ty.clone().or(expected_elem.clone()) {
                 None => elem_ty = Some(this_ty),
                 Some(target) => {
-                    if !types_compatible(target, this_ty) {
+                    if !types_compatible(target.clone(), this_ty.clone()) {
                         self.diagnostics.push(self.diag(
                             440,
                             "LIST_ELEMENT_TYPE_MISMATCH",
@@ -1149,15 +1409,15 @@ impl<'a> Checker<'a> {
             Some(CheckedType::Range(elem)) => Some(CheckedType::Value(elem)),
             _ => None,
         };
-        let start_ty = self.check_expr(start, expected_elem);
-        let end_ty = self.check_expr(end, expected_elem.or(start_ty));
+        let start_ty = self.check_expr(start, expected_elem.clone());
+        let end_ty = self.check_expr(end, expected_elem.clone().or(start_ty.clone()));
         let (Some(start_ty), Some(end_ty)) = (start_ty, end_ty) else {
             return match expected_elem {
                 Some(CheckedType::Value(elem)) => Some(CheckedType::Range(elem)),
                 _ => None,
             };
         };
-        let (CheckedType::Value(_), CheckedType::Value(_)) = (start_ty, end_ty) else {
+        let (CheckedType::Value(_), CheckedType::Value(_)) = (&start_ty, &end_ty) else {
             self.diagnostics.push(self.diag(
                 444,
                 "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
@@ -1170,13 +1430,13 @@ impl<'a> Checker<'a> {
             ));
             return None;
         };
-        if !types_compatible(start_ty, end_ty) {
+        if !types_compatible(start_ty.clone(), end_ty.clone()) {
             self.diagnostics.push(self.diag(
                 442,
                 "RANGE_BOUNDS_TYPE_MISMATCH",
                 format!(
                     "range bounds must have the same/compatible type; found {} and {}",
-                    self.describe(start_ty),
+                    self.describe(start_ty.clone()),
                     self.describe(end_ty)
                 ),
                 span,
@@ -1351,9 +1611,9 @@ impl<'a> Checker<'a> {
                 let l = self.check_expr(lhs, None);
                 let r = self.check_expr(rhs, None);
                 if let (Some(lt), Some(rt)) = (l, r) {
-                    match (lt, rt) {
+                    match (&lt, &rt) {
                         (CheckedType::Value(lv), CheckedType::Value(rv)) => {
-                            if let Err(err) = check_comparison(op.as_str(), lv, rv) {
+                            if let Err(err) = check_comparison(op.as_str(), *lv, *rv) {
                                 self.push_unit_error(err, span);
                             }
                         }
@@ -1365,7 +1625,7 @@ impl<'a> Checker<'a> {
                         // variant comparisons (the paper example's own
                         // evidenced pattern) type-check (`AICAD-053`).
                         _ => {
-                            if !types_compatible(lt, rt) {
+                            if !types_compatible(lt.clone(), rt.clone()) {
                                 self.diagnostics.push(self.diag(
                                     437,
                                     "COMPARISON_TYPE_MISMATCH",
@@ -1384,7 +1644,7 @@ impl<'a> Checker<'a> {
             }
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
                 let arith_op = to_arith_op(op);
-                let expected_dim = expected_dimension(expected);
+                let expected_dim = expected_dimension(expected.clone());
                 let (l, r) = match arith_op {
                     // Add/Sub preserve dimension, so the outer expected
                     // type is a sound hint for *both* operands directly
@@ -1393,7 +1653,7 @@ impl<'a> Checker<'a> {
                     // dimension than the result, so only the *result* is
                     // hinted (via `expected_dim`, below).
                     ArithmeticOp::Add | ArithmeticOp::Sub => (
-                        as_value(self.check_expr(lhs, expected)),
+                        as_value(self.check_expr(lhs, expected.clone())),
                         as_value(self.check_expr(rhs, expected)),
                     ),
                     ArithmeticOp::Mul | ArithmeticOp::Div => (
@@ -1421,6 +1681,7 @@ impl<'a> Checker<'a> {
         &mut self,
         callee: &HirCallee,
         args: &[HirArg],
+        expected: Option<CheckedType>,
         span: Span,
     ) -> Option<CheckedType> {
         match callee {
@@ -1456,14 +1717,26 @@ impl<'a> Checker<'a> {
                             }
                             return None;
                         };
-                        self.check_call_args(name, args, &sig, span);
-                        sig.return_ty
+                        // A generic function (`AICAD-057D`, `project/
+                        // OWNER_DECISIONS.md#D17`) needs call-site type-
+                        // parameter instantiation/inference before its
+                        // arguments/return type mean anything concrete;
+                        // an ordinary function's own signature never
+                        // contains a `CheckedType::TypeParam` at all, so
+                        // the pre-existing arity/type checking is
+                        // untouched for it.
+                        if sig.type_params.is_empty() {
+                            self.check_call_args(name, args, &sig, span);
+                            sig.return_ty
+                        } else {
+                            self.check_generic_call(name, args, &sig, expected, span)
+                        }
                     }
                     // Struct-literal construction via ordinary call
                     // syntax (DL-2 has no separate constructor syntax) —
                     // `AICAD-053`.
                     BindingKind::Struct => {
-                        self.check_struct_construction(*binding, name, args, span)
+                        self.check_struct_construction(*binding, name, args, expected, span)
                     }
                     // Tuple-variant construction (`Ok(value)`,
                     // `Empty()`) — `AICAD-057C`, `project/
@@ -1474,7 +1747,7 @@ impl<'a> Checker<'a> {
                     BindingKind::EnumVariant { enum_name } => {
                         let enum_name = enum_name.clone();
                         self.check_variant_tuple_construction(
-                            *binding, &enum_name, name, args, span,
+                            *binding, &enum_name, name, args, expected, span,
                         )
                     }
                     // Any other callee kind (a plain `let`/`var`/`const`,
@@ -1521,7 +1794,7 @@ impl<'a> Checker<'a> {
                         let idx = next_positional;
                         next_positional += 1;
                         filled[idx] = true;
-                        let expected = sig.params[idx].ty;
+                        let expected = sig.params[idx].ty.clone();
                         self.check_expected(
                             expr,
                             expected,
@@ -1562,7 +1835,7 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                             filled[idx] = true;
-                            let expected = sig.params[idx].ty;
+                            let expected = sig.params[idx].ty.clone();
                             self.check_expected(
                                 value,
                                 expected,
@@ -1597,6 +1870,178 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Type-checks a call to a **generic** function (`AICAD-057D`,
+    /// `project/OWNER_DECISIONS.md#D17`) — `sig.type_params` is
+    /// non-empty, so at least one parameter/return type may mention one
+    /// of them. Unlike `check_call_args` (ordinary, non-generic calls),
+    /// this cannot check each argument against its declared type
+    /// directly — the declared type may itself still be an unresolved
+    /// type parameter — so it proceeds in three passes:
+    ///
+    /// 1. Match each argument to a parameter slot (position/name), with
+    ///    exactly `check_call_args`'s own arity/duplicate/unknown-name
+    ///    diagnostics, but without checking any argument's *value* yet.
+    /// 2. Check every supplied argument's own type independently (no
+    ///    contextual hint — a generic parameter's declared type is not
+    ///    yet known to be anything concrete), and unify each one against
+    ///    its raw (unsubstituted) declared parameter type
+    ///    ([`unify_type_param`]) to infer this call's own `T -> concrete
+    ///    type` bindings. The call's own contextual/expected type (an
+    ///    enclosing `let`/`return`/parameter annotation, ...) is unified
+    ///    against the raw return type too, the same way an ordinary call
+    ///    already lets its expected type flow through
+    ///    [`Checker::check_expected`] — this is what resolves a type
+    ///    parameter that appears only in the return type (e.g. `let x:
+    ///    Length = make();` for `fn make<T>() -> T`).
+    /// 3. Any of this function's own declared type parameters left
+    ///    unbound after that is genuinely ambiguous — diagnosed
+    ///    (`AMBIGUOUS_GENERIC_CALL`), never silently defaulted (AGENTS.md:
+    ///    "ambiguity is an error, never an arbitrary selection") — and
+    ///    the call's own type stays unresolved. Otherwise every
+    ///    argument's own (already-checked) type is re-compared against
+    ///    its declared parameter type *with the inferred substitution
+    ///    applied*, exactly like an ordinary `ARGUMENT_TYPE_MISMATCH` —
+    ///    this is what turns an inconsistent multi-occurrence binding
+    ///    (`fn pair_of<T>(a: T, b: T)` called with a `Length` then a
+    ///    `Mass`) into an honest diagnostic instead of a silent coercion
+    ///    (AGENTS.md: "typed units, never silent coercion") — and the
+    ///    substituted return type is the call's own checked type.
+    fn check_generic_call(
+        &mut self,
+        fn_name: &str,
+        args: &[HirArg],
+        sig: &FnSignature,
+        expected: Option<CheckedType>,
+        call_span: Span,
+    ) -> Option<CheckedType> {
+        // Pass 1: match arguments to parameter slots.
+        let mut slot_expr: Vec<Option<&HirExpr>> = vec![None; sig.params.len()];
+        let mut next_positional = 0usize;
+        for arg in args {
+            match arg {
+                HirArg::Positional(expr) => {
+                    if next_positional < sig.params.len() {
+                        let idx = next_positional;
+                        next_positional += 1;
+                        slot_expr[idx] = Some(expr);
+                    } else {
+                        self.diagnostics.push(self.diag(
+                            414,
+                            "TOO_MANY_ARGUMENTS",
+                            format!(
+                                "'{fn_name}' takes {} argument(s), but more were supplied",
+                                sig.params.len()
+                            ),
+                            call_span,
+                        ));
+                        self.check_expr(expr, None);
+                    }
+                }
+                HirArg::Named {
+                    name,
+                    name_span,
+                    value,
+                } => match sig
+                    .params
+                    .iter()
+                    .position(|p| self.bindings[p.binding.index()].name == *name)
+                {
+                    Some(idx) => {
+                        if slot_expr[idx].is_some() {
+                            self.diagnostics.push(self.diag(
+                                416,
+                                "DUPLICATE_ARGUMENT",
+                                format!("argument '{name}' is already supplied"),
+                                *name_span,
+                            ));
+                        }
+                        slot_expr[idx] = Some(value);
+                    }
+                    None => {
+                        self.diagnostics.push(self.diag(
+                            415,
+                            "UNKNOWN_NAMED_ARGUMENT",
+                            format!("'{fn_name}' has no parameter named '{name}'"),
+                            *name_span,
+                        ));
+                        self.check_expr(value, None);
+                    }
+                },
+            }
+        }
+        for (idx, slot) in slot_expr.iter().enumerate() {
+            if slot.is_none() && !sig.params[idx].has_default {
+                let pname = self.bindings[sig.params[idx].binding.index()].name.clone();
+                self.diagnostics.push(self.diag(
+                    417,
+                    "MISSING_ARGUMENT",
+                    format!("missing required argument '{pname}' in call to '{fn_name}'"),
+                    call_span,
+                ));
+            }
+        }
+
+        // Pass 2: check each supplied argument's own type, and use it to
+        // infer this call's own type-parameter bindings.
+        let mut subst: HashMap<BindingId, CheckedType> = HashMap::new();
+        let mut arg_types: Vec<Option<CheckedType>> = vec![None; sig.params.len()];
+        for (idx, slot) in slot_expr.iter().enumerate() {
+            let Some(expr) = slot else { continue };
+            let arg_ty = self.check_expr(expr, None);
+            if let (Some(param_ty), Some(actual_ty)) = (&sig.params[idx].ty, &arg_ty) {
+                unify_type_param(param_ty, actual_ty, &mut subst);
+            }
+            arg_types[idx] = arg_ty;
+        }
+        // The call's own contextual/expected type can resolve a type
+        // parameter that appears only in the return type.
+        if let (Some(return_ty), Some(exp)) = (&sig.return_ty, &expected) {
+            unify_type_param(return_ty, exp, &mut subst);
+        }
+
+        // Pass 3: ambiguity check, then re-compare every argument against
+        // its substituted declared type.
+        let unresolved: Vec<String> = sig
+            .type_params
+            .iter()
+            .filter(|p| !subst.contains_key(p))
+            .map(|p| self.bindings[p.index()].name.clone())
+            .collect();
+        if !unresolved.is_empty() {
+            self.diagnostics.push(self.diag(
+                459,
+                "AMBIGUOUS_GENERIC_CALL",
+                format!(
+                    "cannot infer type parameter(s) {} for this call to '{fn_name}' from its \
+                     argument(s) or context — an unambiguous argument/expected type is required \
+                     (project/OWNER_DECISIONS.md#D17)",
+                    unresolved.join(", ")
+                ),
+                call_span,
+            ));
+            return None;
+        }
+        for (idx, slot) in slot_expr.iter().enumerate() {
+            let Some(expr) = slot else { continue };
+            let expected_ty = substitute_opt(sig.params[idx].ty.clone(), &subst);
+            if let (Some(e), Some(a)) = (expected_ty, arg_types[idx].clone())
+                && !types_compatible(e.clone(), a.clone())
+            {
+                self.diagnostics.push(self.diag(
+                    418,
+                    "ARGUMENT_TYPE_MISMATCH",
+                    format!(
+                        "expected type {}, found {}",
+                        self.describe(e),
+                        self.describe(a)
+                    ),
+                    expr.span(),
+                ));
+            }
+        }
+        substitute_opt(sig.return_ty.clone(), &subst)
+    }
+
     // --- Structs (AICAD-053) ---
 
     /// Type-checks a struct-literal construction (`Point(x = 1mm, y =
@@ -1609,18 +2054,54 @@ impl<'a> Checker<'a> {
     /// parameter list — struct fields, unlike parameters, never carry a
     /// default value (`crate::hir::HirField` has no `default` slot at
     /// all), so every field must be supplied exactly once.
+    /// `expected` is the call expression's own contextual/expected type
+    /// (an enclosing `let`/`return`/parameter annotation, ...) —
+    /// `AICAD-057D`, `project/OWNER_DECISIONS.md#D17`: when it is a
+    /// genuine instantiation of *this* struct (`Pair<Length, Mass>`), its
+    /// type arguments are substituted into every field's declared type
+    /// before checking the construction's own field values ("struct-
+    /// literal field-type checking" — the owner ruling's own named
+    /// example of where an instantiated type's fields must be
+    /// inspected), and the construction's own checked type becomes that
+    /// same instantiation rather than the bare, non-generic `CheckedType
+    /// ::Struct`. Without a matching `expected` context (no annotation at
+    /// all, or one naming a different type), fields keep their raw,
+    /// possibly-`TypeParam`-carrying declared type exactly as `AICAD-
+    /// 057B` left them — see "Known limitations" for why this construction
+    /// -site case, unlike a generic function call, does not also attempt
+    /// argument-driven inference.
     fn check_struct_construction(
         &mut self,
         struct_binding: BindingId,
         struct_name: &str,
         args: &[HirArg],
+        expected: Option<CheckedType>,
         span: Span,
     ) -> Option<CheckedType> {
-        let fields = self
+        let raw_fields = self
             .struct_fields
             .get(&struct_binding)
             .cloned()
             .unwrap_or_default();
+        let instantiation = match expected {
+            Some(CheckedType::Instantiated { base, args: targs }) if base == struct_binding => {
+                Some((base, targs))
+            }
+            _ => None,
+        };
+        let fields: Vec<FieldInfo> = match &instantiation {
+            Some((base, targs)) => {
+                let subst = self.instantiation_subst(*base, targs);
+                raw_fields
+                    .into_iter()
+                    .map(|f| FieldInfo {
+                        name: f.name,
+                        ty: substitute_opt(f.ty, &subst),
+                    })
+                    .collect()
+            }
+            None => raw_fields,
+        };
         let mut filled = vec![false; fields.len()];
         let mut next_positional = 0usize;
         for arg in args {
@@ -1630,7 +2111,7 @@ impl<'a> Checker<'a> {
                         let idx = next_positional;
                         next_positional += 1;
                         filled[idx] = true;
-                        let expected = fields[idx].ty;
+                        let expected = fields[idx].ty.clone();
                         self.check_expected(
                             expr,
                             expected,
@@ -1666,7 +2147,7 @@ impl<'a> Checker<'a> {
                             ));
                         }
                         filled[idx] = true;
-                        let expected = fields[idx].ty;
+                        let expected = fields[idx].ty.clone();
                         self.check_expected(
                             value,
                             expected,
@@ -1700,7 +2181,10 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
-        Some(CheckedType::Struct(struct_binding))
+        match instantiation {
+            Some((base, targs)) => Some(CheckedType::Instantiated { base, args: targs }),
+            None => Some(CheckedType::Struct(struct_binding)),
+        }
     }
 
     // --- Enum variant construction (AICAD-057C, OWNER_DECISIONS.md#D17) --
@@ -1714,15 +2198,36 @@ impl<'a> Checker<'a> {
     /// since the two construction shapes are not interchangeable
     /// (`AICAD-057C`'s own scope note: a record variant must be
     /// constructed with braces, a tuple variant with parens).
+    /// `expected` is the call expression's own contextual/expected type —
+    /// `AICAD-057D`, `project/OWNER_DECISIONS.md#D17`: when it is a
+    /// genuine instantiation of the *owning enum*, its type arguments are
+    /// substituted into the variant's declared payload type(s) before
+    /// checking the construction's own values, and the construction's
+    /// own checked type becomes that same instantiation. Mirrors
+    /// `Checker::check_struct_construction`'s identical treatment — see
+    /// that function's own doc comment for the full rationale and its
+    /// "no expected context" fallback behavior, which applies here
+    /// unchanged.
     fn check_variant_tuple_construction(
         &mut self,
         variant_binding: BindingId,
         enum_name: &str,
         variant_name: &str,
         args: &[HirArg],
+        expected: Option<CheckedType>,
         span: Span,
     ) -> Option<CheckedType> {
         let enum_binding = self.type_names.get(enum_name).copied();
+        let instantiation = match (&expected, enum_binding) {
+            (Some(CheckedType::Instantiated { base, args: targs }), Some(eb)) if *base == eb => {
+                Some((*base, targs.clone()))
+            }
+            _ => None,
+        };
+        let subst = instantiation
+            .as_ref()
+            .map(|(base, targs)| self.instantiation_subst(*base, targs))
+            .unwrap_or_default();
         match self.variant_shapes.get(&variant_binding).cloned() {
             // Unlike a zero-field *tuple* variant (`Empty()`, still a
             // real constructor call, just with no arguments — see
@@ -1746,6 +2251,10 @@ impl<'a> Checker<'a> {
                 }
             }
             Some(VariantShape::Tuple(field_types)) => {
+                let field_types: Vec<Option<CheckedType>> = field_types
+                    .into_iter()
+                    .map(|t| substitute_opt(t, &subst))
+                    .collect();
                 self.check_variant_positional_args(variant_name, args, &field_types, span);
             }
             Some(VariantShape::Record(_)) => {
@@ -1768,7 +2277,10 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        enum_binding.map(CheckedType::Enum)
+        match instantiation {
+            Some((base, targs)) => Some(CheckedType::Instantiated { base, args: targs }),
+            None => enum_binding.map(CheckedType::Enum),
+        }
     }
 
     /// Shared positional-argument matching for [`Checker::
@@ -1787,7 +2299,7 @@ impl<'a> Checker<'a> {
             match arg {
                 HirArg::Positional(expr) => {
                     if filled < field_types.len() {
-                        let expected = field_types[filled];
+                        let expected = field_types[filled].clone();
                         filled += 1;
                         self.check_expected(
                             expr,
@@ -1847,11 +2359,16 @@ impl<'a> Checker<'a> {
     /// RecordLiteral`'s own AST shape has no positional reading at all
     /// (see that type's own doc comment) — so, unlike `check_struct_
     /// construction`, there is no positional-argument branch to mirror.
+    /// `expected` is the record-literal expression's own contextual/
+    /// expected type — see `Checker::check_struct_construction`'s own
+    /// doc comment for the identical `AICAD-057D` substitution treatment
+    /// this function applies against the owning enum's instantiation.
     fn check_record_literal(
         &mut self,
         name: &str,
         binding: Option<BindingId>,
         fields: &[HirRecordField],
+        expected: Option<CheckedType>,
         span: Span,
     ) -> Option<CheckedType> {
         let Some(binding) = binding else {
@@ -1875,7 +2392,20 @@ impl<'a> Checker<'a> {
             return None;
         };
         let enum_binding = self.type_names.get(&enum_name).copied();
-        let field_infos = match self.variant_shapes.get(&binding).cloned() {
+        let instantiation = match (&expected, enum_binding) {
+            (Some(CheckedType::Instantiated { base, args: targs }), Some(eb)) if *base == eb => {
+                Some((*base, targs.clone()))
+            }
+            _ => None,
+        };
+        let result_ty = || match &instantiation {
+            Some((base, targs)) => Some(CheckedType::Instantiated {
+                base: *base,
+                args: targs.clone(),
+            }),
+            None => enum_binding.map(CheckedType::Enum),
+        };
+        let raw_field_infos = match self.variant_shapes.get(&binding).cloned() {
             Some(VariantShape::Record(field_infos)) => field_infos,
             Some(VariantShape::Unit) | Some(VariantShape::Tuple(_)) => {
                 self.diagnostics.push(self.diag(
@@ -1887,14 +2417,27 @@ impl<'a> Checker<'a> {
                 for field in fields {
                     self.check_expr(&field.value, None);
                 }
-                return enum_binding.map(CheckedType::Enum);
+                return result_ty();
             }
             None => {
                 for field in fields {
                     self.check_expr(&field.value, None);
                 }
-                return enum_binding.map(CheckedType::Enum);
+                return result_ty();
             }
+        };
+        let field_infos: Vec<FieldInfo> = match &instantiation {
+            Some((base, targs)) => {
+                let subst = self.instantiation_subst(*base, targs);
+                raw_field_infos
+                    .into_iter()
+                    .map(|f| FieldInfo {
+                        name: f.name,
+                        ty: substitute_opt(f.ty, &subst),
+                    })
+                    .collect()
+            }
+            None => raw_field_infos,
         };
         let mut filled = vec![false; field_infos.len()];
         for field in fields {
@@ -1909,7 +2452,7 @@ impl<'a> Checker<'a> {
                         ));
                     }
                     filled[idx] = true;
-                    let expected = field_infos[idx].ty;
+                    let expected = field_infos[idx].ty.clone();
                     self.check_expected(
                         &field.value,
                         expected,
@@ -1942,7 +2485,7 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
-        enum_binding.map(CheckedType::Enum)
+        result_ty()
     }
 
     /// Type-checks `receiver.field` (`AICAD-053`) — `receiver_ty` is
@@ -1963,7 +2506,34 @@ impl<'a> Checker<'a> {
             Some(CheckedType::Struct(id)) => {
                 let fields = self.struct_fields.get(&id).cloned().unwrap_or_default();
                 match fields.iter().find(|f| f.name == field) {
-                    Some(f) => f.ty,
+                    Some(f) => f.ty.clone(),
+                    None => {
+                        self.diagnostics.push(self.diag(
+                            431,
+                            "UNKNOWN_STRUCT_FIELD",
+                            format!("struct has no field named '{field}'"),
+                            span,
+                        ));
+                        None
+                    }
+                }
+            }
+            // A field access on a genuine instantiation of a *generic
+            // struct* (`AICAD-057D`, `project/OWNER_DECISIONS.md#D17`) —
+            // substitute this instantiation's own type arguments into
+            // the field's declared type before returning it, so `p.first`
+            // on a `p: Pair<Length, Mass>` yields `Length`, not the raw
+            // `TypeParam`. An `Instantiated` wrapping an *enum* base (an
+            // enum value never has fields) intentionally falls through to
+            // the `Some(other)` arm below, exactly like a plain
+            // non-generic `CheckedType::Enum` already does.
+            Some(CheckedType::Instantiated { base, args })
+                if matches!(self.bindings[base.index()].kind, BindingKind::Struct) =>
+            {
+                let fields = self.struct_fields.get(&base).cloned().unwrap_or_default();
+                let subst = self.instantiation_subst(base, &args);
+                match fields.iter().find(|f| f.name == field) {
+                    Some(f) => substitute_opt(f.ty.clone(), &subst),
                     None => {
                         self.diagnostics.push(self.diag(
                             431,
@@ -2005,7 +2575,7 @@ impl<'a> Checker<'a> {
         let mut covered: Vec<BindingId> = Vec::new();
         let mut is_exhaustive_by_wildcard = false;
         for arm in arms {
-            self.bind_pattern(&arm.pattern, scrutinee_ty);
+            self.bind_pattern(&arm.pattern, scrutinee_ty.clone());
             match &arm.pattern {
                 HirPattern::Wildcard { .. } | HirPattern::Binding { .. } => {
                     is_exhaustive_by_wildcard = true;
@@ -2025,7 +2595,7 @@ impl<'a> Checker<'a> {
                 | HirPattern::Record { variant: None, .. }
                 | HirPattern::Literal { .. } => {}
             }
-            let arm_ty = self.check_expr(&arm.body, expected);
+            let arm_ty = self.check_expr(&arm.body, expected.clone());
             result = self.unify_value_type(result, arm_ty, arm.span);
         }
         self.check_match_exhaustiveness(scrutinee_ty, &covered, is_exhaustive_by_wildcard, span);
@@ -2052,8 +2622,17 @@ impl<'a> Checker<'a> {
         if is_exhaustive_by_wildcard {
             return;
         }
-        let Some(CheckedType::Enum(enum_id)) = scrutinee_ty else {
-            return;
+        // A scrutinee typed as a genuine instantiation of a generic enum
+        // (`AICAD-057D`) is exhaustiveness-checked against its own
+        // `base` declaration exactly like a plain `CheckedType::Enum` —
+        // `enum_variants` is keyed by the *declaring* enum's own
+        // `BindingId` regardless of which instantiation is in play, so
+        // no further substitution is needed here (only variant
+        // *identity*, not payload type, matters for coverage).
+        let enum_id = match scrutinee_ty {
+            Some(CheckedType::Enum(id)) => id,
+            Some(CheckedType::Instantiated { base, .. }) => base,
+            _ => return,
         };
         let Some(all_variants) = self.enum_variants.get(&enum_id) else {
             return;
@@ -2094,7 +2673,7 @@ impl<'a> Checker<'a> {
     ) -> Option<CheckedType> {
         match (acc, new) {
             (Some(a), Some(b)) => {
-                if types_compatible(a, b) {
+                if types_compatible(a.clone(), b.clone()) {
                     Some(a)
                 } else {
                     self.diagnostics.push(self.diag(
@@ -2102,7 +2681,7 @@ impl<'a> Checker<'a> {
                         "BRANCH_TYPE_MISMATCH",
                         format!(
                             "branches produce incompatible types: {} and {}",
-                            self.describe(a),
+                            self.describe(a.clone()),
                             self.describe(b)
                         ),
                         span,
@@ -2121,9 +2700,9 @@ impl<'a> Checker<'a> {
         match pattern {
             HirPattern::Wildcard { .. } => {}
             HirPattern::Literal { value, span } => {
-                let lit_ty = self.check_literal(value, scrutinee_ty, *span);
+                let lit_ty = self.check_literal(value, scrutinee_ty.clone(), *span);
                 if let (Some(s), Some(l)) = (scrutinee_ty, lit_ty)
-                    && !types_compatible(s, l)
+                    && !types_compatible(s.clone(), l.clone())
                 {
                     self.diagnostics.push(self.diag(
                         425,
@@ -2185,6 +2764,18 @@ impl<'a> Checker<'a> {
                     }
                     return;
                 };
+                // A scrutinee typed as a genuine instantiation of the
+                // owning generic enum (`AICAD-057D`) substitutes its own
+                // type arguments into this variant's declared field
+                // types before binding each sub-pattern — computed here
+                // (borrowing `scrutinee_ty`) before the enum-identity
+                // check below consumes it.
+                let subst = match &scrutinee_ty {
+                    Some(CheckedType::Instantiated { base, args }) => {
+                        self.instantiation_subst(*base, args)
+                    }
+                    _ => HashMap::new(),
+                };
                 self.check_pattern_enum_match(scrutinee_ty, &enum_name, *span);
                 match self.variant_shapes.get(variant_id).cloned() {
                     Some(VariantShape::Tuple(field_types)) => {
@@ -2200,10 +2791,12 @@ impl<'a> Checker<'a> {
                                 *span,
                             ));
                         }
-                        for (elem, field_ty) in elems
-                            .iter()
-                            .zip(field_types.iter().copied().chain(std::iter::repeat(None)))
-                        {
+                        for (elem, field_ty) in elems.iter().zip(
+                            field_types
+                                .into_iter()
+                                .map(|t| substitute_opt(t, &subst))
+                                .chain(std::iter::repeat(None)),
+                        ) {
                             self.bind_pattern(elem, field_ty);
                         }
                     }
@@ -2253,6 +2846,15 @@ impl<'a> Checker<'a> {
                     }
                     return;
                 };
+                // See the identical `HirPattern::Tuple` arm above for why
+                // this is computed before `check_pattern_enum_match`
+                // consumes `scrutinee_ty` (`AICAD-057D`).
+                let subst = match &scrutinee_ty {
+                    Some(CheckedType::Instantiated { base, args }) => {
+                        self.instantiation_subst(*base, args)
+                    }
+                    _ => HashMap::new(),
+                };
                 self.check_pattern_enum_match(scrutinee_ty, &enum_name, *span);
                 match self.variant_shapes.get(variant_id).cloned() {
                     Some(VariantShape::Record(field_infos)) => {
@@ -2272,7 +2874,10 @@ impl<'a> Checker<'a> {
                                         ));
                                     }
                                     seen.push(field.name.as_str());
-                                    self.bind_pattern(&field.pattern, info.ty);
+                                    self.bind_pattern(
+                                        &field.pattern,
+                                        substitute_opt(info.ty.clone(), &subst),
+                                    );
                                 }
                                 None => {
                                     self.diagnostics.push(self.diag(
@@ -2327,7 +2932,10 @@ impl<'a> Checker<'a> {
     /// Shared by every pattern shape that matches a specific enum variant
     /// (`HirPattern::Variant`/`Tuple`/`Record`) — checked against the
     /// *scrutinee's own* type, not merely "some enum": `enum_name` must
-    /// match the scrutinee's enum identity exactly.
+    /// match the scrutinee's enum identity exactly. A scrutinee typed as
+    /// a genuine instantiation of that enum (`CheckedType::Instantiated`,
+    /// `AICAD-057D`) matches on its own `base` identity, exactly like a
+    /// plain `CheckedType::Enum` matches on its own id.
     fn check_pattern_enum_match(
         &mut self,
         scrutinee_ty: Option<CheckedType>,
@@ -2335,21 +2943,25 @@ impl<'a> Checker<'a> {
         span: Span,
     ) {
         let owning_enum = self.type_names.get(enum_name).copied();
-        match scrutinee_ty {
-            Some(CheckedType::Enum(scrutinee_enum)) if Some(scrutinee_enum) == owning_enum => {}
-            Some(actual) => {
-                self.diagnostics.push(self.diag(
-                    434,
-                    "VARIANT_ENUM_MISMATCH",
-                    format!(
-                        "this pattern matches a variant of a different enum than the matched \
-                         value's type ({})",
-                        self.describe(actual)
-                    ),
-                    span,
-                ));
-            }
-            None => {}
+        let Some(actual) = scrutinee_ty else {
+            return;
+        };
+        let scrutinee_enum = match &actual {
+            CheckedType::Enum(id) => Some(*id),
+            CheckedType::Instantiated { base, .. } => Some(*base),
+            _ => None,
+        };
+        if scrutinee_enum != owning_enum {
+            self.diagnostics.push(self.diag(
+                434,
+                "VARIANT_ENUM_MISMATCH",
+                format!(
+                    "this pattern matches a variant of a different enum than the matched \
+                     value's type ({})",
+                    self.describe(actual)
+                ),
+                span,
+            ));
         }
     }
 }
@@ -3287,12 +3899,15 @@ mod tests {
         // Evidence this is general machinery, not special-cased to any
         // particular enum name (`AICAD-057A`'s own audit finding — a
         // user-defined generic enum whose name is not Result/Optional/
-        // List/Range). `b`'s own declared type (`Box<Int>`) does not
-        // resolve yet (`Name<Args>` type-*reference* resolution for a
-        // user-defined generic is `AICAD-057D`'s job, per `AICAD-057B`'s
-        // own documented limitation) — this only exercises the payload-
-        // shape/destructuring half `AICAD-057C` actually owns, not
-        // instantiation.
+        // List/Range). Originally written when `b`'s own declared type
+        // (`Box<Int>`) did not resolve yet (`Name<Args>` type-*reference*
+        // resolution for a user-defined generic was `AICAD-057D`'s job,
+        // per `AICAD-057B`'s own documented limitation) — it now resolves
+        // to a genuine `CheckedType::Instantiated` (`AICAD-057D`), which
+        // this test's own "diagnostics.is_empty()" assertion continues to
+        // hold for unchanged; the dedicated `AICAD-057D` generic-enum
+        // instantiation tests below exercise the new substitution
+        // behavior directly.
         let (_lowered, checked) = check(
             "enum Box<T> { Full(T), Empty } \
              fn f(b: Box<Int>) -> Int { match b { Full(v) => { return 0; } Empty => { return 0; } } }",
@@ -3316,7 +3931,7 @@ mod tests {
         let HirStmt::For { binding, .. } = &body.stmts[0] else {
             panic!("expected the fn body's first statement to be a for loop");
         };
-        checked.binding_types[binding.index()]
+        checked.binding_types[binding.index()].clone()
     }
 
     #[test]
@@ -3539,5 +4154,243 @@ mod tests {
             "struct Foo<T, T> { a: T }",
         );
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    // --- Generic instantiation/inference (`AICAD-057D`, `project/
+    //     OWNER_DECISIONS.md#D17`) ---
+
+    #[test]
+    fn generic_struct_with_one_type_parameter_referenced_as_a_type_resolves() {
+        // `Name<Args>` type-reference resolution against a user-defined
+        // generic struct (`AICAD-057B`'s and `AICAD-057C`'s own
+        // documented limitation) — field access on the substituted field
+        // yields the correct concrete type.
+        let (_lowered, checked) =
+            check("struct Box<T> { value: T } fn f(b: Box<Length>) -> Length { return b.value; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_struct_field_access_substitutes_the_declared_type_parameter_not_a_wildcard() {
+        // Adversarial: if substitution silently produced *some* type
+        // rather than genuinely `Length`, a `Mass`-typed return would not
+        // be reported. Proves `b.value` really is `Length`, not an
+        // unresolved/wildcard type that would happen to satisfy any
+        // expected return type.
+        let (_lowered, checked) =
+            check("struct Box<T> { value: T } fn f(b: Box<Length>) -> Mass { return b.value; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    #[test]
+    fn generic_struct_with_two_type_parameters_referenced_as_a_type_resolves_both_fields() {
+        let (_lowered, checked) = check(
+            "struct Pair<T, U> { first: T, second: U } \
+             fn f(p: Pair<Length, Mass>) -> Length { return p.first; } \
+             fn g(p: Pair<Length, Mass>) -> Mass { return p.second; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_struct_two_type_parameters_second_field_substitutes_its_own_parameter_not_the_first()
+    {
+        // Adversarial: `second` must resolve to `Mass` (its own
+        // parameter `U`), not `Length` (`T`, the *other* field's
+        // parameter) — proves each parameter substitutes independently.
+        let (_lowered, checked) = check(
+            "struct Pair<T, U> { first: T, second: U } \
+             fn f(p: Pair<Length, Mass>) -> Length { return p.second; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    #[test]
+    fn generic_struct_type_reference_with_too_few_type_arguments_is_reported() {
+        let (_lowered, checked) =
+            check("struct Pair<T, U> { first: T, second: U } fn f(p: Pair<Length>) {}");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E457"]);
+    }
+
+    #[test]
+    fn generic_struct_type_reference_with_too_many_type_arguments_is_reported() {
+        let (_lowered, checked) = check(
+            "struct Pair<T, U> { first: T, second: U } \
+             fn f(p: Pair<Length, Mass, Bool>) {}",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E458"]);
+    }
+
+    #[test]
+    fn unknown_generic_type_name_still_resolves_to_none_without_a_diagnostic() {
+        // Regression guard: a `Name<Args>` naming no declared struct/enum
+        // at all (and not `List`/`Range`) must keep falling through to
+        // `None` silently — this task must not turn every unresolved
+        // generic reference into a diagnostic, only a *known* struct/enum
+        // referenced with the wrong arity.
+        let (_lowered, checked) = check("fn f(v: Vector2<Length>) {}");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_enum_tuple_variant_construction_against_instantiated_type_checks_cleanly() {
+        let (_lowered, checked) = check(
+            "enum Holder<T> { Full(T), Empty } \
+             fn f() -> Holder<Length> { return Full(5mm); }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_enum_tuple_variant_construction_wrong_expected_type_is_reported() {
+        // Adversarial: `Full` needs a `Mass`-typed payload here (per the
+        // declared `Holder<Mass>` context), so a `Length` literal is a
+        // genuine field-type mismatch, not silently accepted.
+        let (_lowered, checked) = check(
+            "enum Holder<T> { Full(T), Empty } \
+             fn f() -> Holder<Mass> { return Full(5mm); }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E449"]);
+    }
+
+    #[test]
+    fn generic_enum_tuple_variant_pattern_against_instantiated_type_yields_substituted_field_type()
+    {
+        let (_lowered, checked) = check(
+            "enum Holder<T> { Full(T), Empty } \
+             fn f(h: Holder<Length>) -> Length { \
+                 match h { Full(v) => { return v; } Empty => { return 0mm; } } \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_enum_tuple_variant_pattern_binding_is_not_a_wildcard_type() {
+        // Adversarial: `v`'s substituted type is `Length`, not `Mass` —
+        // proves the pattern-side substitution is genuine, not a
+        // universal placeholder that would happen to satisfy any
+        // declared return type.
+        let (_lowered, checked) = check(
+            "enum Holder<T> { Full(T), Empty } \
+             fn f(h: Holder<Length>) -> Mass { \
+                 match h { Full(v) => { return v; } Empty => { return 0kg; } } \
+             }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    #[test]
+    fn generic_enum_record_variant_construction_against_instantiated_type_checks_cleanly() {
+        let (_lowered, checked) = check(
+            "enum Wrap<T> { Boxed { value: T } } \
+             fn f() -> Wrap<Length> { return Boxed { value: 5mm }; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_enum_record_variant_construction_wrong_expected_type_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Wrap<T> { Boxed { value: T } } \
+             fn f() -> Wrap<Mass> { return Boxed { value: 5mm }; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E449"]);
+    }
+
+    #[test]
+    fn generic_enum_record_variant_pattern_against_instantiated_type_yields_substituted_field_type()
+    {
+        let (_lowered, checked) = check(
+            "enum Wrap<T> { Boxed { value: T } } \
+             fn f(w: Wrap<Length>) -> Length { match w { Boxed { value } => { return value; } } }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_function_call_infers_type_parameter_from_argument() {
+        // `identity(5mm)` infers `T = Length` from the argument alone.
+        let (_lowered, checked) = check(
+            "fn identity<T>(value: T) -> T { return value; } \
+             fn use_it() -> Length { return identity(5mm); }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_function_call_argument_inference_is_not_a_wildcard() {
+        // Adversarial: the inferred `T` is genuinely `Length`, not a
+        // universal placeholder — returning it where `Mass` is expected
+        // is a real mismatch.
+        let (_lowered, checked) = check(
+            "fn identity<T>(value: T) -> T { return value; } \
+             fn use_it() -> Mass { return identity(5mm); }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    #[test]
+    fn generic_function_call_infers_type_parameter_from_expected_return_context() {
+        // `T` appears only in the return type; an enclosing `return`'s
+        // own declared type (`Length`) is contextual evidence enough to
+        // resolve it unambiguously — not a silent/arbitrary choice, a
+        // genuine unification against the call's own expected type.
+        let (_lowered, checked) = check(
+            "fn make<T>() -> T { loop {} } \
+             fn use_it() -> Length { return make(); }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn ambiguous_generic_call_with_type_parameter_only_in_return_type_is_reported() {
+        // `T` appears only in `make`'s own return type and nowhere in its
+        // (empty) parameter list; called with no expected/contextual type
+        // at all, `T` is genuinely undeterminable — AGENTS.md "ambiguity
+        // is an error, never an arbitrary selection".
+        let (_lowered, checked) =
+            check("fn make<T>() -> T { loop {} } fn use_it() { let x = make(); }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E459"]);
+    }
+
+    #[test]
+    fn generic_function_called_with_inconsistent_argument_types_for_the_same_type_parameter_is_reported()
+     {
+        // `fn pair_of<T>(a: T, b: T)` called with a `Length` then a
+        // `Mass` — an important adversarial case per AGENTS.md's "typed
+        // units, never silent coercion": `T` binds to `Length` from the
+        // first argument, and the second argument's `Mass` must then be
+        // reported as an ordinary argument-type mismatch, never silently
+        // coerced or silently accepted as "also T".
+        let (_lowered, checked) = check(
+            "fn pair_of<T>(a: T, b: T) -> T { return a; } \
+             fn use_it() { pair_of(5mm, 2kg); }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
+    }
+
+    #[test]
+    fn nested_generic_type_reference_resolves_and_substitutes_recursively() {
+        // `Wrapper<Pair<Length, Mass>>` — a generic struct's own type
+        // argument is itself another generic instantiation; field access
+        // must thread the substitution through both levels
+        // (`w.inner.first` -> `Length`).
+        let (_lowered, checked) = check(
+            "struct Pair<T, U> { first: T, second: U } \
+             struct Wrapper<X> { inner: X } \
+             fn f(w: Wrapper<Pair<Length, Mass>>) -> Length { return w.inner.first; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn nested_generic_type_reference_field_access_is_not_a_wildcard() {
+        let (_lowered, checked) = check(
+            "struct Pair<T, U> { first: T, second: U } \
+             struct Wrapper<X> { inner: X } \
+             fn f(w: Wrapper<Pair<Length, Mass>>) -> Mass { return w.inner.first; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
     }
 }

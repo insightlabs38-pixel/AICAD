@@ -1629,7 +1629,7 @@ tasks:
 - id: AICAD-057D
   stage: 2
   title: Implement generic instantiation/inference/type checking for the approved Stage-2 generic subset
-  status: todo
+  status: done
   depends_on:
   - AICAD-057C
   plan_references:
