@@ -1511,7 +1511,7 @@ tasks:
 - id: AICAD-057
   stage: 2
   title: Implement recursion and Result/error propagation
-  status: todo
+  status: done
   depends_on:
   - AICAD-057F
   plan_references:
@@ -1536,14 +1536,17 @@ tasks:
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage
   notes: >
-    Recursion and call-stack error propagation are already implemented
-    (see project/reports/AICAD-057.md, first session). Result<T,E>
-    construction/matching is blocked on OWNER_DECISIONS.md#D17
+    Recursion and call-stack error propagation were implemented in this
+    task's first session (see project/reports/AICAD-057.md). Result<T,E>
+    construction/matching/propagation was blocked on OWNER_DECISIONS.md#D17
     (DECISION_LOG.md#DL-14) until the AICAD-057A..AICAD-057F remediation
-    sequence completes; depends_on repointed to AICAD-057F by AICAD-057A
-    to encode this in the task graph itself, per the owner's explicit
-    instruction "Only after AICAD-057A through AICAD-057F are complete
-    may the original AICAD-057 resume."
+    sequence completed; that sequence is now done (all six status: done).
+    This task's own closure session re-verified, with fresh evidence
+    against this task's own original acceptance wording, that Result<T,E>
+    construction/matching/explicit Err propagation through nested function
+    calls via ordinary match is fully covered by the AICAD-057E/057F
+    generic-enum prelude machinery, with no new escalation required. See
+    project/reports/AICAD-057.md's "Closure (session 2)" section.
 - id: AICAD-057A
   stage: 2
   title: Stage-2 coverage audit (generics/enums/Result/Optional/collections/closures/generators/interfaces)

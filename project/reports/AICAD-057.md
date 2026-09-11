@@ -22,7 +22,9 @@ task's own `project/TASKS.yaml` `escalate_if` conditions. Recorded as
 `project/OWNER_DECISIONS.md#D17` rather than decided here.
 `project/TASKS.yaml`'s `AICAD-057` entry is left `status: todo` (not
 `done`) — see "Task status" below, mirroring `AICAD-056`'s own identical
-partial-completion pattern for `project/OWNER_DECISIONS.md#D16`.
+partial-completion pattern for `project/OWNER_DECISIONS.md#D16`. **Closed
+in a later session — see "Closure (session 2)" at the end of this
+report.**
 
 ## Base commit
 
@@ -267,3 +269,114 @@ this task; if not, re-verify the blocker still holds and continue to
 wait) — it must not skip ahead to `AICAD-058` or the `STAGE2-C_EXECUTION.md`
 checkpoint, even though neither obviously needs `Result<T,E>` on its own
 title.
+
+## Closure (session 2)
+
+### Base commit
+
+`2a9e680` ("AICAD-057F: Adversarial integration pass proving generic/enum
+machinery is general, not Result-specific"), the tip of
+`origin/claude/aicad-stage2-dev` at this session's start (confirmed via
+`git fetch origin --prune` and `git log --oneline -5`; working tree clean
+beforehand). `project/OWNER_DECISIONS.md#D17` is `RESOLVED (general
+generics + enums) - DL-14`, and the full `AICAD-057A`-`F` remediation
+sequence (`project/TASKS.yaml`, all six entries `status: done`) is
+complete, per `project/SESSION_HANDOFF.md`'s own explicit instruction to
+resume this exact task next.
+
+### What this session verified (no new production code)
+
+Per `project/SESSION_HANDOFF.md`'s own narrowed-scope instruction, this
+session did not re-implement anything; it re-checked this task's own
+original acceptance/`escalate_if` conditions against the current
+implementation with fresh evidence:
+
+1. **Recursion** - re-ran `cargo test -p cad-runtime recursion` fresh (5
+   tests: `mutual_recursion_terminates_correctly`,
+   `moderately_deep_self_recursion_succeeds_within_the_default_budget`,
+   `recursion_limit_exceeded_is_a_clean_error_not_a_stack_overflow`,
+   `recursion_limit_is_restored_after_an_error_unwinds`, plus one
+   unrelated recursion-adjacent test; all `ok`, `0 failed`) - unchanged
+   and unregressed since this task's first session.
+2. **`Result<T,E>` construction, matching, and explicit `Err` propagation
+   through nested function calls via ordinary `match`** - this task's own
+   original title and acceptance wording - re-read directly against
+   current source rather than trusted from `057E`/`057F`'s prose:
+   `crates/cad-runtime/src/interp.rs`'s
+   `successful_result_match_flows_the_ok_value_correctly` (line 2779) and
+   `err_propagates_through_nested_function_calls_to_the_top` (line 2796)
+   name and test exactly this task's own original acceptance scenario -
+   `Ok`/`Err` construction, `match`-based destructuring, and an `Err`
+   payload surviving two full function-call/`match` hops unchanged, with
+   no `?` operator anywhere. `crates/cad-hir/src/typeck.rs` has an
+   identically-named type-checking counterpart
+   (`successful_result_match_flows_the_ok_value_correctly`, line 4533).
+   Both were read in full, not merely grepped for existence.
+3. **No `escalate_if` condition applies now.** `Result<T,E>` is built from
+   general data-carrying enum variants and general user-defined generics
+   (`057B`-`057D`), registered as an ordinary prelude generic enum
+   (`057E`), with no `Result`-specific compiler/runtime semantics beyond
+   prelude registration (`057F`'s own re-confirmed grep evidence) - this
+   is squarely inside the owner-approved `D17`/`DL-14` ruling, not a new
+   public-syntax/semantics change, gate weakening, kernel-boundary leak,
+   reference-ambiguity fallback, or later-stage expansion.
+4. **Fresh full-workspace checks**, run from a clean tree at this
+   session's own base commit (not reused from any prior session's
+   output):
+
+   ```
+   cargo fmt --all -- --check
+       (clean, no output, exit 0)
+
+   cargo test --workspace
+       every test binary: test result: ok, 0 failed
+       (per-crate unchanged from AICAD-057F's own baseline: cad-ast 19,
+       cad-parser 119, cad-compiler 49, cad-hir 187, cad-runtime 77, plus
+       the full native/OCCT Stage-1 suite and every other Stage-2 suite)
+
+   cargo clippy --workspace --all-targets --all-features -- -D warnings
+       Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.18s
+       (clean, no warnings)
+
+   cargo build --workspace --all-targets
+       Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+       (clean)
+
+   cargo test -p cad-runtime recursion
+       running 5 tests ... test result: ok. 5 passed; 0 failed
+   ```
+
+### Conclusion
+
+This task's own original acceptance ("recursion and Result/error
+propagation") is now fully satisfied - not by new work in this session,
+but by the combination of this task's own first session (recursion) and
+the owner-authorized `D17`/`DL-14` remediation sequence's general
+generic-enum machinery (`Result<T,E>` construction/matching/propagation),
+re-verified here against this task's own original wording with fresh
+evidence rather than assumed from prior reports. No new escalation is
+filed. `project/TASKS.yaml`'s `AICAD-057` entry is updated to
+`status: done`.
+
+### Files changed (this session)
+
+- `project/reports/AICAD-057.md` (this closure section).
+- `project/TASKS.yaml` (`AICAD-057` `status: todo` -> `done`; `notes`
+  updated to point at this closure).
+- `project/SESSION_HANDOFF.md` (updated for the next invocation).
+
+### Known limitations (unchanged)
+
+- `while`/`loop`/`for` iteration still uses `AICAD-056`'s own separate
+  iteration budget, not unified with this task's call-depth budget -
+  `AICAD-058`'s own scheduled scope to reconcile, if it chooses to.
+- No `?`/propagation operator exists (by `D17`'s own explicit ruling,
+  deferred to a later explicit language decision, not this task's scope).
+- `Value::Struct`, the `expected`-type-context gap for ambiguous derived-
+  dimension arithmetic, and D16's own named collection scope limits remain
+  unchanged, carried forward from prior task reports.
+
+### Unresolved questions
+
+None new. `D17` remains resolved (`DL-14`); this session's re-verification
+found no reason to reopen it.
