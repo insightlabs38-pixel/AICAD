@@ -1656,7 +1656,7 @@ tasks:
 - id: AICAD-057E
   stage: 2
   title: Define and execute Result<T,E> and Optional<T> using the ordinary generic enum machinery
-  status: todo
+  status: done
   depends_on:
   - AICAD-057D
   plan_references:

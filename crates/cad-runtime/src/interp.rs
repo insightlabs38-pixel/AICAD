@@ -1511,6 +1511,42 @@ mod tests {
         lowered
     }
 
+    /// Same as [`compiled`], but first prepends the AICAD prelude
+    /// (`Result<T, E>`/`Optional<T>`, `cad_hir::prelude::with_prelude`,
+    /// `AICAD-057E`) to `source`'s own already-parsed program — used only
+    /// by the "AICAD-057E: Result/Optional prelude" test section below.
+    /// Every pre-existing test in this module keeps using the plain
+    /// [`compiled`] helper, completely unaffected by the prelude's own
+    /// existence (several already use `Ok`/`Err`/`Some`/`None`/`R`/`Opt`
+    /// as their own unrelated non-generic test fixture names — see e.g.
+    /// `enum R { Ok(Length), Err(Length) }` further up).
+    fn compiled_with_prelude(source: &str) -> LowerResult {
+        let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
+        assert!(
+            parse_diagnostics.is_empty(),
+            "test source failed to parse: {parse_diagnostics:?}"
+        );
+        let program = cad_hir::prelude::with_prelude(&program);
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "test source failed to lower cleanly: {:?}",
+            lowered.diagnostics
+        );
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        assert!(
+            checked.diagnostics.is_empty(),
+            "test source failed to type-check: {:?}",
+            checked.diagnostics
+        );
+        lowered
+    }
+
     fn number(magnitude: f64) -> Value {
         Value::Number(NumberValue {
             magnitude,
@@ -2622,5 +2658,228 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E111");
+    }
+
+    // --- AICAD-057E: Result<T,E>/Optional<T> via the ordinary prelude
+    //     (`project/OWNER_DECISIONS.md#D17`, `project/DECISION_LOG.md
+    //     #DL-14`) — every test below uses `compiled_with_prelude`, never
+    //     `compiled`, and none of them declares `Result`/`Optional`/`Ok`/
+    //     `Err`/`Some`/`None` itself: those five names come from
+    //     `cad_hir::prelude::PRELUDE_SOURCE` alone. Each `Value::EnumVariant`
+    //     produced along the way is an entirely ordinary one — same
+    //     `VariantPayload::Tuple`/`Unit` shapes `AICAD-057C` already built
+    //     for any user-defined enum, with no `Result`/`Optional`-specific
+    //     runtime code anywhere in this crate. -----------------------------
+
+    #[test]
+    fn result_int_string_construct_and_match_executes_correctly() {
+        let lowered = compiled_with_prelude(
+            "fn describe(ok: Bool) -> Result<Int, String> { \
+                 if ok { return Ok(42); } \
+                 return Err(\"bad\"); \
+             } \
+             fn use_it(ok: Bool) -> Int { \
+                 return match describe(ok) { Ok(v) => v, Err(e) => -1, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(
+            interp
+                .call_by_name("use_it", vec![Value::Bool(true)])
+                .unwrap(),
+            42.0,
+        );
+        assert_number_eq(
+            interp
+                .call_by_name("use_it", vec![Value::Bool(false)])
+                .unwrap(),
+            -1.0,
+        );
+    }
+
+    #[test]
+    fn result_length_with_user_defined_error_type_executes_correctly() {
+        // `E` is a user-declared **enum**, not a primitive — proves `E`
+        // isn't secretly constrained to `String`/any built-in type. A
+        // struct is used for this exact scenario's own typeck test
+        // (`cad_hir::typeck`'s `result_length_with_user_defined_error_type_
+        // type_checks_cleanly`); a user-defined *enum* is used here
+        // instead because struct **construction** is not yet implemented
+        // by this crate's own interpreter at all — see this file's own
+        // pre-existing `struct_construction_is_not_yet_supported` test —
+        // an unrelated, already-documented gap, not something this task
+        // introduces or is scoped to fix. This task's own required-test
+        // wording explicitly allows either ("a user-defined error
+        // enum/struct, not a primitive").
+        let lowered = compiled_with_prelude(
+            "enum SensorFault { BadReading(Int) } \
+             fn read_sensor(ok: Bool, x: Length) -> Result<Length, SensorFault> { \
+                 if ok { return Ok(x); } \
+                 return Err(BadReading(99)); \
+             } \
+             fn fault_code_or_zero(ok: Bool, x: Length) -> Int { \
+                 return match read_sensor(ok, x) { \
+                     Ok(v) => 0, \
+                     Err(BadReading(code)) => code, \
+                 }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let zero_length = dimensional(0.0, Dimension::Length);
+        assert_number_eq(
+            interp
+                .call_by_name(
+                    "fault_code_or_zero",
+                    vec![Value::Bool(false), zero_length.clone()],
+                )
+                .unwrap(),
+            99.0,
+        );
+        assert_number_eq(
+            interp
+                .call_by_name("fault_code_or_zero", vec![Value::Bool(true), zero_length])
+                .unwrap(),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn optional_length_some_and_none_execute_correctly() {
+        let lowered = compiled_with_prelude(
+            "fn maybe(present: Bool, x: Length) -> Optional<Length> { \
+                 if present { return Some(x); } \
+                 return None; \
+             } \
+             fn unwrap_or_zero(present: Bool, x: Length) -> Length { \
+                 return match maybe(present, x) { Some(v) => v, None => 0mm, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(
+            interp
+                .call_by_name(
+                    "unwrap_or_zero",
+                    vec![Value::Bool(true), dimensional(7.0, Dimension::Length)],
+                )
+                .unwrap(),
+            7.0,
+        );
+        assert_number_eq(
+            interp
+                .call_by_name(
+                    "unwrap_or_zero",
+                    vec![Value::Bool(false), dimensional(7.0, Dimension::Length)],
+                )
+                .unwrap(),
+            0.0,
+        );
+    }
+
+    #[test]
+    fn successful_result_match_flows_the_ok_value_correctly() {
+        // `op()` always returns `Ok(x)`; the `Ok` arm's own bound value
+        // must reach the caller's own return value unchanged.
+        let lowered = compiled_with_prelude(
+            "fn op(x: Length) -> Result<Length, String> { return Ok(x); } \
+             fn use_it(x: Length) -> Length { \
+                 return match op(x) { Ok(v) => v, Err(e) => 0mm, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("use_it", vec![dimensional(11.0, Dimension::Length)])
+            .unwrap();
+        assert_number_eq(result, 11.0);
+    }
+
+    #[test]
+    fn err_propagates_through_nested_function_calls_to_the_top() {
+        // `inner` returns `Result<Length, String>`; `outer` calls it,
+        // matches, and explicitly propagates with ordinary `match`/
+        // `return Err(e)` on the `Err` arm — no `?` operator anywhere
+        // (`D17`'s own "Result propagation" ruling). `unwrap_err_message`
+        // then matches `outer`'s own result a second time, so the
+        // asserted final value is the *original* `Err` payload string
+        // ("boom") having survived two full function-call/match hops
+        // unchanged.
+        let lowered = compiled_with_prelude(
+            "fn inner(ok: Bool, x: Length) -> Result<Length, String> { \
+                 if ok { return Ok(x); } \
+                 return Err(\"boom\"); \
+             } \
+             fn outer(ok: Bool, x: Length) -> Result<Length, String> { \
+                 return match inner(ok, x) { \
+                     Ok(v) => Ok(v), \
+                     Err(e) => Err(e), \
+                 }; \
+             } \
+             fn unwrap_err_message(ok: Bool, x: Length) -> String { \
+                 return match outer(ok, x) { Ok(v) => \"no error\", Err(e) => e, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name(
+                "unwrap_err_message",
+                vec![Value::Bool(false), dimensional(0.0, Dimension::Length)],
+            )
+            .unwrap();
+        assert_eq!(result, Value::Str("boom".to_string()));
+        // Complementary positive case: the successful path's own message
+        // is unaffected by the propagation machinery.
+        let ok_result = interp
+            .call_by_name(
+                "unwrap_err_message",
+                vec![Value::Bool(true), dimensional(5.0, Dimension::Length)],
+            )
+            .unwrap();
+        assert_eq!(ok_result, Value::Str("no error".to_string()));
+    }
+
+    #[test]
+    fn nested_optional_of_result_constructs_and_matches_correctly() {
+        // `Optional<Result<Int, String>>` — a prelude generic nested
+        // inside another prelude generic, executed (not merely type-
+        // checked — `cad_hir::typeck`'s own
+        // `nested_optional_of_result_type_checks_cleanly` already proves
+        // the compile-time side). A single `match` destructures both
+        // levels at once (`Some(Ok(v))`/`Some(Err(e))`/`None`), mirroring
+        // this file's own pre-existing `nested_tuple_variant_
+        // destructuring_reaches_the_inner_payload`.
+        let lowered = compiled_with_prelude(
+            "fn make(present: Bool, ok: Bool) -> Optional<Result<Int, String>> { \
+                 if present { \
+                     if ok { return Some(Ok(1)); } \
+                     return Some(Err(\"bad\")); \
+                 } \
+                 return None; \
+             } \
+             fn unwrap(present: Bool, ok: Bool) -> Int { \
+                 return match make(present, ok) { \
+                     Some(Ok(v)) => v, \
+                     Some(Err(e)) => -1, \
+                     None => -2, \
+                 }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(
+            interp
+                .call_by_name("unwrap", vec![Value::Bool(true), Value::Bool(true)])
+                .unwrap(),
+            1.0,
+        );
+        assert_number_eq(
+            interp
+                .call_by_name("unwrap", vec![Value::Bool(true), Value::Bool(false)])
+                .unwrap(),
+            -1.0,
+        );
+        assert_number_eq(
+            interp
+                .call_by_name("unwrap", vec![Value::Bool(false), Value::Bool(false)])
+                .unwrap(),
+            -2.0,
+        );
     }
 }

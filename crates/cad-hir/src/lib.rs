@@ -22,6 +22,11 @@
 //!   numeric-literal-type defaulting, and full type checking for
 //!   literals/bindings/functions/calls. See its own module doc comment
 //!   for the struct/enum field/variant typing `AICAD-053` adds on top.
+//! - [`prelude`][]: [`prelude::PRELUDE_SOURCE`]/[`prelude::with_prelude`]
+//!   (`AICAD-057E`) — `Result<T, E>`/`Optional<T>` as ordinary prelude
+//!   generic enums, loaded by parsing fixed AICAD source text and
+//!   prepending it to a user program before lowering. See its own module
+//!   doc comment for exactly where this hooks into the pipeline.
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §5;
 //! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (phases 4 and 7);
@@ -31,6 +36,7 @@
 pub mod hir;
 pub mod ids;
 pub mod lower;
+pub mod prelude;
 pub mod typeck;
 pub mod types;
 
@@ -41,5 +47,6 @@ pub use hir::{
 };
 pub use ids::{Binding, BindingId, BindingKind};
 pub use lower::{LowerResult, lower_program};
+pub use prelude::{PRELUDE_SOURCE, with_prelude};
 pub use typeck::{TypeCheckResult, check_program};
 pub use types::{HirType, HirTypeRef};

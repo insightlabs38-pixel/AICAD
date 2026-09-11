@@ -1259,7 +1259,36 @@ impl<'a> Checker<'a> {
         match expr {
             HirExpr::Literal { value, span, .. } => self.check_literal(value, expected, *span),
             HirExpr::Ident { binding, .. } => {
-                binding.and_then(|b| self.binding_types[b.index()].clone())
+                let actual = binding.and_then(|b| self.binding_types[b.index()].clone());
+                // A bare reference to a `Unit`-shaped enum variant (e.g.
+                // `None`) is registered by `register_type_names` with the
+                // *declaring enum's own* bare, non-instantiated
+                // `CheckedType::Enum` regardless of that enum's own type
+                // parameters or the calling context — the same
+                // "substitute from the call's own expected/contextual
+                // type" rule `AICAD-057D` already applies to tuple-/
+                // record-variant *construction*
+                // (`check_variant_tuple_construction`/
+                // `check_record_literal`) never reaches a `Unit` variant
+                // at all (it is never called, so it never flows through
+                // either function) — so without this, no generic enum's
+                // `Unit` variant could type-check anywhere an
+                // instantiated type is expected (`return None;` against a
+                // declared `-> Optional<Length>`, `AICAD-057E`'s own
+                // required `Optional<Length>` test). This is general to
+                // any generic enum's `Unit` variant, not `Optional`-
+                // specific: it only fires when `expected` already names a
+                // genuine instantiation of the *same* declaring enum
+                // (`base == eb`), never inferring or fabricating one, so
+                // an unrelated/incorrect expected type is unaffected and
+                // still reported exactly as before.
+                match (&actual, &expected) {
+                    (
+                        Some(CheckedType::Enum(base)),
+                        Some(CheckedType::Instantiated { base: eb, .. }),
+                    ) if base == eb => expected,
+                    _ => actual,
+                }
             }
             HirExpr::Unary { op, operand, span } => self.check_unary(*op, operand, *span),
             HirExpr::Binary { op, lhs, rhs, span } => {
@@ -3036,6 +3065,32 @@ mod tests {
         (lowered, checked)
     }
 
+    /// Same as [`check`], but first prepends the AICAD prelude
+    /// (`Result<T, E>`/`Optional<T>`, `crate::prelude::with_prelude`,
+    /// `AICAD-057E`) to `source`'s own already-parsed program — used only
+    /// by the "AICAD-057E: Result/Optional prelude" test section below.
+    /// Every pre-existing test in this module (several of which
+    /// deliberately declare their own unrelated, non-generic `Ok`/`Err`/
+    /// `Result`-named test fixtures — see e.g. `enum R { Ok(Int), Err(Int)
+    /// }` further down) keeps using the plain `check` helper, completely
+    /// unaffected by the prelude's own existence.
+    fn check_with_prelude(source: &str) -> (LowerResult, TypeCheckResult) {
+        let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
+        assert!(
+            parse_diagnostics.is_empty(),
+            "test source failed to parse: {parse_diagnostics:?}"
+        );
+        let program = crate::prelude::with_prelude(&program);
+        let lowered = crate::lower::lower_program(&program, "test.aicad", source);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "test source failed to lower cleanly: {:?}",
+            lowered.diagnostics
+        );
+        let checked = check_program(&lowered.program, &lowered.bindings, "test.aicad", source);
+        (lowered, checked)
+    }
+
     fn codes(diagnostics: &[Diagnostic]) -> Vec<String> {
         diagnostics.iter().map(|d| d.code.as_string()).collect()
     }
@@ -4392,5 +4447,181 @@ mod tests {
              fn f(w: Wrapper<Pair<Length, Mass>>) -> Mass { return w.inner.first; }",
         );
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    // --- AICAD-057E: Result<T,E>/Optional<T> via the ordinary prelude
+    //     (`project/OWNER_DECISIONS.md#D17`, `project/DECISION_LOG.md
+    //     #DL-14`) — every test below uses `check_with_prelude`, never
+    //     `check`, and none of them declares `Result`/`Optional`/`Ok`/
+    //     `Err`/`Some`/`None` itself: those five names come from
+    //     `crate::prelude::PRELUDE_SOURCE` alone. ------------------------
+
+    #[test]
+    fn result_int_string_construct_and_match_type_checks_cleanly() {
+        let (_lowered, checked) = check_with_prelude(
+            "fn safe_div(ok: Bool) -> Result<Int, String> { \
+                 if ok { return Ok(1); } \
+                 return Err(\"division by zero\"); \
+             } \
+             fn use_it(ok: Bool) -> Int { \
+                 match safe_div(ok) { \
+                     Ok(v) => { return v; } \
+                     Err(e) => { e; return 0; } \
+                 } \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn result_length_with_user_defined_error_type_type_checks_cleanly() {
+        // `E` is a user-declared struct, not a primitive — proves `E`
+        // isn't secretly constrained to `String`/any built-in type.
+        let (_lowered, checked) = check_with_prelude(
+            "struct SensorFault { code: Int } \
+             fn read_sensor(ok: Bool) -> Result<Length, SensorFault> { \
+                 if ok { return Ok(5mm); } \
+                 return Err(SensorFault(code = 1)); \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn result_err_payload_wrong_type_against_user_defined_error_type_is_reported() {
+        // Adversarial: `Err(...)` is given an `Int`, not the declared
+        // `SensorFault` — a genuine field-type mismatch, not silently
+        // accepted just because it is the `Err` arm of a `Result`.
+        let (_lowered, checked) = check_with_prelude(
+            "struct SensorFault { code: Int } \
+             fn read_sensor() -> Result<Length, SensorFault> { return Err(1); }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E449"]);
+    }
+
+    #[test]
+    fn optional_length_some_and_none_type_checks_cleanly() {
+        let (_lowered, checked) = check_with_prelude(
+            "fn maybe_length(present: Bool) -> Optional<Length> { \
+                 if present { return Some(5mm); } \
+                 return None; \
+             } \
+             fn use_it(x: Optional<Length>) -> Length { \
+                 match x { Some(v) => { return v; } None => { return 0mm; } } \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn optional_none_against_instantiated_expected_type_is_not_a_wildcard() {
+        // Adversarial: `None`'s type-parameter is genuinely substituted
+        // from the declared `Optional<Length>` return type, not treated
+        // as compatible with any instantiation whatsoever — matching
+        // `w.inner.first` where `Mass` is wrongly expected returns `v`
+        // (a `Some`-bound `Length`) where `Mass` is declared, a real
+        // mismatch.
+        let (_lowered, checked) = check_with_prelude(
+            "fn use_it(x: Optional<Length>) -> Mass { \
+                 match x { Some(v) => { return v; } None => { return 0kg; } } \
+             }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    #[test]
+    fn successful_result_match_flows_the_ok_value_correctly() {
+        // `op()` always returns `Ok(...)`; the `Ok` arm's own bound value
+        // must carry the substituted `Length` type through to the
+        // function's own declared return type with no diagnostic.
+        let (_lowered, checked) = check_with_prelude(
+            "fn op() -> Result<Length, String> { return Ok(5mm); } \
+             fn use_it() -> Length { \
+                 match op() { Ok(v) => { return v; } Err(e) => { e; return 0mm; } } \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn err_propagation_through_nested_function_calls_type_checks_cleanly() {
+        // A helper (`inner`) returns `Result<Length, String>`; the caller
+        // (`outer`) matches it and, on `Err`, explicitly propagates with
+        // ordinary `match`/`return Err(e)` — no `?` operator anywhere
+        // (`D17`'s own "Result propagation" ruling).
+        let (_lowered, checked) = check_with_prelude(
+            "fn inner(ok: Bool) -> Result<Length, String> { \
+                 if ok { return Ok(5mm); } \
+                 return Err(\"inner failed\"); \
+             } \
+             fn outer(ok: Bool) -> Result<Length, String> { \
+                 match inner(ok) { \
+                     Ok(v) => { return Ok(v); } \
+                     Err(e) => { return Err(e); } \
+                 } \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn nested_optional_of_result_type_checks_cleanly() {
+        // `Optional<Result<Int, String>>` — a prelude generic nested
+        // inside another prelude generic, exercising
+        // `CheckedType::Instantiated` nesting concretely for the two
+        // named prelude types (`AICAD-057D`'s own
+        // `nested_generic_type_reference_resolves_and_substitutes_
+        // recursively` proved the mechanism in the abstract for
+        // user-defined `Wrapper<Pair<Length, Mass>>`).
+        let (_lowered, checked) = check_with_prelude(
+            "fn maybe_result(present: Bool, ok: Bool) -> Optional<Result<Int, String>> { \
+                 if present { \
+                     if ok { return Some(Ok(1)); } \
+                     return Some(Err(\"bad\")); \
+                 } \
+                 return None; \
+             } \
+             fn use_it(present: Bool, ok: Bool) -> Int { \
+                 match maybe_result(present, ok) { \
+                     Some(r) => { \
+                         match r { Ok(v) => { return v; } Err(e) => { e; return -1; } } \
+                     } \
+                     None => { return 0; } \
+                 } \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn non_exhaustive_match_over_result_is_reported() {
+        // The prelude's `Result<T, E>` gets exactly the same nominal-enum
+        // match-exhaustiveness check (`AICAD-057C`) as any user-defined
+        // enum — omitting the `Err` arm is `NON_EXHAUSTIVE_MATCH`, not
+        // silently accepted just because the enum came from the prelude.
+        let (_lowered, checked) = check_with_prelude(
+            "fn op() -> Result<Int, String> { return Ok(1); } \
+             fn use_it() -> Int { match op() { Ok(v) => { return v; } } }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E446"]);
+    }
+
+    #[test]
+    fn a_non_prelude_generic_enum_unit_variant_also_resolves_against_an_instantiated_expected_type()
+    {
+        // Generality evidence for the `HirExpr::Ident` fix this task added
+        // (see its own doc comment in `check_expr`): the same substitution
+        // that makes the prelude's `None` usable against `Optional<Length>`
+        // is exercised here by a user-defined generic enum whose name is
+        // not `Result`/`Optional`/`List`/`Range` — nothing enum-name-
+        // specific was added anywhere.
+        let (_lowered, checked) = check_with_prelude(
+            "enum Maybe<T> { Found(T), Empty } \
+             fn f(present: Bool) -> Maybe<Length> { \
+                 if present { return Found(5mm); } \
+                 return Empty; \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
 }
