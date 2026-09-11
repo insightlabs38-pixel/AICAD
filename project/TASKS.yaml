@@ -1683,7 +1683,7 @@ tasks:
 - id: AICAD-057F
   stage: 2
   title: Adversarial integration pass proving generic/enum machinery is general, not Result-specific
-  status: todo
+  status: done
   depends_on:
   - AICAD-057E
   plan_references:

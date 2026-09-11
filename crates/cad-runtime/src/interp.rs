@@ -2882,4 +2882,99 @@ mod tests {
             -2.0,
         );
     }
+
+    // --- AICAD-057F: adversarial generality proof, runtime execution
+    //     (`project/OWNER_DECISIONS.md#D17`, `project/DECISION_LOG.md
+    //     #DL-14`) — the same dedicated `Either<L, R>` enum as
+    //     `cad_hir::typeck`'s own "AICAD-057F" section, actually executed
+    //     by this crate's evaluator (not merely type-checked), proving the
+    //     generic/enum-payload machinery produces correct runtime values
+    //     for a two-type-parameter enum with both a tuple and a record
+    //     variant that no prior task's test fixture reused. Uses the plain
+    //     `compiled` helper (no prelude) — `Either` is ordinary user code.
+    //     -------------------------------------------------------------
+
+    #[test]
+    fn either_tuple_and_record_variant_construction_and_destructuring_execute_correctly() {
+        let lowered = compiled(
+            "enum Either<L, R> { Left(L), Right { value: R } } \
+             fn make_left(x: Length) -> Either<Length, String> { return Left(x); } \
+             fn make_right(s: String) -> Either<Length, String> { return Right { value: s }; } \
+             fn unwrap_left_or_zero(e: Either<Length, String>) -> Length { \
+                 match e { \
+                     Left(v) => { return v; } \
+                     Right { value } => { return 0mm; } \
+                 } \
+             } \
+             fn unwrap_right_or_empty(e: Either<Length, String>) -> String { \
+                 match e { \
+                     Left(v) => { return \"\"; } \
+                     Right { value } => { return value; } \
+                 } \
+             } \
+             fn left_length(x: Length) -> Length { return unwrap_left_or_zero(make_left(x)); } \
+             fn right_string(s: String) -> String { return unwrap_right_or_empty(make_right(s)); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let left_result = interp
+            .call_by_name("left_length", vec![dimensional(6.0, Dimension::Length)])
+            .unwrap();
+        assert_number_eq(left_result, 6.0);
+        let right_result = interp
+            .call_by_name("right_string", vec![Value::Str("hello".to_string())])
+            .unwrap();
+        assert_eq!(right_result, Value::Str("hello".to_string()));
+        // A `Right` value's `Left`-arm bound value is never inspected, and
+        // vice versa — proves both arms genuinely dispatch on the actual
+        // constructed variant, not a fixed one. The `Right` value here is
+        // itself produced by the compiled program's own `make_right`
+        // function, not hand-built, so it is faithful to a value the
+        // evaluator actually constructed.
+        let right_value = interp
+            .call_by_name("make_right", vec![Value::Str("x".to_string())])
+            .unwrap();
+        let left_via_right_ctor = interp
+            .call_by_name("unwrap_left_or_zero", vec![right_value])
+            .unwrap();
+        assert_number_eq(left_via_right_ctor, 0.0);
+    }
+
+    #[test]
+    fn either_nested_inside_itself_executes_correctly() {
+        // `Either<Either<Int, Bool>, String>` — this enum nested inside
+        // itself, executed end to end (not merely type-checked —
+        // `cad_hir::typeck`'s own `either_nested_inside_itself_two_levels_
+        // type_checks_and_destructures_cleanly` already proves the
+        // compile-time side). One branch nests via the tuple variant
+        // (`Left(Left(1))`), the other via the record variant
+        // (`Left(Right { value: true })`), both destructured by a single
+        // nested `match`, each producing a distinct, correct final value.
+        let lowered = compiled(
+            "enum Either<L, R> { Left(L), Right { value: R } } \
+             fn make_nested(inner_left: Bool) -> Either<Either<Int, Bool>, String> { \
+                 if inner_left { return Left(Left(1)); } \
+                 return Left(Right { value: true }); \
+             } \
+             fn unwrap_inner_int_or_default(inner_left: Bool) -> Int { \
+                 return match make_nested(inner_left) { \
+                     Left(Left(n)) => n, \
+                     Left(Right { value }) => 0, \
+                     Right { value } => -1, \
+                 }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(
+            interp
+                .call_by_name("unwrap_inner_int_or_default", vec![Value::Bool(true)])
+                .unwrap(),
+            1.0,
+        );
+        assert_number_eq(
+            interp
+                .call_by_name("unwrap_inner_int_or_default", vec![Value::Bool(false)])
+                .unwrap(),
+            0.0,
+        );
+    }
 }

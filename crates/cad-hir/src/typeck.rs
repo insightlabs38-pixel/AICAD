@@ -4624,4 +4624,125 @@ mod tests {
         );
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
+
+    // --- AICAD-057F: adversarial generality proof
+    //     (`project/OWNER_DECISIONS.md#D17`, `project/DECISION_LOG.md
+    //     #DL-14`) — a single, dedicated, independent generic enum named
+    //     `Either<L, R>` (not `Result`/`Optional`/`List`/`Range`, and not
+    //     reused from any prior `057B`-`E` test fixture), with two type
+    //     parameters, one tuple-shaped variant (`Left(L)`) and one
+    //     record-shaped variant (`Right { value: R }`) — exercising
+    //     construction, destructuring, and nesting of *both* shapes
+    //     through exactly the same machinery `Result`/`Optional` use, with
+    //     no enum-name-specific code anywhere. Runtime execution evidence
+    //     for the same enum lives in `cad_runtime::interp`'s own
+    //     "AICAD-057F" test section. ------------------------------------
+
+    #[test]
+    fn either_two_type_parameter_generic_enum_tuple_and_record_construction_and_destructuring_type_check_cleanly()
+     {
+        let (_lowered, checked) = check(
+            "enum Either<L, R> { Left(L), Right { value: R } } \
+             fn make_left(x: Length) -> Either<Length, String> { return Left(x); } \
+             fn make_right(s: String) -> Either<Length, String> { return Right { value: s }; } \
+             fn unwrap_left_or_zero(e: Either<Length, String>) -> Length { \
+                 match e { \
+                     Left(v) => { return v; } \
+                     Right { value } => { return 0mm; } \
+                 } \
+             } \
+             fn unwrap_right_or_empty(e: Either<Length, String>) -> String { \
+                 match e { \
+                     Left(v) => { return \"\"; } \
+                     Right { value } => { return value; } \
+                 } \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn either_generic_enum_payload_bindings_are_not_wildcards() {
+        // Adversarial: `Left`'s bound value is genuinely typed `L`
+        // (substituted to `Length` here), not a universal placeholder —
+        // returning it where `Mass` is declared is a real mismatch, same
+        // discipline `057D`'s own `Holder`/`Wrap` adversarial tests apply.
+        let (_lowered, checked) = check(
+            "enum Either<L, R> { Left(L), Right { value: R } } \
+             fn f(e: Either<Length, Mass>) -> Mass { \
+                 match e { \
+                     Left(v) => { return v; } \
+                     Right { value } => { return value; } \
+                 } \
+             }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E419"]);
+    }
+
+    #[test]
+    fn either_nested_inside_itself_two_levels_type_checks_and_destructures_cleanly() {
+        // `Either<Either<Int, Bool>, String>` — this enum nested inside
+        // itself (D17's own suggested nesting shape), one level down using
+        // its *tuple* variant (`Left(Left(1))`) and one using its *record*
+        // variant (`Left(Right { value: true })`) for the inner payload,
+        // both destructured by a single nested `match`.
+        let (_lowered, checked) = check(
+            "enum Either<L, R> { Left(L), Right { value: R } } \
+             fn make_nested(inner_left: Bool) -> Either<Either<Int, Bool>, String> { \
+                 if inner_left { return Left(Left(1)); } \
+                 return Left(Right { value: true }); \
+             } \
+             fn unwrap_inner_int_or_default(inner_left: Bool) -> Int { \
+                 return match make_nested(inner_left) { \
+                     Left(Left(n)) => n, \
+                     Left(Right { value }) => 0, \
+                     Right { value } => -1, \
+                 }; \
+             }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn either_non_exhaustive_match_missing_right_arm_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Either<L, R> { Left(L), Right { value: R } } \
+             fn f(e: Either<Int, String>) -> Int { \
+                 match e { Left(v) => { return v; } } \
+             }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E446"]);
+    }
+
+    // --- Coverage gap closed by this audit (not enum-specific): `057D`'s
+    //     `check_struct_construction` already substitutes a generic
+    //     struct's declared field types from the call's own expected/
+    //     contextual instantiation, mirroring its identical treatment of
+    //     enum-variant construction (`check_variant_tuple_construction`/
+    //     `check_record_literal`) — but no test exercised the *struct*
+    //     side of that already-implemented path before this task. No
+    //     production code changed for these two tests; both passed on the
+    //     first run. ------------------------------------------------
+
+    #[test]
+    fn generic_struct_construction_against_instantiated_expected_type_checks_cleanly() {
+        let (_lowered, checked) = check(
+            "struct Pair<T, U> { first: T, second: U } \
+             fn f() -> Pair<Length, Mass> { return Pair(5mm, 2kg); }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn generic_struct_construction_wrong_expected_type_is_reported() {
+        // Adversarial: `second`'s substituted declared type is `Mass`, so
+        // a `Length` construction argument is a genuine field-type
+        // mismatch, not silently accepted just because the struct is
+        // generic.
+        let (_lowered, checked) = check(
+            "struct Pair<T, U> { first: T, second: U } \
+             fn f() -> Pair<Length, Mass> { return Pair(5mm, 2mm); }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E433"]);
+    }
 }

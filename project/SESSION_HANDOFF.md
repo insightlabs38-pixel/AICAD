@@ -1,103 +1,81 @@
 # Session Handoff
 
-## Latest: `AICAD-057E` (`Result<T,E>`/`Optional<T>` via the ordinary prelude) COMPLETE. Resume at `AICAD-057F` next — do not skip ahead.
+## Latest: `AICAD-057F` (adversarial integration pass) COMPLETE. The full `D17`/`DL-14` remediation sequence (`AICAD-057A`-`F`) is done. Resume the original `AICAD-057` next — do not skip ahead to `AICAD-058`.
 
-This session started from `ba7706a` ("AICAD-057D: Implement generic
-instantiation/inference/type checking for the approved Stage-2 generic
-subset"), the tip of `origin/claude/aicad-stage2-dev` at session start
-(re-confirmed via `git fetch`/`git reset --hard`/`git log -3 --oneline`;
-working tree was clean beforehand). `AICAD-057A`'s audit and the owner's
-`D17` ruling (`project/DECISION_LOG.md#DL-14`) authorize a fixed
-remediation sequence — `AICAD-057B` through `AICAD-057F` — before the
-original `AICAD-057` ("recursion and Result/error propagation") may
-resume. This session completed the fifth of those, `AICAD-057E`.
+This session started from `fd84357` ("AICAD-057E: Define and execute
+Result<T,E>/Optional<T> via the ordinary generic-enum prelude"), the tip
+of `origin/claude/aicad-stage2-dev` at session start (re-confirmed via
+`git fetch`/`git reset --hard`/`git log -3 --oneline`; working tree was
+clean beforehand). `AICAD-057A`'s audit and the owner's `D17` ruling
+(`project/DECISION_LOG.md#DL-14`) authorized a fixed remediation
+sequence — `AICAD-057B` through `AICAD-057F` — before the original
+`AICAD-057` ("recursion and Result/error propagation") may resume. This
+session completed the sixth and last of those, `AICAD-057F`, closing out
+the entire sequence.
 
-### What this session did
+### What this session did (`AICAD-057F`)
 
-Defined `Result<T, E>` (`Ok(T)`/`Err(E)`) and `Optional<T>` (`Some(T)`/
-`None`) as ordinary prelude generic enums, built from exactly the
-enum/generic machinery `AICAD-057B`/`C`/`D` already gave every user
-program, with no `Result`-specific compiler/runtime semantics beyond
-ordinary prelude registration/loading — and proved both type-check and
-*execute* correctly, including nested generics
-(`Optional<Result<Int,E>>`) and explicit `Err` propagation through nested
-function calls via ordinary `match` (no `?` operator). Full details, exact
-scope boundary, and complete test list in
-`project/reports/AICAD-057E.md`. Summary:
+Audited the full `AICAD-057B`-`E` remediation sequence rather than adding
+new compiler machinery (`AICAD-057F`'s own explicit scope: "audit +
+adversarial-gap-filling", not new language features). Full detail in
+`project/reports/AICAD-057F.md`. Summary:
 
-- New `crates/cad-hir/src/prelude.rs`: `PRELUDE_SOURCE` is literal,
-  parsed AICAD source text (`enum Result<T, E> { Ok(T), Err(E), } enum
-  Optional<T> { Some(T), None, }`) — not a hand-built AST/HIR tree, so
-  `Result`/`Optional` are declarations a user could have typed themselves,
-  never a compiler-only shape. `with_prelude(user_program: &Program) ->
-  Program` parses this text via the ordinary `cad_parser::parse_program`
-  and prepends its two `enum` items to the caller's own already-parsed
-  program — the one hook every real full-pipeline caller inserts between
-  parsing and lowering. It is opt-in per call site (never automatic inside
-  `lower_program`/`check_program`), since several pre-existing tests
-  across `cad-compiler`/`cad-hir`/`cad-runtime` already declare their own
-  unrelated, non-generic `Ok`/`Err`/`Result`/`Some`/`None`-named test
-  fixtures that must stay completely unaffected.
-- `cad-hir` gained a new, real (non-dev) dependency on `cad-parser`
-  (previously dev-only) — no cycle (`cad-parser` never depends on
-  `cad-hir`).
-- **No hook existed in `cad_compiler`'s module loader/binder to reuse, and
-  none was needed**: direct inspection confirmed neither is part of the
-  actual execution pipeline today (that pipeline is `cad_parser::
-  parse_program` -> `cad_hir::lower_program` -> `cad_hir::typeck::
-  check_program` -> `cad_runtime::Interpreter`, entirely bypassing
-  `cad_compiler`). `cad-cli` (`AICAD-061`, not yet started) needs no
-  wiring either — it is still the zero-dependency `AICAD-002`/`003`
-  scaffolding placeholder; its own future implementation must call
-  `cad_hir::prelude::with_prelude` directly, documented in `prelude.rs`'s
-  own module doc comment for that task to find.
-- **One narrow, general (not `Optional`-specific) gap in `AICAD-057D`'s
-  own instantiation support had to be closed**, discovered by writing this
-  task's own required `Optional<Length>` test first: `register_type_names`
-  gives *every* enum variant (including `Unit`) the bare, non-instantiated
-  `CheckedType::Enum` unconditionally, and `AICAD-057D`'s own "substitute
-  from the call's own expected type" logic was added only to tuple-/
-  record-variant *construction* (`check_variant_tuple_construction`/
-  `check_record_literal`) — a `Unit` variant (`None`) is never called, so
-  it never reached either function. Confirmed by hand-building the failing
-  case first (`return None;` against a declared `-> Optional<Int>` gave
-  `TYPE-E419`, "expected type Optional<Int>, found Optional") before
-  writing any fix, per `AGENTS.md`'s evidence rule. The fix is in
-  `check_expr`'s `HirExpr::Ident` arm (`crates/cad-hir/src/typeck.rs`):
-  when a variant's registered type is the bare `CheckedType::Enum(base)`
-  and the call's own `expected` type is a `CheckedType::Instantiated {
-  base: eb, .. }` naming the *same* enum, adopt `expected` instead — never
-  fabricating or inferring anything, only adopting an already-known,
-  already-verified expected type (the same "trust the annotation" rule
-  `AICAD-057D` already applies elsewhere). General, not `Optional`-
-  specific: proved via a dedicated adversarial test using a user-defined
-  generic enum named `Maybe` (not `Result`/`Optional`/`List`/`Range`).
-  Neither `check_generic_call` nor `check_struct_construction` themselves
-  were touched — this is a distinct, previously-unaddressed code path,
-  necessary (not "beyond what's needed") for the prelude's own required
-  test.
-- No new diagnostic codes were added — the prelude's `Result`/`Optional`
-  reuse every diagnostic `AICAD-057B`/`C`/`D` already built.
-- No production code in `cad-runtime` changed at all — every
-  `Value::EnumVariant`/`VariantPayload` this task's runtime tests produce
-  is the exact same general shape `AICAD-057C` already built.
-- **Grep evidence required by this task's own instructions**: `git diff`
-  across every changed/added file, restricted to non-comment, non-test
-  lines, for the string literals `"Ok"`/`"Err"`/`"Some"`/`"None"`/
-  `"Result"`/`"Optional"` — zero matches. The only non-comment, non-test
-  lines containing the bare words `Some`/`None` at all are Rust's own
-  `Option::Some` pattern matches in the `HirExpr::Ident` fix, unrelated to
-  AICAD's own prelude type. Full detail in the report.
+- **Re-verified every test-name claim** in `project/reports/AICAD-057B.md`
+  through `AICAD-057E.md`'s own "Required tests"/"Adversarial" sections
+  directly against the current source (`grep -n "fn <name>"`, then read in
+  full where the assertion mattered) — every single claimed test was found
+  present, at its claimed location, asserting what the claiming report
+  says. Zero renames/removals broke any prior claim.
+- **Built the full coverage matrix** for `D17`'s own required-test list
+  (`project/reports/AICAD-057F.md`'s own table) — every item is covered.
+- **One genuine gap found and closed**: generic **struct construction**
+  itself (as opposed to field access on an already-typed value) had no
+  dedicated test, even though `AICAD-057D`'s own `check_struct_
+  construction` already implements expected-type-context substitution for
+  it (mirroring its identical treatment of enum-variant construction).
+  Closed with two new tests in `crates/cad-hir/src/typeck.rs`
+  (`generic_struct_construction_against_instantiated_expected_type_checks_
+  cleanly`, `generic_struct_construction_wrong_expected_type_is_reported`)
+  — **zero production code changed**; both passed on the first run,
+  confirming this was a test-coverage gap, not an implementation bug.
+- **Added the task's own namesake dedicated generality-proof scenario**: a
+  new generic enum `Either<L, R>` (never reused by any prior `057B`-`E`
+  test fixture) with two type parameters, a tuple variant (`Left(L)`) and
+  a record variant (`Right { value: R }`) — six new tests across
+  `crates/cad-hir/src/typeck.rs` (4) and `crates/cad-runtime/src/
+  interp.rs` (2) exercising construction/destructuring of both shapes, a
+  non-exhaustive-match diagnostic, this enum nested inside itself two
+  levels deep (via both variant shapes), and full runtime execution
+  producing correct distinct final values for every branch. Zero
+  production code changed; all six passed on the first run.
+- **Re-confirmed, with fresh grep evidence across the full `1888ed3~1..
+  HEAD` (`057B`-`F`) diff range**: zero `?`/propagation-syntax tokens,
+  grammar productions, or parser handling anywhere; exactly the same two
+  (test-code-only, `Ok(...)` AST-shape-assertion) hits for the `"Ok"`/
+  `"Err"`/`"Some"`/`"None"`/`"Result"`/`"Optional"` string-literal grep
+  that `AICAD-057E`'s own report already found for the narrower `057B..
+  057E` range — this session's own new tests added zero new hits.
+- **Zero escalations filed** — every required-test item was genuinely
+  satisfiable (and, after the two gap-closing tests, actually satisfied)
+  using only the existing `057B`-`E` machinery.
 
 Test deltas (all passing, 0 regressions): `cad-ast` 19 -> 19; `cad-parser`
-119 -> 119; `cad-compiler` 49 -> 49; `cad-hir` 167 -> 181 (+14: 4 new
-`prelude.rs` module tests, 10 new `typeck.rs` "AICAD-057E" tests);
-`cad-runtime` 69 -> 75 (+6, all new "AICAD-057E" tests). Full `cargo test
---workspace` all crates `ok`, 0 failed; `cargo clippy --workspace
---all-targets --all-features -- -D warnings` clean (one
-`clippy::doc_nested_refdefs` lint on the new `lib.rs` doc bullet fixed);
-`cargo fmt --all -- --check` clean; `cargo build --workspace --all-targets`
-clean.
+119 -> 119; `cad-compiler` 49 -> 49; `cad-hir` 181 -> 187 (+6: 4 `Either`
+generality tests, 2 generic-struct-construction gap-closing tests);
+`cad-runtime` 75 -> 77 (+2, both `Either` runtime-execution tests). Full
+`cargo test --workspace` all crates `ok`, 0 failed; `cargo clippy
+--workspace --all-targets --all-features -- -D warnings` clean (no lints
+needed fixing this session); `cargo fmt --all -- --check` clean (no
+reformatting needed); `cargo build --workspace --all-targets` clean.
+
+### Prior session's work (`AICAD-057E`)
+
+Defined `Result<T, E>`/`Optional<T>` as ordinary prelude generic enums —
+full detail in `project/reports/AICAD-057E.md`, summarized in this file's
+own git history (previous revision of this section). Not repeated here;
+this session's own audit re-verified every one of `057E`'s test claims
+directly against current source (see `project/reports/AICAD-057F.md`'s
+"Method"/coverage matrix) rather than re-describing them.
 
 ## Current state / next action
 
@@ -106,78 +84,85 @@ clean.
 - **Current/next batch**: S2-09, extended by the `D17`-mandated remediation
   sequence. `AICAD-056` **COMPLETE**. `AICAD-057A` **COMPLETE**.
   `AICAD-057B` **COMPLETE**. `AICAD-057C` **COMPLETE**. `AICAD-057D`
-  **COMPLETE**. `AICAD-057E` **COMPLETE** (this session, `status: done`).
-  `AICAD-057F`: **not started**, `status: todo`, linear `depends_on` chain
-  in `project/TASKS.yaml`. The original `AICAD-057` remains blocked on
-  `AICAD-057F` (task-graph `depends_on`, not just prose).
-- **THE NEXT INVOCATION MUST START `AICAD-057F` NEXT, IN ORDER** —
-  "Adversarial integration pass proving generic/enum machinery is general,
-  not `Result`-specific": per `project/TASKS.yaml`'s own acceptance
-  criterion, exercise a user-defined generic enum whose name is not
-  `Result`/`Optional`/`List`/`Range` through the same generic/pattern/
-  exhaustiveness machinery end to end, confirm the full `OWNER_DECISIONS.md
-  #D17`/`DECISION_LOG.md#DL-14` required-test list passes across
-  `AICAD-057B`-`E` combined, and confirm no `?` syntax and no general
-  compiler-intrinsic facility were added anywhere in that whole span. Note
-  that `AICAD-057E` already contributed one piece of this evidence
-  (`a_non_prelude_generic_enum_unit_variant_also_resolves_against_an_
-  instantiated_expected_type`, `crates/cad-hir/src/typeck.rs`) — `057F`
-  should treat that as a down payment, not assume it alone satisfies the
-  task's own dedicated adversarial pass. Read `project/reports/
-  AICAD-057E.md` first, especially "Known limitations" (struct
-  construction is still not implemented by `cad-runtime`'s own
-  interpreter — unrelated, pre-existing, out of scope; a user program that
-  redeclares a prelude name is silently shadowed by the lowerer's own
-  pre-existing "no duplicate-declaration diagnostic in this pass" design,
-  not a new gap).
+  **COMPLETE**. `AICAD-057E` **COMPLETE**. `AICAD-057F` **COMPLETE** (this
+  session, `status: done`). **The entire `AICAD-057A`-`F` remediation
+  sequence required by `D17`/`DL-14` is now done.**
+- **THE NEXT INVOCATION MUST RESUME THE ORIGINAL `AICAD-057`** ("Implement
+  recursion and Result/error propagation", `project/TASKS.yaml`,
+  `depends_on: [AICAD-057F]` — now satisfied) — do not skip ahead to
+  `AICAD-058` or the `STAGE2-C_EXECUTION` checkpoint. Before doing so, read
+  `project/reports/AICAD-057.md` (the task's own original, partial-
+  completion report) in full. Its own findings, re-read precisely:
+  - **Recursion is already fully implemented and tested** (self/mutual
+    recursion, a real recursion-depth budget,
+    `DEFAULT_MAX_CALL_DEPTH`/`Interpreter::max_call_depth`, clean
+    `RUNTIME-Exxx` errors instead of a native stack overflow) — this half
+    of the task's own title needs no new work, only re-confirming (a
+    fresh `cargo test --workspace` run) that nothing regressed since.
+  - **`Result<T,E>`/`Optional<T>` construction, matching, and explicit
+    `Err` propagation through nested function calls via ordinary `match`
+    (no `?` operator) are now fully available and proven end-to-end** —
+    `project/reports/AICAD-057E.md`'s and `project/reports/AICAD-057F.md`'s
+    own tests already exercise exactly the scenarios `AICAD-057`'s
+    original title names (`err_propagates_through_nested_function_calls_
+    to_the_top`, `successful_result_match_flows_the_ok_value_correctly`,
+    etc., both in `cad_hir::typeck` and `cad_runtime::interp`).
+  - **What the resuming invocation must therefore actually do is narrower
+    than `AICAD-057`'s original pre-`D17` framing**, not a full fresh
+    implementation: re-read `AICAD-057`'s own original acceptance
+    criteria/`escalate_if` list in `project/TASKS.yaml`, confirm (with its
+    own fresh evidence, not by citing `057E`/`057F`'s tests alone) that
+    the task's own stated scope is now satisfied by the prelude + existing
+    recursion work, run the task's own required checks fresh, write a
+    closing report update reflecting that `Result<T,E>` is satisfied via
+    the ordinary generic-enum prelude machinery (not a special-cased
+    implementation), and only then flip `project/TASKS.yaml`'s `AICAD-057`
+    `status` to `done`. Do not assume `057E`/`057F`'s own tests
+    automatically satisfy `AICAD-057`'s own task-level acceptance without
+    that task's own invocation re-checking it against its own original
+    acceptance wording.
 - **Exact recent state**: this session's own fresh runs (most recent
   first): `cargo test --workspace` all crates `ok`, 0 failed (per-crate
-  breakdown above); `cargo build --workspace --all-targets` clean; `cargo
-  clippy --workspace --all-targets --all-features -- -D warnings` clean;
-  `cargo fmt --all -- --check` clean.
+  breakdown: `cad-ast` 19, `cad-parser` 119, `cad-compiler` 49, `cad-hir`
+  187, `cad-runtime` 77, all others unchanged from `AICAD-057E`'s own
+  baseline — see `project/reports/AICAD-057F.md`'s "Commands / results");
+  `cargo build --workspace --all-targets` clean; `cargo clippy --workspace
+  --all-targets --all-features -- -D warnings` clean; `cargo fmt --all --
+  check` clean.
 - **No open regressions.**
-- **No escalations filed this session.** The one gap this session found in
-  `AICAD-057D`'s own scope (`HirExpr::Ident`'s missing `Unit`-variant
-  substitution) was judged to be within, not beyond, "what's needed to
-  make the prelude enums usable exactly as any other user-defined generic
-  enum already is" — see the report's own "Scope decisions" #2 and "The
-  `HirExpr::Ident` fix" section for the full reasoning trail, including the
-  hand-built failing-case evidence gathered *before* writing the fix.
+- **No escalations filed this session.** Every item on `D17`'s required-
+  test list was genuinely satisfiable using only the existing `057B`-`E`
+  machinery; the one coverage gap found (generic struct construction had
+  no dedicated test) closed with zero production-code changes, confirming
+  it was a documentation/test-coverage gap, not an implementation
+  shortfall. See `project/reports/AICAD-057F.md` for the full reasoning.
 - **Unresolved owner decisions**: unchanged from prior sessions — `D17`
-  resolved (`DL-14`). Open/partial: D3, D5 (concrete tolerance constants
-  only), D10, D11, D12, D15. This session added zero new provisional
-  `TYPE-Exxx`/`RUNTIME-Exxx` codes (the prelude reuses every diagnostic
-  `AICAD-057B`/`C`/`D` already built).
-- **D5 status/evidence**: unchanged. This task's own determinism-relevant
-  finding: `with_prelude`'s own item concatenation (`prelude items ++
-  user items`) is a plain, deterministic `Vec::extend` in fixed order — no
-  new ordering dependence introduced.
+  resolved (`DL-14`), and this session's audit found no reason to reopen
+  it. Open/partial: D3, D5 (concrete tolerance constants only), D10, D11,
+  D12, D15. This session added zero new provisional `TYPE-Exxx`/
+  `RUNTIME-Exxx` codes (the two new gap-closing tests and the six new
+  `Either<L, R>` generality tests all reuse diagnostics `057B`-`D` already
+  built — `TYPE-E419`, `TYPE-E433`, `TYPE-E446`).
+- **D5 status/evidence**: unchanged. Nothing this session touched is
+  determinism-relevant (test-only additions).
 - **Pre-existing `TASKS.yaml` staleness** (unchanged, not this batch's
   scope): `AICAD-001` through `AICAD-037` still show `status: todo` despite
   being long complete.
-- **Recommended next action**: start `AICAD-057F` — read `project/
-  reports/AICAD-057E.md` first (its own "Known limitations" and "The
-  `HirExpr::Ident` fix" sections document exactly what changed and why),
-  plus `project/OWNER_DECISIONS.md#D17`/`project/DECISION_LOG.md#DL-14`
-  for the exact required-test list `057F` must confirm end to end. Do not
-  begin the original `AICAD-057`, `AICAD-058`, or the `STAGE2-C_EXECUTION`
-  checkpoint before it.
+- **Recommended next action**: start the original `AICAD-057` per the
+  precise, narrowed scope above. Do not begin `AICAD-058` or the
+  `STAGE2-C_EXECUTION` checkpoint before it.
 
 ## Environment
 
 Unchanged from prior sessions (reconfirmed at session start): Rust 1.98.1
 (auto-installed via `rustup`, matching `rust-toolchain.toml` — the
 toolchain does not persist across sessions in this container), edition
-2024. This session added **zero** new third-party dependencies (only a
-new intra-workspace dependency edge, `cad-hir -> cad-parser`, promoted
-from dev-only to a real dependency — no cycle). `cad-hir` (new
-`prelude.rs` module, `lib.rs`, `typeck.rs`, `Cargo.toml`) and
-`cad-runtime` (`interp.rs` tests only, no production code) were touched,
-plus the usual `project/` bookkeeping files. No `specs/language/
-grammar.ebnf` change was needed (no new syntax — the prelude uses exactly
-the existing generic-enum/tuple-variant grammar `AICAD-057B`/`C` already
-froze). No native/OCCT work was touched. `crates/cad-cli` was inspected
-but not touched (still the zero-dependency scaffolding placeholder).
+2024. This session added **zero** new dependencies of any kind (no new
+third-party crates, no new intra-workspace dependency edges) — only new
+`#[cfg(test)]` test functions in `crates/cad-hir/src/typeck.rs` and
+`crates/cad-runtime/src/interp.rs`, plus the usual `project/` bookkeeping
+files. No `specs/language/grammar.ebnf` change was needed (no new syntax).
+No native/OCCT work was touched. `crates/cad-cli` was not touched.
 
 ## Git identity
 
