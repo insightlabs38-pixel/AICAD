@@ -299,10 +299,17 @@ pub enum GeometryQuery {
     /// `Shape::validate` (the full structured validation report, distinct
     /// from the boolean `IsValid`).
     Validate(GeomId),
-    /// `Shape::tessellate`, given a `Length` deflection tolerance.
+    /// `Shape::tessellate`, given a `Length` linear deflection tolerance
+    /// and an `Angle` angular deflection tolerance (`AICAD-060` finding:
+    /// `Shape::tessellate(&self, linear_deflection: f64, angular_deflection:
+    /// f64)` takes both; this variant originally carried only the linear
+    /// one, an incomplete-parameter gap fixed here rather than carried
+    /// forward, per `AGENTS.md`'s "when a bug is found... fix the root
+    /// cause").
     Tessellate {
         target: GeomId,
-        deflection: Quantity,
+        linear_deflection: Quantity,
+        angular_deflection: Quantity,
     },
     /// `Shape::export_step`.
     ExportStep { target: GeomId, path: PathBuf },
@@ -640,12 +647,22 @@ impl GeometryGraph {
             | GeometryQuery::Validate(target) => {
                 self.check_geometry_operand(*target, span)?;
             }
-            GeometryQuery::Tessellate { target, deflection } => {
+            GeometryQuery::Tessellate {
+                target,
+                linear_deflection,
+                angular_deflection,
+            } => {
                 self.check_geometry_operand(*target, span)?;
                 Self::check_dimension(
-                    deflection,
+                    linear_deflection,
                     Dimension::Length,
-                    "Tessellate.deflection",
+                    "Tessellate.linear_deflection",
+                    span,
+                )?;
+                Self::check_dimension(
+                    angular_deflection,
+                    Dimension::Angle,
+                    "Tessellate.angular_deflection",
                     span,
                 )?;
             }
@@ -1085,5 +1102,69 @@ mod tests {
     #[test]
     fn geom_id_display_is_stable() {
         assert_eq!(GeomId(5).to_string(), "%5");
+    }
+
+    #[test]
+    fn tessellate_requires_a_length_linear_and_angle_angular_deflection() {
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let ok = graph.push_query(
+            GeometryQuery::Tessellate {
+                target: solid,
+                linear_deflection: length(0.1),
+                angular_deflection: angle(0.5),
+            },
+            span(),
+        );
+        assert!(ok.is_ok());
+
+        let wrong_linear = graph
+            .push_query(
+                GeometryQuery::Tessellate {
+                    target: solid,
+                    // an Angle where a Length is required
+                    linear_deflection: angle(0.1),
+                    angular_deflection: angle(0.5),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            wrong_linear,
+            GeometryIrError::DimensionMismatch {
+                context: "Tessellate.linear_deflection",
+                expected: Dimension::Length,
+                ..
+            }
+        ));
+
+        let wrong_angular = graph
+            .push_query(
+                GeometryQuery::Tessellate {
+                    target: solid,
+                    linear_deflection: length(0.1),
+                    // a Length where an Angle is required
+                    angular_deflection: length(0.5),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            wrong_angular,
+            GeometryIrError::DimensionMismatch {
+                context: "Tessellate.angular_deflection",
+                expected: Dimension::Angle,
+                ..
+            }
+        ));
     }
 }

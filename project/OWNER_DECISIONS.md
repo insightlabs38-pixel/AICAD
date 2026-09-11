@@ -41,6 +41,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D15 Plugin runtime (WASM vs. external) | open |
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
 | D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
+| D18 Geometry-operation invocation mechanism from `.aicad` source | open |
 
 ---
 
@@ -610,6 +611,151 @@ patterns/exhaustiveness) -> `AICAD-057D` (generic instantiation/inference)
 -> `AICAD-057F` (adversarial generality proof) -> original `AICAD-057`
 resumes -> `AICAD-058` -> the `STAGE2-C_EXECUTION` checkpoint, in that fixed
 order (`project/TASKS.yaml`, `project/SESSION_HANDOFF.md`).
+
+---
+
+## D18. Geometry-operation invocation mechanism from `.aicad` source
+
+**Question:** `AICAD-060` ("Implement HIR/runtime geometry dispatch into
+Geometry IR/kernel API") needs to give a running `.aicad` program a way to
+actually *invoke* a geometry operation (`box(...)`, `cylinder(...)`,
+`cut(...)`, `fillet(...)`, ...) so that evaluating an ordinary expression
+builds `cad_geometry_api::GeometryGraph` nodes — but today, for the same
+structural reason `D16`/`D17` each found before it, no `.aicad` source
+program can do this at all, and this task's own coverage audit (below)
+found no existing extension point.
+
+**What this task's own audit found (see
+`project/reports/AICAD-060.md` for the full research trail):**
+
+1. `cad_runtime::interp::Interpreter::call` dispatches exactly two callee
+   kinds today: `BindingKind::Fn` (looks up the callee's own
+   `HirItem::Fn { body: HirBlock, .. }` and executes that body via
+   `run_fn_body`/`exec_block`) and `BindingKind::EnumVariant` (constructs a
+   `Value::EnumVariant` directly, no HIR body at all). `HirItem::Fn::body`
+   is a mandatory `HirBlock` field — there is no variant, no `BindingKind`,
+   and no field anywhere that lets a function's implementation be "a Rust
+   callback" instead of real AICAD-source-derived HIR. Confirmed by direct
+   inspection of `cad-hir`'s `hir.rs`/`ids.rs` and `cad-runtime`'s
+   `interp.rs`; grepping the whole workspace for
+   `Builtin|NativeFn|intrinsic|host_fn` (excluding the English word
+   "intrinsically" in one doc comment) returns nothing structural.
+2. The existing precedent for "a compiler-builtin construct with no
+   user-visible source declaration" (`D16`'s `List<T>`/`Range<T>`) lives
+   entirely at the *type-checker/HIR-node* level
+   (`cad_hir::typeck::CheckedType::List`/`CheckedType::Range`,
+   `HirExpr::ListLiteral`/`HirExpr::Range`) — it special-cases new
+   *expression syntax*, not a *callable name*. There is no analogous
+   precedent for a function whose implementation is not an AICAD-source
+   `HirBlock`; `BindingKind::EnumVariant`'s own special-casing in
+   `Interpreter::call` is the closest thing (a callee dispatched without
+   running a `HirBlock`), but it is enum-construction-specific, not a
+   general mechanism.
+3. RFC-0002 §4 already froze a *raw/unsafe* topology-handle mechanism
+   (`unsafe geometry { ... }` blocks, `validate()`/`adopt_validated()`) for
+   Tier-C direct kernel-grade access, but that is explicitly the *unsafe*
+   tier (RFC-0002 §6's Capability Tiers table) — collapsing ordinary
+   Tier-B "Safe CAD" operations like `box(...)`/`cylinder(...)` onto that
+   mechanism would erase the Tier B/C distinction the same RFC freezes, and
+   `docs/plan/02_LANGUAGE_AND_COMPILER.md`'s own illustrative examples
+   (`let body = box(...);`, `cut(working, hole)`) show ordinary call syntax
+   with no `unsafe geometry` wrapper at all.
+4. No `docs/plan/` document defines an authoritative builtin-function name/
+   signature catalogue (`box`, `cylinder`, `extrude`, ...) — only
+   illustrative example syntax. `AICAD-060`'s author must derive the exact
+   surface from `cad_geometry_api::ir::GeometryOp`/`GeometryQuery`'s own
+   variant set, which is itself only Stage-2-authorized IR shape, not a
+   frozen language-surface spec.
+
+This is squarely both `AGENTS.md` escalation triggers `AICAD-060`'s own
+`project/TASKS.yaml` entry lists verbatim ("public syntax/semantics must
+change beyond an approved RFC" and "an unresolved architecture alternative
+must be selected") for the same reason `D16`/`D17` each were: giving a
+program a way to invoke a geometry operation requires *some* new
+binding/dispatch mechanism `cad-hir`/`cad-runtime` do not have today, and
+more than one shape for that mechanism is defensible.
+
+**Live options, none decided here:**
+
+1. **A new `BindingKind` dispatched specially at the call site**, mirroring
+   `BindingKind::EnumVariant`'s own existing precedent exactly: add e.g.
+   `BindingKind::GeometryIntrinsic(GeometryIntrinsicOp)` (or similar), have
+   a prelude-like mechanism (extending `cad_hir::prelude`'s existing
+   `with_prelude` pattern, currently type-only for `Result`/`Optional`)
+   pre-populate global scope with names mapping 1:1 onto every
+   `GeometryOp`/`GeometryQuery` variant (`box`, `cylinder`, `extrude`,
+   `revolve`, `sweep`, `loft`, `union`, `cut`, `intersect`, `fillet`,
+   `chamfer`, `shell`, `offset`, `transform`, `import_step`, `line_edge`,
+   `circle_wire`, `wire_from_edges`, `make_face`, `is_valid`, `volume`,
+   `area`, `bounding_box`, `center_of_mass`, `validate`, `tessellate`,
+   `export_step`), and dispatch each specially in `Interpreter::call`
+   without ever running a `HirBlock` for it. Broadest and most direct match
+   to `cad-geometry-api`'s already-frozen IR surface; requires an RFC-0001
+   §6/RFC-0002 amendment documenting why this is "a kernel API operation
+   exposed through existing language mechanisms" (DL-7's own carve-out,
+   since every one of these names maps 1:1 onto an already-RFC-0002-frozen
+   Stage-1 kernel capability) rather than a from-scratch intrinsic needing
+   its own per-operation RFC.
+2. **Reuse/extend RFC-0002 §4's already-frozen `unsafe geometry { ... }`
+   mechanism** for ordinary geometry construction too, rather than adding a
+   second mechanism. Smaller surface (no new binding kind), but blurs the
+   Tier B ("Safe CAD", validated operations) / Tier C ("Unsafe geometry",
+   raw topology, requires explicit `validate()`/`adopt_validated()`)
+   distinction RFC-0002 §6 already froze for a different purpose — every
+   ordinary `box(...)`/`cut(...)` call would need to run inside an
+   `unsafe` block and be explicitly validated back out, which
+   `docs/plan/02_LANGUAGE_AND_COMPILER.md`'s own example syntax does not
+   show and which would make routine modeling code visually and
+   semantically "unsafe" for no safety reason (a freshly-constructed,
+   already-kernel-validated `Box`/`Cylinder` is never raw/stale topology in
+   the sense §4 protects against).
+3. **Defer language-surface invocation for this task**, scoping
+   `AICAD-060` down to exactly what this session implemented: the
+   `GeometryGraph -> kernel` dispatcher (`crates/cad-geometry-runtime::
+   dispatch`) plus the `NumberValue -> Quantity` conversion helper
+   (`crates/cad-geometry-runtime::bridge`), both fully tested against a
+   real `OcctContext`, with "wire this into actual `.aicad` call syntax"
+   left as explicit follow-up work once this ruling lands — mirrors `D16`/
+   `D17`'s own precedent of leaving the *introducing* task (`AICAD-056`/
+   `AICAD-057`) blocked rather than silently inventing a mechanism.
+   `AICAD-063`'s own end-to-end gate ("no demo-specific interpreter
+   shortcut... `.aicad` source -> ... -> Geometry IR -> Stage-1 kernel
+   API") cannot pass without *some* ruling on this question eventually, so
+   this option only postpones the decision, it does not remove the need
+   for one.
+
+**What this task implemented without needing this ruling:** the complete
+`GeometryGraph -> kernel` dispatch executor (`crates/cad-geometry-runtime::
+dispatch::dispatch_graph`, covering every `GeometryOp`/`GeometryQuery`
+variant, with `EdgeIndex`/`FaceIndex` resolved to real edge/face `Shape`s at
+dispatch time per `AGENTS.md`'s raw-topology-is-ephemeral rule) and the
+`NumberValue -> Quantity` bridge (`crates/cad-geometry-runtime::bridge`) — a
+direct field-copy conversion, since both types already store a canonical-
+unit magnitude plus `cad_units::OperandType` by independent design on each
+side. Both are proven against a real `cad_occt_bridge::OcctContext` with
+exact B-rep validity/closed-form volume/bounding-box/center-of-mass/STEP-
+export-and-reimport evidence (never a render-only check), not merely unit
+tests of data conversion. See `project/reports/AICAD-060.md`.
+
+**Plan references:** `docs/plan/02_LANGUAGE_AND_COMPILER.md` (illustrative
+`box(...)`/`cut(...)` example syntax, no frozen builtin catalogue);
+`rfcs/0001-language-principles.md` §6 (DL-7, compiler intrinsics require an
+RFC); `rfcs/0002-geometry-runtime-kernel-abstraction.md` §4 (raw topology/
+`unsafe geometry` blocks), §6 (capability tiers); `cad_hir::prelude`'s own
+module doc comment (the existing type-only prelude mechanism); `AGENTS.md`
+escalation triggers "change public language syntax or semantics beyond an
+approved RFC" and "select between major unresolved architecture
+alternatives"; `project/TASKS.yaml`'s `AICAD-060` entry lists both verbatim
+as its own `escalate_if` conditions.
+
+**Blocking impact:** `AICAD-060` remains open pending this ruling (the
+dispatcher/bridge halves implemented this session are complete and tested,
+but the task's own title — "HIR/runtime geometry dispatch" — is not fully
+satisfied without a way for `.aicad` source to trigger it); `AICAD-061`
+("Create cad-cli build command...") depends on `AICAD-060` per the fixed
+Batch S2-11 order and should not begin until this resolves and `AICAD-060`
+resumes and completes, mirroring exactly how `AICAD-057` stayed open across
+`D17`'s resolution.
 
 ---
 

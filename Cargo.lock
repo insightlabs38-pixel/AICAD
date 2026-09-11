@@ -64,6 +64,16 @@ dependencies = [
 [[package]]
 name = "cad-geometry-runtime"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-geometry-api",
+ "cad-kernel-api",
+ "cad-occt-bridge",
+ "cad-runtime",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-hir"
