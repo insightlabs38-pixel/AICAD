@@ -47,4 +47,4 @@ pub mod value;
 
 pub use error::RuntimeError;
 pub use interp::Interpreter;
-pub use value::{NumberValue, RangeValue, Value};
+pub use value::{NumberValue, RangeValue, Value, VariantPayload};

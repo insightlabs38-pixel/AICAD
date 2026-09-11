@@ -88,14 +88,14 @@
 
 use crate::hir::{
     HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr, HirField, HirImportPath,
-    HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam, HirPattern, HirProgram, HirStmt,
-    HirTypeParam,
+    HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam, HirPattern, HirProgram,
+    HirRecordField, HirRecordPatternField, HirStmt, HirTypeParam, HirVariantPayload,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
 use cad_ast::{
-    Arg, Block, BlockExpr, ElseBranch, ElseClause, Expr, FnParam, Item, Literal, MatchArm,
-    MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type,
+    Arg, Block, BlockExpr, ElseBranch, ElseClause, EnumVariant, Expr, FnParam, Item, Literal,
+    MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type,
 };
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
 use cad_types::{AffineKind, PrimitiveType};
@@ -309,7 +309,7 @@ impl<'a> Lowerer<'a> {
                     .iter()
                     .map(|variant| {
                         self.mint(
-                            variant,
+                            variant.name(),
                             BindingKind::EnumVariant {
                                 enum_name: name.node.clone(),
                             },
@@ -456,8 +456,9 @@ impl<'a> Lowerer<'a> {
                     .zip(variant_ids)
                     .map(|(variant, id)| HirEnumVariant {
                         binding: id,
-                        name: variant.node.clone(),
-                        span: variant.span,
+                        name: variant.name().node.clone(),
+                        payload: lower_variant_payload(variant),
+                        span: variant.span(),
                     })
                     .collect(),
                 span: *span,
@@ -794,6 +795,23 @@ impl<'a> Lowerer<'a> {
                 inclusive: *inclusive,
                 span: *span,
             },
+            Expr::RecordLiteral { name, fields, span } => {
+                let binding = self.resolve_or_diagnose(name);
+                let fields = fields
+                    .iter()
+                    .map(|(field_name, value)| HirRecordField {
+                        name: field_name.node.clone(),
+                        name_span: field_name.span,
+                        value: self.lower_expr(value),
+                    })
+                    .collect();
+                HirExpr::RecordLiteral {
+                    name: name.node.clone(),
+                    binding,
+                    fields,
+                    span: *span,
+                }
+            }
         }
     }
 
@@ -862,6 +880,33 @@ impl<'a> Lowerer<'a> {
                         binding,
                         span: name.span,
                     }
+                }
+            }
+            Pattern::Tuple { name, elems, span } => {
+                let variant = self.resolve_or_diagnose(name);
+                let elems = elems.iter().map(|e| self.lower_pattern(e)).collect();
+                HirPattern::Tuple {
+                    name: name.node.clone(),
+                    variant,
+                    elems,
+                    span: *span,
+                }
+            }
+            Pattern::Record { name, fields, span } => {
+                let variant = self.resolve_or_diagnose(name);
+                let fields = fields
+                    .iter()
+                    .map(|f| HirRecordPatternField {
+                        name: f.name.node.clone(),
+                        pattern: self.lower_pattern(&f.pattern),
+                        span: f.span,
+                    })
+                    .collect();
+                HirPattern::Record {
+                    name: name.node.clone(),
+                    variant,
+                    fields,
+                    span: *span,
                 }
             }
         }
@@ -935,6 +980,29 @@ fn lower_type(ty: &Type) -> HirTypeRef {
             args: args.iter().map(lower_type).collect(),
             span: *span,
         },
+    }
+}
+
+/// Lowers one [`EnumVariant`]'s declared shape to [`HirVariantPayload`]
+/// (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`) — purely syntactic,
+/// same as `lower_type`; resolving each field's `HirTypeRef` is
+/// `cad_hir::typeck`'s job.
+fn lower_variant_payload(variant: &EnumVariant) -> HirVariantPayload {
+    match variant {
+        EnumVariant::Unit(_) => HirVariantPayload::Unit,
+        EnumVariant::Tuple { fields, .. } => {
+            HirVariantPayload::Tuple(fields.iter().map(lower_type).collect())
+        }
+        EnumVariant::Record { fields, .. } => HirVariantPayload::Record(
+            fields
+                .iter()
+                .map(|f| HirField {
+                    name: f.name.node.clone(),
+                    ty: lower_type(&f.ty),
+                    span: f.span,
+                })
+                .collect(),
+        ),
     }
 }
 

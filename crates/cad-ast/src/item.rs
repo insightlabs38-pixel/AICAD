@@ -22,23 +22,22 @@
 //!   `joint`, `requirement`, `test`, `constraint`, `expose`, `query`,
 //!   `unsafe` are all still unreserved identifiers — see
 //!   `crates/cad-lexer/src/token.rs`'s own doc comment).
-//! - enum variants carrying data (tuple/struct variants) — the only
+//! - enum variants carrying data (tuple/record variants) — the only
 //!   evidence for enum syntax anywhere in frozen material
 //!   (`examples/assemblies/stage0_paper_example.aicad`:
-//!   `enum MotorSize { NEMA17, NEMA23 }`) shows unit variants only; no
-//!   RFC/plan section specifies a data-variant grammar, so guessing one
-//!   now would be exactly the kind of speculative syntax `AGENTS.md`
-//!   warns against. Adding it later (`AICAD-053`'s "enums field and
-//!   variant typing" or a dedicated grammar update) is a small additive
-//!   grammar change, not a redesign. **Update (`AICAD-057B`,
-//!   `project/OWNER_DECISIONS.md#D17`/`project/DECISION_LOG.md#DL-14`):**
-//!   this remains true for variant *payloads* specifically (`AICAD-057C`'s
-//!   job) — but `Item::Fn`/`Item::Struct`/`Item::Enum` now each carry an
-//!   ordinary `type_params: Vec<Spanned<String>>` list (`struct
-//!   Pair<T, U> { ... }`, `enum Optional<T> { ... }`, `fn identity<T>(...)`)
-//!   per the owner's D17 ruling, which is no longer speculative syntax —
-//!   see that ruling for the exact authorized shape and scope limits
-//!   (no bounds/higher-kinded types/variance/specialization here).
+//!   `enum MotorSize { NEMA17, NEMA23 }`) showed unit variants only, so
+//!   guessing a data-variant grammar earlier would have been exactly the
+//!   kind of speculative syntax `AGENTS.md` warns against. **Update
+//!   (`AICAD-057B`/`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`/
+//!   `project/DECISION_LOG.md#DL-14`):** the owner's D17 ruling now
+//!   authorizes both explicitly — `Item::Fn`/`Item::Struct`/`Item::Enum`
+//!   each carry an ordinary `type_params: Vec<Spanned<String>>` list
+//!   (`struct Pair<T, U> { ... }`, `enum Optional<T> { ... }`, `fn
+//!   identity<T>(...)`, `AICAD-057B`), and [`EnumVariant`] carries the
+//!   `Unit`/`Tuple(T1, T2)`/`Record { x: T1, y: T2 }` shapes D17 specifies
+//!   (`AICAD-057C`) — see that ruling for the exact authorized shapes and
+//!   scope limits (no bounds/higher-kinded types/variance/specialization
+//!   here).
 //! - `assign_stmt`'s target stays a bare identifier, exactly as the
 //!   grammar specifies (`assign_stmt = identifier "=" expression ";"`) —
 //!   no field-assignment target (`a.b = x;`), which is consistent with
@@ -84,6 +83,46 @@ pub struct Field {
     pub name: Spanned<String>,
     pub ty: Type,
     pub span: Span,
+}
+
+/// One `enum` variant (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`/
+/// `project/DECISION_LOG.md#DL-14`): a bare unit variant, a tuple variant
+/// carrying positional payload types, or a record variant carrying named
+/// payload fields — exactly the three shapes the owner's D17 ruling
+/// specifies (`Unit`, `Tuple(T1, T2)`, `Record { x: T1, y: T2 }`), general
+/// language constructs rather than `Result`-specific machinery.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnumVariant {
+    Unit(Spanned<String>),
+    /// `Name "(" type { "," type } [","] ")"`.
+    Tuple {
+        name: Spanned<String>,
+        fields: Vec<Type>,
+        span: Span,
+    },
+    /// `Name "{" field { "," field } [","] "}"` — reuses [`Field`] (same
+    /// `name: Type` shape a `struct` field already has).
+    Record {
+        name: Spanned<String>,
+        fields: Vec<Field>,
+        span: Span,
+    },
+}
+
+impl EnumVariant {
+    pub fn name(&self) -> &Spanned<String> {
+        match self {
+            EnumVariant::Unit(name) => name,
+            EnumVariant::Tuple { name, .. } | EnumVariant::Record { name, .. } => name,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        match self {
+            EnumVariant::Unit(name) => name.span,
+            EnumVariant::Tuple { span, .. } | EnumVariant::Record { span, .. } => *span,
+        }
+    }
 }
 
 /// A function parameter: `name: Type [= default]` (`fn_decl`'s `param`
@@ -264,14 +303,14 @@ pub enum Item {
         span: Span,
     },
     /// `enum name ["<" type_param { "," type_param } [","] ">"]
-    /// { Variant, Variant, ... }` — unit variants only, see module doc
-    /// comment (`AICAD-057C` adds tuple/record payload variants).
-    /// `type_params` is empty for an ordinary, non-generic enum
-    /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`).
+    /// { variant, variant, ... }` — unit, tuple, and record variants
+    /// (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`/`project/
+    /// DECISION_LOG.md#DL-14`). `type_params` is empty for an ordinary,
+    /// non-generic enum (`AICAD-057B`).
     Enum {
         name: Spanned<String>,
         type_params: Vec<Spanned<String>>,
-        variants: Vec<Spanned<String>>,
+        variants: Vec<EnumVariant>,
         span: Span,
     },
     /// `part name { item* }`.

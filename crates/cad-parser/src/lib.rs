@@ -19,8 +19,9 @@
 //! implemented.
 
 use cad_ast::{
-    Arg, BinaryOp, Block, BlockExpr, ElseBranch, ElseClause, Expr, Field, FnParam, ImportPath,
-    Item, Literal, MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type, UnaryOp,
+    Arg, BinaryOp, Block, BlockExpr, ElseBranch, ElseClause, EnumVariant, Expr, Field, FnParam,
+    ImportPath, Item, Literal, MatchArm, MatchArmBody, Pattern, Program, RecordPatternField, Span,
+    Spanned, Stmt, Type, UnaryOp,
 };
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
 use cad_lexer::{Keyword, Token, TokenKind};
@@ -122,6 +123,21 @@ pub struct Parser<'a> {
     source: &'a str,
     file: &'a str,
     diagnostics: Vec<Diagnostic>,
+    /// Suppresses [`Expr::RecordLiteral`] parsing at [`Parser::
+    /// parse_primary`]'s `Ident` branch while `true` — the standard
+    /// "no struct/record literal in condition position" restriction
+    /// (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`) every Rust-like
+    /// language with brace-delimited record-construction syntax needs
+    /// (DL-1, "broadly Rust/TypeScript-like"): without it, `if x { ... }`
+    /// would ambiguously read `x`'s trailing `{` as the start of a record
+    /// literal rather than the `if`'s own body, exactly like Rust's own
+    /// identically-motivated restriction. Set only around parsing an
+    /// `if`/`while`'s condition or a `match`'s scrutinee (see
+    /// [`Parser::with_no_record_literal`]) and cleared again the instant a
+    /// nested, unambiguously-delimited context is entered (parentheses,
+    /// brackets, or call/record-literal arguments themselves) — mirrored
+    /// exactly at every such site by `with_no_record_literal(false, ...)`.
+    no_record_literal: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -132,7 +148,18 @@ impl<'a> Parser<'a> {
             source,
             file,
             diagnostics: Vec::new(),
+            no_record_literal: false,
         }
+    }
+
+    /// Runs `f` with [`Parser::no_record_literal`] set to `value`,
+    /// restoring whatever was active beforehand — see that field's own
+    /// doc comment.
+    fn with_no_record_literal<T>(&mut self, value: bool, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = std::mem::replace(&mut self.no_record_literal, value);
+        let result = f(self);
+        self.no_record_literal = previous;
+        result
     }
 
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
@@ -426,48 +453,56 @@ impl<'a> Parser<'a> {
         // both call sites (`call_expr`, `method_call_expr`) share this
         // logic identically.
         self.advance();
-        let mut args = Vec::new();
-        if self.peek_kind() == &TokenKind::RParen {
-            return args;
-        }
-        loop {
-            // `named_arg = identifier "=" expression` vs a positional
-            // expression that happens to start with an identifier: one
-            // token of lookahead (is the identifier immediately followed
-            // by a bare `=`, not `==`?) disambiguates them, matching how
-            // the lexer already distinguishes `=` from `==` by maximal
-            // munch.
-            if let TokenKind::Ident(name) = self.peek_kind().clone() {
-                if self.peek_next_is_bare_eq() {
-                    let name_span = self.peek().span;
-                    self.advance();
-                    self.advance(); // '='
-                    let name = Spanned::new(name, name_span);
-                    match self.parse_expression() {
-                        Some(value) => args.push(Arg::Named { name, value }),
-                        None => break,
+        // Entering a parenthesized argument list is an unambiguous new
+        // context (closed by a matching `)`) — reset `no_record_literal`
+        // so a record-literal argument (`f(Point { x: 1 })`) parses even
+        // while this call itself sits inside an `if`/`while`/`match`
+        // condition/scrutinee (`Parser::with_no_record_literal`'s own doc
+        // comment).
+        self.with_no_record_literal(false, |this| {
+            let mut args = Vec::new();
+            if this.peek_kind() == &TokenKind::RParen {
+                return args;
+            }
+            loop {
+                // `named_arg = identifier "=" expression` vs a positional
+                // expression that happens to start with an identifier: one
+                // token of lookahead (is the identifier immediately followed
+                // by a bare `=`, not `==`?) disambiguates them, matching how
+                // the lexer already distinguishes `=` from `==` by maximal
+                // munch.
+                if let TokenKind::Ident(name) = this.peek_kind().clone() {
+                    if this.peek_next_is_bare_eq() {
+                        let name_span = this.peek().span;
+                        this.advance();
+                        this.advance(); // '='
+                        let name = Spanned::new(name, name_span);
+                        match this.parse_expression() {
+                            Some(value) => args.push(Arg::Named { name, value }),
+                            None => break,
+                        }
+                    } else {
+                        match this.parse_expression() {
+                            Some(value) => args.push(Arg::Positional(value)),
+                            None => break,
+                        }
                     }
                 } else {
-                    match self.parse_expression() {
+                    match this.parse_expression() {
                         Some(value) => args.push(Arg::Positional(value)),
                         None => break,
                     }
                 }
-            } else {
-                match self.parse_expression() {
-                    Some(value) => args.push(Arg::Positional(value)),
-                    None => break,
+                if this.eat(|k| *k == TokenKind::Comma).is_some() {
+                    if this.peek_kind() == &TokenKind::RParen {
+                        break; // trailing comma
+                    }
+                    continue;
                 }
+                break;
             }
-            if self.eat(|k| *k == TokenKind::Comma).is_some() {
-                if self.peek_kind() == &TokenKind::RParen {
-                    break; // trailing comma
-                }
-                continue;
-            }
-            break;
-        }
-        args
+            args
+        })
     }
 
     /// `list_expr = "[" [ expression { "," expression } [","] ] "]"` —
@@ -478,26 +513,73 @@ impl<'a> Parser<'a> {
     fn parse_list_literal(&mut self) -> Option<Expr> {
         let open = self.advance(); // '['
         let start = open.span;
-        let mut elements = Vec::new();
-        if self.peek_kind() != &TokenKind::RBracket {
-            while let Some(element) = self.parse_expression() {
-                elements.push(element);
-                if self.eat(|k| *k == TokenKind::Comma).is_some() {
-                    if self.peek_kind() == &TokenKind::RBracket {
-                        break; // trailing comma
+        // See `Parser::parse_call_args`'s identical reset — `[...]` is
+        // just as unambiguously delimited as `(...)`.
+        self.with_no_record_literal(false, |this| {
+            let mut elements = Vec::new();
+            if this.peek_kind() != &TokenKind::RBracket {
+                while let Some(element) = this.parse_expression() {
+                    elements.push(element);
+                    if this.eat(|k| *k == TokenKind::Comma).is_some() {
+                        if this.peek_kind() == &TokenKind::RBracket {
+                            break; // trailing comma
+                        }
+                        continue;
                     }
+                    break;
+                }
+            }
+            let close = this.expect(&TokenKind::RBracket, "']'");
+            let end = close
+                .map(|t| t.span)
+                .unwrap_or_else(|| elements.last().map(Expr::span).unwrap_or(start));
+            Some(Expr::ListLiteral {
+                elements,
+                span: start.join(end),
+            })
+        })
+    }
+
+    /// `record_literal = identifier "{" field ":" expression { "," field
+    /// ":" expression } [","] "}"` — enum record-variant construction
+    /// (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`/`project/
+    /// DECISION_LOG.md#DL-14`). `name` is the already-consumed constructor
+    /// name; positioned just before the opening `{`. Whether `name`
+    /// actually resolves to a record-shaped enum variant is a binding/
+    /// type-checking concern, not the parser's (mirrors every other
+    /// name-resolution division of labor this crate already establishes).
+    fn parse_record_literal(&mut self, name: Spanned<String>) -> Option<Expr> {
+        let open = self.advance(); // '{'
+        // Entering the record literal's own braces is a new, unambiguous
+        // context (closed by a matching `}`) — see `Parser::
+        // no_record_literal`'s own doc comment.
+        self.with_no_record_literal(false, |this| {
+            let mut fields = Vec::new();
+            while !this.at_end_of_braced_body() {
+                let Some(field_name) = this.expect_ident("a field name") else {
+                    break;
+                };
+                if this.expect(&TokenKind::Colon, "':'").is_none() {
+                    break;
+                }
+                let Some(value) = this.parse_expression() else {
+                    break;
+                };
+                fields.push((field_name, value));
+                if this.eat(|k| *k == TokenKind::Comma).is_some() {
                     continue;
                 }
                 break;
             }
-        }
-        let close = self.expect(&TokenKind::RBracket, "']'");
-        let end = close
-            .map(|t| t.span)
-            .unwrap_or_else(|| elements.last().map(Expr::span).unwrap_or(start));
-        Some(Expr::ListLiteral {
-            elements,
-            span: start.join(end),
+            let close = this.expect(&TokenKind::RBrace, "'}'");
+            let end = close
+                .map(|t| t.span)
+                .unwrap_or_else(|| fields.last().map(|(_, v)| v.span()).unwrap_or(open.span));
+            Some(Expr::RecordLiteral {
+                span: name.span.join(end),
+                name,
+                fields,
+            })
         })
     }
 
@@ -560,6 +642,8 @@ impl<'a> Parser<'a> {
                         args,
                         span: span.join(end),
                     })
+                } else if self.peek_kind() == &TokenKind::LBrace && !self.no_record_literal {
+                    self.parse_record_literal(Spanned::new(name, span))
                 } else {
                     Some(Expr::Ident(Spanned::new(name, span)))
                 }
@@ -567,7 +651,9 @@ impl<'a> Parser<'a> {
             TokenKind::LParen => {
                 let open = tok.span;
                 self.advance();
-                let inner = self.parse_expression()?;
+                // See `Parser::parse_call_args`'s identical reset — `(...)`
+                // grouping is just as unambiguously delimited.
+                let inner = self.with_no_record_literal(false, |this| this.parse_expression())?;
                 let close = self.expect(&TokenKind::RParen, "')'");
                 let end = close.map(|t| t.span).unwrap_or(inner.span());
                 Some(Expr::Paren {
@@ -767,7 +853,10 @@ impl<'a> Parser<'a> {
     fn parse_if_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek().span;
         self.advance(); // 'if'
-        let cond = self.parse_expression()?;
+        // The condition's trailing `{` must open `then_branch`'s block,
+        // not a record literal — `Parser::no_record_literal`'s own doc
+        // comment.
+        let cond = self.with_no_record_literal(true, |this| this.parse_expression())?;
         let then_branch = self.parse_block()?;
         let mut end = then_branch.span;
         let else_branch = if self
@@ -800,7 +889,8 @@ impl<'a> Parser<'a> {
         self.advance(); // 'for'
         let var = self.expect_ident("a loop variable name")?;
         self.expect(&TokenKind::Keyword(Keyword::In), "'in'")?;
-        let iterable = self.parse_expression()?;
+        // See `Parser::parse_if_stmt`'s identical reasoning.
+        let iterable = self.with_no_record_literal(true, |this| this.parse_expression())?;
         let body = self.parse_block()?;
         let span = start.join(body.span);
         Some(Stmt::For {
@@ -815,7 +905,8 @@ impl<'a> Parser<'a> {
     fn parse_while_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek().span;
         self.advance(); // 'while'
-        let cond = self.parse_expression()?;
+        // See `Parser::parse_if_stmt`'s identical reasoning.
+        let cond = self.with_no_record_literal(true, |this| this.parse_expression())?;
         let body = self.parse_block()?;
         let span = start.join(body.span);
         Some(Stmt::While { cond, body, span })
@@ -834,7 +925,9 @@ impl<'a> Parser<'a> {
     fn parse_match_stmt(&mut self) -> Option<Stmt> {
         let start = self.peek().span;
         self.advance(); // 'match'
-        let scrutinee = self.parse_expression()?;
+        // See `Parser::parse_if_stmt`'s identical reasoning — the
+        // scrutinee's trailing `{` must open the match's own arm list.
+        let scrutinee = self.with_no_record_literal(true, |this| this.parse_expression())?;
         self.expect(&TokenKind::LBrace, "'{'")?;
         let arms = self.parse_match_arms();
         let close = self.expect(&TokenKind::RBrace, "'}'");
@@ -899,7 +992,8 @@ impl<'a> Parser<'a> {
     fn parse_if_expr(&mut self) -> Option<Expr> {
         let start = self.peek().span;
         self.advance(); // 'if'
-        let cond = self.parse_expression()?;
+        // See `Parser::parse_if_stmt`'s identical reasoning.
+        let cond = self.with_no_record_literal(true, |this| this.parse_expression())?;
         let then_branch = self.parse_block_expr()?;
         self.expect(&TokenKind::Keyword(Keyword::Else), "'else'")?;
         let else_branch = if self.peek_kind() == &TokenKind::Keyword(Keyword::If) {
@@ -923,7 +1017,8 @@ impl<'a> Parser<'a> {
     fn parse_match_expr(&mut self) -> Option<Expr> {
         let start = self.peek().span;
         self.advance(); // 'match'
-        let scrutinee = self.parse_expression()?;
+        // See `Parser::parse_match_stmt`'s identical reasoning.
+        let scrutinee = self.with_no_record_literal(true, |this| this.parse_expression())?;
         self.expect(&TokenKind::LBrace, "'{'")?;
         let arms = self.parse_match_arms();
         let close = self.expect(&TokenKind::RBrace, "'}'");
@@ -947,9 +1042,15 @@ impl<'a> Parser<'a> {
                 let span = tok.span;
                 self.advance();
                 if name == "_" {
-                    Some(Pattern::Wildcard(span))
+                    return Some(Pattern::Wildcard(span));
+                }
+                let name = Spanned::new(name, span);
+                if self.peek_kind() == &TokenKind::LParen {
+                    self.parse_tuple_pattern(name)
+                } else if self.peek_kind() == &TokenKind::LBrace {
+                    self.parse_record_pattern(name)
                 } else {
-                    Some(Pattern::Ident(Spanned::new(name, span)))
+                    Some(Pattern::Ident(name))
                 }
             }
             TokenKind::BoolLiteral(b) => {
@@ -989,6 +1090,78 @@ impl<'a> Parser<'a> {
                 None
             }
         }
+    }
+
+    /// `Name "(" pattern { "," pattern } [","] ")"` — tuple-variant
+    /// destructuring (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`).
+    /// `name` is the already-consumed variant name; positioned just before
+    /// the opening `(`.
+    fn parse_tuple_pattern(&mut self, name: Spanned<String>) -> Option<Pattern> {
+        self.advance(); // '('
+        let mut elems = Vec::new();
+        if self.peek_kind() != &TokenKind::RParen {
+            loop {
+                let elem = self.parse_pattern()?;
+                elems.push(elem);
+                if self.eat(|k| *k == TokenKind::Comma).is_some() {
+                    if self.peek_kind() == &TokenKind::RParen {
+                        break;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+        let close = self.expect(&TokenKind::RParen, "')'");
+        let end = close
+            .map(|t| t.span)
+            .unwrap_or_else(|| elems.last().map(Pattern::span).unwrap_or(name.span));
+        Some(Pattern::Tuple {
+            span: name.span.join(end),
+            name,
+            elems,
+        })
+    }
+
+    /// `Name "{" record_pattern_field { "," record_pattern_field } [","]
+    /// "}"` — record-variant destructuring (`AICAD-057C`, `project/
+    /// OWNER_DECISIONS.md#D17`). `name` is the already-consumed variant
+    /// name; positioned just before the opening `{`. Each field is
+    /// `identifier [":" pattern]` — see [`RecordPatternField`]'s own doc
+    /// comment for the shorthand-desugaring this performs when no explicit
+    /// `: pattern` follows the field name.
+    fn parse_record_pattern(&mut self, name: Spanned<String>) -> Option<Pattern> {
+        self.advance(); // '{'
+        let mut fields = Vec::new();
+        while !self.at_end_of_braced_body() {
+            let Some(field_name) = self.expect_ident("a record pattern field name") else {
+                break;
+            };
+            let field_pattern = if self.eat(|k| *k == TokenKind::Colon).is_some() {
+                self.parse_pattern()?
+            } else {
+                Pattern::Ident(field_name.clone())
+            };
+            let field_span = field_name.span.join(field_pattern.span());
+            fields.push(RecordPatternField {
+                name: field_name,
+                pattern: field_pattern,
+                span: field_span,
+            });
+            if self.eat(|k| *k == TokenKind::Comma).is_some() {
+                continue;
+            }
+            break;
+        }
+        let close = self.expect(&TokenKind::RBrace, "'}'");
+        let end = close
+            .map(|t| t.span)
+            .unwrap_or_else(|| fields.last().map(|f| f.span).unwrap_or(name.span));
+        Some(Pattern::Record {
+            span: name.span.join(end),
+            name,
+            fields,
+        })
     }
 
     /// `{ match_arm* }`'s arms (already positioned just past the opening
@@ -1193,15 +1366,58 @@ impl<'a> Parser<'a> {
         fields
     }
 
-    /// Enum variants (already positioned just past the opening `{`). Unit
-    /// variants only — see `cad_ast::item`'s doc comment.
-    fn parse_enum_variants(&mut self) -> Vec<Spanned<String>> {
+    /// Enum variants (already positioned just past the opening `{`) — the
+    /// three shapes [`EnumVariant`] supports (`AICAD-057C`, `project/
+    /// OWNER_DECISIONS.md#D17`/`project/DECISION_LOG.md#DL-14`): a bare
+    /// unit variant, a tuple variant (`Name(Type, Type)`), or a record
+    /// variant (`Name { field: Type }` — the same field-list shape
+    /// `parse_struct_fields` already parses for `struct`).
+    fn parse_enum_variants(&mut self) -> Vec<EnumVariant> {
         let mut variants = Vec::new();
         while !self.at_end_of_braced_body() {
             let Some(name) = self.expect_ident("an enum variant name") else {
                 break;
             };
-            variants.push(name);
+            let variant = if self.peek_kind() == &TokenKind::LParen {
+                self.advance();
+                let mut fields = Vec::new();
+                if self.peek_kind() != &TokenKind::RParen {
+                    while let Some(ty) = self.parse_type() {
+                        fields.push(ty);
+                        if self.eat(|k| *k == TokenKind::Comma).is_some() {
+                            if self.peek_kind() == &TokenKind::RParen {
+                                break;
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                let close = self.expect(&TokenKind::RParen, "')'");
+                let end = close
+                    .map(|t| t.span)
+                    .unwrap_or_else(|| fields.last().map(Type::span).unwrap_or(name.span));
+                EnumVariant::Tuple {
+                    span: name.span.join(end),
+                    name,
+                    fields,
+                }
+            } else if self.peek_kind() == &TokenKind::LBrace {
+                self.advance();
+                let fields = self.parse_struct_fields();
+                let close = self.expect(&TokenKind::RBrace, "'}'");
+                let end = close
+                    .map(|t| t.span)
+                    .unwrap_or_else(|| fields.last().map(|f| f.span).unwrap_or(name.span));
+                EnumVariant::Record {
+                    span: name.span.join(end),
+                    name,
+                    fields,
+                }
+            } else {
+                EnumVariant::Unit(name)
+            };
+            variants.push(variant);
             if self.eat(|k| *k == TokenKind::Comma).is_some() {
                 continue;
             }
@@ -1350,7 +1566,7 @@ impl<'a> Parser<'a> {
                 let close = self.expect(&TokenKind::RBrace, "'}'");
                 let end = close
                     .map(|t| t.span)
-                    .unwrap_or_else(|| variants.last().map(|v| v.span).unwrap_or(name.span));
+                    .unwrap_or_else(|| variants.last().map(EnumVariant::span).unwrap_or(name.span));
                 Some(Item::Enum {
                     name,
                     type_params,
@@ -2229,8 +2445,9 @@ mod decl_tests {
             Item::Enum { name, variants, .. } => {
                 assert_eq!(name.node, "MotorSize");
                 assert_eq!(variants.len(), 2);
-                assert_eq!(variants[0].node, "NEMA17");
-                assert_eq!(variants[1].node, "NEMA23");
+                assert_eq!(variants[0].name().node, "NEMA17");
+                assert_eq!(variants[1].name().node, "NEMA23");
+                assert!(matches!(variants[0], EnumVariant::Unit(_)));
             }
             other => panic!("expected Enum, got {other:?}"),
         }
@@ -2292,6 +2509,213 @@ mod decl_tests {
             }
             other => panic!("expected Enum, got {other:?}"),
         }
+    }
+
+    // --- AICAD-057C: data-carrying enum variants, constructors,
+    //     destructuring patterns (project/OWNER_DECISIONS.md#D17) --------
+
+    #[test]
+    fn parses_unit_tuple_and_record_enum_variants_in_one_enum() {
+        let program = program_ok(
+            "enum Message { Quit, Move { x: Length, y: Length }, Write(String), Color(Int, Int, Int) }",
+        );
+        match &program.items[0] {
+            Item::Enum { variants, .. } => {
+                assert_eq!(variants.len(), 4);
+                assert!(matches!(variants[0], EnumVariant::Unit(_)));
+                assert_eq!(variants[0].name().node, "Quit");
+                match &variants[1] {
+                    EnumVariant::Record { name, fields, .. } => {
+                        assert_eq!(name.node, "Move");
+                        assert_eq!(fields.len(), 2);
+                        assert_eq!(fields[0].name.node, "x");
+                        assert_eq!(fields[1].name.node, "y");
+                    }
+                    other => panic!("expected Record variant, got {other:?}"),
+                }
+                match &variants[2] {
+                    EnumVariant::Tuple { name, fields, .. } => {
+                        assert_eq!(name.node, "Write");
+                        assert_eq!(fields.len(), 1);
+                    }
+                    other => panic!("expected Tuple variant, got {other:?}"),
+                }
+                match &variants[3] {
+                    EnumVariant::Tuple { name, fields, .. } => {
+                        assert_eq!(name.node, "Color");
+                        assert_eq!(fields.len(), 3);
+                    }
+                    other => panic!("expected Tuple variant, got {other:?}"),
+                }
+            }
+            other => panic!("expected Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_generic_result_and_optional_style_enums() {
+        let program = program_ok("enum Result<T, E> { Ok(T), Err(E) }");
+        match &program.items[0] {
+            Item::Enum {
+                type_params,
+                variants,
+                ..
+            } => {
+                assert_eq!(type_params.len(), 2);
+                assert_eq!(variants.len(), 2);
+            }
+            other => panic!("expected Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_zero_field_tuple_variant() {
+        let program = program_ok("enum E { Empty() }");
+        match &program.items[0] {
+            Item::Enum { variants, .. } => match &variants[0] {
+                EnumVariant::Tuple { fields, .. } => assert!(fields.is_empty()),
+                other => panic!("expected Tuple variant, got {other:?}"),
+            },
+            other => panic!("expected Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_record_literal_construction_expression() {
+        let program = program_ok("let p = Point { x: 1mm, y: 2mm };");
+        match &program.items[0] {
+            Item::Let { value, .. } => match value {
+                Expr::RecordLiteral { name, fields, .. } => {
+                    assert_eq!(name.node, "Point");
+                    assert_eq!(fields.len(), 2);
+                    assert_eq!(fields[0].0.node, "x");
+                    assert_eq!(fields[1].0.node, "y");
+                }
+                other => panic!("expected RecordLiteral, got {other:?}"),
+            },
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_tuple_variant_constructor_call_expression() {
+        // Reuses ordinary `Expr::Call` syntax — no new expression node
+        // needed for tuple-variant construction (`AICAD-057C`'s own scope
+        // decision).
+        let program = program_ok("let r = Ok(5mm);");
+        match &program.items[0] {
+            Item::Let { value, .. } => match value {
+                Expr::Call { callee, args, .. } => {
+                    assert_eq!(callee.node, "Ok");
+                    assert_eq!(args.len(), 1);
+                }
+                other => panic!("expected Call, got {other:?}"),
+            },
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_tuple_pattern_destructuring() {
+        let program = program_ok("fn f() { match r { Ok(v) => v, Err(e) => e, } }");
+        match &program.items[0] {
+            Item::Fn { body, .. } => match &body.stmts[0] {
+                Stmt::Match { arms, .. } => {
+                    match &arms[0].pattern {
+                        Pattern::Tuple { name, elems, .. } => {
+                            assert_eq!(name.node, "Ok");
+                            assert_eq!(elems.len(), 1);
+                            assert!(matches!(elems[0], Pattern::Ident(_)));
+                        }
+                        other => panic!("expected Tuple pattern, got {other:?}"),
+                    }
+                    assert!(matches!(arms[1].pattern, Pattern::Tuple { .. }));
+                }
+                other => panic!("expected Match, got {other:?}"),
+            },
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_record_pattern_shorthand_and_explicit_fields() {
+        let program = program_ok("fn f() { match p { Point { x, y: b } => x, _ => 0mm, } }");
+        match &program.items[0] {
+            Item::Fn { body, .. } => match &body.stmts[0] {
+                Stmt::Match { arms, .. } => match &arms[0].pattern {
+                    Pattern::Record { name, fields, .. } => {
+                        assert_eq!(name.node, "Point");
+                        assert_eq!(fields.len(), 2);
+                        assert_eq!(fields[0].name.node, "x");
+                        // Shorthand desugars to `Pattern::Ident` of the
+                        // same name.
+                        match &fields[0].pattern {
+                            Pattern::Ident(bound) => assert_eq!(bound.node, "x"),
+                            other => panic!("expected Ident, got {other:?}"),
+                        }
+                        assert_eq!(fields[1].name.node, "y");
+                        match &fields[1].pattern {
+                            Pattern::Ident(bound) => assert_eq!(bound.node, "b"),
+                            other => panic!("expected Ident, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Record pattern, got {other:?}"),
+                },
+                other => panic!("expected Match, got {other:?}"),
+            },
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn if_condition_does_not_misparse_a_record_literal_as_its_own_block() {
+        // `Parser::no_record_literal`'s own reason for existing.
+        let program = program_ok("fn f() { if cond { a; } }");
+        match &program.items[0] {
+            Item::Fn { body, .. } => match &body.stmts[0] {
+                Stmt::If {
+                    cond, then_branch, ..
+                } => {
+                    assert!(matches!(cond, Expr::Ident(_)));
+                    assert_eq!(then_branch.stmts.len(), 1);
+                }
+                other => panic!("expected If, got {other:?}"),
+            },
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unclosed_tuple_variant_paren_is_reported() {
+        let (_, diagnostics) = parse_program("enum E { Ok(Int }", "t.aicad");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "PARSE-E006"),
+            "expected PARSE-E006, got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn record_variant_field_missing_colon_is_reported() {
+        let (_, diagnostics) = parse_program("enum E { Point { x Length } }", "t.aicad");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "PARSE-E006"),
+            "expected PARSE-E006, got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn unclosed_tuple_pattern_paren_is_reported() {
+        let (_, diagnostics) = parse_program("fn f() { match r { Ok(v => v, } }", "t.aicad");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "PARSE-E006"),
+            "expected PARSE-E006, got {diagnostics:?}"
+        );
     }
 
     #[test]

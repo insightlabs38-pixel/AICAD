@@ -133,7 +133,7 @@
 //! this evaluator's `expected`-type context.
 
 use crate::error::RuntimeError;
-use crate::value::{NumberValue, RangeValue, Value};
+use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
 use cad_hir::hir::{
     BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem, HirLiteral, HirMatchArm,
@@ -487,6 +487,28 @@ impl<'a> Interpreter<'a> {
         };
         match &self.bindings[binding_id.index()].kind {
             BindingKind::Fn => {}
+            // Tuple-variant construction (`Ok(value)`, `Empty()`) —
+            // `AICAD-057C`, `project/OWNER_DECISIONS.md#D17`. Already
+            // type-checked (arity/field types, `Unit`/`Record`-shaped
+            // variant rejection) by `cad_hir::typeck`'s `check_variant_
+            // tuple_construction` — this crate does not re-verify shape,
+            // only evaluates each argument in source order and collects
+            // the result.
+            BindingKind::EnumVariant { .. } => {
+                let variant = *binding_id;
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    let expr = match arg {
+                        HirArg::Positional(expr) => expr,
+                        HirArg::Named { value, .. } => value,
+                    };
+                    values.push(self.eval_expr(caller_frame, expr)?);
+                }
+                return Ok(Value::EnumVariant {
+                    variant,
+                    payload: VariantPayload::Tuple(values),
+                });
+            }
             _ => {
                 return Err(RuntimeError::NotCallable {
                     name: name.clone(),
@@ -890,7 +912,10 @@ impl<'a> Interpreter<'a> {
                     self.bindings[binding.index()].kind,
                     BindingKind::EnumVariant { .. }
                 ) {
-                    return Ok(Value::EnumVariant(binding));
+                    return Ok(Value::EnumVariant {
+                        variant: binding,
+                        payload: VariantPayload::Unit,
+                    });
                 }
                 if let Some(v) = frame.get(&binding) {
                     return Ok(v.clone());
@@ -955,6 +980,30 @@ impl<'a> Interpreter<'a> {
                     end: Box::new(end),
                     inclusive: *inclusive,
                 }))
+            }
+            // Record-variant construction (`AICAD-057C`, `project/
+            // OWNER_DECISIONS.md#D17`). Already type-checked (field
+            // names/types, `Unit`/`Tuple`-shaped variant rejection) by
+            // `cad_hir::typeck`'s `check_record_literal`.
+            HirExpr::RecordLiteral {
+                name,
+                binding,
+                fields,
+                span,
+            } => {
+                let variant = binding.ok_or(RuntimeError::UnresolvedBinding {
+                    name: name.clone(),
+                    span: *span,
+                })?;
+                let mut values = Vec::with_capacity(fields.len());
+                for field in fields {
+                    let value = self.eval_expr(frame, &field.value)?;
+                    values.push((field.name.clone(), value));
+                }
+                Ok(Value::EnumVariant {
+                    variant,
+                    payload: VariantPayload::Record(values),
+                })
             }
         }
     }
@@ -1162,13 +1211,17 @@ impl<'a> Interpreter<'a> {
                 .into()),
             },
             (Value::Str(ls), Value::Str(rs)) => Ok(Value::Bool(compare_ord(op, ls, rs))),
-            // Nominal equality (`cad_hir::typeck`'s own established
-            // convention): two variants are equal exactly when they are
-            // the same declared variant, the direct evidence being
-            // `AICAD-053`'s own `Product.motor == NEMA17` pattern.
-            (Value::EnumVariant(la), Value::EnumVariant(ra)) => match op {
-                BinaryOp::Eq | BinaryOp::ApproxEq => Ok(Value::Bool(la == ra)),
-                BinaryOp::NotEq => Ok(Value::Bool(la != ra)),
+            // Structural equality (`AICAD-053`'s original nominal-only
+            // rule — "two variants are equal exactly when they are the
+            // same declared variant" — extended by `AICAD-057C` to also
+            // compare payloads, now that a variant can carry one: `Ok(1)`
+            // and `Ok(2)` share a variant tag but are not the same value).
+            // The direct evidence for the tag half is still `AICAD-053`'s
+            // own `Product.motor == NEMA17` pattern; `values_equal`
+            // recurses into any payload a tuple/record variant carries.
+            (Value::EnumVariant { .. }, Value::EnumVariant { .. }) => match op {
+                BinaryOp::Eq | BinaryOp::ApproxEq => Ok(Value::Bool(values_equal(&l, &r))),
+                BinaryOp::NotEq => Ok(Value::Bool(!values_equal(&l, &r))),
                 _ => Err(RuntimeError::NotOrderable {
                     kind: "enum variant",
                     op: op.as_str(),
@@ -1243,7 +1296,65 @@ impl<'a> Interpreter<'a> {
                 Ok(true)
             }
             HirPattern::Variant { variant, .. } => {
-                Ok(matches!(scrutinee, Value::EnumVariant(id) if id == variant))
+                Ok(matches!(scrutinee, Value::EnumVariant { variant: id, .. } if id == variant))
+            }
+            // Tuple-variant destructuring (`AICAD-057C`, `project/
+            // OWNER_DECISIONS.md#D17`) — `variant: None` means lowering
+            // could not resolve the pattern's own name (already
+            // diagnosed); such a pattern can never legitimately match.
+            HirPattern::Tuple { variant, elems, .. } => {
+                let Some(variant) = variant else {
+                    return Ok(false);
+                };
+                let Value::EnumVariant {
+                    variant: id,
+                    payload: VariantPayload::Tuple(values),
+                } = scrutinee
+                else {
+                    return Ok(false);
+                };
+                if id != variant || values.len() != elems.len() {
+                    return Ok(false);
+                }
+                for (elem, value) in elems.iter().zip(values) {
+                    if !self.pattern_matches(frame, elem, value)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            // Record-variant destructuring (`AICAD-057C`, `project/
+            // OWNER_DECISIONS.md#D17`).
+            HirPattern::Record {
+                variant, fields, ..
+            } => {
+                let Some(variant) = variant else {
+                    return Ok(false);
+                };
+                let Value::EnumVariant {
+                    variant: id,
+                    payload: VariantPayload::Record(values),
+                } = scrutinee
+                else {
+                    return Ok(false);
+                };
+                if id != variant {
+                    return Ok(false);
+                }
+                for field in fields {
+                    let Some((_, value)) = values.iter().find(|(n, _)| n == &field.name) else {
+                        // Structurally unreachable in a type-checked
+                        // program (`cad_hir::typeck`'s own `MISSING_
+                        // VARIANT_FIELD`/`UNKNOWN_VARIANT_FIELD` already
+                        // cover this); never panic on an unexpected shape
+                        // regardless (AGENTS.md).
+                        return Ok(false);
+                    };
+                    if !self.pattern_matches(frame, &field.pattern, value)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
             HirPattern::Literal { value, span } => {
                 let pattern_value = self.eval_literal(value, None, *span)?;
@@ -1253,22 +1364,62 @@ impl<'a> Interpreter<'a> {
     }
 }
 
-/// Structural equality between two runtime values for
-/// `Interpreter::pattern_matches`'s own `HirPattern::Literal` arm — not a
-/// general-purpose `PartialEq` (dimensional operands still deserve
-/// `cad_units::check_comparison`'s own dimension-mismatch diagnostic via
-/// `Interpreter::eval_comparison` at every other comparison site; a
-/// literal *pattern*, per `crate::hir::HirPattern::Literal`'s own doc
-/// comment, is never itself a unit-suffixed dimensional literal in
-/// practice — matching a `Bool`/`String`/unitless-`Number` scrutinee is
-/// the only shape `cad_ast`'s pattern grammar actually produces).
+/// Structural equality between two runtime values — used by
+/// `Interpreter::pattern_matches`'s own `HirPattern::Literal` arm, and (as
+/// of `AICAD-057C`) `Interpreter::eval_comparison`'s `==`/`!=` on
+/// `Value::EnumVariant` (see that arm's own doc comment). Not a general-
+/// purpose `PartialEq` (dimensional operands still deserve `cad_units::
+/// check_comparison`'s own dimension-mismatch diagnostic via
+/// `Interpreter::eval_comparison`'s `Number` arm) — this function is only
+/// ever reached for kinds that need no such diagnostic: a literal
+/// *pattern* is never itself a unit-suffixed dimensional literal
+/// (`crate::hir::HirPattern::Literal`'s own doc comment), and an enum
+/// variant's payload recurses back into this same function for exactly
+/// the same reason (a payload element is an ordinary already-evaluated
+/// value, not a fresh comparison the dimension-mismatch diagnostic path
+/// needs to see).
 fn values_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x.ty == y.ty && x.magnitude == y.magnitude,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
-        (Value::EnumVariant(x), Value::EnumVariant(y)) => x == y,
+        (
+            Value::EnumVariant {
+                variant: vx,
+                payload: px,
+            },
+            Value::EnumVariant {
+                variant: vy,
+                payload: py,
+            },
+        ) => vx == vy && variant_payloads_equal(px, py),
         (Value::Unit, Value::Unit) => true,
+        (Value::List(xs), Value::List(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| values_equal(x, y))
+        }
+        _ => false,
+    }
+}
+
+/// [`Value::EnumVariant`]'s own payload half of [`values_equal`]
+/// (`AICAD-057C`) — a record variant's fields are compared by name (their
+/// storage order is construction order, not necessarily declaration
+/// order — see `crate::value::VariantPayload::Record`'s own doc comment),
+/// not position.
+fn variant_payloads_equal(a: &VariantPayload, b: &VariantPayload) -> bool {
+    match (a, b) {
+        (VariantPayload::Unit, VariantPayload::Unit) => true,
+        (VariantPayload::Tuple(xs), VariantPayload::Tuple(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| values_equal(x, y))
+        }
+        (VariantPayload::Record(xs), VariantPayload::Record(ys)) => {
+            xs.len() == ys.len()
+                && xs.iter().all(|(name, value)| {
+                    ys.iter()
+                        .find(|(n, _)| n == name)
+                        .is_some_and(|(_, v)| values_equal(value, v))
+                })
+        }
         _ => false,
     }
 }
@@ -1726,7 +1877,10 @@ mod tests {
                 .find(|b| b.name == "Plastic")
                 .unwrap()
                 .id;
-            vec![Value::EnumVariant(material_binding)]
+            vec![Value::EnumVariant {
+                variant: material_binding,
+                payload: VariantPayload::Unit,
+            }]
         });
         assert_number_eq(plastic.unwrap(), 0.003);
     }
@@ -1765,14 +1919,161 @@ mod tests {
         assert_number_eq(interp.call_by_name("f", vec![number(2.0)]).unwrap(), -1.0);
     }
 
+    // --- AICAD-057C: data-carrying enum variants, constructors,
+    //     destructuring patterns (project/OWNER_DECISIONS.md#D17) --------
+
+    #[test]
+    fn tuple_variant_construction_and_destructuring_round_trips_the_payload() {
+        let lowered = compiled(
+            "enum R { Ok(Length), Err(Length) } \
+             fn f(x: Length) -> Length { \
+                 let r = Ok(x); \
+                 return match r { Ok(v) => v, Err(e) => e, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("f", vec![dimensional(5.0, Dimension::Length)])
+            .unwrap();
+        assert_number_eq(result, 5.0);
+    }
+
+    #[test]
+    fn record_variant_construction_and_shorthand_destructuring_round_trips_the_payload() {
+        let lowered = compiled(
+            "enum Shape { Circle { radius: Length } } \
+             fn f(r: Length) -> Length { \
+                 let s = Circle { radius: r }; \
+                 return match s { Circle { radius } => radius, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("f", vec![dimensional(3.0, Dimension::Length)])
+            .unwrap();
+        assert_number_eq(result, 3.0);
+    }
+
+    #[test]
+    fn record_pattern_explicit_rename_binds_the_renamed_name() {
+        let lowered = compiled(
+            "enum Shape { Circle { radius: Length } } \
+             fn f(r: Length) -> Length { \
+                 let s = Circle { radius: r }; \
+                 return match s { Circle { radius: rr } => rr, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("f", vec![dimensional(7.0, Dimension::Length)])
+            .unwrap();
+        assert_number_eq(result, 7.0);
+    }
+
+    #[test]
+    fn nested_tuple_variant_destructuring_reaches_the_inner_payload() {
+        let lowered = compiled(
+            "enum Opt { Some(Length), None } \
+             enum R { Ok(Opt), Err(Length) } \
+             fn f(x: Length) -> Length { \
+                 let r = Ok(Some(x)); \
+                 return match r { \
+                     Ok(Some(v)) => v, \
+                     Ok(None) => 0mm, \
+                     Err(e) => e, \
+                 }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("f", vec![dimensional(9.0, Dimension::Length)])
+            .unwrap();
+        assert_number_eq(result, 9.0);
+    }
+
+    #[test]
+    fn zero_field_tuple_variant_constructs_and_matches() {
+        let lowered = compiled(
+            "enum R { Empty(), Full(Length) } \
+             fn f(x: Length) -> Length { \
+                 let r = Empty(); \
+                 return match r { Empty() => 0mm, Full(v) => v, }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("f", vec![dimensional(1.0, Dimension::Length)])
+            .unwrap();
+        assert_number_eq(result, 0.0);
+    }
+
+    #[test]
+    fn tuple_variants_with_equal_payloads_compare_equal() {
+        let lowered = compiled(
+            "enum R { Ok(Length) } \
+             fn f(x: Length) -> Bool { return Ok(x) == Ok(x); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("f", vec![dimensional(4.0, Dimension::Length)])
+            .unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[test]
+    fn tuple_variants_with_different_payloads_compare_unequal() {
+        // A genuine structural-equality check (`AICAD-057C`), not merely
+        // the old tag-only nominal equality: same variant, different
+        // payload, must not be `==`.
+        let lowered = compiled(
+            "enum R { Ok(Length) } \
+             fn f(a: Length, b: Length) -> Bool { return Ok(a) == Ok(b); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name(
+                "f",
+                vec![
+                    dimensional(1.0, Dimension::Length),
+                    dimensional(2.0, Dimension::Length),
+                ],
+            )
+            .unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[test]
+    fn record_variants_with_equal_fields_compare_equal_regardless_of_construction_order() {
+        let lowered = compiled(
+            "enum Shape { P { x: Length, y: Length } } \
+             fn f(a: Length, b: Length) -> Bool { \
+                 return P { x: a, y: b } == P { y: b, x: a }; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name(
+                "f",
+                vec![
+                    dimensional(1.0, Dimension::Length),
+                    dimensional(2.0, Dimension::Length),
+                ],
+            )
+            .unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
     #[test]
     fn non_exhaustive_match_is_a_clean_error() {
-        // No *source* program that type-checks can omit an arm `cad_hir::
-        // typeck` would catch (it does not verify exhaustiveness at all —
-        // `project/reports/AICAD-053.md`'s own documented limitation), so
-        // this really can happen for a compiled program; constructed here
-        // via a literal pattern that simply excludes the runtime value
-        // actually passed in.
+        // `cad_hir::typeck`'s exhaustiveness check (`AICAD-057C`) only
+        // covers a nominal-`enum` scrutinee (`project/OWNER_DECISIONS.md
+        // #D17`'s own wording: "the compiler must diagnose non-exhaustive
+        // matches" — specifically "for nominal enum types"); a `match`
+        // over an ordinary numeric/literal scrutinee like this one has no
+        // finite "variant set" to check coverage against, so it still
+        // type-checks cleanly despite genuinely omitting the runtime value
+        // actually passed in — this evaluator's own `RuntimeError::
+        // NonExhaustiveMatch` remains the correct, non-panicking outcome.
         let lowered = compiled("fn f(x: Float) -> Float { return match x { 1.0 => 100.0, }; }");
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![number(2.0)]).unwrap_err();

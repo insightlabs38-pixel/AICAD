@@ -83,7 +83,9 @@ pub struct NumberValue {
 /// against bare enum-variant values, and nothing else in either construct
 /// requires a full enum *type* identity beyond the variant's own already-
 /// unique `BindingId` (`cad_hir::typeck`'s own nominal-typing convention:
-/// "the declaring item's own `BindingId` is its type identity").
+/// "the declaring item's own `BindingId` is its type identity"). `AICAD-
+/// 057C` (`project/OWNER_DECISIONS.md#D17`) extends this same variant
+/// with an actual payload (`VariantPayload`) for tuple/record variants.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Number(NumberValue),
@@ -92,10 +94,13 @@ pub enum Value {
     /// An enum variant value, identified by its own declaring
     /// `cad_hir::ids::BindingId` (`BindingKind::EnumVariant`) — not the
     /// owning enum's `BindingId` (matching `cad_hir::typeck::CheckedType::
-    /// Enum`'s own choice not to allocate a separate type identity: two
-    /// variants are equal exactly when they are the same variant, which a
-    /// bare `BindingId` comparison already answers).
-    EnumVariant(cad_hir::ids::BindingId),
+    /// Enum`'s own choice not to allocate a separate type identity).
+    /// `payload` carries the variant's own constructed data, if any
+    /// (`AICAD-057C`).
+    EnumVariant {
+        variant: cad_hir::ids::BindingId,
+        payload: VariantPayload,
+    },
     /// The value of a block with no trailing expression, or of a
     /// `return;`/implicit-`Unit`-typed function completion. Not a source-
     /// level type (RFC-0001's grammar has no `Unit`/`()` type spelling) —
@@ -131,6 +136,22 @@ pub struct RangeValue {
     pub inclusive: bool,
 }
 
+/// [`Value::EnumVariant`]'s own payload (`AICAD-057C`, `project/
+/// OWNER_DECISIONS.md#D17`) — mirrors `cad_hir::hir::HirVariantPayload`'s
+/// three shapes at the value level.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VariantPayload {
+    Unit,
+    Tuple(Vec<Value>),
+    /// Field order is construction order, not necessarily declaration
+    /// order (`Interpreter::eval_expr`'s `HirExpr::RecordLiteral` arm
+    /// evaluates fields exactly in the order the source named them) — a
+    /// field's *value* is always looked up by name (`Interpreter::
+    /// pattern_matches`'s `HirPattern::Record` arm), never by position, so
+    /// this has no observable effect.
+    Record(Vec<(String, Value)>),
+}
+
 impl Value {
     /// A short, stable name for diagnostics ("found Bool, expected
     /// Number", ...) — never a `Display` impl a user-facing message would
@@ -141,7 +162,7 @@ impl Value {
             Value::Number(_) => "Number",
             Value::Bool(_) => "Bool",
             Value::Str(_) => "String",
-            Value::EnumVariant(_) => "enum variant",
+            Value::EnumVariant { .. } => "enum variant",
             Value::Unit => "Unit",
             Value::List(_) => "List",
             Value::Range(_) => "Range",

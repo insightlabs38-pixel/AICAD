@@ -97,7 +97,7 @@
 
 use crate::hir::{
     BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem, HirLiteral, HirMatchArm,
-    HirPattern, HirProgram, HirStmt, HirTypeParam, UnaryOp,
+    HirPattern, HirProgram, HirRecordField, HirStmt, HirTypeParam, HirVariantPayload, UnaryOp,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
@@ -194,6 +194,22 @@ struct FieldInfo {
     ty: Option<CheckedType>,
 }
 
+/// One resolved enum variant's declared payload shape — built once in
+/// [`Checker::collect_enum_variant_shapes`] and reused for every
+/// construction/pattern site (`AICAD-057C`, `project/OWNER_DECISIONS.md
+/// #D17`). `Unit` is kept distinct from `Tuple(vec![])` (rather than
+/// collapsing the two) so [`Checker::check_variant_tuple_construction`]
+/// can tell "this variant genuinely takes no payload; do not call it with
+/// `()` at all" apart from "this is a zero-field tuple variant" — a
+/// diagnostic distinction the owner's D17 ruling implies by keeping `Unit`
+/// a separate named shape from `Tuple`/`Record`.
+#[derive(Debug, Clone)]
+enum VariantShape {
+    Unit,
+    Tuple(Vec<Option<CheckedType>>),
+    Record(Vec<FieldInfo>),
+}
+
 struct Checker<'a> {
     bindings: &'a [Binding],
     file: &'a str,
@@ -210,6 +226,14 @@ struct Checker<'a> {
     type_names: HashMap<String, BindingId>,
     /// `struct`'s own `BindingId` -> its resolved field list (`AICAD-053`).
     struct_fields: HashMap<BindingId, Vec<FieldInfo>>,
+    /// enum variant's own `BindingId` -> its resolved payload shape
+    /// (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`).
+    variant_shapes: HashMap<BindingId, VariantShape>,
+    /// `enum`'s own `BindingId` -> the full ordered list of its variants'
+    /// own `BindingId`s (`AICAD-057C`) — used by [`Checker::check_match`]'s
+    /// exhaustiveness check to know the complete variant set a `match`
+    /// over that enum must cover.
+    enum_variants: HashMap<BindingId, Vec<BindingId>>,
     /// Type-parameter name -> its own `BindingId`, populated by
     /// `with_type_params` for exactly the duration of resolving *one*
     /// generic `fn`/`struct`'s own field/parameter/return types
@@ -248,11 +272,14 @@ pub fn check_program(
         fn_signatures: HashMap::new(),
         type_names: HashMap::new(),
         struct_fields: HashMap::new(),
+        variant_shapes: HashMap::new(),
+        enum_variants: HashMap::new(),
         active_type_params: HashMap::new(),
         current_fn_return: None,
     };
     checker.register_type_names(&program.items);
     checker.collect_struct_fields(&program.items);
+    checker.collect_enum_variant_shapes(&program.items);
     checker.collect_signatures(&program.items);
     checker.check_items(&program.items);
     TypeCheckResult {
@@ -578,6 +605,10 @@ impl<'a> Checker<'a> {
                         self.binding_types[variant.binding.index()] =
                             Some(CheckedType::Enum(*binding));
                     }
+                    // The full declared variant set, for `check_match`'s
+                    // exhaustiveness check (`AICAD-057C`).
+                    self.enum_variants
+                        .insert(*binding, variants.iter().map(|v| v.binding).collect());
                 }
                 HirItem::Part { items, .. } => self.register_type_names(items),
                 HirItem::Let { .. }
@@ -612,6 +643,55 @@ impl<'a> Checker<'a> {
                     self.struct_fields.insert(*binding, field_infos);
                 }
                 HirItem::Part { items, .. } => self.collect_struct_fields(items),
+                _ => {}
+            }
+        }
+    }
+
+    // --- Pass 0.75: enum variant payload shapes (AICAD-057C) ---
+
+    /// Resolves every enum variant's declared payload shape, mirroring
+    /// `collect_struct_fields` exactly — including routing payload-type
+    /// resolution through `with_type_params` so a generic enum's own
+    /// variant payloads can reference its declared type parameters
+    /// (`struct Pair<T, U>`'s own field-resolution precedent, per
+    /// `project/reports/AICAD-057B.md`'s documented follow-up: "`AICAD-
+    /// 057C` is expected to route payload-type resolution through the
+    /// same `Checker::active_type_params`/`with_type_params` mechanism...
+    /// not reinvent one").
+    fn collect_enum_variant_shapes(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Enum {
+                    type_params,
+                    variants,
+                    ..
+                } => {
+                    self.with_type_params(type_params, |this| {
+                        for variant in variants {
+                            let shape = match &variant.payload {
+                                HirVariantPayload::Unit => VariantShape::Unit,
+                                HirVariantPayload::Tuple(field_types) => VariantShape::Tuple(
+                                    field_types
+                                        .iter()
+                                        .map(|t| this.resolve_type_ref(t))
+                                        .collect(),
+                                ),
+                                HirVariantPayload::Record(fields) => VariantShape::Record(
+                                    fields
+                                        .iter()
+                                        .map(|f| FieldInfo {
+                                            name: f.name.clone(),
+                                            ty: this.resolve_type_ref(&f.ty),
+                                        })
+                                        .collect(),
+                                ),
+                            };
+                            this.variant_shapes.insert(variant.binding, shape);
+                        }
+                    });
+                }
+                HirItem::Part { items, .. } => self.collect_enum_variant_shapes(items),
                 _ => {}
             }
         }
@@ -865,9 +945,11 @@ impl<'a> Checker<'a> {
                 self.check_block(body, None);
             }
             HirStmt::Match {
-                scrutinee, arms, ..
+                scrutinee,
+                arms,
+                span,
             } => {
-                self.check_match(scrutinee, arms, None);
+                self.check_match(scrutinee, arms, None, *span);
             }
             HirStmt::Return { value, span } => match value {
                 Some(v) => {
@@ -957,6 +1039,12 @@ impl<'a> Checker<'a> {
             HirExpr::Range {
                 start, end, span, ..
             } => self.check_range_expr(start, end, expected, *span),
+            HirExpr::RecordLiteral {
+                name,
+                binding,
+                fields,
+                span,
+            } => self.check_record_literal(name, *binding, fields, *span),
         }
     }
 
@@ -1377,12 +1465,24 @@ impl<'a> Checker<'a> {
                     BindingKind::Struct => {
                         self.check_struct_construction(*binding, name, args, span)
                     }
+                    // Tuple-variant construction (`Ok(value)`,
+                    // `Empty()`) — `AICAD-057C`, `project/
+                    // OWNER_DECISIONS.md#D17`. Cloned to an owned `String`
+                    // first: `enum_name` borrows `self.bindings`, which
+                    // `check_variant_tuple_construction` (taking `&mut
+                    // self`) cannot coexist with.
+                    BindingKind::EnumVariant { enum_name } => {
+                        let enum_name = enum_name.clone();
+                        self.check_variant_tuple_construction(
+                            *binding, &enum_name, name, args, span,
+                        )
+                    }
                     // Any other callee kind (a plain `let`/`var`/`const`,
-                    // an enum/enum-variant, ...) has no signature this
-                    // checker knows how to verify a call against —
-                    // arguments are still walked, but no "not callable"
-                    // diagnostic is raised (a documented known limitation,
-                    // not evidenced scope for either task).
+                    // ...) has no signature this checker knows how to
+                    // verify a call against — arguments are still walked,
+                    // but no "not callable" diagnostic is raised (a
+                    // documented known limitation, not evidenced scope for
+                    // either task).
                     _ => {
                         for arg in args {
                             self.check_arg_expr(arg);
@@ -1603,6 +1703,248 @@ impl<'a> Checker<'a> {
         Some(CheckedType::Struct(struct_binding))
     }
 
+    // --- Enum variant construction (AICAD-057C, OWNER_DECISIONS.md#D17) --
+
+    /// Type-checks a tuple-variant construction call (`Ok(value)`,
+    /// `Empty()`) — `AICAD-057C`. Mirrors `check_call_args`'s positional-
+    /// only matching (a tuple variant's fields, like a struct's own
+    /// positional args, are never named). A `VariantShape::Record` reached
+    /// here means the source used call-parens on a variant that actually
+    /// declared brace-record fields — diagnosed, not silently accepted,
+    /// since the two construction shapes are not interchangeable
+    /// (`AICAD-057C`'s own scope note: a record variant must be
+    /// constructed with braces, a tuple variant with parens).
+    fn check_variant_tuple_construction(
+        &mut self,
+        variant_binding: BindingId,
+        enum_name: &str,
+        variant_name: &str,
+        args: &[HirArg],
+        span: Span,
+    ) -> Option<CheckedType> {
+        let enum_binding = self.type_names.get(enum_name).copied();
+        match self.variant_shapes.get(&variant_binding).cloned() {
+            // Unlike a zero-field *tuple* variant (`Empty()`, still a
+            // real constructor call, just with no arguments — see
+            // `VariantShape::Tuple`'s own doc comment for why the two
+            // are kept distinct), a `Unit` variant is never call syntax
+            // at all, with or without arguments — it is referenced as a
+            // bare name (`HirExpr::Ident`), exactly like Rust's own
+            // unit-like enum variants are never `Name()`-callable.
+            Some(VariantShape::Unit) => {
+                self.diagnostics.push(self.diag(
+                    448,
+                    "UNIT_VARIANT_NOT_CALLABLE",
+                    format!(
+                        "'{variant_name}' is a unit variant and takes no payload; write it as \
+                         '{variant_name}', not '{variant_name}(...)'"
+                    ),
+                    span,
+                ));
+                for arg in args {
+                    self.check_arg_expr(arg);
+                }
+            }
+            Some(VariantShape::Tuple(field_types)) => {
+                self.check_variant_positional_args(variant_name, args, &field_types, span);
+            }
+            Some(VariantShape::Record(_)) => {
+                self.diagnostics.push(self.diag(
+                    451,
+                    "RECORD_VARIANT_NEEDS_BRACES",
+                    format!(
+                        "'{variant_name}' is a record variant; construct it with \
+                         '{variant_name} {{ ... }}', not '{variant_name}(...)'"
+                    ),
+                    span,
+                ));
+                for arg in args {
+                    self.check_arg_expr(arg);
+                }
+            }
+            None => {
+                for arg in args {
+                    self.check_arg_expr(arg);
+                }
+            }
+        }
+        enum_binding.map(CheckedType::Enum)
+    }
+
+    /// Shared positional-argument matching for [`Checker::
+    /// check_variant_tuple_construction`] — no names, no defaults (a tuple
+    /// variant's fields have neither), so this is a strict "exactly one
+    /// value per declared field, in order" check.
+    fn check_variant_positional_args(
+        &mut self,
+        variant_name: &str,
+        args: &[HirArg],
+        field_types: &[Option<CheckedType>],
+        call_span: Span,
+    ) {
+        let mut filled = 0usize;
+        for arg in args {
+            match arg {
+                HirArg::Positional(expr) => {
+                    if filled < field_types.len() {
+                        let expected = field_types[filled];
+                        filled += 1;
+                        self.check_expected(
+                            expr,
+                            expected,
+                            expr.span(),
+                            449,
+                            "VARIANT_FIELD_TYPE_MISMATCH",
+                        );
+                    } else {
+                        self.diagnostics.push(self.diag(
+                            447,
+                            "VARIANT_ARITY_MISMATCH",
+                            format!(
+                                "'{variant_name}' takes {} value(s), but more were supplied",
+                                field_types.len()
+                            ),
+                            call_span,
+                        ));
+                        self.check_expr(expr, None);
+                    }
+                }
+                HirArg::Named {
+                    name,
+                    name_span,
+                    value,
+                } => {
+                    self.diagnostics.push(self.diag(
+                        450,
+                        "TUPLE_VARIANT_NAMED_ARGUMENT",
+                        format!(
+                            "'{variant_name}' has no field named '{name}' — tuple-variant fields \
+                             are positional"
+                        ),
+                        *name_span,
+                    ));
+                    self.check_expr(value, None);
+                }
+            }
+        }
+        if filled < field_types.len() {
+            self.diagnostics.push(self.diag(
+                447,
+                "VARIANT_ARITY_MISMATCH",
+                format!(
+                    "'{variant_name}' takes {} value(s), but only {filled} were supplied",
+                    field_types.len()
+                ),
+                call_span,
+            ));
+        }
+    }
+
+    /// Type-checks a record-variant construction (`Point { x: 1mm, y:
+    /// 2mm }`) — `AICAD-057C`. `name`/`binding` are the already-resolved
+    /// constructor name (mirrors `check_call`'s own `HirCallee::Fn`
+    /// resolution). Every field is necessarily named — `Expr::
+    /// RecordLiteral`'s own AST shape has no positional reading at all
+    /// (see that type's own doc comment) — so, unlike `check_struct_
+    /// construction`, there is no positional-argument branch to mirror.
+    fn check_record_literal(
+        &mut self,
+        name: &str,
+        binding: Option<BindingId>,
+        fields: &[HirRecordField],
+        span: Span,
+    ) -> Option<CheckedType> {
+        let Some(binding) = binding else {
+            // Already diagnosed by lowering (TYPE-E410).
+            for field in fields {
+                self.check_expr(&field.value, None);
+            }
+            return None;
+        };
+        let kind = self.bindings[binding.index()].kind.clone();
+        let BindingKind::EnumVariant { enum_name } = kind else {
+            self.diagnostics.push(self.diag(
+                455,
+                "RECORD_LITERAL_NOT_RECORD_VARIANT",
+                format!("'{name}' is not a record-variant constructor"),
+                span,
+            ));
+            for field in fields {
+                self.check_expr(&field.value, None);
+            }
+            return None;
+        };
+        let enum_binding = self.type_names.get(&enum_name).copied();
+        let field_infos = match self.variant_shapes.get(&binding).cloned() {
+            Some(VariantShape::Record(field_infos)) => field_infos,
+            Some(VariantShape::Unit) | Some(VariantShape::Tuple(_)) => {
+                self.diagnostics.push(self.diag(
+                    455,
+                    "RECORD_LITERAL_NOT_RECORD_VARIANT",
+                    format!("'{name}' does not declare named fields; it is not a record variant"),
+                    span,
+                ));
+                for field in fields {
+                    self.check_expr(&field.value, None);
+                }
+                return enum_binding.map(CheckedType::Enum);
+            }
+            None => {
+                for field in fields {
+                    self.check_expr(&field.value, None);
+                }
+                return enum_binding.map(CheckedType::Enum);
+            }
+        };
+        let mut filled = vec![false; field_infos.len()];
+        for field in fields {
+            match field_infos.iter().position(|f| f.name == field.name) {
+                Some(idx) => {
+                    if filled[idx] {
+                        self.diagnostics.push(self.diag(
+                            453,
+                            "DUPLICATE_VARIANT_FIELD",
+                            format!("field '{}' is already supplied", field.name),
+                            field.name_span,
+                        ));
+                    }
+                    filled[idx] = true;
+                    let expected = field_infos[idx].ty;
+                    self.check_expected(
+                        &field.value,
+                        expected,
+                        field.value.span(),
+                        449,
+                        "VARIANT_FIELD_TYPE_MISMATCH",
+                    );
+                }
+                None => {
+                    self.diagnostics.push(self.diag(
+                        452,
+                        "UNKNOWN_VARIANT_FIELD",
+                        format!("'{name}' has no field named '{}'", field.name),
+                        field.name_span,
+                    ));
+                    self.check_expr(&field.value, None);
+                }
+            }
+        }
+        for (idx, was_filled) in filled.iter().enumerate() {
+            if !was_filled {
+                self.diagnostics.push(self.diag(
+                    454,
+                    "MISSING_VARIANT_FIELD",
+                    format!(
+                        "missing field '{}' in construction of '{name}'",
+                        field_infos[idx].name
+                    ),
+                    span,
+                ));
+            }
+        }
+        enum_binding.map(CheckedType::Enum)
+    }
+
     /// Type-checks `receiver.field` (`AICAD-053`) — `receiver_ty` is
     /// already checked by the caller (`Checker::check_expr`'s `Field`
     /// arm). A struct receiver resolves to that field's own declared
@@ -1656,15 +1998,82 @@ impl<'a> Checker<'a> {
         scrutinee: &HirExpr,
         arms: &[HirMatchArm],
         expected: Option<CheckedType>,
+        span: Span,
     ) -> Option<CheckedType> {
         let scrutinee_ty = self.check_expr(scrutinee, None);
         let mut result = None;
+        let mut covered: Vec<BindingId> = Vec::new();
+        let mut is_exhaustive_by_wildcard = false;
         for arm in arms {
             self.bind_pattern(&arm.pattern, scrutinee_ty);
+            match &arm.pattern {
+                HirPattern::Wildcard { .. } | HirPattern::Binding { .. } => {
+                    is_exhaustive_by_wildcard = true;
+                }
+                HirPattern::Variant { variant, .. }
+                | HirPattern::Tuple {
+                    variant: Some(variant),
+                    ..
+                }
+                | HirPattern::Record {
+                    variant: Some(variant),
+                    ..
+                } => {
+                    covered.push(*variant);
+                }
+                HirPattern::Tuple { variant: None, .. }
+                | HirPattern::Record { variant: None, .. }
+                | HirPattern::Literal { .. } => {}
+            }
             let arm_ty = self.check_expr(&arm.body, expected);
             result = self.unify_value_type(result, arm_ty, arm.span);
         }
+        self.check_match_exhaustiveness(scrutinee_ty, &covered, is_exhaustive_by_wildcard, span);
         result
+    }
+
+    /// Nominal-enum match-exhaustiveness (`AICAD-057C`, `project/
+    /// OWNER_DECISIONS.md#D17`: "the compiler must diagnose non-exhaustive
+    /// matches unless a wildcard or otherwise exhaustive pattern is
+    /// present") — a genuine, previously-undetected soundness gap
+    /// `AICAD-057A`'s own audit found (finding #8): before this task,
+    /// `check_match` performed no coverage check over an enum's variant
+    /// set at all. Only fires when the scrutinee's own type is a resolved
+    /// `CheckedType::Enum` — an unresolved/non-enum scrutinee has nothing
+    /// this check can verify coverage against, matching this module's
+    /// general error-recovery convention.
+    fn check_match_exhaustiveness(
+        &mut self,
+        scrutinee_ty: Option<CheckedType>,
+        covered: &[BindingId],
+        is_exhaustive_by_wildcard: bool,
+        span: Span,
+    ) {
+        if is_exhaustive_by_wildcard {
+            return;
+        }
+        let Some(CheckedType::Enum(enum_id)) = scrutinee_ty else {
+            return;
+        };
+        let Some(all_variants) = self.enum_variants.get(&enum_id) else {
+            return;
+        };
+        let missing: Vec<String> = all_variants
+            .iter()
+            .filter(|v| !covered.contains(v))
+            .map(|v| self.bindings[v.index()].name.clone())
+            .collect();
+        if !missing.is_empty() {
+            self.diagnostics.push(self.diag(
+                446,
+                "NON_EXHAUSTIVE_MATCH",
+                format!(
+                    "match is not exhaustive — missing variant(s): {}",
+                    missing.join(", ")
+                ),
+                span,
+            ));
+        }
     }
 
     fn check_match_expr(
@@ -1672,9 +2081,9 @@ impl<'a> Checker<'a> {
         scrutinee: &HirExpr,
         arms: &[HirMatchArm],
         expected: Option<CheckedType>,
-        _span: Span,
+        span: Span,
     ) -> Option<CheckedType> {
-        self.check_match(scrutinee, arms, expected)
+        self.check_match(scrutinee, arms, expected, span)
     }
 
     fn unify_value_type(
@@ -1746,24 +2155,201 @@ impl<'a> Checker<'a> {
                     // panic on an unexpected shape regardless (AGENTS.md).
                     return;
                 };
-                let owning_enum = self.type_names.get(enum_name).copied();
-                match scrutinee_ty {
-                    Some(CheckedType::Enum(scrutinee_enum))
-                        if Some(scrutinee_enum) == owning_enum => {}
-                    Some(actual) => {
+                let enum_name = enum_name.clone();
+                self.check_pattern_enum_match(scrutinee_ty, &enum_name, *span);
+            }
+            // Tuple-variant destructuring (`AICAD-057C`, `project/
+            // OWNER_DECISIONS.md#D17`).
+            HirPattern::Tuple {
+                name,
+                variant,
+                elems,
+                span,
+            } => {
+                let Some(variant_id) = variant else {
+                    // Already diagnosed by lowering (TYPE-E410); still
+                    // bind every sub-pattern so a later reference to one
+                    // of its names does not cascade into a second,
+                    // spurious diagnostic of its own.
+                    for elem in elems {
+                        self.bind_pattern(elem, None);
+                    }
+                    return;
+                };
+                let Some(enum_name) = (match &self.bindings[variant_id.index()].kind {
+                    BindingKind::EnumVariant { enum_name } => Some(enum_name.clone()),
+                    _ => None,
+                }) else {
+                    for elem in elems {
+                        self.bind_pattern(elem, None);
+                    }
+                    return;
+                };
+                self.check_pattern_enum_match(scrutinee_ty, &enum_name, *span);
+                match self.variant_shapes.get(variant_id).cloned() {
+                    Some(VariantShape::Tuple(field_types)) => {
+                        if field_types.len() != elems.len() {
+                            self.diagnostics.push(self.diag(
+                                447,
+                                "VARIANT_ARITY_MISMATCH",
+                                format!(
+                                    "'{name}' has {} field(s), but this pattern names {}",
+                                    field_types.len(),
+                                    elems.len()
+                                ),
+                                *span,
+                            ));
+                        }
+                        for (elem, field_ty) in elems
+                            .iter()
+                            .zip(field_types.iter().copied().chain(std::iter::repeat(None)))
+                        {
+                            self.bind_pattern(elem, field_ty);
+                        }
+                    }
+                    Some(VariantShape::Unit) | Some(VariantShape::Record(_)) => {
                         self.diagnostics.push(self.diag(
-                            434,
-                            "VARIANT_ENUM_MISMATCH",
+                            456,
+                            "PATTERN_SHAPE_MISMATCH",
                             format!(
-                                "this pattern matches a variant of a different enum than the matched value's type ({})",
-                                self.describe(actual)
+                                "'{name}' is not a tuple variant; this pattern shape does not \
+                                 match its declared shape"
                             ),
                             *span,
                         ));
+                        for elem in elems {
+                            self.bind_pattern(elem, None);
+                        }
                     }
-                    None => {}
+                    None => {
+                        for elem in elems {
+                            self.bind_pattern(elem, None);
+                        }
+                    }
                 }
             }
+            // Record-variant destructuring (`AICAD-057C`, `project/
+            // OWNER_DECISIONS.md#D17`). No rest (`..`) pattern is
+            // authorized (D17's own scope limit), so every declared field
+            // must be covered exactly once.
+            HirPattern::Record {
+                name,
+                variant,
+                fields,
+                span,
+            } => {
+                let Some(variant_id) = variant else {
+                    for field in fields {
+                        self.bind_pattern(&field.pattern, None);
+                    }
+                    return;
+                };
+                let Some(enum_name) = (match &self.bindings[variant_id.index()].kind {
+                    BindingKind::EnumVariant { enum_name } => Some(enum_name.clone()),
+                    _ => None,
+                }) else {
+                    for field in fields {
+                        self.bind_pattern(&field.pattern, None);
+                    }
+                    return;
+                };
+                self.check_pattern_enum_match(scrutinee_ty, &enum_name, *span);
+                match self.variant_shapes.get(variant_id).cloned() {
+                    Some(VariantShape::Record(field_infos)) => {
+                        let mut seen: Vec<&str> = Vec::new();
+                        for field in fields {
+                            match field_infos.iter().find(|f| f.name == field.name) {
+                                Some(info) => {
+                                    if seen.contains(&field.name.as_str()) {
+                                        self.diagnostics.push(self.diag(
+                                            453,
+                                            "DUPLICATE_VARIANT_FIELD",
+                                            format!(
+                                                "field '{}' is already bound in this pattern",
+                                                field.name
+                                            ),
+                                            field.span,
+                                        ));
+                                    }
+                                    seen.push(field.name.as_str());
+                                    self.bind_pattern(&field.pattern, info.ty);
+                                }
+                                None => {
+                                    self.diagnostics.push(self.diag(
+                                        452,
+                                        "UNKNOWN_VARIANT_FIELD",
+                                        format!("'{name}' has no field named '{}'", field.name),
+                                        field.span,
+                                    ));
+                                    self.bind_pattern(&field.pattern, None);
+                                }
+                            }
+                        }
+                        for info in &field_infos {
+                            if !seen.contains(&info.name.as_str()) {
+                                self.diagnostics.push(self.diag(
+                                    454,
+                                    "MISSING_VARIANT_FIELD",
+                                    format!(
+                                        "pattern does not cover field '{}' of '{name}' (no rest \
+                                         pattern is supported)",
+                                        info.name
+                                    ),
+                                    *span,
+                                ));
+                            }
+                        }
+                    }
+                    Some(VariantShape::Unit) | Some(VariantShape::Tuple(_)) => {
+                        self.diagnostics.push(self.diag(
+                            456,
+                            "PATTERN_SHAPE_MISMATCH",
+                            format!(
+                                "'{name}' is not a record variant; this pattern shape does not \
+                                 match its declared shape"
+                            ),
+                            *span,
+                        ));
+                        for field in fields {
+                            self.bind_pattern(&field.pattern, None);
+                        }
+                    }
+                    None => {
+                        for field in fields {
+                            self.bind_pattern(&field.pattern, None);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Shared by every pattern shape that matches a specific enum variant
+    /// (`HirPattern::Variant`/`Tuple`/`Record`) — checked against the
+    /// *scrutinee's own* type, not merely "some enum": `enum_name` must
+    /// match the scrutinee's enum identity exactly.
+    fn check_pattern_enum_match(
+        &mut self,
+        scrutinee_ty: Option<CheckedType>,
+        enum_name: &str,
+        span: Span,
+    ) {
+        let owning_enum = self.type_names.get(enum_name).copied();
+        match scrutinee_ty {
+            Some(CheckedType::Enum(scrutinee_enum)) if Some(scrutinee_enum) == owning_enum => {}
+            Some(actual) => {
+                self.diagnostics.push(self.diag(
+                    434,
+                    "VARIANT_ENUM_MISMATCH",
+                    format!(
+                        "this pattern matches a variant of a different enum than the matched \
+                         value's type ({})",
+                        self.describe(actual)
+                    ),
+                    span,
+                ));
+            }
+            None => {}
         }
     }
 }
@@ -2413,10 +2999,305 @@ mod tests {
         // means the pattern `Shared` resolves to `B::Shared` (declared
         // last), while `a`'s declared type is `A` — a genuine cross-enum
         // mismatch this task's own machinery must catch.
+        // Also `TYPE-E446` (`AICAD-057C`'s exhaustiveness check): since the
+        // pattern actually resolves to `B::Shared`, `A`'s own `Shared`
+        // variant is never genuinely covered by any arm — a real, separate
+        // finding from the enum-identity mismatch itself.
         let (_lowered, checked) = check(
             "enum A { Shared } enum B { Shared } fn f(a: A) -> Int { match a { Shared => { return 1; } } return 0; }",
         );
-        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E434"]);
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E434", "TYPE-E446"]);
+    }
+
+    // --- AICAD-057C: data-carrying enum variants, constructors,
+    //     destructuring patterns, match exhaustiveness
+    //     (project/OWNER_DECISIONS.md#D17) --------------------------------
+
+    #[test]
+    fn tuple_variant_construction_with_correct_types_checks_cleanly() {
+        let (_lowered, checked) =
+            check("enum R { Ok(Int), Err(Int) } fn f() -> Int { let r = Ok(1); return 1; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn tuple_variant_construction_result_has_the_enum_type() {
+        let (lowered, checked) =
+            check("enum R { Ok(Int) } fn f() -> Int { let r = Ok(1); return 1; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Enum {
+            binding: enum_id, ..
+        } = &lowered.program.items[0]
+        else {
+            panic!("expected Enum item");
+        };
+        let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
+            panic!("expected Fn item");
+        };
+        let HirStmt::Let { binding, .. } = &body.stmts[0] else {
+            panic!("expected Let stmt");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(CheckedType::Enum(*enum_id))
+        );
+    }
+
+    #[test]
+    fn tuple_variant_construction_wrong_arity_is_reported() {
+        let (_lowered, checked) =
+            check("enum R { Ok(Int, Int) } fn f() -> Int { let r = Ok(1); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E447"]);
+    }
+
+    #[test]
+    fn tuple_variant_construction_too_many_args_is_reported() {
+        let (_lowered, checked) =
+            check("enum R { Ok(Int) } fn f() -> Int { let r = Ok(1, 2); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E447"]);
+    }
+
+    #[test]
+    fn tuple_variant_construction_field_type_mismatch_is_reported() {
+        let (_lowered, checked) =
+            check("enum R { Ok(Length) } fn f() -> Int { let r = Ok(true); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E449"]);
+    }
+
+    #[test]
+    fn unit_variant_called_with_parens_is_reported() {
+        let (_lowered, checked) =
+            check("enum R { Empty } fn f() -> Int { let r = Empty(); return 1; }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E448"]);
+    }
+
+    #[test]
+    fn zero_field_tuple_variant_called_with_no_args_checks_cleanly() {
+        let (_lowered, checked) =
+            check("enum R { Empty() } fn f() -> Int { let r = Empty(); return 1; }");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn record_variant_construction_with_correct_fields_checks_cleanly() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f() -> Length { let s = Circle { radius: 1mm }; return 1mm; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn record_variant_construction_result_has_the_enum_type() {
+        let (lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f() -> Length { let s = Circle { radius: 1mm }; return 1mm; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Enum {
+            binding: enum_id, ..
+        } = &lowered.program.items[0]
+        else {
+            panic!("expected Enum item");
+        };
+        let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
+            panic!("expected Fn item");
+        };
+        let HirStmt::Let { binding, .. } = &body.stmts[0] else {
+            panic!("expected Let stmt");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(CheckedType::Enum(*enum_id))
+        );
+    }
+
+    #[test]
+    fn record_variant_construction_with_parens_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f() -> Int { let s = Circle(1mm); return 1; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E451"]);
+    }
+
+    #[test]
+    fn record_variant_construction_missing_field_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length, center: Int } } \
+             fn f() -> Int { let s = Circle { radius: 1mm }; return 1; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E454"]);
+    }
+
+    #[test]
+    fn record_variant_construction_unknown_field_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f() -> Int { let s = Circle { radius: 1mm, bogus: 2mm }; return 1; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E452"]);
+    }
+
+    #[test]
+    fn record_variant_construction_duplicate_field_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f() -> Int { let s = Circle { radius: 1mm, radius: 2mm }; return 1; }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E453"]);
+    }
+
+    #[test]
+    fn tuple_pattern_destructuring_binding_has_correct_field_type() {
+        // Required test: "payload binding has correct type."
+        let (lowered, checked) = check(
+            "enum R { Ok(Length) } \
+             fn f(r: R) -> Length { match r { Ok(v) => { return v; } } }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
+            panic!("expected Fn item");
+        };
+        let HirStmt::Match { arms, .. } = &body.stmts[0] else {
+            panic!("expected Match stmt");
+        };
+        let HirPattern::Tuple { elems, .. } = &arms[0].pattern else {
+            panic!("expected Tuple pattern");
+        };
+        let HirPattern::Binding { binding, .. } = &elems[0] else {
+            panic!("expected Binding pattern");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(value(HirType::dimensional(
+                cad_types::Dimension::Length,
+                None
+            )))
+        );
+    }
+
+    #[test]
+    fn record_pattern_shorthand_binding_has_correct_field_type() {
+        // Required test: record destructuring, payload binding type.
+        let (lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f(s: Shape) -> Length { match s { Circle { radius } => { return radius; } } }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
+            panic!("expected Fn item");
+        };
+        let HirStmt::Match { arms, .. } = &body.stmts[0] else {
+            panic!("expected Match stmt");
+        };
+        let HirPattern::Record { fields, .. } = &arms[0].pattern else {
+            panic!("expected Record pattern");
+        };
+        let HirPattern::Binding { binding, .. } = &fields[0].pattern else {
+            panic!("expected Binding pattern");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(value(HirType::dimensional(
+                cad_types::Dimension::Length,
+                None
+            )))
+        );
+    }
+
+    #[test]
+    fn record_pattern_missing_field_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length, center: Int } } \
+             fn f(s: Shape) -> Int { match s { Circle { radius } => { return 1; } } }",
+        );
+        assert!(
+            codes(&checked.diagnostics).contains(&"TYPE-E454".to_string()),
+            "{:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn record_pattern_unknown_field_is_reported() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f(s: Shape) -> Int { match s { Circle { bogus } => { return 1; } } }",
+        );
+        assert!(
+            codes(&checked.diagnostics).contains(&"TYPE-E452".to_string()),
+            "{:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn tuple_pattern_against_a_record_variant_is_a_shape_mismatch() {
+        let (_lowered, checked) = check(
+            "enum Shape { Circle { radius: Length } } \
+             fn f(s: Shape) -> Int { match s { Circle(r) => { return 1; } } }",
+        );
+        assert!(
+            codes(&checked.diagnostics).contains(&"TYPE-E456".to_string()),
+            "{:?}",
+            checked.diagnostics
+        );
+    }
+
+    #[test]
+    fn non_exhaustive_match_over_tuple_and_record_variants_is_reported() {
+        // Required test: "non-exhaustive enum match -> diagnostic."
+        let (_lowered, checked) = check(
+            "enum R { Ok(Int), Err(Int) } \
+             fn f(r: R) -> Int { match r { Ok(v) => { return v; } } }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E446"]);
+    }
+
+    #[test]
+    fn exhaustive_match_covering_every_variant_has_no_diagnostic() {
+        let (_lowered, checked) = check(
+            "enum R { Ok(Int), Err(Int) } \
+             fn f(r: R) -> Int { match r { Ok(v) => { return v; } Err(e) => { return e; } } }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn non_exhaustive_match_with_wildcard_has_no_diagnostic() {
+        let (_lowered, checked) = check(
+            "enum R { Ok(Int), Err(Int) } \
+             fn f(r: R) -> Int { match r { Ok(v) => { return v; } _ => { return 0; } } }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn non_exhaustive_match_over_mixed_unit_tuple_record_variants_names_the_missing_ones() {
+        let (_lowered, checked) = check(
+            "enum Shape { Point, Circle(Length), Rect { w: Length, h: Length } } \
+             fn f(s: Shape) -> Int { match s { Point => { return 0; } } }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E446"]);
+    }
+
+    #[test]
+    fn generic_enum_tuple_variant_destructures_cleanly() {
+        // Evidence this is general machinery, not special-cased to any
+        // particular enum name (`AICAD-057A`'s own audit finding — a
+        // user-defined generic enum whose name is not Result/Optional/
+        // List/Range). `b`'s own declared type (`Box<Int>`) does not
+        // resolve yet (`Name<Args>` type-*reference* resolution for a
+        // user-defined generic is `AICAD-057D`'s job, per `AICAD-057B`'s
+        // own documented limitation) — this only exercises the payload-
+        // shape/destructuring half `AICAD-057C` actually owns, not
+        // instantiation.
+        let (_lowered, checked) = check(
+            "enum Box<T> { Full(T), Empty } \
+             fn f(b: Box<Int>) -> Int { match b { Full(v) => { return 0; } Empty => { return 0; } } }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
 
     // --- Collections / iteration (`AICAD-056`, `project/

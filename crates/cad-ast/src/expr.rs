@@ -246,6 +246,26 @@ pub enum Expr {
         inclusive: bool,
         span: Span,
     },
+    /// `Name "{" field ":" expr { "," field ":" expr } [","] "}"` —
+    /// record-variant construction (`AICAD-057C`, `project/
+    /// OWNER_DECISIONS.md#D17`/`project/DECISION_LOG.md#DL-14`). Mirrors
+    /// [`Pattern::Record`]'s own brace shape exactly (the owner's D17
+    /// worked example uses the identical shape both directions, `Record {
+    /// x, y }` to destructure), rather than the parenthesized `Name(args)`
+    /// call syntax `AICAD-053`'s struct construction already reuses — a
+    /// record variant has no positional reading at all (every field is
+    /// named), a structurally different shape from an ordinary call's
+    /// argument list. Kept as its own node, not folded into `Expr::Call`,
+    /// so the parser's "represent exactly what was written" contract
+    /// (this module's own doc comment) stays intact for the brace-vs-paren
+    /// distinction a later phase needs (`AICAD-057C`'s own scope note: a
+    /// record variant must be constructed with braces, a tuple variant
+    /// with parens).
+    RecordLiteral {
+        name: Spanned<String>,
+        fields: Vec<(Spanned<String>, Expr)>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -262,7 +282,8 @@ impl Expr {
             | Expr::If { span, .. }
             | Expr::Match { span, .. }
             | Expr::ListLiteral { span, .. }
-            | Expr::Range { span, .. } => *span,
+            | Expr::Range { span, .. }
+            | Expr::RecordLiteral { span, .. } => *span,
             Expr::Block(block) => block.span,
         }
     }
@@ -311,21 +332,35 @@ impl ElseBranch {
 }
 
 /// A `match` arm pattern (`pattern` in the grammar — never spelled out
-/// there beyond its use inside `match_arm`). Scope decision: only the
-/// three shapes with concrete evidence or obvious universal necessity —
+/// there beyond its use inside `match_arm`). The original three shapes —
 /// a bare identifier (binds a name, or matches an enum-variant-shaped
 /// name; disambiguating those two readings is a binding-phase concern,
-/// not the parser's), a literal, and the wildcard `_` (needed for
-/// exhaustiveness in any real `match`, and a completely standard
-/// convention). No struct/tuple/enum-data patterns — no evidence
-/// anywhere supports enum variants carrying data at all (see
-/// `cad_ast::item`'s own scope note on unit-only enum variants), so a
-/// data-destructuring pattern shape would be pure speculation.
+/// not the parser's), a literal, and the wildcard `_` — plus, per the
+/// owner's D17 ruling (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`/
+/// `project/DECISION_LOG.md#DL-14`), the two corresponding
+/// data-destructuring shapes for tuple/record enum variants:
+/// `Tuple(a, b)` and `Record { x, y }`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     Wildcard(Span),
     Literal(Spanned<Literal>),
     Ident(Spanned<String>),
+    /// `Name "(" pattern { "," pattern } [","] ")"` — destructures a
+    /// tuple-variant's payload positionally.
+    Tuple {
+        name: Spanned<String>,
+        elems: Vec<Pattern>,
+        span: Span,
+    },
+    /// `Name "{" record_pattern_field { "," record_pattern_field } [","]
+    /// "}"` — destructures a record-variant's payload by field name. See
+    /// [`RecordPatternField`] for the shorthand-vs-explicit-pattern
+    /// distinction (`Record { x, y }` vs. `Record { x: a, y: b }`).
+    Record {
+        name: Spanned<String>,
+        fields: Vec<RecordPatternField>,
+        span: Span,
+    },
 }
 
 impl Pattern {
@@ -334,8 +369,25 @@ impl Pattern {
             Pattern::Wildcard(span) => *span,
             Pattern::Literal(lit) => lit.span,
             Pattern::Ident(ident) => ident.span,
+            Pattern::Tuple { span, .. } | Pattern::Record { span, .. } => *span,
         }
     }
+}
+
+/// One field inside a [`Pattern::Record`] (`AICAD-057C`). The owner's D17
+/// worked example (`Record { x, y } => ...`) shows only the shorthand
+/// form — `cad-parser` desugars it at parse time to `pattern:
+/// Pattern::Ident(<same name>)`, so every later phase (binder, HIR
+/// lowering, type checker) sees one uniform shape regardless of whether
+/// the source wrote the shorthand or an explicit `field: pattern` (the
+/// same rename-or-nest form [`Expr::RecordLiteral`]'s construction side
+/// already needs field names for) — no separate "is this shorthand"
+/// bookkeeping needed downstream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordPatternField {
+    pub name: Spanned<String>,
+    pub pattern: Pattern,
+    pub span: Span,
 }
 
 /// `match_arm = pattern "=>" ( expression "," | block )`. The block form

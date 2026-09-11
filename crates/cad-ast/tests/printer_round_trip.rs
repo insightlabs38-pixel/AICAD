@@ -196,6 +196,52 @@ fn round_trips_a_program_combining_every_implemented_construct() {
     );
 }
 
+#[test]
+fn round_trips_data_carrying_enum_variants() {
+    // AICAD-057C, project/OWNER_DECISIONS.md#D17: Unit/Tuple/Record
+    // variant declarations.
+    assert_round_trips("enum Optional<T> { Some(T), None }");
+    assert_round_trips("enum Result<T, E> { Ok(T), Err(E) }");
+    assert_round_trips("enum Shape { Circle { radius: Length }, Point }");
+    assert_round_trips(
+        "enum Message { Quit, Move { x: Length, y: Length }, Write(String), ChangeColor(Int, Int, Int) }",
+    );
+}
+
+#[test]
+fn round_trips_record_literal_construction() {
+    assert_round_trips("let p = Point { x: 1mm, y: 2mm };");
+    assert_round_trips("let p = Point {};");
+}
+
+#[test]
+fn round_trips_tuple_and_record_patterns() {
+    assert_round_trips("fn f() { match r { Ok(v) => v, Err(e) => e, } }");
+    assert_round_trips("fn f() { match r { Ok(v) => { return v; } Err(e) => { return e; } } }");
+    assert_round_trips("fn f() { match p { Point { x, y } => x, Origin => 0mm, } }");
+    // Explicit (non-shorthand) record-pattern field renaming.
+    assert_round_trips("fn f() { match p { Point { x: a, y: b } => a, } }");
+    // Nested tuple pattern.
+    assert_round_trips("fn f() { match r { Ok(Some(v)) => v, Ok(None) => 0mm, Err(e) => e, } }");
+}
+
+#[test]
+fn record_literal_does_not_misparse_a_following_if_block() {
+    // `Parser::no_record_literal`'s own reason for existing (`AICAD-
+    // 057C`): the condition's trailing `{` must open the `if`'s block,
+    // never a record literal, exactly like Rust's own identical
+    // restriction.
+    assert_round_trips("fn f() { if cond { a; } }");
+    assert_round_trips("fn f() { while cond { a; } }");
+    assert_round_trips("fn f() { match cond { _ => a, } }");
+    // A record literal remains parseable as a condition when explicitly
+    // parenthesized.
+    assert_round_trips("fn f() { if (Point { x: 1mm, y: 2mm }).x > 0mm { a; } }");
+    // ...and unrestricted again once inside a nested, unambiguous
+    // delimiter (call args here).
+    assert_round_trips("fn f() { if f(Point { x: 1mm, y: 2mm }) { a; } }");
+}
+
 /// Locks in the printer's own chosen canonical style for a few
 /// representative constructs, so a future accidental style change shows
 /// up as a diff here rather than only as a (still-passing) round-trip.

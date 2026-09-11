@@ -222,6 +222,24 @@ pub enum HirExpr {
         inclusive: bool,
         span: Span,
     },
+    /// `Name { field: expr, ... }` — record-variant construction
+    /// (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`). `name`/`binding`
+    /// mirror [`HirCallee::Fn`]'s own resolved-name shape (`binding` is
+    /// `None` only when lowering could not resolve `name` — see
+    /// `crate::lower`'s module doc comment "Unresolved names"). Kept as
+    /// its own `HirExpr` variant rather than folded into `HirExpr::Call`:
+    /// a record variant's fields are always named, never positional, so
+    /// there is no ordinary argument-list reading to share with `Call`;
+    /// keeping it distinct also lets the type checker/runtime reject a
+    /// record variant constructed with parens (and vice versa) by
+    /// construction, not by re-deriving "was this a brace or paren call"
+    /// from an already-collapsed shape.
+    RecordLiteral {
+        name: String,
+        binding: Option<BindingId>,
+        fields: Vec<HirRecordField>,
+        span: Span,
+    },
 }
 
 impl HirExpr {
@@ -236,10 +254,19 @@ impl HirExpr {
             | HirExpr::If { span, .. }
             | HirExpr::Match { span, .. }
             | HirExpr::ListLiteral { span, .. }
-            | HirExpr::Range { span, .. } => *span,
+            | HirExpr::Range { span, .. }
+            | HirExpr::RecordLiteral { span, .. } => *span,
             HirExpr::Block(block) => block.span,
         }
     }
+}
+
+/// One field in an [`HirExpr::RecordLiteral`] (`AICAD-057C`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirRecordField {
+    pub name: String,
+    pub name_span: Span,
+    pub value: HirExpr,
 }
 
 /// `"{" { statement } [ trailing_expression ] "}"`, unifying `cad_ast::
@@ -403,6 +430,32 @@ pub enum HirPattern {
         binding: BindingId,
         span: Span,
     },
+    /// `Name(p1, p2, ...)` — destructures a tuple-variant's payload
+    /// positionally (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`).
+    /// Unlike [`HirPattern::Variant`] (whose bare-identifier shape is
+    /// genuinely ambiguous between "match this variant" and "bind a fresh
+    /// name" until name resolution runs), `Name(...)`/`Name { ... }`
+    /// syntax is never a fresh binding — there is no other legal reading
+    /// — so `variant` is `Option<BindingId>` for the same reason
+    /// `HirCallee::Fn::binding` is: `None` only when lowering could not
+    /// resolve `name` at all (see `crate::lower`'s module doc comment
+    /// "Unresolved names"), not a second valid interpretation.
+    Tuple {
+        name: String,
+        variant: Option<BindingId>,
+        elems: Vec<HirPattern>,
+        span: Span,
+    },
+    /// `Name { field: p, ... }` — destructures a record-variant's payload
+    /// by field name (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`).
+    /// See [`HirPattern::Tuple`]'s own doc comment for why `variant` is
+    /// `Option`.
+    Record {
+        name: String,
+        variant: Option<BindingId>,
+        fields: Vec<HirRecordPatternField>,
+        span: Span,
+    },
 }
 
 impl HirPattern {
@@ -411,9 +464,23 @@ impl HirPattern {
             HirPattern::Wildcard { span }
             | HirPattern::Literal { span, .. }
             | HirPattern::Variant { span, .. }
-            | HirPattern::Binding { span, .. } => *span,
+            | HirPattern::Binding { span, .. }
+            | HirPattern::Tuple { span, .. }
+            | HirPattern::Record { span, .. } => *span,
         }
     }
+}
+
+/// One field in an [`HirPattern::Record`] (`AICAD-057C`), mirroring
+/// `cad_ast::expr::RecordPatternField` — `pattern` is always present here,
+/// whether the source wrote `field` (`cad-parser` already desugars this
+/// shorthand to `Pattern::Ident(field)` at parse time — see that AST
+/// type's own doc comment) or an explicit `field: pattern`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirRecordPatternField {
+    pub name: String,
+    pub pattern: HirPattern,
+    pub span: Span,
 }
 
 /// `pattern => body`, unifying `cad_ast::expr::MatchArmBody`'s `Expr`/
@@ -453,12 +520,29 @@ pub struct HirField {
 
 /// One `enum` variant. `binding` is this variant's own newly minted id
 /// (kind `BindingKind::EnumVariant`) — what [`HirPattern::Variant`]'s own
-/// `variant` field points back to.
+/// `variant` field points back to. `payload` carries this variant's
+/// declared shape (`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`) —
+/// syntactic type references only, unresolved (mirrors `HirField::ty`'s
+/// own `HirTypeRef` convention); resolving them against a possibly-
+/// generic enclosing enum's own type parameters is `cad_hir::typeck`'s
+/// job (`Checker::active_type_params`/`with_type_params`, the same
+/// mechanism `AICAD-057B` already built for struct fields).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirEnumVariant {
     pub binding: BindingId,
     pub name: String,
+    pub payload: HirVariantPayload,
     pub span: Span,
+}
+
+/// The payload shape of one [`HirEnumVariant`] (`AICAD-057C`, `project/
+/// OWNER_DECISIONS.md#D17`) — the three shapes the owner's D17 ruling
+/// specifies.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirVariantPayload {
+    Unit,
+    Tuple(Vec<HirTypeRef>),
+    Record(Vec<HirField>),
 }
 
 /// One generic type parameter declared on a `fn`/`struct`/`enum`

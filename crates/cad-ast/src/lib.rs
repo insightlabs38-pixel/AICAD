@@ -17,9 +17,12 @@ mod item;
 mod printer;
 
 pub use expr::{
-    Arg, BinaryOp, BlockExpr, ElseBranch, Expr, Literal, MatchArm, MatchArmBody, Pattern, UnaryOp,
+    Arg, BinaryOp, BlockExpr, ElseBranch, Expr, Literal, MatchArm, MatchArmBody, Pattern,
+    RecordPatternField, UnaryOp,
 };
-pub use item::{Block, ElseClause, Field, FnParam, ImportPath, Item, Program, Stmt, Type};
+pub use item::{
+    Block, ElseClause, EnumVariant, Field, FnParam, ImportPath, Item, Program, Stmt, Type,
+};
 pub use printer::print_program;
 
 /// A half-open byte-offset range into one source file: `[start, end)`.

@@ -253,7 +253,7 @@ impl<'a> Binder<'a> {
                 self.declare(name, SymbolKind::Enum);
                 for variant in variants {
                     self.declare(
-                        variant,
+                        variant.name(),
                         SymbolKind::EnumVariant {
                             enum_name: name.node.clone(),
                         },
@@ -477,6 +477,15 @@ impl<'a> Binder<'a> {
                 self.check_expr(start);
                 self.check_expr(end);
             }
+            // Record-variant construction (`AICAD-057C`) — `name` is a
+            // constructor reference, resolved against lexical scope
+            // exactly like `Expr::Call`'s own `callee`.
+            Expr::RecordLiteral { name, fields, .. } => {
+                self.check_used(name);
+                for (_, value) in fields {
+                    self.check_expr(value);
+                }
+            }
         }
     }
 
@@ -516,6 +525,24 @@ impl<'a> Binder<'a> {
                     // can never fire here since nothing else has been
                     // declared into this scope yet.
                     self.declare(name, SymbolKind::MatchBinding);
+                }
+            }
+            // `Name(...)`/`Name { ... }` syntax always denotes an
+            // existing variant — never a fresh binding, unlike the
+            // genuinely ambiguous bare-`Ident` case above (`AICAD-057C`,
+            // `project/OWNER_DECISIONS.md#D17`) — so `name` is checked
+            // like any other scope reference, and each sub-pattern is
+            // bound recursively in this same arm scope.
+            Pattern::Tuple { name, elems, .. } => {
+                self.check_used(name);
+                for elem in elems {
+                    self.bind_pattern(elem);
+                }
+            }
+            Pattern::Record { name, fields, .. } => {
+                self.check_used(name);
+                for field in fields {
+                    self.bind_pattern(&field.pattern);
                 }
             }
         }
@@ -834,6 +861,57 @@ mod tests {
             "part P { enum E { A } fn f(x: E) -> Int { match x { A => 1, } } } fn g() -> Int { A; }",
         );
         // `A` used at module scope (outside the part) is undefined.
+        assert_eq!(codes(&diags), vec!["TYPE-E401"]);
+    }
+
+    // --- AICAD-057C: data-carrying enum variants/patterns
+    //     (project/OWNER_DECISIONS.md#D17) -------------------------------
+
+    #[test]
+    fn tuple_pattern_binds_its_elements() {
+        let diags = bind(
+            "enum Result { Ok(Int), Err(Int) } \
+             fn f(r: Result) -> Int { match r { Ok(v) => v, Err(e) => e, } }",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn record_pattern_shorthand_binds_its_fields() {
+        let diags = bind(
+            "enum Shape { Circle { radius: Int } } \
+             fn f(s: Shape) -> Int { match s { Circle { radius } => radius, } }",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn tuple_pattern_binding_does_not_leak_outside_its_arm() {
+        let diags = bind(
+            "enum Result { Ok(Int) } \
+             fn f(r: Result) -> Int { match r { Ok(v) => v, } v; }",
+        );
+        assert_eq!(codes(&diags), vec!["TYPE-E401"]);
+    }
+
+    #[test]
+    fn tuple_pattern_against_undefined_variant_name_is_reported() {
+        let diags = bind("fn f(r: Int) -> Int { match r { NotAVariant(v) => v, } }");
+        assert_eq!(codes(&diags), vec!["TYPE-E401"]);
+    }
+
+    #[test]
+    fn record_literal_constructor_name_is_checked_as_a_scope_reference() {
+        let diags = bind("fn f() -> Int { NotAVariant { x: 1 }; }");
+        assert_eq!(codes(&diags), vec!["TYPE-E401"]);
+    }
+
+    #[test]
+    fn record_literal_field_values_are_checked() {
+        let diags = bind(
+            "enum Shape { Circle { radius: Int } } \
+             fn f() -> Int { Circle { radius: missing }; }",
+        );
         assert_eq!(codes(&diags), vec!["TYPE-E401"]);
     }
 

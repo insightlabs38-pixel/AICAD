@@ -42,8 +42,9 @@
 //! grouping already has an explicit `Expr::Paren` node from parsing.
 
 use crate::{
-    Arg, Block, BlockExpr, ElseBranch, ElseClause, Expr, Field, FnParam, ImportPath, Item, Literal,
-    MatchArm, MatchArmBody, Pattern, Program, Spanned, Stmt, Type,
+    Arg, Block, BlockExpr, ElseBranch, ElseClause, EnumVariant, Expr, Field, FnParam, ImportPath,
+    Item, Literal, MatchArm, MatchArmBody, Pattern, Program, RecordPatternField, Spanned, Stmt,
+    Type,
 };
 
 const INDENT_UNIT: &str = "    ";
@@ -181,7 +182,7 @@ impl Printer {
                 self.write(&name.node);
                 self.print_type_params(type_params);
                 self.write(" ");
-                self.print_brace_list(variants.len(), |p, i| p.write(&variants[i].node));
+                self.print_brace_list(variants.len(), |p, i| p.print_enum_variant(&variants[i]));
             }
             Item::Part { name, items, .. } => {
                 self.write("part ");
@@ -269,6 +270,30 @@ impl Printer {
             p.write(": ");
             p.print_type(&fields[i].ty);
         });
+    }
+
+    /// One [`EnumVariant`] (`AICAD-057C`) — `Unit`/`Tuple`/`Record` each
+    /// print their own shape after the variant name.
+    fn print_enum_variant(&mut self, variant: &EnumVariant) {
+        match variant {
+            EnumVariant::Unit(name) => self.write(&name.node),
+            EnumVariant::Tuple { name, fields, .. } => {
+                self.write(&name.node);
+                self.write("(");
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.print_type(field);
+                }
+                self.write(")");
+            }
+            EnumVariant::Record { name, fields, .. } => {
+                self.write(&name.node);
+                self.write(" ");
+                self.print_field_list(fields);
+            }
+        }
     }
 
     fn print_item_block(&mut self, items: &[Item]) {
@@ -461,6 +486,47 @@ impl Printer {
             Pattern::Wildcard(_) => self.write("_"),
             Pattern::Literal(lit) => self.print_literal(&lit.node),
             Pattern::Ident(name) => self.write(&name.node),
+            Pattern::Tuple { name, elems, .. } => {
+                self.write(&name.node);
+                self.write("(");
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.print_pattern(elem);
+                }
+                self.write(")");
+            }
+            Pattern::Record { name, fields, .. } => {
+                self.write(&name.node);
+                self.write(" { ");
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.print_record_pattern_field(field);
+                }
+                self.write(" }");
+            }
+        }
+    }
+
+    /// One [`RecordPatternField`] — printed in explicit `name: pattern`
+    /// form even for a source shorthand field (`Record { x, y }` parses to
+    /// `pattern: Pattern::Ident(x)`, matching `x`'s own name — printing
+    /// `x: x` would round-trip to the same semantic pattern, but the
+    /// shorthand-preserving form is more readable and is what a human
+    /// would actually write, so this collapses back to shorthand whenever
+    /// the pattern is exactly `Ident` with the same name as the field).
+    fn print_record_pattern_field(&mut self, field: &RecordPatternField) {
+        if let Pattern::Ident(bound) = &field.pattern
+            && bound.node == field.name.node
+        {
+            self.write(&field.name.node);
+        } else {
+            self.write(&field.name.node);
+            self.write(": ");
+            self.print_pattern(&field.pattern);
         }
     }
 
@@ -556,6 +622,19 @@ impl Printer {
                 self.print_expr(start);
                 self.write(if *inclusive { "..=" } else { ".." });
                 self.print_expr(end);
+            }
+            Expr::RecordLiteral { name, fields, .. } => {
+                self.write(&name.node);
+                self.write(" { ");
+                for (i, (field_name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(&field_name.node);
+                    self.write(": ");
+                    self.print_expr(value);
+                }
+                self.write(" }");
             }
         }
     }
