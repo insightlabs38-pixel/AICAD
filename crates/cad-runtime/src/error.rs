@@ -23,6 +23,15 @@
 //! [`RuntimeError::category`] for the corresponding `"resource-budget"`
 //! vs. `"execution"` diagnostic category split.
 //!
+//! `AICAD-065` adds [`RuntimeError::CyclicParamDependency`]/[`RuntimeError::
+//! ParamOverrideTypeMismatch`] (`RUNTIME-E124`/`RUNTIME-E125`) for
+//! `crate::params`' first-class parametric model — both are `RUNTIME`
+//! family, matching every other structural-well-formedness variant here
+//! (e.g. `NonExhaustiveMatch`), not a new diagnostic family (`project/
+//! OWNER_DECISIONS.md#D10`/`project/DECISION_LOG.md`'s diagnostic-
+//! stability policy governs adding new *families*; reusing the existing
+//! `RUNTIME` family with two new codes is not that).
+//!
 //! Every variant here is reachable only in one of two ways: (1) a
 //! genuinely out-of-scope HIR shape for this task (`Unsupported` — `if`/
 //! `match`/loops/struct-enum construction/field access, all owned by
@@ -320,6 +329,33 @@ pub enum RuntimeError {
         name: &'static str,
         span: Span,
     },
+    /// `AICAD-065`'s parametric model (`crate::params::ParamModel::build`)
+    /// found a cycle among top-level `param` derived-expression
+    /// dependencies (e.g. `param a: Length = b; param b: Length = a;`).
+    /// Reported as a structured diagnostic rather than picking an
+    /// arbitrary evaluation order — `AGENTS.md`'s "ambiguity is an error,
+    /// never an arbitrary selection" applies exactly as much to a cyclic
+    /// dependency graph as to an ambiguous semantic reference. `names` is
+    /// every param name found unreachable during the topological sort (the
+    /// cycle plus anything only reachable through it), in declaration
+    /// order, for a reproducible diagnostic.
+    CyclicParamDependency {
+        names: Vec<String>,
+        span: Span,
+    },
+    /// `AICAD-065`'s parametric-model rebuild
+    /// (`Interpreter::run_top_level_parametric`) received an override
+    /// value for a `param` whose runtime `OperandType` does not match that
+    /// param's own `cad_hir::typeck::CheckedType`. Rejected rather than
+    /// silently coerced or accepted — overrides are typed edits to a typed
+    /// parametric model, not untyped values (`AGENTS.md`: "Units are typed
+    /// engineering quantities, not untyped floats").
+    ParamOverrideTypeMismatch {
+        name: String,
+        expected: String,
+        found: &'static str,
+        span: Span,
+    },
 }
 
 impl RuntimeError {
@@ -356,6 +392,8 @@ impl RuntimeError {
             RuntimeError::RecursionLimitExceeded { .. } => "BUDGET-E002".to_string(),
             RuntimeError::GeometryConstruction { err } => err.code().to_string(),
             RuntimeError::BuiltinArgumentShape { .. } => "RUNTIME-E123".to_string(),
+            RuntimeError::CyclicParamDependency { .. } => "RUNTIME-E124".to_string(),
+            RuntimeError::ParamOverrideTypeMismatch { .. } => "RUNTIME-E125".to_string(),
         }
     }
 
@@ -401,7 +439,9 @@ impl RuntimeError {
             | RuntimeError::NotIterable { span, .. }
             | RuntimeError::RangeNotIterable { span }
             | RuntimeError::IterationBudgetExceeded { span }
-            | RuntimeError::RecursionLimitExceeded { span } => *span,
+            | RuntimeError::RecursionLimitExceeded { span }
+            | RuntimeError::CyclicParamDependency { span, .. }
+            | RuntimeError::ParamOverrideTypeMismatch { span, .. } => *span,
         }
     }
 
@@ -434,6 +474,8 @@ impl RuntimeError {
             RuntimeError::RecursionLimitExceeded { .. } => "RECURSION_LIMIT_EXCEEDED",
             RuntimeError::GeometryConstruction { err } => err.title(),
             RuntimeError::BuiltinArgumentShape { .. } => "BUILTIN_ARGUMENT_SHAPE_MISMATCH",
+            RuntimeError::CyclicParamDependency { .. } => "CYCLIC_PARAM_DEPENDENCY",
+            RuntimeError::ParamOverrideTypeMismatch { .. } => "PARAM_OVERRIDE_TYPE_MISMATCH",
         }
     }
 
@@ -517,6 +559,18 @@ impl RuntimeError {
             RuntimeError::BuiltinArgumentShape { name, .. } => format!(
                 "internal error: '{name}' received an argument shape its own already-checked \
                  signature should have ruled out"
+            ),
+            RuntimeError::CyclicParamDependency { names, .. } => format!(
+                "cyclic dependency among derived 'param' declarations: {}",
+                names.join(" -> ")
+            ),
+            RuntimeError::ParamOverrideTypeMismatch {
+                name,
+                expected,
+                found,
+                ..
+            } => format!(
+                "override for param '{name}' has the wrong type: expected {expected}, found {found}"
             ),
         }
     }

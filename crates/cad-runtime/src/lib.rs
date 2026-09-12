@@ -49,6 +49,12 @@
 //!   [`interp::ResourceBudget`]/[`interp::ResourceUsage`] — the resource
 //!   limits it enforces and the accounting snapshot of what a run actually
 //!   consumed.
+//! - [`params`][] (`AICAD-065`, Stage 3): [`params::ParamModel`] — first-
+//!   class identity, derived-expression dependency edges, and a
+//!   deterministic evaluation/rebuild order for top-level `param`
+//!   declarations, plus [`params::ParamOverrides`] for the parametric
+//!   model's edit/rebuild entry point
+//!   ([`interp::Interpreter::run_top_level_parametric`]).
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §2.2;
 //! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (execution sits between
@@ -59,8 +65,10 @@
 
 pub mod error;
 pub mod interp;
+pub mod params;
 pub mod value;
 
 pub use error::RuntimeError;
 pub use interp::Interpreter;
+pub use params::{ParamDecl, ParamId, ParamModel, ParamModelError, ParamOverrides};
 pub use value::{NumberValue, RangeValue, Value, VariantPayload};

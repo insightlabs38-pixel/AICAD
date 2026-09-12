@@ -475,41 +475,126 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Import { .. } => continue,
             };
             let Some(value) = value else { continue };
-            let mut scratch: Frame = HashMap::new();
-            match self.eval_expr(&mut scratch, value) {
-                Ok(v) => {
-                    self.globals.insert(binding, v);
-                }
-                Err(Signal::Return(_)) => unreachable!(
-                    "a top-level let/const/param value expression can never contain a \
-                     `return` statement — `return` is only reachable inside a block, and no \
-                     top-level item value is a block-position statement sequence"
-                ),
-                // Unlike `return`, `break`/`continue` *can* syntactically
-                // appear inside a top-level value's nested block
-                // expression (e.g. `let x: Float = { break; };`) even
-                // though no loop encloses it there — a genuinely reachable
-                // "escaped every enclosing loop" case, not a `return`-style
-                // impossibility, so it gets the same real diagnostic
-                // `run_fn_body` gives it for a function body.
-                Err(Signal::Break(span)) => {
-                    return Err(Box::new(
-                        RuntimeError::BreakOutsideLoop { span }
-                            .to_diagnostic(self.file, self.source),
-                    ));
-                }
-                Err(Signal::Continue(span)) => {
-                    return Err(Box::new(
-                        RuntimeError::ContinueOutsideLoop { span }
-                            .to_diagnostic(self.file, self.source),
-                    ));
-                }
-                Err(Signal::Error(err)) => {
-                    return Err(Box::new(err.to_diagnostic(self.file, self.source)));
-                }
-            }
+            self.eval_top_level_value(binding, value)?;
         }
         Ok(())
+    }
+
+    /// Evaluates top-level `let`/`const` items in source order (identical
+    /// to [`Interpreter::run_top_level`]'s own first pass), then evaluates
+    /// every top-level `param` item via `model`'s dependency-ordered,
+    /// override-aware, deterministic schedule (`AICAD-065`,
+    /// `project/DECISION_LOG.md#DL-12` Level-1 determinism) instead of
+    /// `run_top_level`'s naive source-order pass. A `param` with an
+    /// `overrides` entry uses that value instead of its own `default`
+    /// expression — the parametric modeling system's edit/rebuild entry
+    /// point (`crate::params`' own module doc comment). When
+    /// `type_check` is `Some`, an override whose runtime type does not
+    /// match the param's own checked declared type is a real
+    /// [`RuntimeError::ParamOverrideTypeMismatch`] diagnostic, never a
+    /// silent coercion; `None` skips that check (a caller that has not
+    /// run [`cad_hir::typeck::check_program`] at all, e.g. a hand-built
+    /// test program).
+    ///
+    /// This is a complete alternative to [`Interpreter::run_top_level`],
+    /// not an addition to it — a caller wanting ordinary Stage-2 source-
+    /// order semantics with no parametric edit/rebuild behavior keeps
+    /// using that method; a caller wanting first-class parameter
+    /// identity/dependency/override semantics uses this one instead.
+    /// Wiring this into an actual build pipeline/CLI flag is a future
+    /// task's job (`AICAD-061`'s existing `cad-cli build` command predates
+    /// this task and calls neither parametrically yet) — mirrors
+    /// `project/DECISION_LOG.md#DL-15`'s own precedent of a task
+    /// establishing a mechanism and leaving source/CLI wiring to a later
+    /// task.
+    pub fn run_top_level_parametric(
+        &mut self,
+        program: &'a HirProgram,
+        model: &crate::params::ParamModel<'a>,
+        overrides: &crate::params::ParamOverrides,
+        type_check: Option<&cad_hir::typeck::TypeCheckResult>,
+    ) -> Result<(), Box<cad_diagnostics::Diagnostic>> {
+        for item in &program.items {
+            let (binding, value) = match item {
+                HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
+                    (*binding, value)
+                }
+                HirItem::Param { .. }
+                | HirItem::Fn { .. }
+                | HirItem::Struct { .. }
+                | HirItem::Enum { .. }
+                | HirItem::Part { .. }
+                | HirItem::Import { .. } => continue,
+            };
+            self.eval_top_level_value(binding, value)?;
+        }
+
+        for &id in model.evaluation_order() {
+            let decl = model.decl(id).expect(
+                "ParamModel::evaluation_order only ever yields ids the model itself declared",
+            );
+            if let Some(value) = overrides.get(&id) {
+                if let Some(Some(checked)) =
+                    type_check.and_then(|tc| tc.binding_types.get(id.0.index()))
+                    && !crate::params::value_matches_checked_type(value, checked)
+                {
+                    return Err(Box::new(
+                        RuntimeError::ParamOverrideTypeMismatch {
+                            name: decl.name.to_string(),
+                            expected: format!("{checked:?}"),
+                            found: value.kind_name(),
+                            span: decl.span,
+                        }
+                        .to_diagnostic(self.file, self.source),
+                    ));
+                }
+                self.globals.insert(id.0, value.clone());
+                continue;
+            }
+            let Some(default) = decl.default else {
+                continue;
+            };
+            self.eval_top_level_value(id.0, default)?;
+        }
+        Ok(())
+    }
+
+    /// Shared by [`Interpreter::run_top_level`] and [`Interpreter::
+    /// run_top_level_parametric`]: evaluates one top-level value
+    /// expression and stores it in `globals`, converting every non-`Ok`
+    /// [`Signal`] exactly like both call sites already did before this
+    /// helper existed.
+    fn eval_top_level_value(
+        &mut self,
+        binding: BindingId,
+        value: &'a HirExpr,
+    ) -> Result<(), Box<cad_diagnostics::Diagnostic>> {
+        let mut scratch: Frame = HashMap::new();
+        match self.eval_expr(&mut scratch, value) {
+            Ok(v) => {
+                self.globals.insert(binding, v);
+                Ok(())
+            }
+            Err(Signal::Return(_)) => unreachable!(
+                "a top-level let/const/param value expression can never contain a \
+                 `return` statement — `return` is only reachable inside a block, and no \
+                 top-level item value is a block-position statement sequence"
+            ),
+            // Unlike `return`, `break`/`continue` *can* syntactically
+            // appear inside a top-level value's nested block
+            // expression (e.g. `let x: Float = { break; };`) even
+            // though no loop encloses it there — a genuinely reachable
+            // "escaped every enclosing loop" case, not a `return`-style
+            // impossibility, so it gets the same real diagnostic
+            // `run_fn_body` gives it for a function body.
+            Err(Signal::Break(span)) => Err(Box::new(
+                RuntimeError::BreakOutsideLoop { span }.to_diagnostic(self.file, self.source),
+            )),
+            Err(Signal::Continue(span)) => Err(Box::new(
+                RuntimeError::ContinueOutsideLoop { span }.to_diagnostic(self.file, self.source),
+            )),
+            Err(Signal::Error(err)) => Err(Box::new(err.to_diagnostic(self.file, self.source))),
+        }
     }
 
     /// Calls the (unique, top-level, `BindingKind::Fn`) function named
@@ -3609,5 +3694,128 @@ mod tests {
         // Both `box(...)` calls actually ran (the `var` reassignment did
         // not skip the second one) -- two independent geometry nodes.
         assert_eq!(interp.geometry_graph().nodes().len(), 2);
+    }
+
+    // AICAD-065: first-class param declarations / derived expressions —
+    // `Interpreter::run_top_level_parametric`'s own end-to-end behavior
+    // (dependency-graph construction/cycle detection is `crate::params`'
+    // own test module's job; these tests exercise evaluation + edit/
+    // rebuild + override type validation specifically).
+
+    fn param_model_and_checked(source: &str) -> (LowerResult, cad_hir::typeck::TypeCheckResult) {
+        let lowered = compiled(source);
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        (lowered, checked)
+    }
+
+    #[test]
+    fn parametric_run_evaluates_derived_param_from_its_default() {
+        let source = "param width: Length = 40mm;\nparam double_width: Length = width * 2.0;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        let width_id = model.find_by_name("width").unwrap();
+        let double_id = model.find_by_name("double_width").unwrap();
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.04);
+        assert_number_eq(interp.globals[&double_id.0].clone(), 0.08);
+    }
+
+    #[test]
+    fn overriding_a_param_recomputes_its_dependents_deterministically() {
+        let source = "param width: Length = 40mm;\nparam double_width: Length = width * 2.0;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model.find_by_name("width").unwrap();
+        let double_id = model.find_by_name("double_width").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(width_id, dimensional(0.1, Dimension::Length));
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect("edit/rebuild should succeed");
+
+        // width used the override (0.1 m), and double_width recomputed
+        // from that override, not from its own stale default expression.
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.1);
+        assert_number_eq(interp.globals[&double_id.0].clone(), 0.2);
+    }
+
+    #[test]
+    fn override_with_wrong_type_is_a_structured_diagnostic_not_a_silent_coercion() {
+        let source = "param width: Length = 40mm;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model.find_by_name("width").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(width_id, Value::Bool(true));
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect_err("a Bool override for a Length param must be rejected");
+        assert_eq!(diag_code(&err), "RUNTIME-E125");
+    }
+
+    #[test]
+    fn cyclic_param_dependency_converts_to_a_structured_diagnostic() {
+        let source = "param a: Length = b;\nparam b: Length = a;\n";
+        let lowered = compiled(source);
+        let err = crate::params::ParamModel::build(&lowered.program)
+            .expect_err("cycle must be rejected")
+            .into_runtime_error();
+        let diag = err.to_diagnostic("test.aicad", source);
+        assert_eq!(diag.code.as_string(), "RUNTIME-E124");
+    }
+
+    #[test]
+    fn rebuild_is_deterministic_across_repeated_runs_with_the_same_overrides() {
+        // D5 Level-1 determinism: identical source + identical overrides
+        // must produce identical results on every rebuild, not merely the
+        // first one.
+        let source = "param a: Length = 1mm;\n\
+                       param b: Length = a * 3.0;\n\
+                       param c: Length = b + a;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let a_id = model.find_by_name("a").unwrap();
+        let c_id = model.find_by_name("c").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(a_id, dimensional(0.005, Dimension::Length));
+
+        let mut results = Vec::new();
+        for _ in 0..5 {
+            let mut interp =
+                Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+            interp
+                .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+                .expect("rebuild should succeed");
+            match &interp.globals[&c_id.0] {
+                Value::Number(n) => results.push(n.magnitude),
+                other => panic!("expected Number, got {other:?}"),
+            }
+        }
+        assert!(results.windows(2).all(|w| w[0] == w[1]));
+        // c = b + a = (a*3) + a = 4*a = 4*0.005 = 0.02
+        assert!((results[0] - 0.02).abs() < 1e-12);
     }
 }

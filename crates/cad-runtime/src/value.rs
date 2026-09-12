@@ -184,4 +184,31 @@ impl Value {
             Value::Geometry(_) => "Geometry",
         }
     }
+
+    /// This value's intrinsic [`OperandType`], for the two runtime kinds
+    /// that carry one directly (`Number`'s own `NumberValue::ty`, and
+    /// `Bool`/`Str`, whose scalar `PrimitiveType` is unambiguous with no
+    /// dimensional/affine bookkeeping needed) — `None` for every other
+    /// kind (`EnumVariant`/`Unit`/`List`/`Range`/`Geometry`), which either
+    /// has no `OperandType`-shaped counterpart at all or would need a
+    /// larger `CheckedType` comparison this crate does not attempt here.
+    /// Added for `AICAD-065`'s parametric-model override validation
+    /// (`crate::params::value_matches_checked_type`) — comparing a
+    /// caller-supplied override `Value` against a param's own
+    /// `cad_hir::typeck::CheckedType::Value` without re-deriving type
+    /// resolution independently in this crate (this module's own doc
+    /// comment already documents why this crate never re-derives type-
+    /// checker context).
+    pub fn operand_type(&self) -> Option<OperandType> {
+        match self {
+            Value::Number(n) => Some(n.ty),
+            Value::Bool(_) => Some(OperandType::Scalar(cad_types::PrimitiveType::Bool)),
+            Value::Str(_) => Some(OperandType::Scalar(cad_types::PrimitiveType::String)),
+            Value::EnumVariant { .. }
+            | Value::Unit
+            | Value::List(_)
+            | Value::Range(_)
+            | Value::Geometry(_) => None,
+        }
+    }
 }
