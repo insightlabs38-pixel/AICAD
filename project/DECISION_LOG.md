@@ -865,3 +865,271 @@ them; do not add entries here unilaterally.
   source API specification this ruling requires); `D9`/`DL-7` (unweakened —
   a genuine future compiler intrinsic still needs its own RFC).
 - Supersedes: none (first ruling on D18).
+
+---
+
+## DL-16: Stage 2 passed — owner approval of the `AICAD-064` PASS WITH CONDITIONS gate
+
+- Date: 2026-09-12
+- Resolves: Stage-2 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: **Stage 2 has passed.** The owner accepts `project/gates/
+  stage-2-gate.md`'s (`AICAD-064`) PASS WITH CONDITIONS recommendation: the
+  complete Stage-2 source -> parser/type/HIR/runtime -> Geometry IR ->
+  kernel-neutral API -> exact B-rep -> STEP slice is accepted as evidenced
+  (full clean re-run: `cargo fmt --all -- --check`, `cargo clippy
+  --workspace --all-targets --all-features -- -D warnings` zero warnings
+  across 27 crates, `cargo test --workspace` zero failures, `cargo test -p
+  cad-cli --test stage2_end_to_end -- --test-threads=1` 3/3; independently
+  re-verified kernel/Geometry-IR boundary and no-demo-shortcut claims). The
+  gate's one condition — `project/OWNER_DECISIONS.md#D19` (D5 v1
+  comparison-profile numeric tolerance constants) — is explicitly
+  **non-blocking** for Stage-2 completion itself, per `DECISION_LOG.md
+  #DL-12`'s own framing ("before the Stage 8/13 determinism benchmarks
+  mature") and `AICAD-064`'s own escalation. This decision is the
+  owner-recorded pass decision `AGENTS.md`/`project/CURRENT_STAGE.md`
+  require before Stage 3 may begin, following the `DL-10`/`DL-11` pattern.
+- Rationale: `AICAD-064`'s audit independently re-verified every Stage-2
+  exit-gate criterion (not merely cited prior task reports) against actual
+  current code and a from-clean-state re-run of the full verification
+  suite, found no BLOCKER, and the one open condition (D19's remaining
+  four unevidenced constants: `linear_rel`/`area_abs`/`area_rel`/
+  `volume_abs`) does not gate any Stage-2 acceptance criterion — no
+  `AICAD-038`..`AICAD-063` task ever required those constants to exist.
+  Carrying D19 forward as the first Stage-3 task (`AICAD-064A`, Batch
+  S3-00) rather than blocking Stage-2 exit on it matches `AGENTS.md`'s
+  "quality gates are requirements for continued development, not
+  substitutes for continued development" and avoids inventing an
+  unscheduled stabilization period the campaign brief explicitly forbids.
+- Alternatives considered: withholding Stage-2 approval until D19 fully
+  resolves (rejected — D19 blocks no Stage-2 acceptance criterion, and
+  `crates/cad-validation` was never a Stage-2 task in the first place, so
+  there is nothing Stage-2-scoped left to wait on); re-litigating any of
+  the already-closed Stage-2 batch checkpoints (rejected — no new evidence
+  contradicts `STAGE2-A_FRONTEND.md`/`STAGE2-B_TYPES_HIR.md`/
+  `STAGE2-C_EXECUTION.md`, all independently re-audited by `AICAD-064`
+  itself).
+- Affected RFCs/tasks: Closes out Stage 2 (`AICAD-038` through `AICAD-064`).
+  Unblocks Stage 3 (`project/CURRENT_STAGE.md` advances to Stage 3;
+  `AICAD-064A` onward, per `project/TASKS.yaml` and the fixed Stage-3 batch
+  order S3-00 through S3-10 — `AICAD-080` and all Stage-4 implementation
+  remain forbidden until a later, separate, explicit owner approval after
+  the Stage-3 final gate, `AICAD-079B`).
+- Supersedes: none (first Stage-2 pass ruling). Does not reopen or alter
+  any other `OWNER_DECISIONS.md`/`DECISION_LOG.md` entry.
+
+---
+
+## DL-17: D19 partial ruling — three of seven D5 v1 comparison-profile constants accepted; the rest require `AICAD-064A` calibration
+
+- Date: 2026-09-12
+- Resolves: `OWNER_DECISIONS.md#D19` (partial).
+- Decision: The owner accepts the three directly-evidenced constants
+  `AICAD-064`'s audit (`project/OWNER_DECISIONS.md#D19`, sourced from
+  `project/reports/AICAD-034.md`) already produced, as v1 defaults:
+
+  ```text
+  linear_abs         = 0.0001 mm   (1e-4 mm)
+  center_of_mass_abs = linear_abs
+  volume_rel         = 0.001       (1e-3)
+  ```
+
+  `linear_abs` is a physical quantity expressed canonically (millimetres),
+  never a dimensionless number reinterpreted in a caller's own display
+  units — consistent with `DL-3`'s structural-canonicalization ruling. The
+  owner does **not** authorize guessed defaults for the remaining four:
+  `linear_rel`, `area_abs`, `area_rel`, `volume_abs` — no existing Stage-1/
+  Stage-2 evidence exercised a multi-scale fixture or measured an area
+  comparison at all, and a dimensional-analogy guess (e.g. `area_rel ≈
+  volume_rel`) would be exactly the unsupported guess `AGENTS.md`
+  prohibits. `AICAD-064A` (Batch S3-00) must run a focused, bounded,
+  multi-scale calibration corpus (characteristic scales spanning
+  approximately 1 mm, 10 mm, 100 mm, 1000 mm; primitives, transforms,
+  booleans, fillets/chamfers, analytically checkable area, analytically
+  checkable volume, center of mass, repeated rebuilds; absolute error,
+  relative error, and repeat-run numerical drift measured separately, on
+  one machine — cross-platform behavior must not be inferred from
+  same-machine repeated runs) and derive the remaining constants from that
+  measured evidence, escalating back here (as a superseding entry) rather
+  than guessing if the evidence is ambiguous, or if a required tolerance
+  looks obviously unreasonable, or if the data conflicts materially with
+  `DL-12`'s existing D5 contract.
+- Rationale: Owner ruling, per `AGENTS.md`'s "produce the
+  measurements/recommendation and escalate the constants rather than
+  guessing" and `DECISION_LOG.md#DL-12`'s own instruction that Stage 2/3
+  "derive and document" the v1 constants "from actual ... evidence." The
+  three accepted constants already have direct, repeated, evidenced
+  support (`AICAD-034`'s five-repeat-run bounding-box/volume measurements);
+  the other four have never been measured against any real fixture at any
+  scale, so accepting them now would be exactly the "guessed default" `D19`
+  itself flagged as prohibited.
+- Alternatives considered: accepting all seven constants now via
+  dimensional-analogy extrapolation from the three evidenced ones
+  (rejected outright by `D19`'s own text: "The owner does NOT authorize
+  guessed defaults"); deferring all seven, including the three already
+  evidenced, until `AICAD-064A` completes (rejected — the three evidenced
+  constants have real, repeated, multi-run supporting data today; there is
+  no reason to withhold them pending a calibration pass that is not
+  measuring them again from scratch, only extending coverage to the other
+  four and to multiple scales).
+- Affected RFCs/tasks: `AICAD-064A` (Batch S3-00, must implement/calibrate
+  the complete v1 profile in `crates/cad-validation` per this ruling and
+  `DL-12`'s comparison-profile shape); `DECISION_LOG.md#DL-12` (unweakened —
+  this only fixes concrete numeric constants, not the profile's shape or
+  layering).
+- Supersedes: none (first ruling on the concrete D19 constants; narrows,
+  does not reopen, `DL-12`).
+
+---
+
+## DL-18: D10 — diagnostic code/schema stability policy
+
+- Date: 2026-09-12
+- Resolves: `OWNER_DECISIONS.md#D10`.
+- Decision: Committed diagnostic identifiers (`FAMILY-Exxx`/`Wxxx`/`Ixxx`
+  codes already used by a merged commit) are durable. A committed code must
+  never be silently repurposed for a different meaning. Pre-1.0
+  diagnostics may be deprecated or replaced, but never silently renumbered
+  or reused for an unrelated condition — a deprecated code is retired
+  (documented as deprecated, optionally kept emitting with a
+  superseded-by note) rather than reassigned. Machine-readable diagnostic
+  schemas (`docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md`'s JSON schema) are
+  versioned; a compatibility-breaking schema change (removing a field,
+  changing a field's meaning/type, removing a family) requires explicit
+  review — recorded here, not silently shipped in an ordinary task commit.
+  Adding a *new* code within an already-reserved family (e.g. the next
+  `RUNTIME-E1xx`), or adding a wholly new family for a genuinely new
+  diagnostic domain, is ordinary task work and does not itself require an
+  owner ruling — only *repurposing* an existing committed code, or a
+  breaking schema change, does.
+- Rationale: Owner ruling, per the Stage-3 campaign brief's explicit
+  requirement that this decision be in force before `AICAD-078` normalizes
+  new modeling diagnostics, and per every existing diagnostic module's own
+  already-stated assumption ("provisional per D10" — `crates/cad-runtime/
+  src/error.rs`, `crates/cad-hir/src/typeck.rs`) that such a policy would
+  eventually be recorded. Codifying "durable once committed, not
+  repurposed, versioned schema" gives every future diagnostic-adding task
+  (Stage 3's `AICAD-072`/`073`/`074`/`075`/`076`/`077`/`078`/`079` included)
+  a fixed rule rather than an implicit convention.
+- Alternatives considered: allowing pre-1.0 codes to be freely renumbered
+  (rejected — every diagnostic module in this codebase already documents
+  its own codes as "provisional per D10" in anticipation of exactly this
+  ruling landing before renumbering became a real risk with real external
+  consumers, e.g. `cad-lsp`/tooling reading fixed codes); requiring a full
+  1.0-style stability guarantee immediately (rejected — pre-1.0
+  deprecate-and-replace remains allowed, matching how every other
+  Stage 0-2 provisional decision in this log treats pre-1.0 flexibility).
+- Affected RFCs/tasks: `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md` §10-12;
+  every diagnostic-emitting crate (`cad-diagnostics`, `cad-hir::typeck`,
+  `cad-runtime::error`, `cad-units::arithmetic`, `cad-geometry-api::ir`,
+  `cad-occt-bridge`); `AICAD-078` (Stage 3, "normalized diagnostics" —
+  this ruling must be in force first, per the campaign brief).
+- Supersedes: none (first ruling on D10).
+
+---
+
+## DL-19: D3 — sketch entity/object model
+
+- Date: 2026-09-12
+- Resolves: `OWNER_DECISIONS.md#D3`.
+- Decision: The authoritative Stage-3 sketch model is an explicit,
+  kernel-independent semantic `Sketch` object. A `Sketch` owns/contains an
+  explicit plane/frame, explicit entity nodes (`line`, `circle`, `arc`,
+  ...), explicit constraint nodes, deterministic local semantic entity
+  identities suitable for the sketch IR (mirroring `param`'s own
+  `BindingId`-based identity precedent from `AICAD-065`/this log's `DL-16`
+  era, not a parallel identity scheme), and source/provenance links where
+  available. Sketch entities are **not** registered through hidden global
+  mutable state — an entity created inside a `sketch { ... }` block may use
+  lowering-context information to attach itself to that block's own
+  `Sketch`, but the resulting IR must explicitly identify both the owning
+  sketch and the entity itself; no entity's existence may depend on an
+  implicit, unobservable side effect. Surface block syntax (`sketch(plane)
+  { line(...); circle(...); }`) may exist as ergonomic sugar, but it must
+  lower to this same explicit functional/value semantic model — matching
+  `DL-2`'s own "method/builder syntax is sugar lowering to functional
+  semantics" precedent. Stage-3 sketch entity identity must **not** be
+  represented by OCCT topology IDs, and this decision does **not** claim to
+  solve Stage-4 persistent topological naming — a sketch entity's Stage-3
+  identity is stable only within one build/edit of that sketch's own IR,
+  not across arbitrary topology-changing rebuilds.
+- Rationale: Owner ruling, per the Stage-3 campaign brief's explicit
+  requirement that this decision be recorded before the sketch-entity-IR
+  batch (`AICAD-072`, Batch S3-04) begins. `docs/plan/
+  04_HIGH_LEVEL_MODELING_API.md` §3 already favors explicit sketch objects
+  internally with block syntax as sugar but never specified the actual
+  binding mechanism (`project/reports/ORIENTATION_PASS.md` §6, contradiction
+  4) — this ruling picks the explicit-object option the plan itself leaned
+  toward, and forecloses the alternative (implicit global registration)
+  `AGENTS.md`'s "no secret mutation semantics" non-negotiable would
+  otherwise leave ambiguous going into Stage 3.
+- Alternatives considered: implicit global sketch-registration (a bare
+  `line(...)` call mutating some ambient "current sketch" global state)
+  (rejected — "hidden mutable global registration" is exactly what
+  `AGENTS.md`'s functional-core/no-secret-mutation non-negotiables and this
+  ruling's own text forbid); deferring the sketch object model until
+  `AICAD-072` itself decides it ad hoc (rejected — sketch/constraint IR is
+  exactly the kind of "select between major unresolved architecture
+  alternatives" `AGENTS.md` requires escalating rather than deciding
+  silently inside a single task).
+- Affected RFCs/tasks: `AICAD-072` (Batch S3-04, "Create minimal sketch
+  entity IR" — must implement exactly this model); `AICAD-073`/`074`/`075`
+  (Batch S3-05, constraint IR/lowering, build on this same `Sketch` object);
+  `docs/plan/04_HIGH_LEVEL_MODELING_API.md` §3.
+- Supersedes: none (first ruling on D3).
+
+---
+
+## DL-20: D11 — constraint IR semantics and solver-independence rules
+
+- Date: 2026-09-12
+- Resolves: `OWNER_DECISIONS.md#D11`.
+- Decision: The AICAD constraint IR (not a solver backend) is authoritative
+  for every observable constraint semantic. It owns: typed/dimensioned
+  constraint variables; constraint kinds and their parameters; semantic IDs
+  (mirroring `DL-19`'s own sketch-entity-identity precedent — AICAD-owned,
+  not kernel/solver-owned); source/provenance mapping; the solve-status
+  vocabulary (at minimum: solved, underconstrained, overconstrained); and a
+  structured diagnostic/evidence vocabulary. A solver backend owns
+  numerical algorithms only, and must **not** redefine dimensional
+  semantics, the meaning of any constraint kind, success/failure
+  classifications, or observable ambiguity/underconstraint semantics. For a
+  multiple-solution or underconstrained case, the backend must expose
+  structured status/degrees-of-freedom/evidence — it must never let a
+  backend-specific arbitrary branch silently become AICAD language
+  semantics; a deterministic branch-selection policy, if ever required,
+  belongs above the solver adapter and needs its own explicit
+  specification (not authorized by this ruling). For an overconstrained
+  case, structured conflict evidence is desirable, but a provably minimal
+  conflict set is **not** required in the Stage-3 baseline. Exactly one
+  initial solver implementation is permitted behind this interface; the
+  interface itself must permit a later solver replacement without changing
+  public constraint semantics. Numerical tolerances that affect observable
+  behavior must be explicit and versioned (mirroring `DL-12`/`DL-17`'s D5
+  versioned-profile precedent) and must never be silently widened merely to
+  make a test pass.
+- Rationale: Owner ruling, per the Stage-3 campaign brief's explicit
+  requirement that this decision be recorded before the constraint-IR batch
+  (`AICAD-073`, Batch S3-05) begins, and per `AGENTS.md`'s own non-
+  negotiable "stable semantic references are preferred; ambiguity is an
+  error, never an arbitrary selection" extended here to constraint solving
+  specifically. `docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md` §4/§6
+  describes a constraint IR conceptually but never froze the precise
+  solver-independence boundary (`project/OWNER_DECISIONS.md#D11`'s own
+  original "Status: Open" text) — this ruling freezes that boundary before
+  any solver-backed implementation exists to entrench an ad hoc one.
+- Alternatives considered: letting the first solver implementation
+  implicitly define constraint semantics by precedent (rejected — exactly
+  the "select between major unresolved architecture alternatives"
+  escalation trigger `AGENTS.md` requires an owner ruling for, and would
+  make later solver replacement a breaking change rather than an internal
+  swap); requiring a provably minimal overconstraint conflict set in the
+  Stage-3 baseline (rejected as premature — no Stage-3 task needs it, and
+  demanding it now would be exactly the kind of scope-creep the campaign
+  brief's "do not pull forward... full verification framework" line
+  forbids).
+- Affected RFCs/tasks: `AICAD-073` (Batch S3-05, "Create solver-independent
+  sketch constraint IR/adapter" — must implement exactly this boundary);
+  `AICAD-074`/`075` (build on the same IR); `docs/plan/
+  08_CONSTRAINTS_REQUIREMENTS_TESTS.md` §4, §6.
+- Supersedes: none (first ruling on D11).

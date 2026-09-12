@@ -26,15 +26,15 @@ rationale live in `project/DECISION_LOG.md`.
 |---|---|
 | D1 Canonical surface syntax | RESOLVED — DL-1 |
 | D2 Mutation semantics | RESOLVED — DL-2 |
-| D3 Sketch entity/object model | open |
+| D3 Sketch entity/object model | RESOLVED — DL-19 |
 | D4 Type/units semantics | RESOLVED — DL-3 |
 | D5 Determinism-equivalence contract | RESOLVED (v1 policy) — DL-12 |
 | D6 Kernel abstraction boundary | RESOLVED — DL-5 |
 | D7 Reference resolution/fallback policy | PARTIALLY RESOLVED — DL-8 |
 | D8 OCAF vs. kernel-independent graph | PARTIALLY RESOLVED (directional) — DL-9 |
 | D9 Intrinsic-vs-package boundary | RESOLVED — DL-7 |
-| D10 Diagnostic stability policy | open |
-| D11 Constraint IR/solver independence | open |
+| D10 Diagnostic stability policy | RESOLVED — DL-18 |
+| D11 Constraint IR/solver independence | RESOLVED — DL-20 |
 | D12 Trusted native plugin boundary | open |
 | D13 OCCT/standards licensing | PARTIALLY RESOLVED (development policy) — DL-6 |
 | D14 File extension/branding | RESOLVED — DL-4 |
@@ -42,7 +42,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
 | D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
 | D18 Geometry-operation invocation mechanism from `.aicad` source | RESOLVED (runtime-backed standard functions) — DL-15 |
-| D19 D5 v1 comparison-profile numeric tolerance constants | open (measurements/recommendation produced) |
+| D19 D5 v1 comparison-profile numeric tolerance constants | PARTIALLY RESOLVED — DL-17 |
 
 ---
 
@@ -94,6 +94,15 @@ desugaring/SSA lowering rule is not specified.
 
 ## D3. Sketch entity/object model
 
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-19`.** An explicit,
+kernel-independent semantic `Sketch` object owns its plane/frame, explicit
+entity nodes, explicit constraint nodes, deterministic local semantic entity
+identities, and source/provenance links; no hidden global mutable
+registration; block syntax may exist as sugar but must lower to this same
+explicit model; Stage-3 sketch entity identity is not OCCT topology IDs and
+does not claim to solve Stage-4 persistent topological naming. Original
+question/context kept below for record.
+
 **Question:** Are sketch entities (`line`, `circle`, `arc`, ...) explicit
 named objects registered onto a `Sketch` value, or sugar over a declarative
 block? How does an entity created by a free function actually attach to a
@@ -104,8 +113,9 @@ specific `Sketch`'s plane and constraint solver?
 §4.3. No example in the bundle (checked 02, 04, 18) shows the binding
 mechanism — see `project/reports/ORIENTATION_PASS.md` §6 (contradiction 4).
 
-**Status:** Open; plan favors explicit objects internally with block syntax
-as sugar, but the mechanism is undefined.
+**Prior framing (superseded — see resolution above):** Plan favored explicit
+objects internally with block syntax as sugar, but the mechanism was
+undefined.
 
 **Blocking impact:** Stage 3 sketch IR/constraint tasks (AICAD-072, AICAD-073,
 AICAD-074, AICAD-075).
@@ -295,6 +305,14 @@ until the standard library work in Stage 3+ begins in earnest.
 
 ## D10. Diagnostic code/schema stability policy
 
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-18`.** Committed
+diagnostic codes are durable and never silently repurposed; pre-1.0 codes
+may be deprecated/replaced but not silently renumbered/reused; the
+machine-readable schema is versioned; a compatibility-breaking schema
+change requires explicit review. Adding a new code in an existing family,
+or a wholly new family, is ordinary task work. Original question/context
+kept below for record.
+
 **Question:** What is the exact stability/deprecation policy for diagnostic
 codes (the `PARSE-E###`/`GEOM-E###`/etc. families) once published — can
 codes be renumbered pre-1.0, and what is the process for adding new
@@ -303,15 +321,27 @@ families?
 **Plan references:** `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md` §10-12;
 `AICAD_AGENT_OPERATING_MODEL.md` §7 item 10.
 
-**Status:** A taxonomy and JSON schema exist; a stability policy does not.
+**Prior framing (superseded — see resolution above):** A taxonomy and JSON
+schema existed; a stability policy did not.
 
 **Blocking impact:** AICAD-038 (`cad-diagnostics` crate + JSON-schema
-conformance tests) is the first task that materializes this schema — should
-be settled at or before that task.
+conformance tests) is the first task that materialized this schema;
+AICAD-078 (Stage 3, normalized diagnostics) requires this ruling in force
+first.
 
 ---
 
 ## D11. Constraint IR semantics and solver-independence rules
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-20`.** The AICAD
+constraint IR (typed variables, constraint kinds/parameters, semantic IDs,
+provenance, solve-status vocabulary, structured diagnostics) is
+authoritative; a solver backend owns numerical algorithms only and may
+never redefine dimensional semantics, constraint-kind meaning, success/
+failure classification, or silently let an arbitrary branch become
+language semantics; a provably minimal overconstraint conflict set is not
+required in the Stage-3 baseline. Original question/context kept below for
+record.
 
 **Question:** Exact constraint IR contract (`docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md`
 §4) and the precise boundary of what a pluggable solver backend may vs. may
@@ -322,8 +352,11 @@ selection, conflict-set minimality guarantees).
 `docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md` §4, §6;
 `AICAD_AGENT_OPERATING_MODEL.md` §7 item 11.
 
-**Status:** Open; needed before sketch/assembly solving expands
-(Stage 3 AICAD-073/074, Stage 6).
+**Prior framing (superseded — see resolution above):** Open; needed before
+sketch/assembly solving expands (Stage 3 AICAD-073/074, Stage 6).
+
+**Blocking impact:** AICAD-073 (Batch S3-05) implements this boundary
+directly.
 
 ---
 
@@ -773,8 +806,16 @@ completes, per the fixed Batch S2-11 order.
 
 ## D19. D5 v1 comparison-profile numeric tolerance constants
 
-**Status: open — measurements/recommendation produced, owner ruling
-requested.** `DECISION_LOG.md#DL-12` froze the *shape* of the D5
+**Status: PARTIALLY RESOLVED — see `project/DECISION_LOG.md#DL-17`.** The
+owner accepts the three directly-evidenced constants below (`linear_abs =
+0.0001 mm`, `center_of_mass_abs = linear_abs`, `volume_rel = 0.001`) as v1
+defaults now. **Still open:** `linear_rel`/`area_abs`/`area_rel`/
+`volume_abs` require `AICAD-064A`'s bounded multi-scale calibration corpus
+(Batch S3-00) before they may be set — no guessed/dimensional-analogy
+default is authorized for them. Original question/context kept below for
+record.
+
+`DECISION_LOG.md#DL-12` froze the *shape* of the D5
 comparison profile (`linear`/`area`/`volume`/`center-of-mass`, each scaled
 by characteristic linear scale `S`) but explicitly left the concrete v1
 numeric constants unfixed, assigning Stage 2 to "derive and document them
