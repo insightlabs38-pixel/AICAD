@@ -1,6 +1,7 @@
-# Stage-2 Safe CAD source API
+# Safe CAD source API
 
-Status: Stage 2, authoritative for the current Stage-2 window.
+Status: Stage 2 (authoritative baseline) plus Stage 3 additions
+(`AICAD-070`/`AICAD-071`, see "Stage-3 additions" below).
 Owner ruling: `project/DECISION_LOG.md#DL-15` (resolving
 `project/OWNER_DECISIONS.md#D18`).
 Implementing crate/task: `AICAD-060`, `crates/cad-hir/src/builtins.rs`
@@ -156,6 +157,65 @@ kernel operation already exists:
   kernel *during* interpretation rather than after it, as this task's own
   two-phase design assumes), that is its own future architecture decision,
   not something folded silently into this one.
+
+## Stage-3 additions
+
+### Geometry data types (`AICAD-070`)
+
+Six ordinary (generic where useful) `struct` types, loaded via
+`cad_hir::geometry_types::with_geometry_types` exactly like `crate::
+prelude::with_prelude` loads `Result`/`Optional` — see that module's own
+doc comment for the full mechanism:
+
+| Type | Fields |
+|---|---|
+| `Vector2<T>` | `x: T`, `y: T` |
+| `Vector3<T>` | `x: T`, `y: T`, `z: T` |
+| `Point2` | `x: Length`, `y: Length` |
+| `Point3` | `x: Length`, `y: Length`, `z: Length` |
+| `Axis3` | `origin: Point3`, `direction: Vector3<Float>` |
+| `Frame3` | `origin: Point3`, `x_axis: Vector3<Float>`, `y_axis: Vector3<Float>`, `z_axis: Vector3<Float>` |
+
+Constructed and read with the language's ordinary, already-approved struct
+call-construction/field-access syntax (`Point3(x = 1mm, y = 2mm, z = 3mm)`,
+`p.z`) — `AICAD-070` also completes the runtime side of that machinery
+(`cad_runtime::value::Value::Struct`), which previously type-checked but
+had no runtime representation at all (`cad_runtime::error::RuntimeError::
+NotCallable`'s own prior doc comment documented this exact gap).
+
+**Not yet wired into any builtin signature.** No existing or new
+`RuntimeBuiltin` function accepts a `Vector3<Length>`/`Point3`/`Frame3`/
+`Axis3` parameter yet — Stage 2's `box`/`cylinder`/`transform` keep their
+existing flat scalar signatures unchanged (rewriting them risks the
+already-proven `AICAD-063` Stage-2 gate fixture), and `plate` (below)
+deliberately stays scalar-only for the same reason. `Frame3`/`Axis3` are
+passive data shapes only so far; a coherent axis/frame/rotation
+*semantics* for revolve/transform/mirror/circular-pattern is `AICAD-075A`'s
+own explicitly assigned task, not this one's.
+
+### `plate(width, depth, thickness) -> Geometry` (`AICAD-071`)
+
+A rectangular plate, corner at the origin — dispatches to the identical
+`GeometryOp::Box` construction `box` itself uses (`width/depth/thickness`
+-> `dx/dy/dz`); no new `GeometryOp` variant was needed. Deliberately
+narrower than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own `plate`
+signature (no `center`/`corner_radius`/`frame`/`centered` parameters yet —
+`corner_radius` would need low-level wire/face construction this catalogue
+does not expose, per this document's own "Deliberately not exposed as
+Stage-2 source functions" section; `center`/`frame` placement is left to an
+ordinary `transform` call).
+
+### Part concept (`AICAD-071`)
+
+A `part { ... }` body's own top-level `let`/`const`/`param`-with-default
+items — which may freely call `box`/`cylinder`/`plate`/... — now actually
+execute (`cad_runtime::interp::Interpreter::run_top_level`), producing a
+`cad_runtime::value::Value::Part` carrying the part's own named outputs.
+Deliberately narrow: no parameterized part *instantiation* call syntax
+(`Bracket()`) and no `.`-syntax source-level access to a part's own named
+outputs (`Bracket.body`) exist yet — see `Interpreter::eval_part_body`'s
+own doc comment for the exact scope this represents and what remains
+future work.
 
 ## Determinism / resource accounting
 

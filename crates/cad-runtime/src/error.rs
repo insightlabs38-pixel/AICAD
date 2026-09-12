@@ -152,13 +152,14 @@ pub enum RuntimeError {
         rhs: &'static str,
         span: Span,
     },
-    /// `callee(args)` resolved to a binding that is not `BindingKind::Fn`
-    /// (a struct/enum/plain variable/etc. called as a function) — struct-
-    /// literal construction via call syntax type-checks (`AICAD-053`) but
-    /// has no runtime representation yet (see `crate::value`'s module doc
-    /// comment); any other non-`Fn` callee kind was never callable to
-    /// begin with (`cad_hir::typeck::check_call`'s own documented "any
-    /// other callee kind" pass-through).
+    /// `callee(args)` resolved to a binding that is not `BindingKind::Fn`/
+    /// `BindingKind::EnumVariant`/`BindingKind::Struct` (a plain variable/
+    /// `part`/etc. called as a function) — struct-literal construction via
+    /// call syntax (`AICAD-053`) now has a real runtime representation
+    /// (`AICAD-070`, [`crate::value::Value::Struct`]); any other non-
+    /// callable binding kind was never callable to begin with (`cad_hir::
+    /// typeck::check_call`'s own documented "any other callee kind"
+    /// pass-through).
     NotCallable {
         name: String,
         span: Span,
@@ -214,17 +215,21 @@ pub enum RuntimeError {
     NonExhaustiveMatch {
         span: Span,
     },
-    /// A HIR node this crate does not execute yet — struct field access
-    /// and construction have no runtime value representation yet (see
-    /// `crate::value`'s module doc comment); method calls have no
-    /// method/interface-implementation declaration syntax anywhere in the
-    /// language. Reported as a structured diagnostic, never a panic, so a
-    /// program that happens to exercise one of these before its owning
-    /// task lands fails cleanly. (`for`-loop iteration over a `List`/
-    /// `Range` is implemented — `AICAD-056`, `project/OWNER_DECISIONS.md
-    /// #D16` — and no longer reaches this variant; see
-    /// [`RuntimeError::NotIterable`]/[`RuntimeError::RangeNotIterable`]
-    /// for the two ways a `for` loop can still fail cleanly.)
+    /// A HIR node this crate does not execute yet. As of `AICAD-070`,
+    /// struct field access/construction *are* implemented
+    /// (`Value::Struct`) — this variant now covers exactly: field access
+    /// on a receiver that resolved to some other, non-struct/non-`Part`
+    /// value kind (defensive; `cad_hir::typeck::check_field_access`
+    /// already rejects this at compile time for a type-checked program),
+    /// and method calls, which have no method/interface-implementation
+    /// declaration syntax anywhere in the language. Reported as a
+    /// structured diagnostic, never a panic, so a program that happens to
+    /// exercise one of these before its owning task lands fails cleanly.
+    /// (`for`-loop iteration over a `List`/`Range` is implemented —
+    /// `AICAD-056`, `project/OWNER_DECISIONS.md#D16` — and no longer
+    /// reaches this variant; see [`RuntimeError::NotIterable`]/
+    /// [`RuntimeError::RangeNotIterable`] for the two ways a `for` loop can
+    /// still fail cleanly.)
     Unsupported {
         construct: &'static str,
         span: Span,
@@ -356,6 +361,34 @@ pub enum RuntimeError {
         found: &'static str,
         span: Span,
     },
+    /// A struct-literal construction call (`callee(args)` resolving to a
+    /// `BindingKind::Struct` binding, `AICAD-070`) received an argument
+    /// shape (arity, or a named argument naming a field that does not
+    /// exist) its own already-checked signature should have ruled out.
+    /// Mirrors [`RuntimeError::BuiltinArgumentShape`]'s own "internal
+    /// error" framing exactly: `cad_hir::typeck::Checker::
+    /// check_struct_construction` already verifies field count/names/types
+    /// for a type-checked program, so this should be unreachable in
+    /// practice — defended here per this module's own "trusts, but
+    /// verifies" precedent, never a panic.
+    StructConstructionArgumentShape {
+        name: String,
+        span: Span,
+    },
+    /// `receiver.field` (`AICAD-070`) evaluated `receiver` to a
+    /// [`crate::value::Value::Struct`]/[`crate::value::Value::Part`] with
+    /// no field named `field`. `cad_hir::typeck::Checker::
+    /// check_field_access` already rejects an unknown struct field at
+    /// compile time (`TYPE-E431`), so this is unreachable for a
+    /// type-checked program constructed through ordinary struct
+    /// declarations; defended here anyway per this module's own doc
+    /// comment (and reachable in practice for a `Value::Part`, which has
+    /// no compile-time field check at all yet — see `Value::Part`'s own
+    /// doc comment).
+    UnknownField {
+        field: String,
+        span: Span,
+    },
 }
 
 impl RuntimeError {
@@ -394,6 +427,8 @@ impl RuntimeError {
             RuntimeError::BuiltinArgumentShape { .. } => "RUNTIME-E123".to_string(),
             RuntimeError::CyclicParamDependency { .. } => "RUNTIME-E124".to_string(),
             RuntimeError::ParamOverrideTypeMismatch { .. } => "RUNTIME-E125".to_string(),
+            RuntimeError::StructConstructionArgumentShape { .. } => "RUNTIME-E126".to_string(),
+            RuntimeError::UnknownField { .. } => "RUNTIME-E127".to_string(),
         }
     }
 
@@ -441,7 +476,9 @@ impl RuntimeError {
             | RuntimeError::IterationBudgetExceeded { span }
             | RuntimeError::RecursionLimitExceeded { span }
             | RuntimeError::CyclicParamDependency { span, .. }
-            | RuntimeError::ParamOverrideTypeMismatch { span, .. } => *span,
+            | RuntimeError::ParamOverrideTypeMismatch { span, .. }
+            | RuntimeError::StructConstructionArgumentShape { span, .. }
+            | RuntimeError::UnknownField { span, .. } => *span,
         }
     }
 
@@ -476,6 +513,10 @@ impl RuntimeError {
             RuntimeError::BuiltinArgumentShape { .. } => "BUILTIN_ARGUMENT_SHAPE_MISMATCH",
             RuntimeError::CyclicParamDependency { .. } => "CYCLIC_PARAM_DEPENDENCY",
             RuntimeError::ParamOverrideTypeMismatch { .. } => "PARAM_OVERRIDE_TYPE_MISMATCH",
+            RuntimeError::StructConstructionArgumentShape { .. } => {
+                "STRUCT_CONSTRUCTION_ARGUMENT_SHAPE_MISMATCH"
+            }
+            RuntimeError::UnknownField { .. } => "UNKNOWN_FIELD",
         }
     }
 
@@ -572,6 +613,13 @@ impl RuntimeError {
             } => format!(
                 "override for param '{name}' has the wrong type: expected {expected}, found {found}"
             ),
+            RuntimeError::StructConstructionArgumentShape { name, .. } => format!(
+                "internal error: construction of '{name}' received an argument shape its own \
+                 already-checked signature should have ruled out"
+            ),
+            RuntimeError::UnknownField { field, .. } => {
+                format!("value has no field named '{field}'")
+            }
         }
     }
 

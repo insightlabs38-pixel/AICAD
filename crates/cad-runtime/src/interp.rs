@@ -236,6 +236,12 @@ pub struct Interpreter<'a> {
     /// declare-before-call shape so a function may call a sibling
     /// declared later in source.
     fns: HashMap<BindingId, &'a HirItem>,
+    /// Every `struct` item, indexed by its own declaring `BindingId`
+    /// (`AICAD-070`) — mirrors [`Interpreter::fns`] exactly (including
+    /// recursing into `part` nesting via [`index_structs`]), used by
+    /// [`Interpreter::construct_struct`] to look up a struct's own
+    /// declared field name/order at construction time.
+    structs: HashMap<BindingId, &'a HirItem>,
     /// Top-level `let`/`const`/`param` values, populated by
     /// [`Interpreter::run_top_level`].
     globals: Frame,
@@ -391,11 +397,14 @@ impl<'a> Interpreter<'a> {
     ) -> Interpreter<'a> {
         let mut fns = HashMap::new();
         index_fns(&program.items, &mut fns);
+        let mut structs = HashMap::new();
+        index_structs(&program.items, &mut structs);
         Interpreter {
             bindings,
             file,
             source,
             fns,
+            structs,
             globals: HashMap::new(),
             iterations_consumed: 0,
             call_depth: 0,
@@ -448,8 +457,11 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Evaluates every top-level `let`/`const`/`param` item's value
-    /// expression, in source order, populating [`Interpreter::globals`].
-    /// `fn`/`struct`/`enum`/`import`/`part` items are declarations with no
+    /// expression, in source order, populating [`Interpreter::globals`],
+    /// and (`AICAD-071`) executes every top-level `part { ... }` body via
+    /// [`Interpreter::eval_part_body`], binding the resulting
+    /// [`Value::Part`] into `globals` under the part's own binding.
+    /// `fn`/`struct`/`enum`/`import` items remain declarations with no
     /// value of their own to compute and are silently skipped (not a
     /// scope gap — `cad_hir::typeck`'s own `register_type_names`/
     /// `collect_signatures` passes skip them identically, for the same
@@ -461,13 +473,93 @@ impl<'a> Interpreter<'a> {
         program: &'a HirProgram,
     ) -> Result<(), Box<cad_diagnostics::Diagnostic>> {
         for item in &program.items {
-            let (binding, value) = match item {
+            match item {
                 HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
-                    (*binding, Some(value))
+                    self.eval_top_level_value(*binding, value)?;
                 }
                 HirItem::Param {
                     binding, default, ..
-                } => (*binding, default.as_ref()),
+                } => {
+                    if let Some(value) = default {
+                        self.eval_top_level_value(*binding, value)?;
+                    }
+                }
+                HirItem::Part { binding, items, .. } => {
+                    let value = self.eval_part_body(*binding, items)?;
+                    self.globals.insert(*binding, value);
+                }
+                HirItem::Fn { .. }
+                | HirItem::Struct { .. }
+                | HirItem::Enum { .. }
+                | HirItem::Import { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluates one `part { ... }` body's own top-level `let`/`const`/
+    /// `param`-with-default items (`AICAD-071`), in source order, into a
+    /// fresh nested scope — the same naive source-order evaluation
+    /// [`Interpreter::run_top_level`] already performs for the whole
+    /// program, confined to one part's own item list and collected as a
+    /// [`Value::Part`] rather than written into `self.globals` directly.
+    ///
+    /// # Deliberately narrow scope
+    ///
+    /// This gives a `part` body real execution semantics for the first
+    /// time — previously `HirItem::Part` was silently skipped by both
+    /// [`Interpreter::run_top_level`]/[`Interpreter::
+    /// run_top_level_parametric`] (a pure declaration with no runtime
+    /// effect at all). It deliberately does **not** implement:
+    /// - parameterized part *instantiation* (`Bracket()`-style
+    ///   construction call syntax) — no such syntax exists in the grammar
+    ///   today (`part` is a plain item-scope declaration, never callable,
+    ///   unlike `struct`);
+    /// - `.`-syntax source-level access to a part's own named outputs
+    ///   (`Bracket.body`) — `cad_hir::typeck` has no `CheckedType::Part`
+    ///   and no `struct_fields`-style entry for a part's own binding, so
+    ///   this stays unresolved at the type level; only this crate's own
+    ///   runtime [`Value::Part`] and [`Interpreter::global`] exist so far,
+    ///   for introspection (tests, a future `cad-cli` reporting a part's
+    ///   outputs), not general `.aicad` source syntax;
+    /// - nested `part`-in-`part` bodies — skipped exactly like `fn`/
+    ///   `struct`/`enum`/`import` are, matching this method's own
+    ///   top-level-only precedent, with no forcing evidence requiring
+    ///   recursion here yet.
+    ///
+    /// `fn`/`struct` items declared *inside* a part body are unaffected by
+    /// any of the above: [`Interpreter::fns`]/[`Interpreter::structs`]
+    /// already index them via `index_fns`/`index_structs`'s own
+    /// pre-existing recursion into `part` nesting, so calling/constructing
+    /// one from inside (or outside) a part body already worked before this
+    /// task and needs no change here.
+    fn eval_part_body(
+        &mut self,
+        part_binding: BindingId,
+        items: &'a [HirItem],
+    ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
+        let mut frame: Frame = HashMap::new();
+        let mut fields = Vec::new();
+        for item in items {
+            let (binding, item_name, value) = match item {
+                HirItem::Let {
+                    binding,
+                    name,
+                    value,
+                    ..
+                }
+                | HirItem::Const {
+                    binding,
+                    name,
+                    value,
+                    ..
+                } => (*binding, name, Some(value)),
+                HirItem::Param {
+                    binding,
+                    name,
+                    default,
+                    ..
+                } => (*binding, name, default.as_ref()),
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
@@ -475,9 +567,53 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Import { .. } => continue,
             };
             let Some(value) = value else { continue };
-            self.eval_top_level_value(binding, value)?;
+            match self.eval_expr(&mut frame, value) {
+                Ok(v) => {
+                    frame.insert(binding, v.clone());
+                    fields.push((item_name.clone(), v));
+                }
+                Err(Signal::Return(_)) => unreachable!(
+                    "a part item's own value expression can never contain a 'return' \
+                     statement, exactly like Interpreter::eval_top_level_value's identical \
+                     precedent"
+                ),
+                Err(Signal::Break(span)) => {
+                    return Err(Box::new(
+                        RuntimeError::BreakOutsideLoop { span }
+                            .to_diagnostic(self.file, self.source),
+                    ));
+                }
+                Err(Signal::Continue(span)) => {
+                    return Err(Box::new(
+                        RuntimeError::ContinueOutsideLoop { span }
+                            .to_diagnostic(self.file, self.source),
+                    ));
+                }
+                Err(Signal::Error(err)) => {
+                    return Err(Box::new(err.to_diagnostic(self.file, self.source)));
+                }
+            }
         }
-        Ok(())
+        Ok(Value::Part {
+            binding: part_binding,
+            fields,
+        })
+    }
+
+    /// The current value of a top-level `let`/`const`/`param` binding, or
+    /// (`AICAD-071`) a top-level `part`'s own [`Value::Part`], if
+    /// [`Interpreter::run_top_level`] has already populated it — `None`
+    /// beforehand, or for a `param` with no default (`AICAD-065`'s own
+    /// documented "left unpopulated" convention). Note
+    /// [`Interpreter::run_top_level_parametric`] does **not** execute
+    /// `part` bodies (still silently skips `HirItem::Part`, unchanged by
+    /// this task — see [`Interpreter::eval_part_body`]'s own doc comment
+    /// for why `part` execution is `run_top_level`-only so far). Added for
+    /// `AICAD-071`'s `part` execution: a test/future `cad-cli` caller's
+    /// only way to observe a part's own named outputs today, since no
+    /// `.`-syntax source access exists yet.
+    pub fn global(&self, binding: BindingId) -> Option<&Value> {
+        self.globals.get(&binding)
     }
 
     /// Evaluates top-level `let`/`const` items in source order (identical
@@ -735,6 +871,14 @@ impl<'a> Interpreter<'a> {
                     payload: VariantPayload::Tuple(values),
                 });
             }
+            // Struct-literal construction via ordinary call syntax
+            // (`AICAD-053` type-checks this; `AICAD-070` gives it a real
+            // runtime value — see `Interpreter::construct_struct`'s own
+            // doc comment).
+            BindingKind::Struct => {
+                let struct_binding = *binding_id;
+                return self.construct_struct(caller_frame, struct_binding, name, args, span);
+            }
             _ => {
                 return Err(RuntimeError::NotCallable {
                     name: name.clone(),
@@ -809,6 +953,92 @@ impl<'a> Interpreter<'a> {
             frame.insert(param.binding, value);
         }
         self.run_fn_body(fn_item, frame)
+    }
+
+    /// Constructs a [`Value::Struct`] from a struct-literal call-syntax
+    /// construction (`Point(1mm, 2mm)`/`Point(x: 1mm, y: 2mm)`, `AICAD-070`
+    /// — completes `cad_hir::typeck::Checker::check_struct_construction`'s
+    /// already-approved type-checking with an actual runtime value).
+    /// `struct_binding` names the struct's own declaration (looked up in
+    /// [`Interpreter::structs`] for its declared field name/order — generic
+    /// or not, field order is independent of any type-parameter
+    /// instantiation, which is erased at runtime exactly like
+    /// [`crate::value::Value::List`]'s own element type already is).
+    ///
+    /// Positional and named arguments may be mixed exactly like an
+    /// ordinary function call (`Interpreter::call`'s own positional/named
+    /// slot-filling, mirrored here). Every error path below is defensive
+    /// only (already-checked for a type-checked program by
+    /// `check_struct_construction`) — see [`RuntimeError::
+    /// StructConstructionArgumentShape`]'s own doc comment.
+    fn construct_struct(
+        &mut self,
+        frame: &mut Frame,
+        struct_binding: BindingId,
+        name: &str,
+        args: &[HirArg],
+        span: Span,
+    ) -> EvalResult<Value> {
+        let struct_item = *self.structs.get(&struct_binding).ok_or_else(|| {
+            RuntimeError::StructConstructionArgumentShape {
+                name: name.to_string(),
+                span,
+            }
+        })?;
+        let HirItem::Struct {
+            fields: field_decls,
+            ..
+        } = struct_item
+        else {
+            unreachable!("structs only ever indexes HirItem::Struct (see index_structs)")
+        };
+
+        let mut slots: Vec<Option<Value>> = vec![None; field_decls.len()];
+        let mut next_positional = 0usize;
+        for arg in args {
+            match arg {
+                HirArg::Positional(expr) => {
+                    let value = self.eval_expr(frame, expr)?;
+                    if next_positional >= slots.len() {
+                        return Err(RuntimeError::StructConstructionArgumentShape {
+                            name: name.to_string(),
+                            span,
+                        }
+                        .into());
+                    }
+                    slots[next_positional] = Some(value);
+                    next_positional += 1;
+                }
+                HirArg::Named {
+                    name: field_name,
+                    value,
+                    ..
+                } => {
+                    let evaluated = self.eval_expr(frame, value)?;
+                    let idx = field_decls
+                        .iter()
+                        .position(|f| f.name == *field_name)
+                        .ok_or_else(|| RuntimeError::StructConstructionArgumentShape {
+                            name: name.to_string(),
+                            span,
+                        })?;
+                    slots[idx] = Some(evaluated);
+                }
+            }
+        }
+
+        let mut fields = Vec::with_capacity(field_decls.len());
+        for (decl, slot) in field_decls.iter().zip(slots) {
+            let value = slot.ok_or_else(|| RuntimeError::StructConstructionArgumentShape {
+                name: name.to_string(),
+                span,
+            })?;
+            fields.push((decl.name.clone(), value));
+        }
+        Ok(Value::Struct {
+            ty: struct_binding,
+            fields,
+        })
     }
 
     fn run_fn_body(&mut self, fn_item: &'a HirItem, mut frame: Frame) -> EvalResult<Value> {
@@ -975,6 +1205,15 @@ impl<'a> Interpreter<'a> {
                 target: geometry(arg(0)?)?,
                 edges: edge_indices(arg(1)?)?,
                 distance: quantity(arg(2)?)?,
+            },
+            // `plate` dispatches to the identical `GeometryOp::Box`
+            // construction `box` itself uses — see `BuiltinFnId::Plate`'s
+            // own doc comment for why no new `GeometryOp` variant exists
+            // for it.
+            BuiltinFnId::Plate => GeometryOp::Box {
+                dx: quantity(arg(0)?)?,
+                dy: quantity(arg(1)?)?,
+                dz: quantity(arg(2)?)?,
             },
         };
         let node = self
@@ -1314,11 +1553,37 @@ impl<'a> Interpreter<'a> {
             HirExpr::Unary { op, operand, span } => self.eval_unary(frame, *op, operand, *span),
             HirExpr::Binary { op, lhs, rhs, span } => self.eval_binary(frame, *op, lhs, rhs, *span),
             HirExpr::Call { callee, args, span } => self.call(frame, callee, args, *span),
-            HirExpr::Field { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "field access (no runtime struct value exists yet)",
-                span: *span,
+            // `receiver.field` (`AICAD-070`) — `receiver`'s own type was
+            // already verified by `cad_hir::typeck::Checker::
+            // check_field_access` to be a struct with this field for a
+            // type-checked program (`Value::Part` has no such compile-time
+            // check yet — see that variant's own doc comment — so the
+            // `UnknownField` path below is genuinely reachable for it, not
+            // only defensive).
+            HirExpr::Field {
+                receiver,
+                field,
+                span,
+            } => {
+                let receiver_value = self.eval_expr(frame, receiver)?;
+                match &receiver_value {
+                    Value::Struct { fields, .. } | Value::Part { fields, .. } => {
+                        match fields.iter().find(|(name, _)| name == field) {
+                            Some((_, value)) => Ok(value.clone()),
+                            None => Err(RuntimeError::UnknownField {
+                                field: field.clone(),
+                                span: *span,
+                            }
+                            .into()),
+                        }
+                    }
+                    _ => Err(RuntimeError::Unsupported {
+                        construct: "field access on a non-struct value",
+                        span: *span,
+                    }
+                    .into()),
+                }
             }
-            .into()),
             HirExpr::Block(block) => self.exec_block(frame, block),
             HirExpr::If {
                 cond,
@@ -1856,6 +2121,7 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::Intersect => "intersect",
         BuiltinFnId::Fillet => "fillet",
         BuiltinFnId::Chamfer => "chamfer",
+        BuiltinFnId::Plate => "plate",
     }
 }
 
@@ -1869,6 +2135,24 @@ fn index_fns<'a>(items: &'a [HirItem], out: &mut HashMap<BindingId, &'a HirItem>
                 out.insert(*binding, item);
             }
             HirItem::Part { items, .. } => index_fns(items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Indexes every `struct` item by its own `BindingId` (`AICAD-070`),
+/// mirroring [`index_fns`] exactly — including recursing into `part`
+/// bodies for indexing completeness, for the identical reason `index_fns`
+/// already does (a struct declared inside a `part` is constructible from
+/// anywhere, `part` *instantiation* itself is a separate, narrower concern
+/// — see [`Interpreter::eval_part_body`]'s own doc comment).
+fn index_structs<'a>(items: &'a [HirItem], out: &mut HashMap<BindingId, &'a HirItem>) {
+    for item in items {
+        match item {
+            HirItem::Struct { binding, .. } => {
+                out.insert(*binding, item);
+            }
+            HirItem::Part { items, .. } => index_structs(items, out),
             _ => {}
         }
     }
@@ -2226,6 +2510,110 @@ mod tests {
         // `run_top_level` deliberately not called first.
         let err = interp.call_by_name("f", vec![number(2.0)]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E102");
+    }
+
+    // --- AICAD-071: part body execution ---------------------------------
+
+    fn binding_named(lowered: &LowerResult, name: &str) -> BindingId {
+        lowered
+            .bindings
+            .iter()
+            .find(|b| b.name == name)
+            .unwrap_or_else(|| panic!("no binding named '{name}' in {:?}", lowered.bindings))
+            .id
+    }
+
+    #[test]
+    fn part_body_executes_and_exposes_named_outputs() {
+        let lowered = compiled(
+            "part Bracket { \
+                 param width: Length = 80mm; \
+                 let doubled: Length = width * 2.0; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "width");
+                assert_number_eq(fields[0].1.clone(), 0.08);
+                assert_eq!(fields[1].0, "doubled");
+                assert_number_eq(fields[1].1.clone(), 0.16);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn part_body_can_call_safe_cad_builtins_and_expose_geometry() {
+        let lowered = compiled(
+            "part Bracket { \
+                 let body: Geometry = box(10mm, 20mm, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].0, "body");
+                assert!(matches!(fields[0].1, Value::Geometry(_)));
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+    }
+
+    #[test]
+    fn a_param_with_no_default_is_left_out_of_a_part_s_exposed_fields() {
+        let lowered = compiled(
+            "part Bracket { \
+                 param width: Length; \
+                 let doubled: Length = 1mm; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].0, "doubled");
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_part_not_yet_run_top_level_ed_has_no_global_value() {
+        let lowered = compiled("part Bracket { let x: Float = 1.0; }");
+        let interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // `run_top_level` deliberately not called first.
+        let bracket = binding_named(&lowered, "Bracket");
+        assert_eq!(interp.global(bracket), None);
+    }
+
+    #[test]
+    fn a_part_body_can_call_a_fn_declared_inside_the_same_part() {
+        let lowered = compiled(
+            "part Bracket { \
+                 fn helper(x: Float) -> Float { return x + 1.0; } \
+                 let result: Float = helper(41.0); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_number_eq(fields[0].1.clone(), 42.0);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
     }
 
     // --- Conditional execution (AICAD-055) ---
@@ -3195,15 +3583,74 @@ mod tests {
         assert_eq!(diag_code(&err), "RUNTIME-E111");
     }
 
+    // --- AICAD-070: struct-value construction and field access ---------
+
     #[test]
-    fn struct_construction_is_not_yet_supported() {
+    fn struct_construction_with_named_arguments_produces_a_struct_value() {
         let lowered = compiled(
             "struct Point { x: Float, y: Float } \
              fn f() -> Point { return Point(x = 1.0, y = 2.0); }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
-        let err = interp.call_by_name("f", vec![]).unwrap_err();
-        assert_eq!(diag_code(&err), "RUNTIME-E111");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        match result {
+            Value::Struct { fields, .. } => {
+                assert_eq!(fields.len(), 2);
+                assert_number_eq(fields[0].1.clone(), 1.0);
+                assert_number_eq(fields[1].1.clone(), 2.0);
+            }
+            other => panic!("expected Value::Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_construction_with_positional_arguments_matches_declared_field_order() {
+        let lowered = compiled(
+            "struct Point { x: Float, y: Float } \
+             fn f() -> Point { return Point(3.0, 4.0); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        match result {
+            Value::Struct { fields, .. } => {
+                assert_eq!(fields[0].0, "x");
+                assert_number_eq(fields[0].1.clone(), 3.0);
+                assert_eq!(fields[1].0, "y");
+                assert_number_eq(fields[1].1.clone(), 4.0);
+            }
+            other => panic!("expected Value::Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn field_access_reads_a_constructed_struct_field() {
+        let lowered = compiled(
+            "struct Point { x: Float, y: Float } \
+             fn f() -> Float { return Point(x = 5.0, y = 6.0).y; }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 6.0);
+    }
+
+    #[test]
+    fn generic_struct_construction_and_field_access_work_for_any_instantiation() {
+        // `check_struct_construction`'s own generic-instantiation
+        // substitution only fires when the construction's own contextual
+        // `expected` type is a genuine `Pair<Float, Bool>` instantiation
+        // (an explicit `let` type annotation here) — matching
+        // `AICAD-057D`'s documented call-site-inference scope, which
+        // (unlike a generic *function* call) does not infer a generic
+        // *struct* construction's type arguments from its own field
+        // values alone.
+        let lowered = compiled(
+            "struct Pair<T, U> { first: T, second: U } \
+             fn f() -> Float { \
+                 let p: Pair<Float, Bool> = Pair(first = 7.0, second = true); \
+                 return p.first; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 7.0);
     }
 
     // --- AICAD-057E: Result<T,E>/Optional<T> via the ordinary prelude
@@ -3570,6 +4017,29 @@ mod tests {
                 assert!((dx.magnitude - 0.010).abs() < 1e-12);
                 assert!((dy.magnitude - 0.020).abs() < 1e-12);
                 assert!((dz.magnitude - 0.030).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plate_call_dispatches_to_a_box_geometry_node() {
+        // `plate` (`AICAD-071`) deliberately reuses `GeometryOp::Box`
+        // verbatim (`width`/`depth`/`thickness` -> `dx`/`dy`/`dz`) — see
+        // `BuiltinFnId::Plate`'s own doc comment for why no new
+        // `GeometryOp` variant exists for it.
+        let lowered = compiled("fn f() -> Geometry { return plate(40mm, 25mm, 3mm); }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+        match geometry_node(interp.geometry_graph(), id) {
+            cad_geometry_api::GeometryOp::Box { dx, dy, dz } => {
+                assert!((dx.magnitude - 0.040).abs() < 1e-12);
+                assert!((dy.magnitude - 0.025).abs() < 1e-12);
+                assert!((dz.magnitude - 0.003).abs() < 1e-12);
             }
             other => panic!("expected GeometryOp::Box, got {other:?}"),
         }

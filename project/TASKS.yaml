@@ -2080,7 +2080,7 @@ tasks:
 - id: AICAD-070
   stage: 3
   title: Create safe language-facing geometry types
-  status: todo
+  status: done
   depends_on:
   - AICAD-069
   plan_references:
@@ -2107,7 +2107,7 @@ tasks:
 - id: AICAD-071
   stage: 3
   title: Implement part concept plus box/cylinder/plate standard helpers
-  status: todo
+  status: done
   depends_on:
   - AICAD-070
   plan_references:

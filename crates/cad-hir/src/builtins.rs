@@ -55,12 +55,14 @@
 //! expose every existing `GeometryOp` merely because the dispatcher
 //! already implements it." This module's [`catalogue`] therefore covers
 //! exactly `box`/`cylinder`/`transform`/`union`/`cut`/`intersect`/
-//! `fillet`/`chamfer` — not a 1:1 mirror of `cad_geometry_api::ir::
-//! GeometryOp`'s full 18-variant set. See `docs/spec/safe-cad-api.md` for
-//! the full human-readable specification (including the two deliberate
-//! Stage-2 narrowings this module encodes: `transform` is translate-only,
-//! and `fillet`/`chamfer` select edges by a plain `List<Int>` of raw
-//! indices rather than any new "edge reference" type).
+//! `fillet`/`chamfer` (Stage 2) plus `plate` (Stage 3, `AICAD-071`) — not a
+//! 1:1 mirror of `cad_geometry_api::ir::GeometryOp`'s full 18-variant set.
+//! See `docs/API/safe-cad-api.md` for the full human-readable
+//! specification (including the deliberate narrowings this module encodes:
+//! `transform` is translate-only, `fillet`/`chamfer` select edges by a
+//! plain `List<Int>` of raw indices rather than any new "edge reference"
+//! type, and `plate` is corner-at-origin with no `corner_radius`/`frame`
+//! parameter yet — see [`BuiltinFnId::Plate`]'s own doc comment).
 
 use crate::types::HirTypeRef;
 use cad_ast::Span;
@@ -102,13 +104,37 @@ pub enum BuiltinFnId {
     /// `chamfer(target: Geometry, edges: List<Int>, distance: Length) ->
     /// Geometry`. See [`BuiltinFnId::Fillet`]'s own doc comment.
     Chamfer,
+    /// `plate(width: Length, depth: Length, thickness: Length) ->
+    /// Geometry` (`AICAD-071`, Stage 3). A rectangular plate — dispatches
+    /// to the identical `GeometryOp::Box` construction `box` itself uses
+    /// (`dx = width, dy = depth, dz = thickness`), since a flat rectangular
+    /// plate has no geometry `box` does not already cover; `plate` exists
+    /// as its own catalogue entry purely so Safe CAD source has the
+    /// domain-meaningful name `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s
+    /// `plate` feature specifies, not because a new `GeometryOp` variant
+    /// is needed. Deliberately narrower than that plan section's own
+    /// `plate` signature (`size: Vector2<Length>`, `center: Point3`,
+    /// `corner_radius: Length`, `frame: Frame3`, `centered: Bool`): no
+    /// rounded-corner construction op exists in `cad_geometry_api::ir`
+    /// (`corner_radius` would need low-level wire/face construction,
+    /// explicitly out of Stage-2/3 scope so far — `cad_hir::builtins`'s own
+    /// module doc comment, "Stage-2 catalogue scope"), and no builtin
+    /// consumes the new `AICAD-070` `Frame3`/`Point3` geometry types yet
+    /// (Stage-3's own axis/frame/rotation foundation is `AICAD-075A`'s
+    /// task, not this one's — matches `Transform`'s own precedent
+    /// "deliberately translate-only" narrowing for the identical reason:
+    /// escalating rather than guessing an ambiguous signature). A plate is
+    /// always corner-at-origin, matching `box`'s own existing convention;
+    /// `center`/`centered`/`frame` placement is left to a future
+    /// `transform` call, exactly as any other Safe CAD solid.
+    Plate,
 }
 
 impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 8] = [
+    pub const ALL: [BuiltinFnId; 9] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -117,6 +143,7 @@ impl BuiltinFnId {
         BuiltinFnId::Intersect,
         BuiltinFnId::Fillet,
         BuiltinFnId::Chamfer,
+        BuiltinFnId::Plate,
     ];
 }
 
@@ -218,6 +245,16 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("target", named("Geometry")),
                 ("edges", list_of("Int")),
                 ("distance", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Plate,
+            name: "plate",
+            params: vec![
+                ("width", named("Length")),
+                ("depth", named("Length")),
+                ("thickness", named("Length")),
             ],
             return_ty: named("Geometry"),
         },
