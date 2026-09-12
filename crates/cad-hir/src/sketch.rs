@@ -830,9 +830,22 @@ impl Sketch {
         let p4 = start.translate(offset.scale(-1.0));
 
         let radius = Quantity::of(half_width, Dimension::Length);
-        // Both caps sweep exactly PI radians counter-clockwise, bulging
-        // away from the slot body — see this module's own derivation in
-        // its implementation report (`project/reports/AICAD-072.md`).
+        // Both caps sweep exactly PI radians, bulging away from the slot
+        // body — see this module's own derivation in its implementation
+        // report (`project/reports/AICAD-072.md`). That derivation's own
+        // arithmetic is correct, but its direction was not: `start_angle`
+        // -> `end_angle` here is a +PI increase, and *increasing* angle is
+        // `Direction2::perp`'s own established counter-clockwise
+        // convention (`+90 degrees (counter-clockwise)`) — so traversing
+        // this specific pair of angles counter-clockwise sweeps through
+        // the angle *between* them (e.g. `end_cap_start_angle + PI/2`,
+        // which points back toward the slot body's own centerline), not
+        // away from it. `AICAD-075`'s own geometry-backed lowering tests
+        // caught this: the resulting profile had exactly `2 * (half_width
+        // circle area)` less area than the correct stadium, i.e. each cap
+        // was cut *into* the body instead of extending past it.
+        // `Clockwise` (decreasing angle) sweeps the correct, outward-
+        // bulging PI/2 half of the circle instead.
         let end_cap_start_angle = along.angle() + std::f64::consts::FRAC_PI_2;
         let start_cap_start_angle = end_cap_start_angle + PI;
 
@@ -842,7 +855,7 @@ impl Sketch {
             radius,
             Quantity::of(end_cap_start_angle, Dimension::Angle),
             Quantity::of(end_cap_start_angle + PI, Dimension::Angle),
-            RotationDirection::CounterClockwise,
+            RotationDirection::Clockwise,
             false,
             span,
         )?;
@@ -852,7 +865,7 @@ impl Sketch {
             radius,
             Quantity::of(start_cap_start_angle, Dimension::Angle),
             Quantity::of(start_cap_start_angle + PI, Dimension::Angle),
-            RotationDirection::CounterClockwise,
+            RotationDirection::Clockwise,
             false,
             span,
         )?;
@@ -1149,16 +1162,56 @@ mod tests {
                     assert!(((end.x - start.x).abs() - 10.0).abs() < 1e-9);
                 }
                 SketchEntityKind::Arc {
+                    center,
                     radius,
                     start_angle,
                     end_angle,
                     direction,
-                    ..
                 } => {
                     arc_count += 1;
                     assert_eq!(radius.magnitude, 2.0);
                     assert!((end_angle.magnitude - start_angle.magnitude - PI).abs() < 1e-9);
-                    assert_eq!(direction, RotationDirection::CounterClockwise);
+                    assert_eq!(direction, RotationDirection::Clockwise);
+                    // The cap must bulge AWAY from the slot body (past
+                    // `center.x = 0` or `center.x = 10`, the slot's own
+                    // endpoints), never back into it — the exact bug this
+                    // regression test is for (see `add_slot`'s own doc
+                    // comment on its `Clockwise` choice).
+                    // The arithmetic mean of the two stored angles is
+                    // direction-independent and cannot distinguish which
+                    // of the two possible semicircles is meant — walk
+                    // half the actual signed sweep instead (mirrors
+                    // `cad_geometry_runtime::sketch_lowering::arc_mid_angle`'s
+                    // own direction-aware calculation).
+                    let tau = std::f64::consts::TAU;
+                    let raw_delta = end_angle.magnitude - start_angle.magnitude;
+                    let half_sweep = match direction {
+                        RotationDirection::CounterClockwise => raw_delta.rem_euclid(tau) / 2.0,
+                        RotationDirection::Clockwise => -(-raw_delta).rem_euclid(tau) / 2.0,
+                    };
+                    let mid_angle = start_angle.magnitude + half_sweep;
+                    let bulge_x = center.x + radius.magnitude * mid_angle.cos();
+                    let bulge_y = center.y + radius.magnitude * mid_angle.sin();
+                    assert!(bulge_y.abs() < 1e-9, "cap must bulge along the centerline");
+                    // The slot's centerline spans x in [0, 10]; each cap's
+                    // own center sits at one end of it (x=0 or x=10) and
+                    // must bulge further away from the other end, not
+                    // back toward it.
+                    if center.x > 5.0 {
+                        assert!(
+                            bulge_x > center.x,
+                            "end cap (center.x={}) must bulge to x > {} (outward), got {bulge_x}",
+                            center.x,
+                            center.x
+                        );
+                    } else {
+                        assert!(
+                            bulge_x < center.x,
+                            "start cap (center.x={}) must bulge to x < {} (outward), got {bulge_x}",
+                            center.x,
+                            center.x
+                        );
+                    }
                 }
                 other => panic!("slot must only produce Line/Arc entities, got {other:?}"),
             }

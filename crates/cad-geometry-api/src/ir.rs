@@ -215,6 +215,20 @@ pub enum GeometryOp {
         normal: Direction3,
         radius: Quantity,
     },
+    /// A circular-arc edge passing through three points, in order `start
+    /// -> mid -> end` (`OcctContext::make_arc_edge`, `AICAD-075`). `mid`
+    /// must lie strictly between the other two along the intended arc —
+    /// this determines both which of the two possible arcs between
+    /// `start`/`end` is built and its traversal direction, with no
+    /// separate axis/sense parameter (mirrors `LineEdge`'s own "no
+    /// separate handedness flag" style, and fills the gap `CircleWire`'s
+    /// always-closed-full-circle contract cannot: a sketch `arc` entity
+    /// lowers to a *partial* circle, not a full one).
+    ArcEdge {
+        start: Point3,
+        mid: Point3,
+        end: Point3,
+    },
     /// Assembles a wire from an ordered list of edges
     /// (`OcctContext::make_wire_from_edges`). `edges` must be non-empty.
     WireFromEdges { edges: Vec<GeomId> },
@@ -558,6 +572,7 @@ impl GeometryGraph {
             GeometryOp::CircleWire { radius, .. } => {
                 Self::check_dimension(radius, Dimension::Length, "CircleWire.radius", span)?;
             }
+            GeometryOp::ArcEdge { .. } => {}
             GeometryOp::WireFromEdges { edges } => {
                 Self::check_non_empty(edges, "WireFromEdges.edges", span)?;
                 self.check_geometry_operands(edges, span)?;
@@ -953,6 +968,22 @@ mod tests {
             }
             other => panic!("expected DimensionMismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn arc_edge_op_pushes_with_no_dimension_checks() {
+        let mut graph = GeometryGraph::new();
+        let id = graph
+            .push_op(
+                GeometryOp::ArcEdge {
+                    start: Point3::new(1.0, 0.0, 0.0),
+                    mid: Point3::new(0.0, 1.0, 0.0),
+                    end: Point3::new(-1.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(id).unwrap().kind.produces_geometry());
     }
 
     #[test]

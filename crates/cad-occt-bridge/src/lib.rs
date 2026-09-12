@@ -230,6 +230,43 @@ impl OcctContext {
         })
     }
 
+    /// Constructs a circular-arc edge passing through three points, in
+    /// order `start -> mid -> end` (AICAD-075). `mid` must lie strictly
+    /// between the other two along the intended arc -- see
+    /// `aicad_occt_make_arc_edge`'s own doc comment for why this
+    /// determines both which of the two possible arcs is built and its
+    /// traversal direction, with no separate axis/sense parameter.
+    pub fn make_arc_edge(
+        &self,
+        start: Point3,
+        mid: Point3,
+        end: Point3,
+    ) -> KernelResult<Shape<'_>> {
+        let start = [start.x, start.y, start.z];
+        let mid = [mid.x, mid.y, mid.z];
+        let end = [end.x, end.y, end.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_line_edge` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_arc_edge(
+                self.raw,
+                start.as_ptr(),
+                mid.as_ptr(),
+                end.as_ptr(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
     /// Joins an ordered list of edges (each owned by this context) into
     /// one wire (AICAD-022).
     pub fn make_wire_from_edges<'ctx>(
@@ -1361,6 +1398,77 @@ mod tests {
             context.make_line_edge(p, p).unwrap_err(),
             KernelError::InvalidArgument
         );
+    }
+
+    #[test]
+    fn make_arc_edge_is_valid_with_the_expected_endpoints_and_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        // A quarter circle of radius 2 in the XY plane, centered at the
+        // origin, from angle 0 to angle pi/2 (start=(2,0,0), mid at pi/4,
+        // end=(0,2,0)).
+        let start = Point3::new(2.0, 0.0, 0.0);
+        let mid = Point3::new(
+            2.0 * std::f64::consts::FRAC_1_SQRT_2,
+            2.0 * std::f64::consts::FRAC_1_SQRT_2,
+            0.0,
+        );
+        let end = Point3::new(0.0, 2.0, 0.0);
+        let edge = context.make_arc_edge(start, mid, end).unwrap();
+        assert!(edge.is_valid().unwrap());
+        let bbox = edge.bounding_box().unwrap();
+        // The arc bulges out to x=2 (at start) and y=2 (at end); its
+        // bounding box must match the quarter-circle's own bounds, within
+        // `bounding_box`'s own tessellation-based tolerance (matching
+        // `make_circle_wire_is_valid_with_the_expected_bounding_box`'s own
+        // `1e-6` tolerance below, not this task's own numeric policy).
+        assert!((bbox.max.x - 2.0).abs() < 1e-6);
+        assert!((bbox.max.y - 2.0).abs() < 1e-6);
+        assert!(bbox.min.x.abs() < 1e-6);
+        assert!(bbox.min.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn make_arc_edge_rejects_coincident_points() {
+        let context = OcctContext::new().unwrap();
+        let p = Point3::new(1.0, 0.0, 0.0);
+        let other = Point3::new(0.0, 1.0, 0.0);
+        assert_eq!(
+            context.make_arc_edge(p, p, other).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_arc_edge_rejects_collinear_points() {
+        let context = OcctContext::new().unwrap();
+        let p0 = Point3::new(0.0, 0.0, 0.0);
+        let p1 = Point3::new(1.0, 0.0, 0.0);
+        let p2 = Point3::new(2.0, 0.0, 0.0);
+        assert_eq!(
+            context.make_arc_edge(p0, p1, p2).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_arc_edge_can_be_joined_with_line_edges_into_a_closed_wire() {
+        // A "D" shape: a straight diameter plus a semicircular arc,
+        // proving an arc edge composes with `make_wire_from_edges` and
+        // `make_face` exactly like a line edge does.
+        let context = OcctContext::new().unwrap();
+        let p_top = Point3::new(0.0, 1.0, 0.0);
+        let p_bottom = Point3::new(0.0, -1.0, 0.0);
+        let p_right = Point3::new(1.0, 0.0, 0.0);
+        let diameter = context.make_line_edge(p_bottom, p_top).unwrap();
+        let arc = context.make_arc_edge(p_top, p_right, p_bottom).unwrap();
+        let wire = context
+            .make_wire_from_edges(&[&diameter, &arc])
+            .expect("a diameter edge plus a semicircular arc edge must close");
+        assert!(wire.is_valid().unwrap());
+        let face = wire.make_face().unwrap();
+        assert!(face.is_valid().unwrap());
+        let expected_area = std::f64::consts::PI * 1.0 * 1.0 / 2.0;
+        assert!((face.area().unwrap() - expected_area).abs() < expected_area * 1e-6);
     }
 
     #[test]

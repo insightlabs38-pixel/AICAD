@@ -8,8 +8,10 @@ publish.workspace = true
 
 [dependencies]
 cad-ast = { path = "../cad-ast" }
+cad-constraints = { path = "../cad-constraints" }
 cad-diagnostics = { path = "../cad-diagnostics" }
 cad-geometry-api = { path = "../cad-geometry-api" }
+cad-hir = { path = "../cad-hir" }
 cad-kernel-api = { path = "../cad-kernel-api" }
 cad-occt-bridge = { path = "../cad-occt-bridge" }
 cad-runtime = { path = "../cad-runtime" }
@@ -17,5 +19,4 @@ cad-types = { path = "../cad-types" }
 cad-units = { path = "../cad-units" }
 
 [dev-dependencies]
-cad-hir = { path = "../cad-hir" }
 cad-parser = { path = "../cad-parser" }

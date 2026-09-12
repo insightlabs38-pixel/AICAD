@@ -181,6 +181,23 @@ aicad_occt_status_t aicad_occt_make_circle_wire(aicad_occt_context_t* context,
                                                  double radius,
                                                  aicad_shape_handle_t* out_handle);
 
+/* Constructs a circular-arc edge passing through three points, in the
+ * order `p_start` -> `p_mid` -> `p_end` (AICAD-075: sketch `arc` entity
+ * lowering needs an edge for a partial circle, which
+ * `aicad_occt_make_circle_wire`'s always-closed-full-circle contract
+ * cannot express). `p_mid` must lie strictly between the other two along
+ * the intended arc -- it disambiguates both which of the two possible
+ * circular arcs between `p_start`/`p_end` is built and which direction it
+ * is traversed, with no separate axis/sense parameter needed (mirrors
+ * `aicad_occt_make_line_edge`'s own "no separate handedness flag" style).
+ * Rejects coincident or collinear points as AICAD_OCCT_ERR_INVALID_ARGUMENT
+ * (OCCT's own GC_MakeArcOfCircle construction failure). */
+aicad_occt_status_t aicad_occt_make_arc_edge(aicad_occt_context_t* context,
+                                              const double p_start[3],
+                                              const double p_mid[3],
+                                              const double p_end[3],
+                                              aicad_shape_handle_t* out_handle);
+
 /* Joins an ordered list of edges into one wire. `edges`/`edge_count` is a
  * caller-owned array (no STL container crosses this boundary); edges must
  * form a single connected chain (open or closed) in the given order. */

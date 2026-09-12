@@ -30,6 +30,7 @@
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
+#include <GC_MakeArcOfCircle.hxx>
 #include <GProp_GProps.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
@@ -598,6 +599,42 @@ aicad_occt_status_t aicad_occt_make_circle_wire(aicad_occt_context_t* context,
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, make_wire.Wire());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_arc_edge(aicad_occt_context_t* context,
+                                              const double p_start[3],
+                                              const double p_mid[3],
+                                              const double p_end[3],
+                                              aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (p_start == nullptr || p_mid == nullptr || p_end == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!IsFinite3(p_start) || !IsFinite3(p_mid) || !IsFinite3(p_end)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    GC_MakeArcOfCircle maker(ToPnt(p_start), ToPnt(p_mid), ToPnt(p_end));
+    if (!maker.IsDone()) {
+      // Coincident or collinear points -- OCCT's own gce_ConfusedPoints /
+      // gce_IntersectionError construction failure, a caller-input
+      // problem, not an adapter defect.
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    BRepBuilderAPI_MakeEdge make_edge(maker.Value());
+    if (!make_edge.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_edge.Edge());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

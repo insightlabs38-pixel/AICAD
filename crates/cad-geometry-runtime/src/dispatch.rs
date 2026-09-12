@@ -252,6 +252,9 @@ fn dispatch_op<'ctx>(
             "CircleWire",
             ctx.make_circle_wire(*center, *normal, mag(radius)),
         )?,
+        GeometryOp::ArcEdge { start, mid, end } => {
+            kernel_op(id, span, "ArcEdge", ctx.make_arc_edge(*start, *mid, *end))?
+        }
         GeometryOp::WireFromEdges { edges } => {
             let edge_shapes = shape_operands(results, id, edges, span)?;
             kernel_op(
@@ -830,6 +833,71 @@ mod tests {
         match &results[area_q.index() as usize] {
             NodeResult::Number(area) => {
                 let expected = SIDE * SIDE;
+                assert!(
+                    (*area - expected).abs() < expected * 1e-6,
+                    "area {area} did not match expected {expected}"
+                )
+            }
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arc_edge_and_line_edge_build_a_semicircular_face_with_the_expected_area() {
+        // A "D" shape: a straight diameter plus a semicircular arc edge,
+        // proving `GeometryOp::ArcEdge` dispatches through the same
+        // `WireFromEdges`/`MakeFace` path `LineEdge` already does.
+        const RADIUS: f64 = 0.01;
+        let p_top = Point3::new(0.0, RADIUS, 0.0);
+        let p_bottom = Point3::new(0.0, -RADIUS, 0.0);
+        let p_right = Point3::new(RADIUS, 0.0, 0.0);
+
+        let mut graph = GeometryGraph::new();
+        let diameter = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: p_bottom,
+                    end: p_top,
+                },
+                span(),
+            )
+            .unwrap();
+        let arc = graph
+            .push_op(
+                GeometryOp::ArcEdge {
+                    start: p_top,
+                    mid: p_right,
+                    end: p_bottom,
+                },
+                span(),
+            )
+            .unwrap();
+        let wire = graph
+            .push_op(
+                GeometryOp::WireFromEdges {
+                    edges: vec![diameter, arc],
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(GeometryOp::MakeFace { wire }, span())
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(face), span())
+            .unwrap();
+        let area_q = graph.push_query(GeometryQuery::Area(face), span()).unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => {
+                let expected = std::f64::consts::PI * RADIUS * RADIUS / 2.0;
                 assert!(
                     (*area - expected).abs() < expected * 1e-6,
                     "area {area} did not match expected {expected}"

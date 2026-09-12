@@ -89,6 +89,7 @@ name = "cad-geometry-runtime"
 version = "0.0.0"
 dependencies = [
  "cad-ast",
+ "cad-constraints",
  "cad-diagnostics",
  "cad-geometry-api",
  "cad-hir",

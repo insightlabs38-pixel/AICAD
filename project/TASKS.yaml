@@ -2215,7 +2215,7 @@ tasks:
 - id: AICAD-075
   stage: 3
   title: Lower solved closed sketch profiles to exact faces
-  status: todo
+  status: done
   depends_on:
   - AICAD-074
   plan_references:

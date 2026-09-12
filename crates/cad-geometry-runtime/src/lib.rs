@@ -46,6 +46,8 @@
 
 pub mod bridge;
 pub mod dispatch;
+pub mod sketch_lowering;
 
 pub use bridge::number_value_to_quantity;
 pub use dispatch::{DispatchError, GraphResults, NodeResult, dispatch_graph};
+pub use sketch_lowering::{LoweredFace, SketchLoweringError, lower_profile_to_face};
