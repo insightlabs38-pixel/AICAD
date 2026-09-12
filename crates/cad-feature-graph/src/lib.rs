@@ -7,11 +7,13 @@
 //! construction from the currently supported modeling operations — see
 //! `crate::graph`'s own module doc comment for the full design.
 //! `AICAD-068` (Batch S3-02) adds cache keys/dirty propagation
-//! (`crate::cache`). Source-to-feature provenance (`AICAD-069`) remains a
-//! separate, later Batch-S3-02 task this crate does not yet implement.
+//! (`crate::cache`). `AICAD-069` (Batch S3-02) adds source-to-feature
+//! mapping and provenance (`crate::provenance`).
 
 mod cache;
 mod graph;
+mod provenance;
 
 pub use cache::CacheKey;
 pub use graph::{FeatureGraph, FeatureGraphError, FeatureId, FeatureNode};
+pub use provenance::{Declaration, Provenance};

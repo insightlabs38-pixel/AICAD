@@ -2053,7 +2053,7 @@ tasks:
 - id: AICAD-069
   stage: 3
   title: Implement source-to-feature mapping and provenance
-  status: todo
+  status: done
   depends_on:
   - AICAD-068
   plan_references:

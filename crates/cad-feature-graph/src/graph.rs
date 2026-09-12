@@ -47,8 +47,15 @@
 //!   cache_key`]/[`FeatureNode::binding_refs`] are populated by [`Builder::
 //!   resolve_geometry_expr`] calling straight into `crate::cache::
 //!   node_cache_key`, but this module itself owns none of that hashing
-//!   logic. **Source-to-feature provenance** (`AICAD-069`) remains a
-//!   separate, later Batch-S3-02 task this module does not yet implement.
+//!   logic. **Source-to-feature mapping/provenance** are likewise
+//!   `AICAD-069`'s own job (`crate::provenance` — see that module's doc
+//!   comment, including its own explicit scope boundary against
+//!   `docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md`'s much larger
+//!   Git/AI-governance "provenance" concept); [`FeatureNode::provenance`]
+//!   is populated the same way, and [`FeatureGraph::feature_at`] is this
+//!   module's own thin wrapper over `self.nodes` for the reverse
+//!   offset-to-feature lookup `crate::provenance` does not itself have
+//!   access to (`FeatureGraph::nodes` is a private field).
 //! - **Evaluating** a feature's own scalar parameters into actual
 //!   `cad_units` quantities is `cad_runtime`'s job. [`FeatureNode::
 //!   parameters`] stores each non-`Geometry` parameter's *expression*
@@ -86,6 +93,7 @@
 //!   instantiation semantics are `AICAD-072`'s job, not yet decided.
 
 use crate::cache::{CacheKey, node_cache_key};
+use crate::provenance::{Declaration, Provenance};
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SourceSpan};
 use cad_hir::builtins::{BuiltinFnId, BuiltinFnSpec};
@@ -163,6 +171,12 @@ pub struct FeatureNode<'a> {
     /// `dirty_set`'s transitive propagation walks that edge, not this
     /// field, to avoid double-representing the same dependency two ways).
     pub binding_refs: Vec<BindingId>,
+    /// This node's own source-to-feature provenance (`AICAD-069`,
+    /// `crate::provenance`) — which top-level declaration kind (if any)
+    /// this node came from, plus the full transitive top-level-binding
+    /// dependency closure. See `crate::provenance`'s own module doc
+    /// comment for the full contract and explicit scope boundary.
+    pub provenance: Provenance,
 }
 
 /// Every way [`FeatureGraph::build`] can fail — both are purely
@@ -303,25 +317,28 @@ impl<'a> FeatureGraph<'a> {
         };
 
         for item in &program.items {
-            let (binding, name, value) = match item {
+            let (binding, name, value, declared_as) = match item {
                 HirItem::Let {
                     binding,
                     name,
                     value,
                     ..
-                }
-                | HirItem::Const {
+                } => (binding, name, value, Declaration::Let),
+                HirItem::Const {
                     binding,
                     name,
                     value,
                     ..
-                } => (binding, name, value),
+                } => (binding, name, value, Declaration::Const),
                 _ => continue,
             };
             if let Some(id) = builder.resolve_geometry_expr(value)? {
                 let node = &mut builder.nodes[id.0 as usize];
                 if node.name.is_none() {
                     node.name = Some(name.as_str());
+                }
+                if node.provenance.declared_as == Declaration::Anonymous {
+                    node.provenance.declared_as = declared_as;
                 }
                 builder.named.insert(*binding, id);
             }
@@ -375,6 +392,44 @@ impl<'a> FeatureGraph<'a> {
             }
         }
         dirty
+    }
+
+    /// The innermost feature node whose own `span` contains `position` —
+    /// `AICAD-069`'s "source-to-feature mapping" (`crate::provenance`'s own
+    /// module doc comment). `position` is a plain byte offset into the same
+    /// single source file every [`Span`] in this graph was built from (see
+    /// `crate::provenance`'s "What this deliberately does not do" for why
+    /// this is not `(file, offset)`).
+    ///
+    /// "Innermost" matters because feature spans nest: `cut(base, cylinder
+    /// (...))`'s own call span contains the nested `cylinder(...)` call's
+    /// span entirely, and a position inside `cylinder(...)` should resolve
+    /// to *that* feature, not `cut`'s. Ties (equal-length containing spans)
+    /// cannot arise from two distinct calls in real source (two different
+    /// calls never share byte-identical spans), but are resolved
+    /// deterministically in favor of whichever node [`FeatureGraph::build`]
+    /// happened to construct first, for the same reason `dirty_set`'s own
+    /// linear scan is deterministic — never `HashMap`/`HashSet` iteration
+    /// order (`project/DECISION_LOG.md#DL-12` Level 1).
+    pub fn feature_at(&self, position: u32) -> Option<FeatureId> {
+        let mut best: Option<&FeatureNode<'a>> = None;
+        for node in &self.nodes {
+            if node.span.start > position || position >= node.span.end {
+                continue;
+            }
+            let replace = match best {
+                None => true,
+                Some(current) => {
+                    let node_len = node.span.end - node.span.start;
+                    let current_len = current.span.end - current.span.start;
+                    node_len < current_len
+                }
+            };
+            if replace {
+                best = Some(node);
+            }
+        }
+        best.map(|n| n.id)
     }
 }
 
@@ -465,6 +520,17 @@ impl<'a> Builder<'a> {
                 let (cache_key, binding_refs) =
                     node_cache_key(fn_name, &geometry_input_keys, &parameters);
 
+                let geometry_input_closures: Vec<&[BindingId]> = geometry_inputs
+                    .iter()
+                    .map(|input_id| {
+                        self.nodes[input_id.0 as usize]
+                            .provenance
+                            .transitive_bindings
+                            .as_slice()
+                    })
+                    .collect();
+                let provenance = Provenance::compute(&binding_refs, &geometry_input_closures);
+
                 let id = FeatureId(self.nodes.len() as u32);
                 self.nodes.push(FeatureNode {
                     id,
@@ -475,6 +541,7 @@ impl<'a> Builder<'a> {
                     parameters,
                     cache_key,
                     binding_refs,
+                    provenance,
                 });
                 Ok(Some(id))
             }
@@ -979,5 +1046,102 @@ mod tests {
             }
         }
         panic!("no top-level param named {name:?}");
+    }
+
+    #[test]
+    fn top_level_let_gets_declaration_let() {
+        let lowered = lowered("let base = box(10mm, 10mm, 10mm);\n");
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let base = graph
+            .get(graph.find_by_binding(binding_of(&lowered, "base")).unwrap())
+            .unwrap();
+        assert_eq!(base.provenance.declared_as, Declaration::Let);
+    }
+
+    #[test]
+    fn top_level_const_gets_declaration_const() {
+        let lowered = lowered("const base = box(10mm, 10mm, 10mm);\n");
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let base = graph
+            .get(graph.find_by_binding(binding_of(&lowered, "base")).unwrap())
+            .unwrap();
+        assert_eq!(base.provenance.declared_as, Declaration::Const);
+    }
+
+    #[test]
+    fn anonymous_nested_call_gets_declaration_anonymous() {
+        let lowered = lowered(
+            "let base = box(10mm, 10mm, 10mm);\nlet drilled = cut(base, cylinder(1mm, 10mm));\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let cylinder_node = graph
+            .nodes()
+            .iter()
+            .find(|n| n.op == BuiltinFnId::Cylinder)
+            .expect("an anonymous Cylinder node was built");
+        assert_eq!(cylinder_node.provenance.declared_as, Declaration::Anonymous);
+    }
+
+    #[test]
+    fn transitive_bindings_include_upstream_features_own_param_refs() {
+        let lowered = lowered(
+            "param radius: Length = 4mm;\n\
+             let boss = cylinder(radius, 12mm);\n\
+             let base = box(10mm, 10mm, 10mm);\n\
+             let combined = union(base, boss);\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let radius = param_binding(&lowered, "radius");
+        let combined = graph
+            .get(
+                graph
+                    .find_by_binding(binding_of(&lowered, "combined"))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            combined.provenance.transitive_bindings,
+            vec![radius],
+            "combined does not itself reference radius, but its own boss input does"
+        );
+
+        let base = graph
+            .get(graph.find_by_binding(binding_of(&lowered, "base")).unwrap())
+            .unwrap();
+        assert!(
+            base.provenance.transitive_bindings.is_empty(),
+            "base is built entirely from literals"
+        );
+    }
+
+    #[test]
+    fn feature_at_resolves_to_the_innermost_containing_span() {
+        let source = "let base = box(10mm, 10mm, 10mm);\n\
+                       let drilled = cut(base, cylinder(1mm, 10mm));\n";
+        let lowered = lowered(source);
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+
+        let cylinder_offset = source.find("cylinder").unwrap() as u32 + 2;
+        let cylinder_id = graph
+            .feature_at(cylinder_offset)
+            .expect("inside cylinder(...)");
+        let cylinder_node = graph.get(cylinder_id).unwrap();
+        assert_eq!(cylinder_node.op, BuiltinFnId::Cylinder);
+
+        let cut_offset = source.rfind("cut").unwrap() as u32 + 1;
+        let cut_id = graph.feature_at(cut_offset).expect("inside cut(...)");
+        let cut_node = graph.get(cut_id).unwrap();
+        assert_eq!(cut_node.op, BuiltinFnId::Cut);
+        assert_ne!(
+            cut_id, cylinder_id,
+            "a position inside the nested call resolves to the inner feature, not the outer one"
+        );
+    }
+
+    #[test]
+    fn feature_at_outside_every_span_is_none() {
+        let lowered = lowered("let base = box(10mm, 10mm, 10mm);\n");
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        assert_eq!(graph.feature_at(u32::MAX), None);
     }
 }
