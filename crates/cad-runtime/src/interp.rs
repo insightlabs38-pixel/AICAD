@@ -167,9 +167,11 @@
 use crate::error::RuntimeError;
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
+use cad_geometry_api::{EdgeIndex, GeomId, GeometryOp, Quantity};
+use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
-    BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem, HirLiteral, HirMatchArm,
-    HirPattern, HirProgram, HirStmt, UnaryOp,
+    BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
+    HirLiteral, HirMatchArm, HirParam, HirPattern, HirProgram, HirStmt, UnaryOp,
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::HirType;
@@ -255,6 +257,14 @@ pub struct Interpreter<'a> {
     /// [`ResourceBudget`]'s own doc comment for why one struct now governs
     /// every category rather than two independent ad-hoc fields.
     budget: ResourceBudget,
+    /// The backend-independent geometry program this run has built so far
+    /// (`project/DECISION_LOG.md#DL-15`, resolving `project/
+    /// OWNER_DECISIONS.md#D18`) — every `RuntimeBuiltin` Safe CAD standard
+    /// function call (`box`, `cut`, ...) appends one node here via
+    /// [`Interpreter::dispatch_builtin`] and returns a [`crate::value::
+    /// Value::Geometry`] referencing it. Never dispatched into actual
+    /// kernel calls by this crate — see [`Interpreter::into_geometry_graph`].
+    geometry: cad_geometry_api::GeometryGraph,
 }
 
 /// The single coherent configuration surface for every execution resource
@@ -391,7 +401,21 @@ impl<'a> Interpreter<'a> {
             call_depth: 0,
             peak_call_depth: 0,
             budget: ResourceBudget::default(),
+            geometry: cad_geometry_api::GeometryGraph::new(),
         }
+    }
+
+    /// The complete `GeometryGraph` this run has built so far (`project/
+    /// DECISION_LOG.md#DL-15`) — every node a `RuntimeBuiltin` Safe CAD
+    /// call constructed, in construction order. Safe to call at any point
+    /// during or after execution, exactly like [`Interpreter::
+    /// resource_usage`]. Dispatching this graph into actual kernel calls
+    /// is `cad_geometry_runtime::dispatch::dispatch_graph`'s job, run by a
+    /// caller (e.g. the eventual `cad-cli` build command) against a real
+    /// `cad_occt_bridge::OcctContext` after this interpreter's run
+    /// completes — this crate makes zero kernel calls itself.
+    pub fn geometry_graph(&self) -> &cad_geometry_api::GeometryGraph {
+        &self.geometry
     }
 
     /// Overrides this interpreter's [`ResourceBudget`] (default
@@ -705,6 +729,7 @@ impl<'a> Interpreter<'a> {
     fn run_fn_body(&mut self, fn_item: &'a HirItem, mut frame: Frame) -> EvalResult<Value> {
         let HirItem::Fn {
             name,
+            params,
             body,
             return_ty,
             span,
@@ -714,31 +739,164 @@ impl<'a> Interpreter<'a> {
             unreachable!("run_fn_body is only ever called with an HirItem::Fn")
         };
         self.enter_call(*span)?;
-        let result = match self.exec_block(&mut frame, body) {
-            Ok(_completed_without_return) => {
-                if return_ty.is_some() {
-                    Err(RuntimeError::MissingReturn {
-                        name: name.clone(),
-                        span: *span,
+        // Runtime-backed standard functions (`project/DECISION_LOG.md
+        // #DL-15`, resolving `project/OWNER_DECISIONS.md#D18`) are still
+        // charged against `enter_call`/`exit_call`'s own recursion-depth
+        // budget above, exactly like an ordinary AICAD-source function —
+        // "They cannot bypass AICAD execution budgets merely because
+        // their implementation is runtime-provided" (`DL-15`).
+        let result = match body {
+            FunctionImplementation::Aicad(block) => match self.exec_block(&mut frame, block) {
+                Ok(_completed_without_return) => {
+                    if return_ty.is_some() {
+                        Err(RuntimeError::MissingReturn {
+                            name: name.clone(),
+                            span: *span,
+                        }
+                        .into())
+                    } else {
+                        Ok(Value::Unit)
                     }
-                    .into())
-                } else {
-                    Ok(Value::Unit)
                 }
+                Err(Signal::Return(value)) => Ok(value),
+                // A `break`/`continue` that escaped every enclosing loop in
+                // this call frame — legal HIR per `cad_hir::typeck`'s own
+                // no-op check (see `RuntimeError::BreakOutsideLoop`'s doc
+                // comment), converted to a real diagnostic here rather than
+                // propagating the internal `Signal` type past this function's
+                // own boundary.
+                Err(Signal::Break(span)) => Err(RuntimeError::BreakOutsideLoop { span }.into()),
+                Err(Signal::Continue(span)) => {
+                    Err(RuntimeError::ContinueOutsideLoop { span }.into())
+                }
+                Err(err @ Signal::Error(_)) => Err(err),
+            },
+            FunctionImplementation::RuntimeBuiltin(id) => {
+                self.dispatch_builtin(*id, params, &frame, *span)
             }
-            Err(Signal::Return(value)) => Ok(value),
-            // A `break`/`continue` that escaped every enclosing loop in
-            // this call frame — legal HIR per `cad_hir::typeck`'s own
-            // no-op check (see `RuntimeError::BreakOutsideLoop`'s doc
-            // comment), converted to a real diagnostic here rather than
-            // propagating the internal `Signal` type past this function's
-            // own boundary.
-            Err(Signal::Break(span)) => Err(RuntimeError::BreakOutsideLoop { span }.into()),
-            Err(Signal::Continue(span)) => Err(RuntimeError::ContinueOutsideLoop { span }.into()),
-            Err(err @ Signal::Error(_)) => Err(err),
         };
         self.exit_call();
         result
+    }
+
+    /// Dispatches one `RuntimeBuiltin` Safe CAD standard-function call
+    /// (`project/DECISION_LOG.md#DL-15`, resolving `project/
+    /// OWNER_DECISIONS.md#D18`): reads `frame`'s already-evaluated
+    /// argument values — bound to `params`'s own `BindingId`s by
+    /// `Interpreter::call`/`call_by_values` exactly like an ordinary
+    /// AICAD-source function's own parameters, per `DL-15`'s "the same
+    /// ordinary ... call-expression semantics" — converts them into the
+    /// `cad_geometry_api` vocabulary `cad_hir::builtins::catalogue`'s own
+    /// signature for `id` promises, and appends one node to this run's
+    /// own accumulated [`Interpreter::geometry`]. Every argument's runtime
+    /// kind was already verified against that exact signature by
+    /// `cad_hir::typeck` before this program ever executed, so the
+    /// [`RuntimeError::BuiltinArgumentShape`] path below is defensive only
+    /// (this evaluator's own "trusts, but verifies" precedent), never
+    /// reachable for a type-checked program.
+    fn dispatch_builtin(
+        &mut self,
+        id: BuiltinFnId,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let name = builtin_name(id);
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let quantity = |value: &Value| -> EvalResult<Quantity> {
+            match value {
+                Value::Number(n) => Ok(Quantity::new(n.magnitude, n.ty)),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let geometry = |value: &Value| -> EvalResult<GeomId> {
+            match value {
+                Value::Geometry(id) => Ok(*id),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // A raw edge/face index, carried as an ordinary `List<Int>` value
+        // rather than any new "edge reference" type — `cad_hir::builtins`'s
+        // own module doc comment, "Stage-2 catalogue scope".
+        let edge_indices = |value: &Value| -> EvalResult<Vec<EdgeIndex>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(EdgeIndex(n.magnitude as usize)),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+
+        let op = match id {
+            BuiltinFnId::Box => GeometryOp::Box {
+                dx: quantity(arg(0)?)?,
+                dy: quantity(arg(1)?)?,
+                dz: quantity(arg(2)?)?,
+            },
+            BuiltinFnId::Cylinder => GeometryOp::Cylinder {
+                radius: quantity(arg(0)?)?,
+                height: quantity(arg(1)?)?,
+            },
+            BuiltinFnId::Transform => {
+                let target = geometry(arg(0)?)?;
+                let dx = quantity(arg(1)?)?.magnitude;
+                let dy = quantity(arg(2)?)?.magnitude;
+                let dz = quantity(arg(3)?)?.magnitude;
+                GeometryOp::Transform {
+                    target,
+                    transform: cad_kernel_api::Transform::translation(cad_kernel_api::Vector3 {
+                        x: dx,
+                        y: dy,
+                        z: dz,
+                    }),
+                }
+            }
+            BuiltinFnId::Union => GeometryOp::Union {
+                lhs: geometry(arg(0)?)?,
+                rhs: geometry(arg(1)?)?,
+            },
+            BuiltinFnId::Cut => GeometryOp::Cut {
+                lhs: geometry(arg(0)?)?,
+                rhs: geometry(arg(1)?)?,
+            },
+            BuiltinFnId::Intersect => GeometryOp::Intersect {
+                lhs: geometry(arg(0)?)?,
+                rhs: geometry(arg(1)?)?,
+            },
+            BuiltinFnId::Fillet => GeometryOp::Fillet {
+                target: geometry(arg(0)?)?,
+                edges: edge_indices(arg(1)?)?,
+                radius: quantity(arg(2)?)?,
+            },
+            BuiltinFnId::Chamfer => GeometryOp::Chamfer {
+                target: geometry(arg(0)?)?,
+                edges: edge_indices(arg(1)?)?,
+                distance: quantity(arg(2)?)?,
+            },
+        };
+        let node = self
+            .geometry
+            .push_op(op, span)
+            .map_err(|err| RuntimeError::GeometryConstruction { err })?;
+        Ok(Value::Geometry(node))
     }
 
     /// Charges one function-call level against this interpreter's
@@ -1594,6 +1752,25 @@ fn to_arith_op(op: BinaryOp) -> ArithmeticOp {
         BinaryOp::Mul => ArithmeticOp::Mul,
         BinaryOp::Div => ArithmeticOp::Div,
         _ => unreachable!("to_arith_op is only called for Add/Sub/Mul/Div"),
+    }
+}
+
+/// The stable name one `BuiltinFnId` variant reports in a
+/// [`RuntimeError::BuiltinArgumentShape`] diagnostic — mirrors
+/// `cad_hir::builtins::catalogue`'s own `name` field exactly (kept as its
+/// own small match here rather than searching the catalogue at error time,
+/// since these are used only to label an error message, never to resolve
+/// behavior).
+fn builtin_name(id: BuiltinFnId) -> &'static str {
+    match id {
+        BuiltinFnId::Box => "box",
+        BuiltinFnId::Cylinder => "cylinder",
+        BuiltinFnId::Transform => "transform",
+        BuiltinFnId::Union => "union",
+        BuiltinFnId::Cut => "cut",
+        BuiltinFnId::Intersect => "intersect",
+        BuiltinFnId::Fillet => "fillet",
+        BuiltinFnId::Chamfer => "chamfer",
     }
 }
 
@@ -3260,5 +3437,177 @@ mod tests {
                 .unwrap(),
             0.0,
         );
+    }
+
+    // ---- `project/DECISION_LOG.md#DL-15`: Safe CAD standard functions ----
+    // (resolving `project/OWNER_DECISIONS.md#D18`). Covers this crate's own
+    // share of the D18 ruling's required-tests list: (3) `box(...)`
+    // creates the expected `GeometryGraph` node; (4) `cylinder(...)` does
+    // too; (5) `cut(box(...), cylinder(...))` composes with correct
+    // dependency ordering; (6) `transform` composes normally; (12) an
+    // ordinary AICAD-defined function can call a Safe CAD function and
+    // return its geometry value; (13) local lexical bindings/function
+    // calls still behave normally alongside runtime-backed functions.
+    // (1)/(2)/(7)/(8) are covered by `cad-hir`'s own test suite; (9) is an
+    // architectural property (`cad-runtime`'s own `Cargo.toml` has no
+    // `cad-occt-bridge`/`native` dependency at all — grep-verifiable, not
+    // a runtime test); (10) is covered by `cad-geometry-runtime`'s own
+    // integration test, which needs a real `OcctContext` this crate does
+    // not depend on.
+
+    fn geometry_node(
+        graph: &cad_geometry_api::GeometryGraph,
+        id: cad_geometry_api::GeomId,
+    ) -> &cad_geometry_api::GeometryOp {
+        match &graph
+            .get(id)
+            .unwrap_or_else(|| panic!("expected a node at {id}"))
+            .kind
+        {
+            cad_geometry_api::GeometryNodeKind::Construct(op) => op,
+            cad_geometry_api::GeometryNodeKind::Query(_) => {
+                panic!("expected a Construct node at {id}, got a Query")
+            }
+        }
+    }
+
+    #[test]
+    fn box_call_creates_the_expected_geometry_node() {
+        let lowered = compiled("fn f() -> Geometry { return box(10mm, 20mm, 30mm); }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+        match geometry_node(interp.geometry_graph(), id) {
+            cad_geometry_api::GeometryOp::Box { dx, dy, dz } => {
+                assert!((dx.magnitude - 0.010).abs() < 1e-12);
+                assert!((dy.magnitude - 0.020).abs() < 1e-12);
+                assert!((dz.magnitude - 0.030).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cylinder_call_creates_the_expected_geometry_node() {
+        let lowered = compiled("fn f() -> Geometry { return cylinder(5mm, 12mm); }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        match geometry_node(interp.geometry_graph(), id) {
+            cad_geometry_api::GeometryOp::Cylinder { radius, height } => {
+                assert!((radius.magnitude - 0.005).abs() < 1e-12);
+                assert!((height.magnitude - 0.012).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Cylinder, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cut_of_box_and_cylinder_composes_with_correct_dependency_ordering() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return cut(box(10mm, 10mm, 10mm), cylinder(2mm, 10mm)); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(cut_id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 3);
+        match geometry_node(graph, cut_id) {
+            cad_geometry_api::GeometryOp::Cut { lhs, rhs } => {
+                // `box(...)` was evaluated first (leftmost argument, per
+                // ordinary left-to-right argument evaluation —
+                // `Interpreter::call`'s own doc comment), so it is node 0
+                // and `cylinder(...)` is node 1 — proving argument
+                // evaluation order determines `GeomId` order exactly like
+                // any other left-to-right evaluated call.
+                assert!(matches!(
+                    geometry_node(graph, *lhs),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                assert!(matches!(
+                    geometry_node(graph, *rhs),
+                    cad_geometry_api::GeometryOp::Cylinder { .. }
+                ));
+            }
+            other => panic!("expected GeometryOp::Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transform_composes_normally() {
+        let lowered = compiled(
+            "fn f() -> Geometry { return transform(box(1mm, 1mm, 1mm), 5mm, 0mm, -3mm); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        match geometry_node(interp.geometry_graph(), id) {
+            cad_geometry_api::GeometryOp::Transform { target, transform } => {
+                assert!(matches!(
+                    geometry_node(interp.geometry_graph(), *target),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                let translated = transform.apply_point(cad_kernel_api::Point3::ORIGIN);
+                assert!((translated.x - 0.005).abs() < 1e-12);
+                assert!((translated.y - 0.0).abs() < 1e-12);
+                assert!((translated.z - (-0.003)).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Transform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordinary_fn_can_call_a_safe_cad_function_and_return_its_geometry_value() {
+        // Requirement 12: an ordinary AICAD-defined function (`make`, a
+        // real `HirBlock` body) calls a Safe CAD standard function
+        // (`box`) and returns its geometry value unchanged, through
+        // exactly the same `HirExpr::Call`/`return` machinery any other
+        // function-to-function call already uses.
+        let lowered = compiled(
+            "fn make() -> Geometry { return box(3mm, 4mm, 5mm); } \
+             fn wrapper() -> Geometry { return make(); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("wrapper", vec![]).unwrap();
+        assert!(matches!(result, Value::Geometry(_)));
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+    }
+
+    #[test]
+    fn local_lexical_bindings_and_function_calls_still_work_alongside_builtins() {
+        // Requirement 13: ordinary `let`/`var`/arithmetic keeps working
+        // correctly in a function that also calls a Safe CAD standard
+        // function — the two mechanisms coexist in the same frame/body
+        // with no interference.
+        let lowered = compiled(
+            "fn f(side: Length) -> Length { \
+                 let doubled = side * 2.0; \
+                 var s = box(side, side, side); \
+                 s = box(doubled, doubled, doubled); \
+                 return doubled; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp
+            .call_by_name("f", vec![dimensional(0.01, Dimension::Length)])
+            .unwrap();
+        match result {
+            Value::Number(n) => assert!((n.magnitude - 0.02).abs() < 1e-12),
+            other => panic!("expected Number, got {other:?}"),
+        }
+        // Both `box(...)` calls actually ran (the `var` reassignment did
+        // not skip the second one) -- two independent geometry nodes.
+        assert_eq!(interp.geometry_graph().nodes().len(), 2);
     }
 }

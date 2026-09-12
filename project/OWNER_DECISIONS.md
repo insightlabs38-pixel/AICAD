@@ -41,7 +41,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D15 Plugin runtime (WASM vs. external) | open |
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
 | D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
-| D18 Geometry-operation invocation mechanism from `.aicad` source | open |
+| D18 Geometry-operation invocation mechanism from `.aicad` source | RESOLVED (runtime-backed standard functions) — DL-15 |
 
 ---
 
@@ -616,6 +616,18 @@ order (`project/TASKS.yaml`, `project/SESSION_HANDOFF.md`).
 
 ## D18. Geometry-operation invocation mechanism from `.aicad` source
 
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-15`.** Ordinary safe
+geometry operations use ordinary function-call syntax, backed by a general
+(not geometry-specific) compiler/runtime-owned "standard function"
+mechanism — `FunctionImplementation::Aicad(HirBlock)` vs.
+`FunctionImplementation::RuntimeBuiltin(BuiltinFnId)` — participating in
+the same ordinary binding/typing/call-expression semantics as
+AICAD-defined functions, explicitly not a compiler intrinsic and not an
+arbitrary native-callback facility. A deliberate, documented Safe CAD
+source API sits above Geometry IR (not a 1:1 exposure of every
+`GeometryOp`/`GeometryQuery` variant). Original question/context kept below
+for record.
+
 **Question:** `AICAD-060` ("Implement HIR/runtime geometry dispatch into
 Geometry IR/kernel API") needs to give a running `.aicad` program a way to
 actually *invoke* a geometry operation (`box(...)`, `cylinder(...)`,
@@ -748,14 +760,13 @@ approved RFC" and "select between major unresolved architecture
 alternatives"; `project/TASKS.yaml`'s `AICAD-060` entry lists both verbatim
 as its own `escalate_if` conditions.
 
-**Blocking impact:** `AICAD-060` remains open pending this ruling (the
-dispatcher/bridge halves implemented this session are complete and tested,
-but the task's own title — "HIR/runtime geometry dispatch" — is not fully
-satisfied without a way for `.aicad` source to trigger it); `AICAD-061`
-("Create cad-cli build command...") depends on `AICAD-060` per the fixed
-Batch S2-11 order and should not begin until this resolves and `AICAD-060`
-resumes and completes, mirroring exactly how `AICAD-057` stayed open across
-`D17`'s resolution.
+**Blocking impact:** Resolved; `AICAD-060` resumes from its existing
+partial implementation (the already-tested `GeometryGraph -> kernel`
+dispatcher and `NumberValue -> Quantity` bridge are kept, not discarded)
+and implements the general `RuntimeBuiltin` mechanism plus the Stage-2 Safe
+CAD catalogue (`docs/API/safe-cad-api.md`) and source-to-`GeometryGraph`
+path per `DL-15`. `AICAD-061` proceeds only after `AICAD-060` fully
+completes, per the fixed Batch S2-11 order.
 
 ---
 

@@ -86,10 +86,12 @@
 //! pipeline, the same underlying condition caught twice; see module doc
 //! comment above.
 
+use crate::builtins::{BuiltinFnSpec, catalogue as builtin_catalogue};
 use crate::hir::{
-    HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr, HirField, HirImportPath,
-    HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam, HirPattern, HirProgram,
-    HirRecordField, HirRecordPatternField, HirStmt, HirTypeParam, HirVariantPayload,
+    FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr,
+    HirField, HirImportPath, HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam,
+    HirPattern, HirProgram, HirRecordField, HirRecordPatternField, HirStmt, HirTypeParam,
+    HirVariantPayload,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
@@ -113,6 +115,31 @@ pub struct LowerResult {
 
 /// Lowers one already-parsed program to typed HIR. See module doc comment
 /// for exactly what this does and does not resolve.
+///
+/// Every returned [`HirProgram`] is seeded with the Stage-2 Safe CAD
+/// standard-function catalogue (`crate::builtins::catalogue`, `project/
+/// DECISION_LOG.md#DL-15`): each builtin's name is declared in the module
+/// scope *before* any of `program`'s own items are lowered, so a user call
+/// site resolves to it exactly as `crate::prelude::with_prelude` makes
+/// `Result`/`Optional` resolvable everywhere — except these names are
+/// seeded as HIR nodes directly (see `crate::builtins`'s own module doc
+/// comment "Why HIR-level, not source-text, seeding") rather than by
+/// prepending parsed AST items. The synthetic builtin items themselves are
+/// appended *after* the user's own lowered items in the returned
+/// [`HirProgram::items`] (declaration order has no effect on `crate::
+/// typeck`'s forward-reference-friendly two-pass checking or `cad_runtime`'s
+/// own `index_fns`, both of which scan the full item list regardless of
+/// position) — this keeps `result.program.items[0]` meaning exactly what
+/// every pre-existing test already assumes it does: the caller's own first
+/// declared item, not a builtin. Unlike the prelude, this seeding is
+/// unconditional (every `lower_program` caller gets it — `DL-15`'s
+/// functions are ordinary standard-library-shaped names, not an opt-in
+/// extra), and a user declaration that happens to redeclare `box`/
+/// `cylinder`/... simply overwrites the seeded binding in the lowerer's
+/// own top-level scope map, identical to how any other same-name
+/// redeclaration behaves (module doc comment "Duplicate-declaration
+/// detection") — no special protection, per the same non-special-casing
+/// precedent `crate::prelude` already established.
 pub fn lower_program(program: &Program, file: &str, source: &str) -> LowerResult {
     let mut lowerer = Lowerer {
         file,
@@ -121,7 +148,9 @@ pub fn lower_program(program: &Program, file: &str, source: &str) -> LowerResult
         bindings: Vec::new(),
         diagnostics: Vec::new(),
     };
-    let items = lowerer.lower_items(&program.items);
+    let builtin_items = lowerer.seed_builtins();
+    let mut items = lowerer.lower_items(&program.items);
+    items.extend(builtin_items);
     LowerResult {
         program: HirProgram { items },
         bindings: lowerer.bindings,
@@ -199,6 +228,61 @@ impl<'a> Lowerer<'a> {
             .expect("lower_program always keeps at least one scope active")
             .insert(name.node.clone(), id);
         id
+    }
+
+    /// Mints a fresh `BindingId` for one of `crate::builtins::catalogue`'s
+    /// own parameter entries, *without* declaring it in any active scope
+    /// — a runtime-backed function's params have no `HirBlock` body to
+    /// resolve names against (`crate::hir::FunctionImplementation::
+    /// RuntimeBuiltin`), so, exactly like `mint_type_params`'s own
+    /// identical reasoning, there is no lexical scope a builtin's own
+    /// parameter name could ever need to be looked up in.
+    fn mint_unscoped(&mut self, name: &str, kind: BindingKind, span: Span) -> BindingId {
+        let id = BindingId::new(self.bindings.len() as u32);
+        self.bindings.push(Binding {
+            id,
+            name: name.to_string(),
+            kind,
+            span,
+        });
+        id
+    }
+
+    /// Seeds every `crate::builtins::catalogue` entry as a top-level
+    /// `HirItem::Fn` with a `FunctionImplementation::RuntimeBuiltin` body,
+    /// declaring each one's name in the (currently empty) module scope —
+    /// see `lower_program`'s own doc comment for why this must run before
+    /// any caller-supplied item is lowered.
+    fn seed_builtins(&mut self) -> Vec<HirItem> {
+        let synthetic_span = Span::new(0, 0);
+        builtin_catalogue()
+            .into_iter()
+            .map(|spec: BuiltinFnSpec| {
+                let name_spanned = Spanned::new(spec.name.to_string(), synthetic_span);
+                let binding = self.mint(&name_spanned, BindingKind::Fn);
+                let params = spec
+                    .params
+                    .into_iter()
+                    .map(|(param_name, ty)| HirParam {
+                        binding: self.mint_unscoped(param_name, BindingKind::Param, synthetic_span),
+                        name: param_name.to_string(),
+                        ty,
+                        default: None,
+                        span: synthetic_span,
+                    })
+                    .collect();
+                HirItem::Fn {
+                    binding,
+                    name: spec.name.to_string(),
+                    is_pure: true,
+                    type_params: Vec::new(),
+                    params,
+                    return_ty: Some(spec.return_ty),
+                    body: FunctionImplementation::RuntimeBuiltin(spec.id),
+                    span: synthetic_span,
+                }
+            })
+            .collect()
     }
 
     /// Mints a fresh `BindingId` (`BindingKind::TypeParam`) for each
@@ -406,7 +490,7 @@ impl<'a> Lowerer<'a> {
                     type_params: lower_type_params(type_params, &type_param_ids),
                     params,
                     return_ty: return_ty.as_ref().map(lower_type),
-                    body,
+                    body: FunctionImplementation::Aicad(body),
                     span: *span,
                 }
             }
@@ -1241,6 +1325,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &result.program.items[1] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
         };
@@ -1261,6 +1348,9 @@ mod tests {
         };
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
@@ -1337,6 +1427,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &items[0] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
         };
@@ -1372,6 +1465,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         assert!(body.trailing.is_none());
         assert_eq!(body.stmts.len(), 2);
     }
@@ -1381,6 +1477,9 @@ mod tests {
         let result = lower("fn f() -> Int { let r = { let a = 1; a }; r; }");
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Let { value, .. } = &body.stmts[0] else {
             panic!("expected Let stmt");
@@ -1397,6 +1496,9 @@ mod tests {
             lower("fn f(c: Bool) -> Int { let r = if c { 1 } else if c { 2 } else { 3 }; r; }");
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Let { value, .. } = &body.stmts[0] else {
             panic!("expected Let stmt");
@@ -1416,6 +1518,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::If { else_branch, .. } = &body.stmts[0] else {
             panic!("expected If stmt");
         };
@@ -1427,6 +1532,9 @@ mod tests {
         let result = lower("fn f(xs: Int) -> Int { for x in xs { x; } 0; }");
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::For { binding, body, .. } = &body.stmts[0] else {
             panic!("expected For stmt");
@@ -1448,6 +1556,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         assert!(matches!(body.stmts[0], HirStmt::While { .. }));
         assert!(matches!(body.stmts[1], HirStmt::Loop { .. }));
     }
@@ -1466,6 +1577,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &result.program.items[1] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Match { arms, .. } = &body.stmts[0] else {
             panic!("expected Match stmt");
         };
@@ -1482,6 +1596,9 @@ mod tests {
         );
         let HirItem::Fn { body, .. } = &result.program.items[1] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         // `match` used as the fn body's own last statement is still
         // statement-position `match_stmt` (`cad_ast::item::Block` has no
@@ -1508,6 +1625,9 @@ mod tests {
         let result = lower("fn f(x: Int, y: Int) -> Int { x.frobnicate(y); }");
         let HirItem::Fn { body, params, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
@@ -1539,6 +1659,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
         };
@@ -1552,6 +1675,9 @@ mod tests {
         let result = lower("fn f() -> Int { (1 + 2); }");
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
@@ -1582,6 +1708,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
         };
@@ -1597,6 +1726,9 @@ mod tests {
         let result = lower("fn f() -> Int { missing_fn(); }");
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Expr { expr, .. } = &body.stmts[0] else {
             panic!("expected Expr stmt");
@@ -1616,6 +1748,9 @@ mod tests {
         let result = lower("fn f() -> Int { missing = 2; }");
         let HirItem::Fn { body, .. } = &result.program.items[0] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Assign { target, .. } = &body.stmts[0] else {
             panic!("expected Assign stmt");

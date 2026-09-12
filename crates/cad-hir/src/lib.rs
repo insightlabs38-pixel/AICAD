@@ -27,12 +27,21 @@
 //!   generic enums, loaded by parsing fixed AICAD source text and
 //!   prepending it to a user program before lowering. See its own module
 //!   doc comment for exactly where this hooks into the pipeline.
+//! - [`builtins`][]: [`builtins::BuiltinFnId`]/[`builtins::catalogue`]
+//!   (`AICAD-060`, `project/DECISION_LOG.md#DL-15`) — the Stage-2 Safe CAD
+//!   standard-function catalogue: compiler/runtime-owned callables
+//!   (`box`, `cylinder`, `cut`, ...) seeded directly as HIR nodes by
+//!   `lower::lower_program`'s own internal seeding step (no AICAD-source
+//!   spelling exists for "declare a function with no body," unlike
+//!   [`prelude`]'s text-based approach). See `docs/API/safe-cad-api.md`
+//!   for the human-readable catalogue rendering.
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §5;
 //! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (phases 4 and 7);
 //! `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §15 (control flow);
 //! `rfcs/0004-units-type-system.md` §8-9.
 
+pub mod builtins;
 pub mod hir;
 pub mod ids;
 pub mod lower;
@@ -40,10 +49,11 @@ pub mod prelude;
 pub mod typeck;
 pub mod types;
 
+pub use builtins::{BuiltinFnId, BuiltinFnSpec, catalogue as builtin_catalogue};
 pub use hir::{
-    BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr, HirField,
-    HirImportPath, HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam, HirPattern,
-    HirProgram, HirStmt, HirTypeParam, UnaryOp,
+    BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant,
+    HirExpr, HirField, HirImportPath, HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam,
+    HirPattern, HirProgram, HirStmt, HirTypeParam, UnaryOp,
 };
 pub use ids::{Binding, BindingId, BindingKind};
 pub use lower::{LowerResult, lower_program};

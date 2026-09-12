@@ -96,8 +96,9 @@
 //! `TYPE`-family codes for conditions `cad-units` already names).
 
 use crate::hir::{
-    BinaryOp, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem, HirLiteral, HirMatchArm,
-    HirPattern, HirProgram, HirRecordField, HirStmt, HirTypeParam, HirVariantPayload, UnaryOp,
+    BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
+    HirLiteral, HirMatchArm, HirPattern, HirProgram, HirRecordField, HirStmt, HirTypeParam,
+    HirVariantPayload, UnaryOp,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
@@ -194,6 +195,23 @@ pub enum CheckedType {
         base: BindingId,
         args: Vec<CheckedType>,
     },
+    /// A geometry value — one node of a `cad_geometry_api::GeometryGraph`
+    /// (`project/DECISION_LOG.md#DL-15`, resolving `project/
+    /// OWNER_DECISIONS.md#D18`). A single opaque nominal type: Stage 2
+    /// does not distinguish solid/wire/face/etc. at the type-checker
+    /// level (every Safe CAD standard function in `crate::builtins::
+    /// catalogue` that takes or returns a geometry value uses this same
+    /// type, exactly like the source-level `Geometry` name they all
+    /// declare) — narrower shape-kind checking is left to runtime
+    /// validation (`cad-occt-bridge`'s own `KernelError`s), matching how
+    /// this checker already leaves plenty of other runtime-checked
+    /// conditions unchecked at this layer. Unlike `Struct`/`Enum`, no
+    /// `BindingId` identifies it — nothing declares a `Geometry` type in
+    /// user source (`crate::typeck::Checker::resolve_type_ref` resolves
+    /// the bare name `"Geometry"` to this variant directly, the same way
+    /// it resolves `"Length"`/`"Int"`), so there is no declaring item to
+    /// point back to.
+    Geometry,
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -395,6 +413,7 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::List(e), CheckedType::List(a)) => value_types_compatible(e, a),
         (CheckedType::Range(e), CheckedType::Range(a)) => value_types_compatible(e, a),
         (CheckedType::TypeParam(e), CheckedType::TypeParam(a)) => e == a,
+        (CheckedType::Geometry, CheckedType::Geometry) => true,
         // Nominal, not structural (`AICAD-057D`): the same declaring
         // struct/enum `base`, with every type argument pairwise
         // compatible in declared order.
@@ -546,6 +565,7 @@ impl<'a> Checker<'a> {
                 let arg_strs: Vec<String> = args.into_iter().map(|a| self.describe(a)).collect();
                 format!("{name}<{}>", arg_strs.join(", "))
             }
+            CheckedType::Geometry => "Geometry".to_string(),
         }
     }
 
@@ -699,6 +719,17 @@ impl<'a> Checker<'a> {
                 // has no observed effect on any non-generic program).
                 if let Some(&id) = self.active_type_params.get(name) {
                     return Some(CheckedType::TypeParam(id));
+                }
+                // `Geometry` (`project/DECISION_LOG.md#DL-15`) is a
+                // single opaque builtin nominal type, resolved the same
+                // way `PrimitiveType`/`Dimension` names are below — no
+                // user `struct`/`enum` declaration can ever produce it,
+                // so it must be checked before `self.type_names` in case
+                // a user program declares its own type named `Geometry`
+                // (the builtin name always wins, exactly like `Length`/
+                // `Int` already do).
+                if name == "Geometry" {
+                    return Some(CheckedType::Geometry);
                 }
                 if let Some(prim) = PrimitiveType::from_name(name) {
                     return Some(CheckedType::Value(HirType::Scalar(prim)));
@@ -1075,7 +1106,15 @@ impl<'a> Checker<'a> {
                     // special generic treatment here (no instantiation/
                     // inference happens for calls inside it — that is
                     // `AICAD-057D`'s job).
-                    this.check_block(body, None);
+                    //
+                    // A `RuntimeBuiltin` body has no `HirBlock` to check
+                    // at all (`project/DECISION_LOG.md#DL-15`) — its
+                    // signature was already fully resolved by
+                    // `collect_signatures` above, exactly like any other
+                    // function's, so there is nothing left to do here.
+                    if let FunctionImplementation::Aicad(block) = body {
+                        this.check_block(block, None);
+                    }
                     this.current_fn_return = previous_return;
                 });
             }
@@ -3425,6 +3464,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &lowered.program.items[0] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Let { value: expr, .. } = &body.stmts[0] else {
             panic!("expected Let stmt");
         };
@@ -3565,6 +3607,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Let { binding, .. } = &body.stmts[0] else {
             panic!("expected Let stmt");
         };
@@ -3701,6 +3746,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Let { binding, .. } = &body.stmts[0] else {
             panic!("expected Let stmt");
         };
@@ -3770,6 +3818,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Let { binding, .. } = &body.stmts[0] else {
             panic!("expected Let stmt");
         };
@@ -3826,6 +3877,9 @@ mod tests {
         let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
             panic!("expected Fn item");
         };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
+        };
         let HirStmt::Match { arms, .. } = &body.stmts[0] else {
             panic!("expected Match stmt");
         };
@@ -3854,6 +3908,9 @@ mod tests {
         assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
         let HirItem::Fn { body, .. } = &lowered.program.items[1] else {
             panic!("expected Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::Match { arms, .. } = &body.stmts[0] else {
             panic!("expected Match stmt");
@@ -3982,6 +4039,9 @@ mod tests {
     ) -> Option<CheckedType> {
         let HirItem::Fn { body, .. } = &lowered.program.items[0] else {
             panic!("expected a Fn item");
+        };
+        let FunctionImplementation::Aicad(body) = body else {
+            panic!("expected an Aicad-sourced fn body in this test fixture");
         };
         let HirStmt::For { binding, .. } = &body.stmts[0] else {
             panic!("expected the fn body's first statement to be a for loop");
@@ -4744,5 +4804,111 @@ mod tests {
              fn f() -> Pair<Length, Mass> { return Pair(5mm, 2mm); }",
         );
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E433"]);
+    }
+
+    // ---- `project/DECISION_LOG.md#DL-15`: Safe CAD standard functions ----
+    // (resolving `project/OWNER_DECISIONS.md#D18`). These tests cover this
+    // crate's own share of the D18 ruling's required-tests list: (1) a
+    // runtime-backed standard function resolves through ordinary name
+    // binding; (2) its argument/return types are checked through the
+    // exact same machinery as an AICAD-defined function; (7) invalid
+    // argument dimensions fail with stable type diagnostics, before any
+    // kernel dispatch could ever happen (this crate never dispatches at
+    // all). Execution-level requirements (3-6, 9-13) are covered by
+    // `cad-runtime`'s/`cad-geometry-runtime`'s own test suites instead.
+
+    #[test]
+    fn box_builtin_resolves_through_ordinary_name_binding() {
+        let (lowered, checked) = check("let s = box(1mm, 2mm, 3mm);");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Let { value, .. } = &lowered.program.items[0] else {
+            panic!("expected Let item");
+        };
+        let HirExpr::Call { callee, .. } = value else {
+            panic!("expected Call expr");
+        };
+        let HirCallee::Fn { binding, .. } = callee else {
+            panic!("expected Fn callee");
+        };
+        let binding = binding.expect("box(...) must resolve to a real binding, not None");
+        assert_eq!(lowered.bindings[binding.index()].kind, BindingKind::Fn);
+        assert_eq!(lowered.bindings[binding.index()].name, "box");
+    }
+
+    #[test]
+    fn box_builtin_return_type_is_geometry_checked_through_ordinary_call_checking() {
+        let (lowered, checked) = check("let s = box(1mm, 2mm, 3mm);");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Let { binding, .. } = &lowered.program.items[0] else {
+            panic!("expected Let item");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(CheckedType::Geometry)
+        );
+    }
+
+    #[test]
+    fn cut_of_box_and_cylinder_composes_through_ordinary_call_checking() {
+        let (lowered, checked) = check("let s = cut(box(10mm, 10mm, 10mm), cylinder(2mm, 10mm));");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Let { binding, .. } = &lowered.program.items[0] else {
+            panic!("expected Let item");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(CheckedType::Geometry)
+        );
+    }
+
+    #[test]
+    fn transform_of_box_composes_through_ordinary_call_checking() {
+        let (lowered, checked) = check("let s = transform(box(1mm, 1mm, 1mm), 5mm, 0mm, 0mm);");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let HirItem::Let { binding, .. } = &lowered.program.items[0] else {
+            panic!("expected Let item");
+        };
+        assert_eq!(
+            checked.binding_types[binding.index()],
+            Some(CheckedType::Geometry)
+        );
+    }
+
+    #[test]
+    fn fillet_accepts_a_plain_list_of_int_edge_indices() {
+        let (_lowered, checked) = check("let s = fillet(box(10mm, 10mm, 10mm), [0, 1, 2], 1mm);");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn box_called_with_a_dimensionally_wrong_argument_is_reported_before_any_dispatch() {
+        // `dy` given a Mass instead of a Length -- an ordinary
+        // `ARGUMENT_TYPE_MISMATCH`, exactly the diagnostic any
+        // AICAD-defined function's own wrong-dimension argument gets
+        // (`too_many_positional_arguments_is_reported`'s sibling tests
+        // elsewhere in this module establish the same code for ordinary
+        // functions) -- never anything geometry-specific.
+        let (_lowered, checked) = check("let s = box(1mm, 2kg, 3mm);");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
+    }
+
+    #[test]
+    fn union_called_with_a_non_geometry_argument_is_reported() {
+        let (_lowered, checked) = check("let s = union(box(1mm, 1mm, 1mm), 5mm);");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
+    }
+
+    #[test]
+    fn calling_an_undeclared_name_that_looks_like_a_builtin_typo_is_still_an_ordinary_unresolved_call()
+     {
+        // `boxx` is not in `crate::builtins::catalogue` and no user item
+        // declares it -- ordinary unresolved-name handling applies with no
+        // special "did you mean a builtin?" carve-out.
+        let (program, parse_diagnostics) =
+            cad_parser::parse_program("let s = boxx(1mm, 1mm, 1mm);", "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let lowered =
+            crate::lower::lower_program(&program, "test.aicad", "let s = boxx(1mm, 1mm, 1mm);");
+        assert_eq!(codes(&lowered.diagnostics), vec!["TYPE-E410"]);
     }
 }

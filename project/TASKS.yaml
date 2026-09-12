@@ -1779,7 +1779,7 @@ tasks:
 - id: AICAD-060
   stage: 2
   title: Implement HIR/runtime geometry dispatch into Geometry IR/kernel API
-  status: todo
+  status: done
   depends_on:
   - AICAD-059
   plan_references:

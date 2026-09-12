@@ -44,10 +44,33 @@
 //! already has) — so a HIR consumer checks one place, not two, to learn
 //! whether a construct produces a value.
 
+use crate::builtins::BuiltinFnId;
 use crate::ids::BindingId;
 use crate::types::{HirType, HirTypeRef};
 use cad_ast::Span;
 pub use cad_ast::{BinaryOp, UnaryOp};
+
+/// A callable function's implementation source (`project/DECISION_LOG.md
+/// #DL-15`, resolving `project/OWNER_DECISIONS.md#D18`): either ordinary
+/// AICAD source (`Aicad`, the only case that existed before this
+/// decision), or a compiler/runtime-owned standard function (
+/// `RuntimeBuiltin`) whose behavior `cad_runtime::interp::Interpreter`
+/// provides natively rather than by executing a `HirBlock`. Both
+/// participate in exactly the same ordinary name binding, argument/return
+/// type checking, and call-expression semantics — `DL-15`'s own text:
+/// "Runtime-backed functions participate in the same ordinary: name
+/// resolution; argument checking; type checking; ...; call-expression
+/// semantics ... as AICAD-defined functions." A `RuntimeBuiltin` is
+/// deliberately *not* its own `HirExpr`/`BindingKind` variant (no
+/// `HirExpr::GeometryCall`/`HirExpr::GeometryIntrinsic` — `DL-15` forbids
+/// exactly that) and is not a compiler intrinsic (`project/
+/// DECISION_LOG.md#DL-7`'s RFC-gated process is unrelated and unweakened
+/// — see [`BuiltinFnId`]'s own module doc comment).
+#[derive(Debug, Clone, PartialEq)]
+pub enum FunctionImplementation {
+    Aicad(HirBlock),
+    RuntimeBuiltin(BuiltinFnId),
+}
 
 /// A literal value, lowered from `cad_ast::Literal`. Structurally identical
 /// today (both are "exactly what the source spelled"), but kept as HIR's
@@ -625,7 +648,7 @@ pub enum HirItem {
         type_params: Vec<HirTypeParam>,
         params: Vec<HirParam>,
         return_ty: Option<HirTypeRef>,
-        body: HirBlock,
+        body: FunctionImplementation,
         span: Span,
     },
     Struct {

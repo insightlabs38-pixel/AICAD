@@ -126,6 +126,21 @@ pub enum Value {
     /// comment for exactly which shapes iterate and which are rejected at
     /// run time.
     Range(RangeValue),
+    /// A geometry value — one node of the [`Interpreter`](crate::interp::
+    /// Interpreter)'s own accumulated `cad_geometry_api::GeometryGraph`
+    /// (`project/DECISION_LOG.md#DL-15`, resolving `project/
+    /// OWNER_DECISIONS.md#D18`). Produced only by a `RuntimeBuiltin`
+    /// Safe CAD standard function (`box`, `cut`, ...; `cad_hir::builtins`)
+    /// — never by ordinary AICAD-source execution, since no surface syntax
+    /// constructs one directly. Carries only `cad_geometry_api::GeomId`, an
+    /// opaque SSA-node index local to that one graph — never an OCCT
+    /// object, a raw kernel topology pointer, or persistent identity
+    /// derived from one (`DL-15`'s own "does NOT expose an OCCT object...
+    /// a raw kernel topology pointer"); realizing this id into an actual
+    /// kernel `Shape` is `cad_geometry_runtime::dispatch::dispatch_graph`'s
+    /// job, run against the finished graph after execution completes, not
+    /// this crate's.
+    Geometry(cad_geometry_api::GeomId),
 }
 
 /// [`Value::Range`]'s payload — see that variant's own doc comment.
@@ -166,6 +181,7 @@ impl Value {
             Value::Unit => "Unit",
             Value::List(_) => "List",
             Value::Range(_) => "Range",
+            Value::Geometry(_) => "Geometry",
         }
     }
 }

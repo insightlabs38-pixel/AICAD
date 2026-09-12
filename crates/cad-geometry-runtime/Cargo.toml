@@ -15,3 +15,7 @@ cad-occt-bridge = { path = "../cad-occt-bridge" }
 cad-runtime = { path = "../cad-runtime" }
 cad-types = { path = "../cad-types" }
 cad-units = { path = "../cad-units" }
+
+[dev-dependencies]
+cad-hir = { path = "../cad-hir" }
+cad-parser = { path = "../cad-parser" }

@@ -291,6 +291,35 @@ pub enum RuntimeError {
     RecursionLimitExceeded {
         span: Span,
     },
+    /// A `RuntimeBuiltin` Safe CAD standard function (`project/
+    /// DECISION_LOG.md#DL-15`) tried to build a `cad_geometry_api::
+    /// GeometryGraph` node and `GeometryGraph::push_op`/`push_query`
+    /// rejected it. Reuses that error's own stable `code()`/`title()`/
+    /// `message()`/`span()` verbatim under the `GEOM` diagnostic family,
+    /// exactly like [`RuntimeError::DimensionalArithmetic`] reuses
+    /// `cad_units`'s own `UNIT`-family error — this crate never reinvents
+    /// a `RUNTIME`-family code for a condition `cad-geometry-api` already
+    /// names. Every `crate::hir::builtins` catalogue signature is checked
+    /// by `cad_hir::typeck` before a program ever executes, so this should
+    /// be unreachable for a type-checked program in practice; defended
+    /// here anyway per this module's own "trusts, but verifies" precedent.
+    GeometryConstruction {
+        err: cad_geometry_api::GeometryIrError,
+    },
+    /// A `RuntimeBuiltin` Safe CAD standard function (`project/
+    /// DECISION_LOG.md#DL-15`) received an argument `Value` whose runtime
+    /// kind does not match what its own `cad_hir::builtins::catalogue`
+    /// signature declares (e.g. a non-`Value::Number` where a `Length`
+    /// parameter was declared). `cad_hir::typeck` already type-checks
+    /// every builtin call exactly like an ordinary function call
+    /// (`DL-15`: "the same ordinary ... argument checking ... as
+    /// AICAD-defined functions"), so this should be unreachable for a
+    /// type-checked program — defended here per this module's own
+    /// "trusts, but verifies" precedent, never a panic.
+    BuiltinArgumentShape {
+        name: &'static str,
+        span: Span,
+    },
 }
 
 impl RuntimeError {
@@ -325,6 +354,8 @@ impl RuntimeError {
             RuntimeError::RangeNotIterable { .. } => "RUNTIME-E122".to_string(),
             RuntimeError::IterationBudgetExceeded { .. } => "BUDGET-E001".to_string(),
             RuntimeError::RecursionLimitExceeded { .. } => "BUDGET-E002".to_string(),
+            RuntimeError::GeometryConstruction { err } => err.code().to_string(),
+            RuntimeError::BuiltinArgumentShape { .. } => "RUNTIME-E123".to_string(),
         }
     }
 
@@ -337,12 +368,15 @@ impl RuntimeError {
         match self {
             RuntimeError::IterationBudgetExceeded { .. }
             | RuntimeError::RecursionLimitExceeded { .. } => "resource-budget",
+            RuntimeError::GeometryConstruction { .. } => "geometry-ir",
             _ => "execution",
         }
     }
 
     fn span(&self) -> Span {
         match self {
+            RuntimeError::GeometryConstruction { err } => err.span(),
+            RuntimeError::BuiltinArgumentShape { span, .. } => *span,
             RuntimeError::UnresolvedBinding { span, .. }
             | RuntimeError::UnboundValue { span, .. }
             | RuntimeError::MalformedNumericLiteral { span, .. }
@@ -398,6 +432,8 @@ impl RuntimeError {
             RuntimeError::RangeNotIterable { .. } => "RANGE_NOT_ITERABLE",
             RuntimeError::IterationBudgetExceeded { .. } => "ITERATION_BUDGET_EXCEEDED",
             RuntimeError::RecursionLimitExceeded { .. } => "RECURSION_LIMIT_EXCEEDED",
+            RuntimeError::GeometryConstruction { err } => err.title(),
+            RuntimeError::BuiltinArgumentShape { .. } => "BUILTIN_ARGUMENT_SHAPE_MISMATCH",
         }
     }
 
@@ -477,6 +513,11 @@ impl RuntimeError {
             RuntimeError::RecursionLimitExceeded { .. } => {
                 "function call exceeded this interpreter's recursion-depth limit".to_string()
             }
+            RuntimeError::GeometryConstruction { err } => err.message(),
+            RuntimeError::BuiltinArgumentShape { name, .. } => format!(
+                "internal error: '{name}' received an argument shape its own already-checked \
+                 signature should have ruled out"
+            ),
         }
     }
 

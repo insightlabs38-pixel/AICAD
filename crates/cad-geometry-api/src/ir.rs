@@ -372,7 +372,7 @@ pub enum GeometryIrError {
 }
 
 impl GeometryIrError {
-    fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             GeometryIrError::InvalidOperand { .. } => "GEOM-E001",
             GeometryIrError::OperandIsNotGeometry { .. } => "GEOM-E002",
@@ -381,7 +381,7 @@ impl GeometryIrError {
         }
     }
 
-    fn title(&self) -> &'static str {
+    pub fn title(&self) -> &'static str {
         match self {
             GeometryIrError::InvalidOperand { .. } => "INVALID_GEOMETRY_OPERAND",
             GeometryIrError::OperandIsNotGeometry { .. } => "OPERAND_IS_NOT_GEOMETRY",
@@ -390,7 +390,7 @@ impl GeometryIrError {
         }
     }
 
-    fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             GeometryIrError::InvalidOperand { referenced, .. } => {
                 format!("{referenced} does not name any geometry node already built in this graph")
@@ -411,7 +411,7 @@ impl GeometryIrError {
         }
     }
 
-    fn span(&self) -> Span {
+    pub fn span(&self) -> Span {
         match self {
             GeometryIrError::InvalidOperand { span, .. }
             | GeometryIrError::OperandIsNotGeometry { span, .. }

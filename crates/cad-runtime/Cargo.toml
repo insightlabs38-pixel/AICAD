@@ -9,7 +9,9 @@ publish.workspace = true
 [dependencies]
 cad-ast = { path = "../cad-ast" }
 cad-diagnostics = { path = "../cad-diagnostics" }
+cad-geometry-api = { path = "../cad-geometry-api" }
 cad-hir = { path = "../cad-hir" }
+cad-kernel-api = { path = "../cad-kernel-api" }
 cad-types = { path = "../cad-types" }
 cad-units = { path = "../cad-units" }
 

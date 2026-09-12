@@ -735,3 +735,133 @@ them; do not add entries here unilaterally.
   decision's general generic machinery where practical, per "List/Range
   cleanup" above, without being forced to before `AICAD-057F`).
 - Supersedes: none (first ruling on D17).
+
+---
+
+## DL-15: D18 — runtime-backed standard functions and safe geometry invocation
+
+- Date: 2026-09-12
+- Resolves: `OWNER_DECISIONS.md#D18`.
+- Decision: AICAD ordinary safe geometry operations (`box(...)`,
+  `cylinder(...)`, `cut(a, b)`, `transform(body, ...)`, ...) are invoked
+  using **ordinary function-call syntax**. No new geometry-specific call
+  syntax is introduced. AICAD supports a general, non-geometry-specific
+  mechanism: **compiler/runtime-owned standard functions** whose
+  implementation is provided by the runtime rather than by an AICAD-source
+  `HirBlock`.
+  - **Function representation.** A callable function retains ordinary
+    function binding and call semantics. The HIR function representation
+    distinguishes implementation source conceptually as
+    `FunctionImplementation::Aicad(HirBlock)` vs.
+    `FunctionImplementation::RuntimeBuiltin(BuiltinFnId)` (an equivalent
+    internal representation is acceptable). No geometry-specific
+    expression form (`HirExpr::GeometryCall`, `HirExpr::GeometryIntrinsic`)
+    is authorized. Runtime-backed functions participate in the same
+    ordinary name resolution, argument checking, type checking, overload
+    rules (if/when supported), source-span diagnostics, and call-expression
+    semantics as AICAD-defined functions.
+  - **Not a compiler intrinsic.** A runtime-backed standard function is not
+    a compiler intrinsic merely because its implementation is native/
+    runtime code: it uses ordinary syntax/binding/typing/`HirExpr::Call`,
+    only its implementation differs. A construct requiring compiler-
+    specific syntax, typing, lowering, or semantic rules unavailable to
+    ordinary functions remains a compiler intrinsic, still governed by
+    `D9`/`DL-7`'s RFC requirement, unweakened by this ruling.
+  - **No arbitrary native callback facility.** Stage 2 does not expose
+    arbitrary Rust/C++ callbacks, FFI functions, native plugins, or
+    user-defined host functions. `RuntimeBuiltin` ids are a closed,
+    compiler/runtime-owned, finite mechanism — never a serialized raw
+    function pointer, and never alters the later plugin/native-extension
+    security boundary (`D12`).
+  - **Tier B (Safe CAD).** Ordinary safe CAD operations use runtime-backed
+    standard functions whose implementations construct/extend the
+    backend-independent `GeometryGraph` (`box(...)` -> `GeometryOp::Box`,
+    `cut(a, b)` -> `GeometryOp::Cut`, ...), returning the appropriate AICAD
+    geometry value referencing the resulting `GeometryGraph` node. They
+    never expose an OCCT object, a raw kernel topology pointer, persistent
+    identity from an OCCT handle, or a call path around Geometry IR; kernel
+    execution continues through the Stage-1 kernel-neutral boundary.
+  - **Tier C (unsafe geometry) stays reserved.** RFC-0002's
+    `unsafe geometry { ... }` mechanism remains reserved for raw/kernel-
+    grade topology capabilities. Ordinary `box`/`cylinder`/`cut`/... must
+    never require an `unsafe geometry` block; Tier B and Tier C stay
+    semantically distinct.
+  - **Public API is not the Geometry IR.** The public AICAD Safe CAD
+    function catalogue must **not** automatically expose every
+    `GeometryOp`/`GeometryQuery` variant one-for-one — Geometry IR is an
+    internal, backend-independent execution representation that must
+    remain free to be refactored/split/combined/extended without
+    automatically changing the language API. A deliberate source-level Safe
+    CAD API sits above Geometry IR, documented in a small,
+    version-controlled specification (`docs/API/safe-cad-api.md`).
+  - **Stage-2 surface.** Stage 2 exposes only the Safe CAD operations
+    needed to prove the Stage-2 language-to-geometry slice
+    (`AICAD-063`'s bracket proof) plus operations already unambiguously
+    supported by the approved Safe CAD design: at minimum `box`,
+    `cylinder`, `transform`, `union`, `cut`, `intersect`, `fillet`,
+    `chamfer`. `export_step`/`import_step`/`tessellate`/low-level edge-wire
+    construction/raw topology traversal/`validate`/`adopt_validated`/
+    diagnostic-kernel-inspection operations do **not** automatically become
+    Stage-2 source functions merely because a corresponding IR/runtime
+    operation exists — STEP export for the `AICAD-063` gate may remain part
+    of the build/output pipeline rather than an arbitrary source-level I/O
+    operation, avoiding accidental file-I/O/effect semantics in the
+    language. Geometry queries (`volume`/`area`/`bounding_box`/
+    `center_of_mass`/`is_valid`) may use the same runtime-backed-function
+    architecture when/if their source-visible semantics are implemented;
+    this ruling does not require all of them to become source-visible in
+    Stage 2, and if letting source control flow depend on kernel-evaluated
+    queries needs a materially different execution/evaluation model, that
+    is its own separate architecture decision, not something to fold
+    silently into `AICAD-060`.
+  - **Standard function catalogue.** Runtime-backed standard functions are
+    described by typed declarations carrying at least: name (for
+    resolution), parameter types, return type, runtime builtin identity,
+    and diagnostics. A single authoritative declaration/catalogue feeds
+    both binding/type checking and runtime dispatch where practical — the
+    type checker must not independently duplicate geometry signatures.
+  - **Prelude/module binding.** Runtime-backed functions may be made
+    available through AICAD's existing module/prelude machinery. No new
+    import syntax is authorized. For Stage 2, preserve the
+    already-approved/illustrated ordinary call style without inventing new
+    grammar.
+  - **Determinism/resource accounting.** Runtime-backed functions remain
+    subject to `D5` deterministic-execution requirements, execution-
+    resource accounting, structured diagnostics, the approved kernel
+    abstraction, and normal error propagation — they cannot bypass AICAD
+    execution budgets merely because their implementation is runtime-
+    provided.
+- Rationale: Owner ruling. AICAD needs a controlled bridge between ordinary
+  language functions and capabilities the host runtime implements; geometry
+  is the first major use of that bridge, but the mechanism must not let
+  geometry-specific semantics infect the general compiler. This design
+  preserves ordinary AICAD call semantics, a backend-independent Geometry
+  IR, and a narrow kernel boundary simultaneously, without a general
+  compiler-intrinsic facility and without collapsing Safe CAD into unsafe
+  kernel access.
+- Alternatives considered (`OWNER_DECISIONS.md#D18`'s own three options):
+  option 1 (a new `BindingKind`/geometry-specific dispatch, e.g.
+  `BindingKind::GeometryIntrinsic`) — rejected as stated, in favor of the
+  more general `FunctionImplementation::RuntimeBuiltin` shape that is not
+  geometry-specific and reuses ordinary `HirExpr::Call`/`BindingKind::Fn`
+  machinery rather than adding a new binding kind or expression form;
+  option 2 (reusing/extending RFC-0002 §4's `unsafe geometry` blocks for
+  ordinary Safe CAD operations) — rejected, exactly as `D18`'s own option-2
+  writeup warned, to keep Tier B/Tier C semantically distinct; option 3
+  (deferring language-surface invocation further) — superseded by this
+  ruling authorizing the general mechanism now, resuming `AICAD-060` from
+  its existing partial implementation rather than deferring again.
+- Affected RFCs/tasks: `AICAD-060` (resumes, implementing the general
+  `RuntimeBuiltin` mechanism plus the Stage-2 Safe CAD catalogue and source-
+  to-`GeometryGraph` path; the already-tested `GeometryGraph -> kernel`
+  dispatcher and `NumberValue -> Quantity` bridge from this task's own
+  prior session are kept, not discarded, absent a concrete defect);
+  `AICAD-061` (proceeds only after `AICAD-060` fully completes, per the
+  fixed Batch S2-11 order); `RFC-0001`/`RFC-0002` (updated only as
+  necessary to document the general runtime-backed standard-function
+  mechanism and its Tier-B/Tier-C relationship — `RuntimeBuiltin` functions
+  must never be described as compiler intrinsics); a new
+  `docs/API/safe-cad-api.md` (the small, version-controlled Safe CAD
+  source API specification this ruling requires); `D9`/`DL-7` (unweakened —
+  a genuine future compiler intrinsic still needs its own RFC).
+- Supersedes: none (first ruling on D18).

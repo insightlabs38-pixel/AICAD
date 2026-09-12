@@ -926,4 +926,70 @@ mod tests {
         let err = shape_operand(&empty_results, id, id, span()).unwrap_err();
         assert!(matches!(err, DispatchError::GraphInvariantViolated { .. }));
     }
+
+    /// `project/DECISION_LOG.md#DL-15`'s own required-tests list, item 10:
+    /// "runtime execution reaches the already-implemented real OCCT
+    /// dispatcher and produces valid exact B-rep evidence." This is the
+    /// full pipeline `DL-15`'s own "IMPLEMENTATION FLOW TO PROVE" names:
+    /// `.aicad` source -> parser -> binding -> type checker -> typed HIR
+    /// ordinary call -> `RuntimeBuiltin` dispatch -> `GeometryGraph` node
+    /// -> this crate's own dispatcher -> the Stage-1 kernel-neutral API ->
+    /// OCCT — every layer exercised for real, never bypassed. Not a
+    /// substitute for `AICAD-063`'s own full end-to-end gate (a much
+    /// larger fixture with parameters/control flow/STEP verification),
+    /// only this task's own proof that the `D18` mechanism it adds
+    /// actually reaches a real kernel call.
+    #[test]
+    fn full_source_to_kernel_pipeline_produces_a_valid_exact_brep() {
+        let source = "\
+            fn f() -> Geometry { \
+                let hole = transform(cylinder(2mm, 20mm), 5mm, 5mm, -5mm); \
+                return cut(box(10mm, 10mm, 10mm), hole); \
+            }";
+        let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+
+        let mut interp = cad_runtime::interp::Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        let result = interp
+            .call_by_name("f", vec![])
+            .expect("execution should succeed");
+        let cad_runtime::value::Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results =
+            dispatch_graph(interp.geometry_graph(), &ctx).expect("dispatch should succeed");
+        match &results[id.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!(
+                    shape.is_valid().unwrap(),
+                    "cut result must be a valid B-rep"
+                );
+                let volume = shape.volume().unwrap();
+                let box_volume = 0.01 * 0.01 * 0.01;
+                let hole_volume = std::f64::consts::PI * 0.002 * 0.002 * 0.01;
+                let expected = box_volume - hole_volume;
+                assert!(
+                    (volume - expected).abs() < expected * 0.01,
+                    "volume {volume} far from expected {expected}"
+                );
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
 }
