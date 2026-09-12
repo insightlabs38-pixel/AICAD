@@ -1,0 +1,522 @@
+status: DRAFT_NOT_APPROVED
+stage: 6
+name: Assemblies configurations and kinematics
+basis_revision: d82bf82e53a98f3117d3dc17707f1756822e593d
+provisional_id_policy: POST100-S6-* identifiers are planning-only and MUST be replaced only after owner review.
+entry_conditions:
+  - Stage-5 owner gate approved.
+  - Stage-4 semantic references and Stage-5 advanced lineage are stable enough for cross-instance references.
+  - Assembly identity owner decision OD-S6-01 resolved.
+  - Interface/protocol and bounded-generic owner decision OD-S6-02 resolved before tasks that use those features.
+  - Solver-neutral assembly relation and deterministic pose decision OD-S6-03 resolved before solver integration.
+  - Configuration identity/suppression/replacement decision OD-S6-04 resolved before configuration tasks.
+  - Minimal external-asset identity decision OD-S6-05 resolved before imported-component task.
+checkpoints:
+  - POST100-S6-011
+  - POST100-S6-018
+  - POST100-S6-026
+final_gate: POST100-S6-030
+
+tasks:
+  - id: POST100-S6-001
+    stage: 6
+    title: Freeze Stage-6 normative prerequisites and assembly capability envelope
+    objective: Reconcile Stage-5 outputs with approved assembly identity solver configuration language and external-asset decisions before implementation begins.
+    depends_on: []
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/15_IMPLEMENTATION_ROADMAP.md, project/planning/post100/OPEN_DECISIONS.md#BEFORE-STAGE-6]
+    spec_dependencies: [OD-S6-01, OD-S6-02, OD-S6-03, OD-S6-04, OD-S6-05, D11, Stage-4 reference semantics, Stage-5 spatial semantics]
+    acceptance:
+      - Component definition instance nested-path configuration BOM and geometry-reference identity domains are explicitly documented.
+      - Initial solver cannot define public mate joint pose or diagnostic semantics.
+      - No assembly task depends on unimplemented undefined interface generic-bound configuration or declaration syntax.
+    required_checks: [owner-decision cross-check, canonical language-spec cross-check, Stage-5 gate review]
+    likely_crates: []
+    escalate_if: [any assembly example requires choosing unresolved language or identity semantics]
+    gate_relevance: blocking architecture prerequisite
+
+  - id: POST100-S6-002
+    stage: 6
+    title: Implement general interfaces protocols implements semantics and required generic bounds
+    objective: Provide the approved general language machinery required by reusable mechanical interfaces without creating assembly-only type-system rules.
+    depends_on: [POST100-S6-001]
+    plan_references: [docs/plan/02_LANGUAGE_AND_COMPILER.md, docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md, docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [OD-S6-02, SPEC-DELTA-008, D17]
+    acceptance:
+      - Interface declarations and approved conformance mechanism lower/type-check through general language machinery.
+      - Generic bounds resolve and diagnose unsatisfied/ambiguous conformance deterministically.
+      - No assembly crate special-cases parser/type checker behavior for a named mechanical interface.
+      - Existing generic and value semantics remain compatible.
+    required_checks: [parser AST printer round-trip, type-check conformance tests, generic-bound positive/negative corpus]
+    likely_crates: [cad-lexer, cad-parser, cad-ast, cad-hir, cad-types, cad-diagnostics]
+    escalate_if: [mechanical interface requirements cannot be represented by the accepted general interface model]
+    gate_relevance: Stage-6 language prerequisite
+
+  - id: POST100-S6-003
+    stage: 6
+    title: Define and implement assembly semantic identity primitives
+    objective: Encode distinct stable IDs for assembly definitions component definitions logical instances nested instance paths configuration slots and related semantic subjects.
+    depends_on: [POST100-S6-001]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md]
+    spec_dependencies: [OD-S6-01, SPEC-DELTA-014]
+    acceptance:
+      - IDs are deterministic/reproducible according to accepted source semantics and never derived from raw topology or solver variables.
+      - Logical instance identity survives pose recomputation.
+      - Nested instance paths are unambiguous and stable under unrelated sibling edits according to documented rules.
+      - Identity types cannot be accidentally mixed across domains.
+    required_checks: [identity determinism tests, rename/reorder perturbation fixtures per spec, type-safety tests]
+    likely_crates: [cad-assemblies, cad-hir, cad-types, cad-provenance]
+    escalate_if: [source edits create ambiguous identity preservation with no owner-approved rule]
+    gate_relevance: Stage-6 core foundation
+
+  - id: POST100-S6-004
+    stage: 6
+    title: Implement assembly component-definition and instance semantic IR
+    objective: Represent component/assembly definitions named instances parameters and instantiated semantic subjects independently from realized geometry and solver state.
+    depends_on: [POST100-S6-002, POST100-S6-003]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [assembly declaration/instance syntax, identity model]
+    acceptance:
+      - Definitions and instances are distinct typed entities.
+      - Multiple instances of one definition share definition identity but retain unique logical instance identity.
+      - Instance parameterization and component outputs use ordinary language values/functions where approved.
+      - No geometry occurrence/index serves as authoritative assembly identity.
+    required_checks: [multi-instance fixture, definition reuse fixture, AST/HIR/runtime tests]
+    likely_crates: [cad-assemblies, cad-ast, cad-hir, cad-runtime, cad-types]
+    escalate_if: [language declaration design cannot preserve stable instance identity]
+    gate_relevance: Stage-6 core
+
+  - id: POST100-S6-005
+    stage: 6
+    title: Implement local world frame and rigid-pose semantics for instances
+    objective: Reuse Stage-5 spatial types to represent local component frames world poses composition and inverse without assembly-specific transform conventions.
+    depends_on: [POST100-S6-004]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md]
+    spec_dependencies: [Stage-5 spatial semantics]
+    acceptance:
+      - Every instance has explicit local/world frame semantics.
+      - Nested transforms compose deterministically using the shared rigid-transform model.
+      - Pose changes do not alter logical instance identity or source semantic references.
+      - Unit/frame mismatch diagnostics are structured.
+    required_checks: [composition/inverse tests, nested-frame fixtures, identity-under-pose tests]
+    likely_crates: [cad-assemblies, cad-types, cad-kernel-api]
+    escalate_if: [assembly requires transform behavior not representable by shared spatial model]
+    gate_relevance: Stage-6 core
+
+  - id: POST100-S6-006
+    stage: 6
+    title: Implement nested-assembly dependency graph and cycle diagnostics
+    objective: Build deterministic dependency relationships among assembly/component definitions and nested instances with explicit illegal-cycle handling.
+    depends_on: [POST100-S6-004, POST100-S6-005]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [assembly identity and instantiation semantics]
+    acceptance:
+      - Nested assemblies resolve through deterministic dependency order.
+      - Illegal recursive/cyclic instantiation is diagnosed with source path and cycle trace.
+      - Shared definitions are reused rather than duplicated semantically.
+      - Dependency graph is separate from solver relation graph.
+    required_checks: [deep nesting fixture, shared subassembly fixture, direct/indirect cycle tests]
+    likely_crates: [cad-assemblies, cad-hir, cad-diagnostics]
+    escalate_if: [planned language intentionally permits recursive assembly values requiring different semantics]
+    gate_relevance: Stage-6 core
+
+  - id: POST100-S6-007
+    stage: 6
+    title: Implement assembly-level semantic-reference addressing
+    objective: Compose Stage-4/5 semantic references with logical instance paths so mates joints tests and tooling can address geometry across nested assemblies safely.
+    depends_on: [POST100-S6-003, POST100-S6-006]
+    plan_references: [docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md, docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [Stage-4 resolver, Stage-5 lineage, assembly identity]
+    acceptance:
+      - A reference identifies an assembly subject via logical instance path plus semantic geometry recipe rather than world topology occurrence.
+      - Pose-only changes preserve references.
+      - Definition edits/configuration changes resolve or fail according to declared durability and configuration semantics.
+      - Cross-instance ambiguity fails closed with candidate evidence.
+    required_checks: [nested reference fixture, pose perturbation, component rebuild, ambiguous/broken cases]
+    likely_crates: [cad-assemblies, cad-references, cad-query, cad-provenance]
+    escalate_if: [Stage-4 reference representation cannot compose with instance-path identity without breaking semantics]
+    gate_relevance: required for mates joints and verification
+
+  - id: POST100-S6-008
+    stage: 6
+    title: Implement reusable mechanical interface semantic model
+    objective: Represent named connection/interface contracts using general language interfaces plus assembly-domain frames references parameters and compatibility rules.
+    depends_on: [POST100-S6-002, POST100-S6-007]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [general interface semantics, assembly reference semantics]
+    acceptance:
+      - Mechanical interfaces can be declared on reusable component definitions without compiler special cases per interface name.
+      - Interface exports may include semantic refs frames typed parameters and compatibility metadata.
+      - Conformance is validated statically where type information suffices and structurally at assembly resolution where geometry is required.
+    required_checks: [motor-mount style fixture, incompatible interface diagnostics, nested interface reuse]
+    likely_crates: [cad-assemblies, cad-hir, cad-types, cad-references]
+    escalate_if: [required geometric compatibility cannot be separated cleanly from language type conformance]
+    gate_relevance: Stage-6 reusable assembly API
+
+  - id: POST100-S6-009
+    stage: 6
+    title: Define and implement solver-neutral mate relation IR
+    objective: Encode mate intent in AICAD-owned semantic relations over instance/reference/frame subjects without numerical-solver variable leakage.
+    depends_on: [POST100-S6-007, POST100-S6-008]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [OD-S6-03, D11]
+    acceptance:
+      - Canonical-plan mate families map to typed semantic relations and stable relation IDs.
+      - Relations carry source spans subjects parameters and hard/soft status only if approved; no native solver IDs/weights are source semantics.
+      - Relation representation is serializable/inspectable independently of solver backend.
+    required_checks: [relation construction tests, source/HIR round trips if syntax added, solver-free introspection tests]
+    likely_crates: [cad-assemblies, cad-constraints, cad-hir, cad-types]
+    escalate_if: [a mate kind can only be represented as opaque solver code]
+    gate_relevance: Stage-6 solver-neutral core
+
+  - id: POST100-S6-010
+    stage: 6
+    title: Define and implement solver-neutral joint relation and coordinate IR
+    objective: Encode revolute prismatic cylindrical planar spherical gear or canonical-plan joint intent and joint coordinates independently from numerical backend.
+    depends_on: [POST100-S6-009]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [OD-S6-03, shared spatial/unit semantics]
+    acceptance:
+      - Joint coordinates carry correct dimensional types and explicit limits/defaults where specified.
+      - Joint relation identity survives pose evaluation.
+      - Kinematic relation intent can be inspected without solver-native expressions.
+      - Unsupported combinations fail at semantic validation rather than becoming solver undefined behavior.
+    required_checks: [joint family corpus, dimensional type tests, limit/invalid relation tests]
+    likely_crates: [cad-assemblies, cad-constraints, cad-types, cad-units]
+    escalate_if: [joint semantics depend on solver-specific coordinate parameterization]
+    gate_relevance: Stage-6 kinematic core
+
+  - id: POST100-S6-011
+    stage: 6
+    title: Stage-6 checkpoint A — semantic assembly graph interfaces and relations
+    objective: Prove a nested assembly can be represented referenced and constrained entirely in solver-neutral semantic form before numerical solving is integrated.
+    depends_on: [POST100-S6-010]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage-6 identity reference interface relation specs]
+    acceptance:
+      - Nested multi-instance fixture resolves definitions paths frames semantic refs interfaces mates and joints with no solver present.
+      - All identities and ordering are deterministic across rebuilds.
+      - Introspection output contains no topology index or solver-native identity as semantic authority.
+    required_checks: [workspace checks, deterministic semantic-graph snapshot, nested fixture]
+    likely_crates: [cad-assemblies, cad-constraints, cad-references, cad-query]
+    escalate_if: [numerical solver state is required merely to define assembly meaning]
+    gate_relevance: internal architecture checkpoint
+
+  - id: POST100-S6-012
+    stage: 6
+    title: Define numerical assembly-solver adapter contract
+    objective: Specify lowering from semantic mate/joint relations into numerical unknowns residuals Jacobian/evaluation data and structured solve evidence while keeping backend details private.
+    depends_on: [POST100-S6-011]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [D11, OD-S6-03, solver tolerance category]
+    acceptance:
+      - Adapter input is semantic assembly relation graph plus explicit solver policy/profile.
+      - Solver output maps deterministically back to instance poses relation residuals and diagnostics.
+      - Native variable IDs ordering and algorithm settings are not persisted as assembly semantics.
+      - A mock/alternate adapter can satisfy the contract in tests.
+    required_checks: [adapter conformance tests, mock backend, deterministic mapping tests]
+    likely_crates: [cad-assemblies, cad-constraints]
+    escalate_if: [public assembly behavior requires exposing solver-specific object/state]
+    gate_relevance: solver independence requirement
+
+  - id: POST100-S6-013
+    stage: 6
+    title: Implement deterministic grounding initial-pose and representative-pose semantics
+    objective: Remove arbitrary rigid-body/gauge choices from observable assembly results and specify behavior for underconstrained assemblies.
+    depends_on: [POST100-S6-012]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [SPEC-DELTA-015, OD-S6-03]
+    acceptance:
+      - Root/ground convention is explicit and stable.
+      - Underconstrained assemblies report remaining DOF and use only approved deterministic representative-pose rules.
+      - Initial guesses may affect performance but not accepted semantic result class or arbitrary identity.
+      - Repeated runs and relation insertion-order perturbations yield equivalent normalized poses.
+    required_checks: [floating assembly tests, insertion-order perturbation, repeated-run pose normalization]
+    likely_crates: [cad-assemblies, cad-constraints]
+    escalate_if: [two valid solutions cannot be normalized without an owner-visible convention]
+    gate_relevance: deterministic Stage-6 semantics
+
+  - id: POST100-S6-014
+    stage: 6
+    title: Implement baseline assembly numerical solver backend
+    objective: Solve approved mate/joint relation sets through the adapter with bounded deterministic numerical behavior and structured convergence evidence.
+    depends_on: [POST100-S6-012, POST100-S6-013]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [solver tolerance policy, solver adapter contract]
+    acceptance:
+      - Solver supports canonical baseline relation set without defining new public relation semantics.
+      - Convergence/nonconvergence is bounded and returns residual/iteration/reason evidence.
+      - Numerical tolerance is solver-class policy and never D5/verification tolerance by implication.
+      - Failure cannot leave partially authoritative poses.
+    required_checks: [convergence corpus, nonconvergence cases, resource limits, repeatability]
+    likely_crates: [cad-constraints, cad-assemblies]
+    escalate_if: [solver limitations tempt changing mate/joint public semantics rather than adapter/backend]
+    gate_relevance: Stage-6 implementation core
+
+  - id: POST100-S6-015
+    stage: 6
+    title: Implement degrees-of-freedom analysis
+    objective: Compute and explain assembly mobility/remaining freedoms from semantic relations independent of raw solver variable count.
+    depends_on: [POST100-S6-012, POST100-S6-014]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [DOF counting policy, semantic relation IR]
+    acceptance:
+      - Known hinge slider rigid and floating fixtures report expected DOF.
+      - DOF evidence identifies involved instances/relations/coordinates.
+      - Numerical rank thresholds are governed by solver tolerance/policy and surfaced in evidence.
+    required_checks: [known-mechanism corpus, near-singular cases, relation-order perturbation]
+    likely_crates: [cad-assemblies, cad-constraints]
+    escalate_if: [DOF results materially change with backend-specific parameterization]
+    gate_relevance: Stage-6 gate requirement
+
+  - id: POST100-S6-016
+    stage: 6
+    title: Implement overconstraint redundancy and conflict diagnostics
+    objective: Explain inconsistent/redundant relation sets with stable semantic subjects and evidence instead of reporting only generic solve failure.
+    depends_on: [POST100-S6-014, POST100-S6-015]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md]
+    spec_dependencies: [assembly diagnostic taxonomy, solver adapter evidence]
+    acceptance:
+      - Contradictory relation fixtures identify a deterministic relevant conflict set or bounded candidate set per spec.
+      - Redundant relations are distinguishable from inconsistent ones.
+      - Diagnostics cite source relation IDs instance paths and relevant references.
+      - No native solver variable names are required to understand the error.
+    required_checks: [overconstraint corpus, redundancy corpus, diagnostic schema conformance]
+    likely_crates: [cad-assemblies, cad-constraints, cad-diagnostics]
+    escalate_if: [backend cannot provide enough evidence for accepted diagnostic guarantees]
+    gate_relevance: Stage-6 explainability requirement
+
+  - id: POST100-S6-017
+    stage: 6
+    title: Implement baseline kinematic evaluation over joint coordinates
+    objective: Evaluate assembly poses across approved joint coordinates/limits while preserving semantic identity and deterministic constraint satisfaction.
+    depends_on: [POST100-S6-010, POST100-S6-014, POST100-S6-015]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [joint coordinate semantics, deterministic pose policy]
+    acceptance:
+      - Hinge slider gearbox/linked joint fixtures evaluate across bounded coordinate samples.
+      - Limits and invalid coordinate combinations produce structured outcomes.
+      - Kinematic evaluation does not imply dynamics mass or force simulation.
+      - Instance identity/reference durability is preserved across motion.
+    required_checks: [trajectory sample tests, limit tests, reference-under-motion tests]
+    likely_crates: [cad-assemblies, cad-constraints]
+    escalate_if: [requested baseline behavior requires dynamics or time integration outside Stage6 scope]
+    gate_relevance: Stage-6 kinematics baseline
+
+  - id: POST100-S6-018
+    stage: 6
+    title: Stage-6 checkpoint B — solver-neutral assembly realization
+    objective: Prove semantic relations lower to a replaceable solver and return deterministic poses DOF and diagnostics before configurations are added.
+    depends_on: [POST100-S6-016, POST100-S6-017]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage-6 solver/pose specifications]
+    acceptance:
+      - Hinge slider and small nested mechanism fixtures pass pose DOF and conflict checks.
+      - Mock/alternate solver adapter proves public assembly IR is not backend-specific.
+      - Relation-order perturbation produces equivalent normalized results.
+      - Diagnostics use semantic IDs/references.
+    required_checks: [workspace checks, solver-adapter conformance, deterministic perturbation suite]
+    likely_crates: [cad-assemblies, cad-constraints, cad-references]
+    escalate_if: [backend replacement changes source-visible assembly meaning]
+    gate_relevance: internal hard checkpoint
+
+  - id: POST100-S6-019
+    stage: 6
+    title: Implement configuration declaration and immutable overlay model
+    objective: Represent named configurations as immutable overlays over base semantic models with stable identity and deterministic resolution.
+    depends_on: [POST100-S6-001, POST100-S6-003, POST100-S6-018]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [OD-S6-04, SPEC-DELTA-016, approved configuration language surface]
+    acceptance:
+      - Base assembly remains semantically immutable.
+      - Configuration identity and resolution inputs are deterministic and inspectable.
+      - Overlays can bind approved parameters/variants/status without deleting base logical subjects.
+      - Invalid/unknown target IDs fail with structured diagnostics.
+    required_checks: [base-vs-config immutability tests, deterministic resolution, parser/HIR tests if syntax added]
+    likely_crates: [cad-configurations, cad-assemblies, cad-hir, cad-runtime]
+    escalate_if: [configuration requires hidden mutable state outside source/manifest semantics]
+    gate_relevance: Stage-6 configuration foundation
+
+  - id: POST100-S6-020
+    stage: 6
+    title: Implement configuration validity rules and deterministic selection
+    objective: Evaluate configuration rules using ordinary typed expressions/predicates where possible and produce structured validity evidence.
+    depends_on: [POST100-S6-019]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [configuration rule semantics]
+    acceptance:
+      - Rule evaluation order cannot change outcome; dependency cycles are diagnosed if rules reference derived config state.
+      - Invalid configurations report rule IDs/source evidence.
+      - No bespoke mini-language is introduced if general expressions/functions suffice.
+    required_checks: [valid/invalid rule matrix, cyclic rule case if applicable, deterministic ordering]
+    likely_crates: [cad-configurations, cad-runtime, cad-hir, cad-diagnostics]
+    escalate_if: [general expression semantics cannot represent required declarative rule behavior]
+    gate_relevance: Stage-6 configuration validity
+
+  - id: POST100-S6-021
+    stage: 6
+    title: Implement suppression semantics with stable logical identity
+    objective: Resolve suppressed components/features as inactive semantic subjects without silently deleting/reassigning logical identity.
+    depends_on: [POST100-S6-019, POST100-S6-020]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [OD-S6-04]
+    acceptance:
+      - Suppressed subjects remain traceable with explicit inactive status per spec.
+      - Mates/references/BOM involving suppression produce deterministic active/inactive/broken behavior.
+      - Toggling configurations does not recycle identity among different logical instances.
+    required_checks: [suppression toggle fixture, ref/mate behavior, BOM behavior]
+    likely_crates: [cad-configurations, cad-assemblies, cad-references, cad-provenance]
+    escalate_if: [suppression semantics conflict with Stage-4 reference durability]
+    gate_relevance: Stage-6 configuration core
+
+  - id: POST100-S6-022
+    stage: 6
+    title: Implement replacement and variant-selection semantics
+    objective: Bind logical component slots to compatible concrete definitions/variants while preserving declared logical identity and recording provenance.
+    depends_on: [POST100-S6-002, POST100-S6-008, POST100-S6-019, POST100-S6-021]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [OD-S6-04, interface conformance]
+    acceptance:
+      - Replacement requires approved interface/type compatibility.
+      - Logical slot identity and concrete definition/variant identity are separately inspectable.
+      - References to unavailable semantic outputs fail closed with actionable evidence.
+      - BOM and provenance reflect concrete selected variant.
+    required_checks: [compatible/incompatible replacement, cross-config reference tests, provenance tests]
+    likely_crates: [cad-configurations, cad-assemblies, cad-references, cad-provenance]
+    escalate_if: [replacement needs heuristic geometry matching to preserve identity]
+    gate_relevance: Stage-6 variant core
+
+  - id: POST100-S6-023
+    stage: 6
+    title: Implement externally imported component semantic wrapper and provenance
+    objective: Allow locked external/vendor geometry to participate as components without making file paths or imported topology indices authoritative identity.
+    depends_on: [POST100-S6-003, POST100-S6-007]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/09_FILE_FORMAT_INTERCHANGE_RECONSTRUCTION.md, docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md]
+    spec_dependencies: [OD-S6-05, SPEC-DELTA-022]
+    acceptance:
+      - External asset record includes stable logical ID content digest importer/version/settings and provenance required by accepted spec.
+      - Rebuild with unchanged asset/settings is deterministic at semantic level.
+      - Changed content invalidates affected component/evidence explicitly.
+      - Imported topology references use semantic wrapper/recipe policy rather than raw STEP entity/index identity unless explicitly scoped as ephemeral.
+    required_checks: [vendor STEP fixture, changed-asset invalidation, missing asset diagnostics]
+    likely_crates: [cad-assemblies, cad-interchange, cad-provenance, cad-references]
+    escalate_if: [reproducibility requires Stage-8 artifact functionality not available in a minimal asset record]
+    gate_relevance: Stage-6 realistic assembly support
+
+  - id: POST100-S6-024
+    stage: 6
+    title: Implement BOM identity quantities and configuration sensitivity
+    objective: Derive deterministic bills of materials from semantic assembly definitions/instances/configurations rather than realized geometry occurrences.
+    depends_on: [POST100-S6-004, POST100-S6-021, POST100-S6-022, POST100-S6-023]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [assembly/BOM identity rules]
+    acceptance:
+      - Nested quantities aggregate deterministically according to accepted BOM identity/key policy.
+      - Suppressed instances and replacements affect BOM exactly as specified.
+      - Multiple geometric bodies within one component do not accidentally multiply BOM quantity.
+      - BOM entries link back to definition/instance/configuration provenance.
+    required_checks: [nested quantity fixture, suppression/replacement matrix, vendor component BOM]
+    likely_crates: [cad-assemblies, cad-configurations, cad-provenance]
+    escalate_if: [BOM line identity requires a new unresolved owner policy]
+    gate_relevance: Stage-6 engineering semantics
+
+  - id: POST100-S6-025
+    stage: 6
+    title: Implement assembly interference and collision-query baseline
+    objective: Query resolved instance geometry for static interference/contact evidence using semantic instance/reference identities and deterministic result ordering.
+    depends_on: [POST100-S6-007, POST100-S6-018, POST100-S6-021, POST100-S6-022]
+    plan_references: [docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [geometry query semantics, configuration resolution]
+    acceptance:
+      - Collision/interference pairs identify logical instances and semantic geometry subjects.
+      - Result ordering is deterministic and independent of hash/native traversal order.
+      - Contact/touching/penetration distinctions follow approved operation tolerance policy.
+      - Broad-phase acceleration if used cannot change accepted results.
+    required_checks: [known collision/noncollision/touching fixtures, config variants, ordering repeat tests]
+    likely_crates: [cad-assemblies, cad-query, cad-geometry-runtime, cad-references]
+    escalate_if: [contact semantics require an unresolved tolerance-category decision]
+    gate_relevance: Stage-6 required query capability
+
+  - id: POST100-S6-026
+    stage: 6
+    title: Stage-6 checkpoint C — configurations BOM external assets and interference
+    objective: Prove configuration resolution preserves semantic identity and engineering outputs before final benchmark/adversarial work.
+    depends_on: [POST100-S6-020, POST100-S6-021, POST100-S6-022, POST100-S6-023, POST100-S6-024, POST100-S6-025]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage-6 configuration/external-asset/BOM semantics]
+    acceptance:
+      - One nested configurable assembly exercises suppression replacement imported component BOM and interference.
+      - Logical IDs/references remain stable or fail according to explicit rules across configurations.
+      - No hidden state outside source/configuration/locked external-asset records determines result.
+    required_checks: [workspace checks, config matrix integration fixture, deterministic rebuild]
+    likely_crates: [cad-assemblies, cad-configurations, cad-interchange, cad-references, cad-query]
+    escalate_if: [config resolution requires destructive identity mutation]
+    gate_relevance: internal hard checkpoint
+
+  - id: POST100-S6-027
+    stage: 6
+    title: Build canonical realistic assembly benchmark corpus
+    objective: Implement the planned hinge slider gearbox actuator robot-arm nested assembly vendor STEP and configuration-replacement fixtures with machine-checked engineering expectations.
+    depends_on: [POST100-S6-026]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [all Stage-6 core semantics]
+    acceptance:
+      - Corpus includes hinge slider gearbox actuator robot-arm/nested assembly imported vendor component and replacement configuration cases where canonical plan requires them.
+      - Expected pose DOF conflicts interference BOM configuration validity and reference durability are machine checked.
+      - Fixtures use public source semantics rather than test-only crate internals.
+    required_checks: [full assembly benchmark, locked expected evidence, source-first build path]
+    likely_crates: [cad-assemblies, cad-configurations, cad-constraints, cad-references, cad-query, cad-interchange]
+    escalate_if: [canonical benchmark exposes a missing semantic capability rather than a local defect]
+    gate_relevance: Stage-6 realism evidence
+
+  - id: POST100-S6-028
+    stage: 6
+    title: Run adversarial assembly solver identity and scale campaign
+    objective: Stress over/underconstraint singular mechanisms deep nesting symmetric solutions config churn imported geometry and larger instance counts without allowing solver/topology artifacts to become semantics.
+    depends_on: [POST100-S6-027]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md, docs/plan/19_RESEARCH_NOTES_AND_SOURCES.md]
+    spec_dependencies: [deterministic pose, identity, solver tolerance, diagnostics]
+    acceptance:
+      - Relation/instance insertion-order perturbation cannot change normalized semantic result.
+      - Symmetric/ambiguous configurations report approved ambiguity/DOF rather than arbitrary pose selection.
+      - Large bounded fixtures satisfy documented resource limits or produce structured limit errors.
+      - No silent identity/ref reassignment across configuration churn.
+    required_checks: [perturbation runner, adversarial mechanisms, scale benchmark, resource-budget tests]
+    likely_crates: [cad-assemblies, cad-configurations, cad-constraints, cad-references, cad-validation]
+    escalate_if: [performance fixes would require changing semantic identity or solver-neutral relation representation]
+    gate_relevance: Stage-6 adversarial evidence
+
+  - id: POST100-S6-029
+    stage: 6
+    title: Expose structured assembly inspection and CLI machine interfaces
+    objective: Make definitions instances paths interfaces relations poses DOF conflicts configurations BOM and interference inspectable through stable semantic schemas usable by Stage7 IDE and AI work.
+    depends_on: [POST100-S6-027, POST100-S6-028]
+    plan_references: [docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md, docs/plan/11_AI_NATIVE_SKILLS_AND_AGENT_PROTOCOL.md]
+    spec_dependencies: [structured semantic IDs and diagnostics]
+    acceptance:
+      - Machine output contains stable semantic IDs and versioned schema fields rather than debug formatting/native solver objects.
+      - Human CLI rendering derives from the structured model.
+      - Query/filter ordering is deterministic.
+      - Stage7 can refer to assembly subjects without importing cad-assemblies private internals.
+    required_checks: [schema conformance, golden machine-output fixtures, ordering tests]
+    likely_crates: [cad-cli, cad-assemblies, cad-configurations, cad-query, cad-diagnostics, cad-agent-tools]
+    escalate_if: [tooling requires unstable internal solver/HIR structures as protocol]
+    gate_relevance: cross-stage interface requirement
+
+  - id: POST100-S6-030
+    stage: 6
+    title: Prepare Stage-6 owner gate — assemblies configurations and kinematics
+    objective: Produce a hard gate packet proving semantic identity solver independence deterministic pose configurations engineering outputs and realistic assembly behavior before Stage7 begins.
+    depends_on: [POST100-S6-029]
+    plan_references: [docs/plan/15_IMPLEMENTATION_ROADMAP.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [all accepted Stage6 decisions/specifications]
+    acceptance:
+      - Checkpoints A B and C pass with no unresolved blocking escalation.
+      - Canonical assembly benchmark passes pose DOF conflict interference BOM configuration and reference criteria.
+      - Solver adapter can be replaced/mock-tested without changing public relation semantics.
+      - Configuration suppression/replacement preserves declared identity/ref/provenance rules.
+      - No language feature used by Stage6 remains merely illustrative or undefined.
+      - Owner approval is required before Stage7 task execution.
+    required_checks: [full workspace fmt, full workspace clippy, full workspace tests, assembly benchmark, adversarial campaign, API/schema review, owner gate packet]
+    likely_crates: []
+    escalate_if: [any silent pose/reference/identity ambiguity remains or initial solver behavior has leaked into public semantics]
+    gate_relevance: final owner gate
