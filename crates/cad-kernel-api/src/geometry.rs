@@ -12,6 +12,61 @@
 //! [`Transform::to_row_major_3x4`] to actually move kernel-resident
 //! geometry (`aicad_occt_transform_shape`, AICAD-021's native half).
 //! Every other type here is pure math with no bridge crossing of its own.
+//!
+//! # The Stage-3 spatial foundation (`AICAD-075A`)
+//!
+//! `AICAD-075A` audited this module and confirmed it is already the one
+//! coherent, kernel-neutral spatial model Stage-3 modeling operations
+//! (revolve, general transforms, mirror, circular pattern) must share
+//! rather than each inventing its own convention -- already reused
+//! directly (no duplicate math layer) by `cad_geometry_api::ir::
+//! GeometryOp::Revolve`/`Transform` (both take these exact types) and by
+//! `cad_occt_bridge::Shape::revolve`/`transform`. The fixed conventions,
+//! restated explicitly here so no later task re-derives or contradicts
+//! them:
+//!
+//! - **Handedness/positive rotation:** right-hand rule about `axis.
+//!   direction` ([`Transform::rotation`]'s Rodrigues-formula
+//!   implementation) -- looking from the axis's positive direction back
+//!   toward its origin, a positive angle rotates counter-clockwise. This
+//!   is the same convention OCCT's own `gp_Ax1`/`BRepPrimAPI_MakeRevol`
+//!   use, which `Shape::revolve` passes `axis`/`angle_radians` to
+//!   directly -- no separate convention is introduced at that boundary.
+//! - **Identity:** [`Transform::identity`] (zero rotation, zero
+//!   translation) is a no-op for every `apply_point`/`apply_vector`/
+//!   `apply_direction` call.
+//! - **Composition order:** `a.compose(&b)` is "apply `a` first, then
+//!   `b`" (`a.compose(&b).apply_point(p) == b.apply_point(a.apply_point(p))`
+//!   for every `p`) -- see [`Transform::compose`]'s own doc comment.
+//! - **Rigidity (no reflection):** every [`Transform`] this module can
+//!   produce is a proper rigid motion -- rotation composed with
+//!   translation only, determinant `+1`, never a reflection or scale
+//!   (`every_produced_transform_is_rigid_within_native_tolerance` proves
+//!   this for every public constructor). A mirror operation is an
+//!   *improper* isometry (determinant `-1`) and therefore cannot be
+//!   represented as a [`Transform`] -- a future mirror kernel operation
+//!   (`AICAD-077`) needs its own [`Plane3`]-based kernel-adapter entry
+//!   point, not a `Transform` value, matching this module's own
+//!   already-fixed "rigid means no reflection" invariant rather than
+//!   weakening it.
+//! - **Frame validity:** every [`Frame3`] is orthonormal and right-handed
+//!   within `1e-6` ([`Frame3::new`]'s own tolerance, matching
+//!   `aicad_occt_transform_shape`'s native rigidity check) -- an invalid
+//!   triple is rejected with [`KernelError::InvalidArgument`], never
+//!   silently repaired.
+//! - **Direction validity:** a [`Direction3`] can only be constructed via
+//!   [`Vector3::normalize`], which rejects a non-finite or near-zero
+//!   (`< 1e-12`) vector with `None` rather than silently returning an
+//!   arbitrary axis.
+//! - **Semantic vs. representation equivalence:** two different
+//!   [`Frame3`] values can determine the same [`Plane3`] (any in-plane
+//!   rotation about a shared normal), and applying two different but
+//!   mathematically-equal-effect `Transform` sequences produces
+//!   `PartialEq`-equal results only when their underlying float
+//!   representations happen to match bit-for-bit -- callers comparing
+//!   transforms/frames for *semantic* equivalence must compare their
+//!   effect (e.g. `apply_point` on representative points), not rely on
+//!   `PartialEq` alone.
 
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
@@ -269,6 +324,50 @@ impl Frame3 {
     }
 }
 
+/// A geometrically-defined plane: an origin point plus a unit normal
+/// direction (`docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s `mirror(plane:
+/// Plane|FaceRef, ...)`) -- deliberately not a [`Frame3`]: many frames
+/// share one plane (any in-plane rotation about a shared `normal` gives a
+/// different [`Frame3`] but the same [`Plane3`]), and a plane's own
+/// semantics (which side is "outside", mirroring) never depend on an
+/// arbitrarily chosen in-plane x/y basis a [`Frame3`] would force a
+/// caller to pick. `AICAD-075A`'s own required semantic distinctions:
+/// see this module's own doc comment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Plane3 {
+    pub origin: Point3,
+    pub normal: Direction3,
+}
+
+impl Plane3 {
+    pub const fn new(origin: Point3, normal: Direction3) -> Plane3 {
+        Plane3 { origin, normal }
+    }
+
+    /// The plane a [`Frame3`] determines: `frame`'s own origin, and its
+    /// `z` axis as the normal (`docs/plan/
+    /// 05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s `plane_surface(frame)`
+    /// convention -- a frame's `z` axis is its "out of plane" direction).
+    /// The converse does not hold: a [`Plane3`] alone cannot recover the
+    /// `Frame3` that produced it (its in-plane `x`/`y` basis is a
+    /// strictly additional choice) -- see [`Frame3::from_x`] to pick one
+    /// deterministically if a frame is needed back.
+    pub fn from_frame(frame: &Frame3) -> Plane3 {
+        Plane3::new(frame.origin, frame.z)
+    }
+
+    /// The signed distance from `point` to this plane: positive on the
+    /// side `normal` points toward, zero exactly on the plane, negative
+    /// on the far side -- the standard point-plane distance formula
+    /// `(point - origin) . normal`. A future mirror operation
+    /// (`AICAD-077`) reflects a point by subtracting twice this distance
+    /// along `normal`; this task establishes the plane representation and
+    /// this one supporting primitive, not the mirror operation itself.
+    pub fn signed_distance(&self, point: Point3) -> f64 {
+        (point - self.origin).dot(self.normal.as_vector3())
+    }
+}
+
 /// A rigid (rotation + translation, no scale/shear/reflection) affine
 /// transform, matching `aicad_occt_transform_shape`'s contract exactly:
 /// the native bridge independently re-validates rigidity and rejects
@@ -494,6 +593,47 @@ mod tests {
             KernelError::InvalidArgument
         );
         assert!(Frame3::new(Point3::ORIGIN, Direction3::X, Direction3::Y, Direction3::Z).is_ok());
+    }
+
+    #[test]
+    fn plane_from_frame_uses_frame_origin_and_z_as_normal() {
+        let frame = Frame3::from_x(Point3::new(1.0, 2.0, 3.0), Direction3::X);
+        let plane = Plane3::from_frame(&frame);
+        assert_eq!(plane.origin, frame.origin);
+        assert_eq!(plane.normal, frame.z);
+    }
+
+    #[test]
+    fn different_frames_sharing_origin_and_normal_produce_equal_planes() {
+        // Two distinct, independently-valid right-handed frames (a 90-degree
+        // in-plane rotation of one another about their shared z) determine
+        // the same plane -- semantic equivalence, not representation
+        // identity (this module's own doc comment).
+        let origin = Point3::new(0.0, 0.0, 5.0);
+        let frame_a = Frame3::new(origin, Direction3::X, Direction3::Y, Direction3::Z).unwrap();
+        let frame_b = Frame3::new(origin, Direction3::Y, -Direction3::X, Direction3::Z).unwrap();
+        assert_ne!(frame_a, frame_b);
+        assert_eq!(Plane3::from_frame(&frame_a), Plane3::from_frame(&frame_b));
+    }
+
+    #[test]
+    fn signed_distance_is_zero_on_the_plane_and_signed_off_it() {
+        let plane = Plane3::new(Point3::ORIGIN, Direction3::Z);
+        assert_close(
+            plane.signed_distance(Point3::new(3.0, -1.0, 0.0)),
+            0.0,
+            1e-12,
+        );
+        assert_close(
+            plane.signed_distance(Point3::new(0.0, 0.0, 2.0)),
+            2.0,
+            1e-12,
+        );
+        assert_close(
+            plane.signed_distance(Point3::new(0.0, 0.0, -2.0)),
+            -2.0,
+            1e-12,
+        );
     }
 
     #[test]

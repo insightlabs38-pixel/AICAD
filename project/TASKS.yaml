@@ -2242,7 +2242,7 @@ tasks:
 - id: AICAD-075A
   stage: 3
   title: Establish general axis/frame/rotation semantics needed by revolve, mirror, circular pattern, and non-translation transforms
-  status: todo
+  status: done
   depends_on:
   - AICAD-075
   plan_references:

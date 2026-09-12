@@ -55,6 +55,11 @@
 //!   declarations, plus [`params::ParamOverrides`] for the parametric
 //!   model's edit/rebuild entry point
 //!   ([`interp::Interpreter::run_top_level_parametric`]).
+//! - [`spatial`][] (`AICAD-075A`, Stage 3): the validated `Value::Struct
+//!   -> cad_kernel_api` spatial-value conversion boundary
+//!   (`Point3`/`Vector3`/`Direction3`/`Axis3`/`Frame3`/`Plane3`) later
+//!   `RuntimeBuiltin` dispatch arms (`AICAD-076`/`AICAD-077`) share rather
+//!   than each re-deriving their own extraction/validation logic.
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §2.2;
 //! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (execution sits between
@@ -66,9 +71,11 @@
 pub mod error;
 pub mod interp;
 pub mod params;
+pub mod spatial;
 pub mod value;
 
 pub use error::RuntimeError;
 pub use interp::Interpreter;
 pub use params::{ParamDecl, ParamId, ParamModel, ParamModelError, ParamOverrides};
+pub use spatial::SpatialValueError;
 pub use value::{NumberValue, RangeValue, Value, VariantPayload};

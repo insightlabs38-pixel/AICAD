@@ -27,7 +27,7 @@
 //! # What this task does and does not do
 //!
 //! This module gives Safe CAD source a way to *construct* and *read* these
-//! six types (via `AICAD-070`'s other half — general struct-value runtime
+//! types (via `AICAD-070`'s other half — general struct-value runtime
 //! construction/field access in `cad-runtime`, see that crate's
 //! `crate::value::Value::Struct`/`Interpreter::construct_struct`/
 //! `HirExpr::Field` evaluation). It does **not** wire any of them into an
@@ -37,10 +37,22 @@
 //! are (changing them would risk the already-proven `AICAD-063` Stage-2
 //! gate fixture), and `AICAD-071`'s own new `plate` builtin deliberately
 //! stays scalar-only for the identical reason (see that task's own
-//! `BuiltinFnId::Plate` doc comment). Establishing one coherent axis/
-//! frame/rotation *semantics* for revolve/transform/mirror/circular
-//! patterns (not just the passive data shape [`AXIS3`]/[`FRAME3`] declare
-//! here) is `AICAD-075A`'s own explicitly assigned task, not this one's.
+//! `BuiltinFnId::Plate` doc comment).
+//!
+//! `AICAD-075A` (Batch S3-06) added the `Plane` declaration above
+//! (a mirror-plane shape sufficient for `AICAD-077`, mirroring `Axis3`'s
+//! own `origin`/direction-as-`Vector3<Float>` shape) and established the
+//! coherent axis/frame/rotation *semantics* these passive struct shapes
+//! were missing: `cad_kernel_api::geometry`'s already-audited-and-reused
+//! `Point3`/`Vector3`/`Direction3`/`Axis3`/`Frame3`/`Plane3`/`Transform`
+//! conventions are now the authoritative target these source-level shapes
+//! convert into, via the validated `cad_runtime::spatial` conversion
+//! boundary (`Value::Struct` -> `cad_kernel_api` value, rejecting a
+//! degenerate direction or a non-orthonormal frame explicitly rather than
+//! silently repairing or panicking). Wiring a `RuntimeBuiltin` (`revolve`,
+//! `mirror`, `radial_pattern`, ...) that actually consumes one of these
+//! shapes through that boundary remains `AICAD-076`/`AICAD-077`'s own
+//! task, not this one's — see `project/reports/AICAD-075A.md`.
 
 use cad_ast::Program;
 
@@ -83,6 +95,11 @@ struct Frame3 {
     x_axis: Vector3<Float>,
     y_axis: Vector3<Float>,
     z_axis: Vector3<Float>,
+}
+
+struct Plane {
+    origin: Point3,
+    normal: Vector3<Float>,
 }
 ";
 
@@ -131,15 +148,33 @@ mod tests {
     }
 
     #[test]
-    fn with_geometry_types_prepends_the_six_declarations_before_user_items() {
+    fn with_geometry_types_prepends_the_seven_declarations_before_user_items() {
         let (user_program, diags) = cad_parser::parse_program("let x = 1;", "test.aicad");
         assert!(diags.is_empty(), "{diags:?}");
         let combined = with_geometry_types(&user_program);
-        assert_eq!(combined.items.len(), 7);
-        for item in &combined.items[..6] {
+        assert_eq!(combined.items.len(), 8);
+        for item in &combined.items[..7] {
             assert!(matches!(item, cad_ast::Item::Struct { .. }));
         }
-        assert!(matches!(combined.items[6], cad_ast::Item::Let { .. }));
+        assert!(matches!(combined.items[7], cad_ast::Item::Let { .. }));
+    }
+
+    #[test]
+    fn user_code_can_construct_a_plane_from_point3_and_vector3() {
+        let source = "fn f() -> Plane { \
+                 return Plane( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 1mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+             }";
+        let (user_program, diags) = cad_parser::parse_program(source, "test.aicad");
+        assert!(diags.is_empty(), "{diags:?}");
+        let combined = with_geometry_types(&user_program);
+        let lowered = crate::lower::lower_program(&combined, "test.aicad", source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked =
+            crate::typeck::check_program(&lowered.program, &lowered.bindings, "test.aicad", source);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
 
     #[test]

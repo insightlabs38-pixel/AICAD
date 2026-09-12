@@ -95,17 +95,17 @@ convention).
 **Stage-2 narrowing, not the full `cad_kernel_api::Transform`.** The kernel
 adapter's `Transform` can also rotate and compose arbitrary rigid motions
 (`Transform::rotation`, `Transform::compose`, `Transform::from_frames`),
-but no AICAD source-level vector/axis/rotation type exists yet to name a
-rotation unambiguously (there is no `Vector3`/`Axis3`/angle-around-axis
-surface syntax in Stage 2). Per `DL-15`'s own instruction ("if an exact
-signature cannot be derived unambiguously... document the ambiguity and
-escalate rather than guessing"), this function is scoped to the one
-unambiguous case: a rigid translation by `(dx, dy, dz)`. A future task
-introducing source-level rotation needs its own signature (a distinct
-function name, e.g. `rotate`, rather than overloading `transform` — no
-such name is reserved by this document) once AICAD gains a way to name an
-axis/angle unambiguously in source; that is out of scope here and not
-silently guessed at.
+but at the time this narrowing was made, no AICAD source-level vector/
+axis/rotation type existed yet to name a rotation unambiguously. `Vector3`/
+`Axis3` source-level shapes now exist (`AICAD-070`) with real, kernel-
+neutral rotation semantics behind them (`AICAD-075A`), but no `RuntimeBuiltin`
+has yet been wired to actually *consume* an `Axis3`/angle pair as a
+rotation — this `transform` entry remains unchanged and still scoped to the
+one already-unambiguous case: a rigid translation by `(dx, dy, dz)`. A
+future task introducing source-level rotation needs its own signature (a
+distinct function name, e.g. `rotate`, rather than overloading `transform`
+— no such name is reserved by this document); that wiring is
+`AICAD-076`/`AICAD-077`'s or a later task's own scope, not guessed at here.
 
 ### `union`/`cut`/`intersect(a, b) -> Geometry`
 
@@ -175,6 +175,7 @@ doc comment for the full mechanism:
 | `Point3` | `x: Length`, `y: Length`, `z: Length` |
 | `Axis3` | `origin: Point3`, `direction: Vector3<Float>` |
 | `Frame3` | `origin: Point3`, `x_axis: Vector3<Float>`, `y_axis: Vector3<Float>`, `z_axis: Vector3<Float>` |
+| `Plane` | `origin: Point3`, `normal: Vector3<Float>` (`AICAD-075A`) |
 
 Constructed and read with the language's ordinary, already-approved struct
 call-construction/field-access syntax (`Point3(x = 1mm, y = 2mm, z = 3mm)`,
@@ -185,13 +186,32 @@ NotCallable`'s own prior doc comment documented this exact gap).
 
 **Not yet wired into any builtin signature.** No existing or new
 `RuntimeBuiltin` function accepts a `Vector3<Length>`/`Point3`/`Frame3`/
-`Axis3` parameter yet — Stage 2's `box`/`cylinder`/`transform` keep their
-existing flat scalar signatures unchanged (rewriting them risks the
+`Axis3`/`Plane` parameter yet — Stage 2's `box`/`cylinder`/`transform` keep
+their existing flat scalar signatures unchanged (rewriting them risks the
 already-proven `AICAD-063` Stage-2 gate fixture), and `plate` (below)
-deliberately stays scalar-only for the same reason. `Frame3`/`Axis3` are
-passive data shapes only so far; a coherent axis/frame/rotation
-*semantics* for revolve/transform/mirror/circular-pattern is `AICAD-075A`'s
-own explicitly assigned task, not this one's.
+deliberately stays scalar-only for the same reason. Wiring one of these
+shapes into an actual builtin signature (`revolve`, `rotate`, `mirror`,
+`radial_pattern`, ...) is `AICAD-076`/`AICAD-077`'s own task.
+
+### Axis/frame/rotation semantics (`AICAD-075A`)
+
+`AICAD-075A` established the coherent spatial semantics `Frame3`/`Axis3`
+were previously passive data shapes deferring: `cad_kernel_api::geometry`'s
+already Stage-1-established `Point3`/`Vector3`/`Direction3`/`Axis3`/
+`Frame3`/`Transform` (right-hand-rule rotation, proper-rigid-only
+`Transform`, orthonormal-and-right-handed `Frame3`) is the one
+authoritative kernel-neutral model every later Stage-3 modeling operation
+must share — already reused directly, not duplicated, by
+`cad_geometry_api::ir::GeometryOp::Revolve`/`Transform` and
+`cad_occt_bridge::Shape::revolve`/`transform`. `AICAD-075A` added
+[`cad_kernel_api::Plane3`] (origin + unit normal — a mirror-plane
+representation distinct from `Frame3` because many frames share one
+plane) and [`cad_runtime::spatial`], the validated `Value::Struct ->
+cad_kernel_api` conversion boundary a future `RuntimeBuiltin` dispatch arm
+converts a source-constructed `Axis3`/`Frame3`/`Plane` value through
+(rejecting a degenerate direction or non-orthonormal frame explicitly,
+never silently). See `project/reports/AICAD-075A.md` for the full
+rationale, conventions, and tests.
 
 ### `plate(width, depth, thickness) -> Geometry` (`AICAD-071`)
 
