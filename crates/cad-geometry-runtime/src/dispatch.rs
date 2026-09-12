@@ -1065,24 +1065,28 @@ mod tests {
         }
     }
 
-    /// The `hole` Safe CAD builtin (`AICAD-076`) end to end from real
-    /// `.aicad` source through a real kernel: a through-hole (with a
-    /// deliberate 1mm overshoot on the entry side, `AICAD-034`'s own
-    /// "clean through-cut" precedent) bored along +Z through a box,
-    /// verified against the closed-form removed volume. Needs
-    /// `cad_hir::geometry_types` prepended (unlike `full_source_to_
-    /// kernel_pipeline_produces_a_valid_exact_brep` above) because `hole`
-    /// takes a `Vector3<Float>` direction argument.
+    /// The `hole` Safe CAD builtin (`AICAD-076`, re-typed by `AICAD-076A`)
+    /// end to end from real `.aicad` source through a real kernel: a
+    /// through-hole (with a deliberate 1mm overshoot on the entry side,
+    /// `AICAD-034`'s own "clean through-cut" precedent) bored along +Z
+    /// through a box, verified against the closed-form removed volume.
+    /// No `cad_hir::geometry_types::with_geometry_types` composition is
+    /// needed (unlike this test's own pre-`AICAD-076A` version) — `hole`'s
+    /// `axis: Axis3` and `Vector3<Float>` direction field both resolve
+    /// from the standard type environment `AICAD-076A`'s `crate::lower::
+    /// Lowerer::seed_standard_types` now seeds unconditionally
+    /// (`project/DECISION_LOG.md#DL-21`).
     #[test]
     fn hole_builtin_end_to_end_bores_a_clean_through_hole() {
         let source = "\
             fn f() -> Geometry { \
-                return hole(box(20mm, 20mm, 10mm), 5mm, 5mm, -1mm, \
-                    Vector3(x = 0.0, y = 0.0, z = 1.0), 4mm, 12mm); \
+                return hole(box(20mm, 20mm, 10mm), \
+                    Axis3(origin = Point3(x = 5mm, y = 5mm, z = -1mm), \
+                          direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                    4mm, 12mm); \
             }";
         let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
         assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
-        let program = cad_hir::geometry_types::with_geometry_types(&program);
         let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
         assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
         let checked = cad_hir::typeck::check_program(

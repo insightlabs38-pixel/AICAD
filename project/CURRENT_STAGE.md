@@ -72,8 +72,11 @@ Batches S3-00 through S3-10 in the fixed order given in the active
 scheduled-task brief and `project/TASKS.yaml`: `AICAD-064A`, `AICAD-065`
 (S3-00); `AICAD-066`, `AICAD-067` (S3-01); `AICAD-068`, `AICAD-069`
 (S3-02); `AICAD-070`, `AICAD-071` (S3-03); `AICAD-072` (S3-04);
-`AICAD-073`, `AICAD-074`, `AICAD-075` (S3-05); `AICAD-075A`, `AICAD-076`
-(S3-06); `AICAD-077`, `AICAD-078` (S3-07); `AICAD-079` (S3-08);
+`AICAD-073`, `AICAD-074`, `AICAD-075` (S3-05); `AICAD-075A`, `AICAD-076`,
+`AICAD-076A` (S3-06, `AICAD-076A` inserted by owner ruling
+`project/DECISION_LOG.md#DL-21` to make the `RuntimeBuiltin` catalogue's
+standard type environment closed before `AICAD-077` needs a `Plane`-typed
+parameter); `AICAD-077`, `AICAD-078` (S3-07); `AICAD-079` (S3-08);
 `AICAD-079A` (S3-09); `AICAD-079B` (S3-10). `AICAD-080` and all Stage-4
 implementation are forbidden until a later, separate, explicit owner
 approval after the Stage-3 final gate.

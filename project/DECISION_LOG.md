@@ -1133,3 +1133,88 @@ them; do not add entries here unilaterally.
   `AICAD-074`/`075` (build on the same IR); `docs/plan/
   08_CONSTRAINTS_REQUIREMENTS_TESTS.md` §4, §6.
 - Supersedes: none (first ruling on D11).
+
+## DL-21: D20 — struct-typed parameters in the always-seeded `RuntimeBuiltin` catalogue
+
+- Date: 2026-09-12
+- Resolves: `OWNER_DECISIONS.md#D20`.
+- Decision: A `BuiltinFnId` signature may reference approved AICAD
+  standard nominal types, including the geometry/spatial types
+  `Point3`/`Axis3`/`Frame3`/`Plane` (and, by the same logic, any other
+  `cad_hir::geometry_types` type). The always-seeded builtin environment
+  must be **type-closed**: if a builtin declaration is automatically
+  present in every compiled program, every nominal type required to
+  type-check that declaration must likewise be available to the
+  compiler's standard builtin/prelude type environment, without
+  requiring optional caller composition (`cad_hir::geometry_types::
+  with_geometry_types` must not be required merely to make an
+  always-seeded builtin's own signature valid). The compiler shall seed
+  the standard nominal types the `BuiltinFnId` catalogue requires as part
+  of the same standard environment used to seed the builtin functions
+  themselves. This is a closed, first-party standard environment only —
+  it does **not** authorize arbitrary runtime/native type registration,
+  plugin-injected builtin types, arbitrary host callbacks, or
+  kernel/OCCT types in source/HIR signatures. The existing eager
+  function-signature-collection model (`cad_hir::typeck::Checker::
+  collect_signatures` resolving every seeded function's signature up
+  front, whether or not a program calls it) remains authoritative — this
+  ruling does **not** authorize lazy per-call-site signature resolution
+  (`project/OWNER_DECISIONS.md#D20`'s own option 3). Standard spatial
+  types remain kernel-neutral AICAD types governed by the semantics
+  `AICAD-075A` already established (right-hand-rule rotation,
+  proper-rigid-only `Transform`, orthonormal `Frame3`, ...) — this ruling
+  changes only where/how their type *declarations* are seeded, not their
+  semantics. The standard builtin catalogue and its required type
+  declarations must be deterministic, internally self-consistent, and
+  independently type-validatable — `AICAD-076A` must add a test proving
+  the entire catalogue type-checks against an otherwise-empty program
+  with zero diagnostics, so a future bad signature is caught by that one
+  targeted test rather than by an unrelated test suite exploding.
+  `with_geometry_types` may remain as a compatibility/composition helper
+  where still useful, but composing it on top of the now-always-seeded
+  standard types must be idempotent (never a duplicate/conflicting
+  declaration). `AICAD-076`'s own scalar-decomposed `revolve`/`hole`/
+  `pocket` signatures were an approved *temporary* compatibility
+  workaround, not the long-term Safe CAD API pattern — builtins should
+  migrate to the appropriate semantic struct types once this ruling is
+  implemented (`AICAD-076A`).
+- Rationale: `AICAD-076` discovered, by direct experiment, that adding a
+  `Named` reference to an unseeded `cad_hir::geometry_types` struct in a
+  `BuiltinFnId` signature broke 149 previously-passing, Stage-3-unrelated
+  `cad-hir` tests — because every builtin is seeded into every program
+  unconditionally and its signature is resolved eagerly regardless of
+  whether the program calls it. Requiring every future struct-typed
+  builtin to either avoid struct types entirely (permanently limiting the
+  Safe CAD API to primitives/dimensions/`List<T>`/user-defined generics)
+  or repeatedly invent its own scalar-decomposition workaround
+  (`project/OWNER_DECISIONS.md#D20`'s own option 2, taken as a stopgap by
+  `AICAD-076`) does not scale — `AICAD-077`'s own planned
+  `mirror(target, plane: Plane)` hits the identical wall immediately.
+  Making the always-seeded environment type-closed (option 1) is the
+  direct fix and matches `AGENTS.md`'s own "prefer library/std-package
+  features... one language" principle: geometry/spatial types are
+  ordinary AICAD standard-library types, and the compiler's own builtin
+  environment should be able to use its own standard library without an
+  optional opt-in step.
+- Alternatives considered: permanently restricting builtins to
+  primitive/dimensional/generic-only types (`project/
+  OWNER_DECISIONS.md#D20` option 2 — rejected as a long-term policy,
+  though accepted as `AICAD-076`'s own temporary stopgap pending this
+  ruling; produces increasingly awkward flattened signatures as richer
+  types arrive); lazy per-call-site signature resolution (`project/
+  OWNER_DECISIONS.md#D20` option 3 — rejected: a materially larger,
+  riskier change to `cad_hir::typeck`'s established eager-resolution
+  architecture, affecting every function's own error-surfacing behavior,
+  not just newly-added struct-typed builtins, and not requested here).
+- Affected RFCs/tasks: `AICAD-076A` (new, inserted before `AICAD-077` in
+  Batch S3-06 — implements this ruling: seeds standard geometry/spatial
+  types alongside builtins, migrates `AICAD-076`'s scalar-decomposed
+  signatures back to their intended `Axis3`/`Frame3`/`Plane`-typed forms,
+  adds the catalogue-wide zero-diagnostics test); `AICAD-077` (depends on
+  `AICAD-076A`, not `AICAD-076` directly — its own `mirror`/
+  `radial_pattern` signatures should use real struct-typed parameters
+  from the start, not repeat `AICAD-076`'s own workaround);
+  `crates/cad-hir/src/builtins.rs`'s own "Why no `Axis3`/`Frame3`-typed
+  parameter yet" note (superseded by this ruling, to be removed/updated
+  by `AICAD-076A`).
+- Supersedes: none (first ruling on D20).

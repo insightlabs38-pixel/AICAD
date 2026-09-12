@@ -2296,12 +2296,54 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage
+- id: AICAD-076A
+  stage: 3
+  title: Make the RuntimeBuiltin catalogue's standard type environment type-closed
+  status: done
+  depends_on:
+  - AICAD-076
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  - project/DECISION_LOG.md#DL-21
+  acceptance:
+  - Every nominal type referenced by any BuiltinFnId signature (including Point3/Axis3/Frame3/Plane) is resolvable
+    without the compiling program separately composing cad_hir::geometry_types::with_geometry_types.
+  - A dedicated test proves the entire BuiltinFnId catalogue type-checks against an otherwise-empty valid program
+    with zero diagnostics (project/DECISION_LOG.md#DL-21's own required invariant), separate from any test of an
+    individual builtin's own expected signature.
+  - with_geometry_types remains safe to call on top of the now-always-seeded standard types (idempotent; no
+    duplicate/conflicting declaration).
+  - AICAD-076's scalar-decomposed revolve/hole/pocket signatures are migrated to real Axis3/Frame3-typed parameters
+    where AICAD-075A already defines the needed type; the "Why no Axis3/Frame3-typed parameter yet" note in
+    crates/cad-hir/src/builtins.rs is removed/updated accordingly.
+  - The existing eager function-signature-collection model is preserved unchanged (no lazy per-call-site resolution).
+  - No plugin-injected/runtime-registered builtin types, arbitrary host callbacks, or kernel/OCCT types in
+    source/HIR signatures are introduced.
+  - cargo test -p cad-hir and the full workspace suite pass with zero failures (the 149-test regression AICAD-076
+    found during development must not recur).
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-hir
+  - cargo test --workspace
+  - cargo test -p cad-cli --test stage2_end_to_end -- --test-threads=1
+  report: project/reports/AICAD-076A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected (beyond what project/DECISION_LOG.md#DL-21 already
+    settled)
+  - work would expand into a later roadmap stage
+  - lazy per-call-site signature resolution would be required to proceed (DL-21 explicitly does not authorize this)
 - id: AICAD-077
   stage: 3
   title: Implement mirror and linear/circular pattern basics
   status: todo
   depends_on:
-  - AICAD-076
+  - AICAD-076A
   plan_references:
   - docs/plan/04_HIGH_LEVEL_MODELING_API.md
   - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md

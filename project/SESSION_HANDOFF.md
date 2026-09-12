@@ -12,14 +12,21 @@ what changed this invocation and the current tip):
   cad_kernel_api` conversion boundary), and a geometry-backed integration
   test suite proving revolve/circular-pattern/mirror-plane/general-
   transform preparation. See `project/reports/AICAD-075A.md`.
-- (this invocation's second commit) — `AICAD-076`: `extrude`/`revolve`/
-  `hole`/`pocket` `RuntimeBuiltin`s, `GeometryOp::GetFace`,
-  `Frame3::from_z`, and a real architecture finding recorded as
-  `project/OWNER_DECISIONS.md#D20` (a `Named` `cad_hir::geometry_types`
-  struct cannot safely be a builtin-catalogue parameter type yet — see
-  that entry and `project/reports/AICAD-076.md` for the full finding and
-  the safe scalar-decomposed workaround shipped instead). Batch S3-06 is
-  now complete.
+- `8bf1a7c` — `AICAD-076`: `extrude`/`revolve`/`hole`/`pocket`
+  `RuntimeBuiltin`s, `GeometryOp::GetFace`, `Frame3::from_z`, and a real
+  architecture finding recorded as `project/OWNER_DECISIONS.md#D20` (a
+  `Named` `cad_hir::geometry_types` struct broke every other program's
+  type-checking when referenced in a builtin signature) — shipped with a
+  temporary scalar-decomposed workaround pending an owner ruling.
+- (this invocation's commit) — `AICAD-076A`: implements the owner's `D20`
+  ruling (`project/DECISION_LOG.md#DL-21`, "Accepted"). `crate::lower::
+  lower_program` now seeds `cad_hir::geometry_types`'s standard struct
+  declarations unconditionally, alongside the builtin catalogue itself
+  (`Lowerer::seed_standard_types`), making the always-seeded builtin
+  environment type-closed — no `with_geometry_types` composition
+  required. Migrated `revolve`/`hole`/`pocket` back to real `Axis3`/
+  `Frame3`-typed signatures. Added the owner-requested catalogue-wide
+  zero-diagnostics invariant test. Batch S3-06 is now complete.
 
 All commits through this invocation's own are pushed to `origin/
 claude/aicad-stage3-dev` (verified — see "Push verification" below).
@@ -27,123 +34,106 @@ claude/aicad-stage3-dev` (verified — see "Push verification" below).
 ## Active stage / current batch
 
 Stage 3, `status: active` (`project/CURRENT_STAGE.md`). **Batch S3-06 is
-now COMPLETE** (`AICAD-075A`/`AICAD-076` both `status: done` in
-`project/TASKS.yaml`). No checkpoint is required between S3-06 and S3-07
-— `project/gates/STAGE3-C_MODELING.md` is prepared only after Batches
-S3-06/S3-07/S3-08 all complete (`project/CURRENT_STAGE.md`'s own fixed
-batch list).
+now COMPLETE** (`AICAD-075A`/`AICAD-076`/`AICAD-076A` all `status: done`
+in `project/TASKS.yaml`; `AICAD-076A` was inserted into this batch by
+owner ruling `project/DECISION_LOG.md#DL-21` after `AICAD-076` found the
+architecture gap `DL-21` resolves — see `project/CURRENT_STAGE.md`'s own
+updated fixed batch list). No checkpoint is required between S3-06 and
+S3-07 — `project/gates/STAGE3-C_MODELING.md` is prepared only after
+Batches S3-06/S3-07/S3-08 all complete.
 
-Per the campaign brief, one invocation works on exactly ONE fixed batch,
-executing every task in that batch in dependency order before stopping.
-This invocation completed both tasks of Batch S3-06 (`AICAD-075A` then
-`AICAD-076`) and is stopping here, at the batch boundary, per that rule.
+Per explicit owner instruction accompanying the `D20` ruling ("Keep this
+as a short additional task. Stop here instead of continuing on to
+AICAD-077"), this invocation stops at the end of `AICAD-076A`, even
+though Batch S3-06 is now complete and the campaign brief would otherwise
+call for continuing into Batch S3-07 in the same invocation.
 
 ## Last completed task
 
-`AICAD-076` ("Implement high-level extrude/revolve/hole/pocket"), second
-and final task of Batch S3-06. See `project/reports/AICAD-076.md` for
-full detail; summary:
+`AICAD-076A` ("Make the RuntimeBuiltin catalogue's standard type
+environment type-closed"), interstitial task inserted into Batch S3-06.
+See `project/reports/AICAD-076A.md` for full detail; summary:
 
-- Added `extrude(target, face, direction, distance)`, `revolve(target,
-  face, direction, angle)` (axis through world origin), `hole(target,
-  origin_x, origin_y, origin_z, direction, diameter, depth)`, and
-  `pocket(target, origin_x, origin_y, origin_z, width, length, depth)` to
-  the Safe CAD `RuntimeBuiltin` catalogue.
-- New `GeometryOp::GetFace { target, face }` (raw-index face selection,
-  mirroring `Fillet`/`Chamfer`'s own precedent) — the profile source for
-  `extrude`/`revolve` before source-level sketch construction exists.
-- New `Frame3::from_z` (`cad_kernel_api`, mirrors `from_x`), used by
-  `hole` to align a fixed-`+Z`-axis cylinder onto an arbitrary axis.
-- `Interpreter::dispatch_builtin` restructured (behavior-preserving) to
-  push one-or-more `GeometryOp` nodes per builtin call, not just one —
-  needed because `extrude`/`revolve`/`hole`/`pocket` are each compound
-  (2-3 nodes), unlike every pre-existing single-node builtin.
-- **A real architecture finding, escalated as `project/
-  OWNER_DECISIONS.md#D20`, not silently resolved:** `AICAD-075A`'s own
-  plan for this task (`revolve`/`hole` taking a real `Axis3`-typed
-  argument via `cad_runtime::spatial::axis3_from_value`) turned out to
-  be unsafe — every `BuiltinFnId` is seeded into every compiled program
-  unconditionally, and the type checker eagerly resolves every seeded
-  function's signature whether or not the program calls it, so a
-  `Named` reference to an unloaded `cad_hir::geometry_types` struct
-  breaks *every other program's* compilation too. Confirmed empirically:
-  a draft with `Axis3`/`Frame3` parameters broke 149 unrelated `cad-hir`
-  tests. Shipped a safe, fully-typed scalar-decomposition workaround
-  instead (flat `Length` scalars for position, `Vector3<Float>` for
-  direction — the latter is a `Generic` reference, which fails silently
-  rather than eagerly when unresolved, unlike a `Named` one). The
-  general question (should struct-typed builtin parameters be made safe,
-  and how) remains open in `D20` — relevant to `AICAD-077`'s own planned
-  `mirror(target, plane: Plane)`.
+- New `Lowerer::seed_standard_types` (`crates/cad-hir/src/lower.rs`),
+  called from `lower_program` unconditionally: seeds `cad_hir::
+  geometry_types::GEOMETRY_TYPES_SOURCE`'s struct declarations
+  (`Point2`/`Point3`/`Vector2<T>`/`Vector3<T>`/`Axis3`/`Frame3`/`Plane`)
+  into every compiled program's global scope, skipping any name the
+  caller's own program already declares (idempotence with
+  `with_geometry_types`, which remains available as an optional,
+  backward-compatible composition helper).
+- Migrated `revolve`/`hole`/`pocket` (`AICAD-076`) from their temporary
+  scalar-decomposed signatures back to real `Axis3`/`Frame3`-typed ones
+  (`cad_runtime::spatial::axis3_from_value`/`frame3_from_value`,
+  `AICAD-075A`), restoring the arbitrary-origin capability the workaround
+  had dropped. `extrude`'s `direction: Vector3<Float>` was unaffected
+  either way (a `Generic` type reference was never part of the original
+  problem).
+- New catalogue-wide invariant test (`cad-hir`, the owner's own explicit
+  request): the entire `BuiltinFnId` catalogue type-checks against an
+  otherwise-empty program with zero diagnostics — catches a future bad
+  signature directly, rather than via an unrelated test suite exploding
+  (`AICAD-076`'s own 149-test regression during development).
+- `project/OWNER_DECISIONS.md#D20` marked RESOLVED; `project/
+  DECISION_LOG.md#DL-21` records the full ruling and rationale.
 
-Test counts (delta from Batch S3-05's own baseline via `AICAD-075A`):
-`cad-geometry-api` 20 -> 22 (+2), `cad-kernel-api` 26 -> 27 (+1),
-`cad-hir` 226 -> 226 (+0), `cad-runtime` 121 -> 126 (+5),
-`cad-geometry-runtime` 20 unit -> 22 unit (+2), 4 integration unchanged.
-Every other crate's count is unchanged from Batch S3-05's own
-last-verified totals.
+Test counts (delta from `AICAD-076`'s own baseline): `cad-hir` 226 -> 227
+(+1), `cad-runtime` 126 -> 127 (+1). Every other crate's count is
+unchanged from `AICAD-076`'s own last-verified totals.
 
 ## Partial task
 
-None. Batch S3-06 (`AICAD-075A` then `AICAD-076`) completed cleanly in
-this invocation, in order, per the campaign brief's own "one invocation,
-one fixed batch" rule.
+None. `AICAD-076A` completed cleanly in this invocation.
 
 ## Next task
 
 Batch S3-07 (`AICAD-077`, then `AICAD-078`). `AICAD-077` ("Implement
-mirror and linear/circular pattern basics") depends on `AICAD-076`
-(satisfied). **Before designing `AICAD-077`'s own signatures, read
-`project/OWNER_DECISIONS.md#D20` and `project/reports/AICAD-076.md`'s own
-"Limitations"/"Next dependency" sections** — `mirror(target, plane:
-Plane)` hits the identical struct-typed-builtin-parameter wall `AICAD-076`
-found (no clean scalar decomposition exists for a plane without
-splitting it into origin + normal fields, at minimum), and
-`radial_pattern`'s own axis can safely reuse `AICAD-076`'s own
-`Vector3<Float>`-plus-scalar-origin pattern exactly as `revolve`/`hole`
-already do (`AICAD-075A`'s own geometry-backed test #2 already proved one
-`Axis3` representation serves both revolve and circular-pattern
-preparation interchangeably — that finding still holds, only the
-*source-level parameter shape* changed). Also read `cad_kernel_api::
-geometry`'s own "Rigidity (no reflection)" note (`AICAD-075A`): mirror
-cannot be expressed as a `Transform` (determinant `+1` only) and needs
-its own `Plane3`-based native/bridge operation — `AICAD-077` is the first
-task that needs to actually add one.
+mirror and linear/circular pattern basics") now depends on `AICAD-076A`
+(satisfied), not `AICAD-076` directly. **Before starting, read
+`project/DECISION_LOG.md#DL-21` and `project/reports/AICAD-076A.md`'s own
+"Next dependency" section**: `mirror(target, plane: Plane)` and
+`radial_pattern`'s own axis parameter should use real struct-typed
+parameters from the start (`plane3_from_value`/`axis3_from_value`, both
+already available from `AICAD-075A`) — the type-closed standard
+environment `AICAD-076A` established makes this safe now, with no
+scalar-decomposition workaround needed (do not repeat `AICAD-076`'s own
+temporary pattern; that was explicitly a stopgap, not the long-term
+convention). `AICAD-077` is also the task that must add mirror's own
+`Plane3`-based native/kernel-adapter operation — mirror cannot be
+expressed as a `Transform` (`AICAD-075A`'s own "Rigidity (no reflection)"
+finding: `Transform` is proper-rigid-only, determinant `+1`), and no
+mirror kernel capability exists yet at any layer (confirmed by
+`AICAD-075A`'s own audit).
 
 ## Exact recent test status
 
 - `cargo fmt --all -- --check` → clean.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   → zero warnings, full workspace (29 crates).
-- `cargo test --workspace` → 0 failures, 976 tests passed across every
-  crate.
+- `cargo test --workspace` → 978 passed, 0 failed across every crate.
 - `cargo test -p cad-cli --test stage2_end_to_end -- --test-threads=1` →
   3/3 (Stage-2 gate proof unaffected).
 
 ## Regressions/failures
 
-None outstanding. `AICAD-076`'s own draft (before the scalar-decomposition
-fix) transiently broke 149 `cad-hir` tests during this invocation's own
-development — never committed or pushed; the final shipped state was
-verified at 0 failures across the full workspace before this invocation's
-commit. See `project/reports/AICAD-076.md`'s "The architecture finding"
-section for the full account.
+None outstanding. `AICAD-076`'s own transient 149-test regression (from
+its first draft, during a prior invocation) was never committed/pushed
+and is fully resolved by this task — the pre-existing edge case that
+regression risked recurring on (a user program declaring its own
+unrelated `struct Point2`) was checked directly this invocation and
+passes unmodified.
 
 ## Unresolved owner decisions
 
 `D7`/`D8`/`D12`/`D15` remain open/partially-resolved, none blocking
-through at least S3-08 (unchanged from prior batches). **New this
-invocation: `D20`** (struct-typed parameters in the always-seeded
-`RuntimeBuiltin` catalogue) — open, not blocking `AICAD-076` itself (a
-safe workaround shipped), but directly relevant to `AICAD-077`'s own
-`mirror` signature — see `project/OWNER_DECISIONS.md#D20` for the full
-finding and live options.
+through at least S3-08 (unchanged from prior batches). **`D20` is now
+RESOLVED** (`DL-21`, this invocation) — no longer an open item.
 
 ## D5/D19 calibration status
 
 Unchanged — complete (`project/OWNER_DECISIONS.md#D19`,
 `DECISION_LOG.md#DL-17`, `project/reports/AICAD-064A.md`). Not touched by
-either task this invocation.
+this task.
 
 ## Current checkpoint status
 
@@ -158,9 +148,7 @@ still remain.
 
 Rust 1.98.1 (edition 2024), container Linux environment. No new
 third-party dependency was added this invocation, and no `Cargo.toml` in
-any crate changed — every new capability (`GetFace`, `Frame3::from_z`,
-the four new builtins) was built entirely from each crate's own existing
-dependency set.
+any crate changed.
 
 ## Git identity
 
@@ -172,20 +160,15 @@ bypassed. Every commit set `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/
 
 ## Push verification
 
-Before each push, `git fetch origin claude/aicad-stage3-dev` is re-run
-and the remote branch confirmed unchanged from this invocation's own
-prior state (no concurrent writer) before `git push -u origin
+Before the final push, `git fetch origin claude/aicad-stage3-dev` is
+re-run and the remote branch confirmed unchanged from this invocation's
+own prior state (no concurrent writer) before `git push -u origin
 claude/aicad-stage3-dev` runs as a fast-forward.
 
 ## Recommended next action
 
-Start Batch S3-07 (`AICAD-077`, then `AICAD-078`) on the next invocation.
-Read `project/OWNER_DECISIONS.md#D20` and `project/reports/AICAD-076.md`
-first — `AICAD-077`'s `mirror`/`radial_pattern` signatures should follow
-the same scalar-decomposition discipline `AICAD-076` established (or
-explicitly re-escalate if a genuinely different resolution is needed, per
-`project/OWNER_DECISIONS.md`'s own "do not invent a temporary convention"
-rule), and `AICAD-077` is the task that needs to add mirror's own
-`Plane3`-based native/kernel-adapter operation (it does not exist yet at
-any layer — confirmed by `AICAD-075A`'s own audit). Do not re-open Batch
-S3-00 through S3-06's own already-complete tasks.
+Per explicit owner instruction, this invocation stops here rather than
+continuing into Batch S3-07. The next invocation starts Batch S3-07
+(`AICAD-077`, then `AICAD-078`) — read `project/DECISION_LOG.md#DL-21`
+and `project/reports/AICAD-076A.md` first, per "Next task" above. Do not
+re-open Batch S3-00 through S3-06's own already-complete tasks.

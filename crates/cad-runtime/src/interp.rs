@@ -1196,6 +1196,16 @@ impl<'a> Interpreter<'a> {
                 RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
             })
         };
+        let spatial_axis = |value: &Value| -> EvalResult<Axis3> {
+            crate::spatial::axis3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_frame = |value: &Value| -> EvalResult<Frame3> {
+            crate::spatial::frame3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
         // Pushes one `GeometryOp` node onto this run's own accumulated
         // `Interpreter::geometry` graph — every builtin arm below ends in
         // one or more calls to this, per this function's own doc comment
@@ -1279,56 +1289,49 @@ impl<'a> Interpreter<'a> {
                     distance,
                 })?
             }
-            // `revolve(target, face, direction, angle)` (`AICAD-076`):
+            // `revolve(target, face, axis, angle)` (`AICAD-076`, re-typed
+            // by `AICAD-076A` per `project/DECISION_LOG.md#DL-21`):
             // selects `target`'s own face `face`, then revolves it about
-            // the axis through the *world origin* along `direction` — see
-            // `cad_hir::builtins`'s own "Why no `Axis3`-typed parameter
-            // yet" note for why the axis has no independent origin today.
+            // the real `Axis3` value `axis` — the same axis representation
+            // `hole` shares below, per `AICAD-075A`'s own integration
+            // requirement ("no feature invents its own coordinate
+            // convention").
             BuiltinFnId::Revolve => {
                 let target = geometry(arg(0)?)?;
                 let face = face_index(arg(1)?)?;
-                let direction = spatial_direction(arg(2)?)?;
+                let axis = spatial_axis(arg(2)?)?;
                 let angle = quantity(arg(3)?)?;
                 let profile = push_op(GeometryOp::GetFace { target, face })?;
-                let axis = Axis3::new(cad_kernel_api::Point3::ORIGIN, direction);
                 push_op(GeometryOp::Revolve {
                     profile,
                     axis,
                     angle,
                 })?
             }
-            // `hole(target, origin_x, origin_y, origin_z, direction,
-            // diameter, depth)` (`AICAD-076`): places a `diameter`/2-radius,
-            // `depth`-tall cylinder (the same fixed +Z-axis primitive
-            // `cylinder` itself uses) along the axis through
-            // `(origin_x, origin_y, origin_z)` in `direction`, via
-            // `Frame3::from_z`/`Transform::from_frames` (`AICAD-075A`),
-            // then cuts it from `target`. The axis origin is three flat
-            // scalars, not an `Axis3` value — see `cad_hir::builtins`'s
-            // own "Why no `Axis3`-typed parameter yet" note. Deliberately
-            // narrower than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s
-            // own `hole` signature: no `ThroughAll` depth (querying
-            // `target`'s own extent along the axis to compute one is a
-            // separate, not-yet-built capability), and no counterbore/
-            // countersink/thread metadata yet — the caller picks an
-            // explicit `depth` themselves, exactly like every other
-            // Stage-2/3 Safe CAD dimension parameter.
+            // `hole(target, axis, diameter, depth)` (`AICAD-076`, re-typed
+            // by `AICAD-076A`): places a `diameter`/2-radius, `depth`-tall
+            // cylinder (the same fixed +Z-axis primitive `cylinder` itself
+            // uses) along the real `Axis3` value `axis`, via `Frame3::
+            // from_z`/`Transform::from_frames` (`AICAD-075A`), then cuts
+            // it from `target`. Deliberately narrower than `docs/plan/
+            // 04_HIGH_LEVEL_MODELING_API.md`'s own `hole` signature: no
+            // `ThroughAll` depth (querying `target`'s own extent along
+            // the axis to compute one is a separate, not-yet-built
+            // capability), and no counterbore/countersink/thread metadata
+            // yet — the caller picks an explicit `depth` themselves,
+            // exactly like every other Stage-2/3 Safe CAD dimension
+            // parameter.
             BuiltinFnId::Hole => {
                 let target = geometry(arg(0)?)?;
-                let origin = cad_kernel_api::Point3::new(
-                    quantity(arg(1)?)?.magnitude,
-                    quantity(arg(2)?)?.magnitude,
-                    quantity(arg(3)?)?.magnitude,
-                );
-                let direction = spatial_direction(arg(4)?)?;
-                let diameter = quantity(arg(5)?)?;
-                let depth = quantity(arg(6)?)?;
+                let axis = spatial_axis(arg(1)?)?;
+                let diameter = quantity(arg(2)?)?;
+                let depth = quantity(arg(3)?)?;
                 let radius = Quantity::new(diameter.magnitude / 2.0, diameter.ty);
                 let cylinder = push_op(GeometryOp::Cylinder {
                     radius,
                     height: depth,
                 })?;
-                let placement_frame = Frame3::from_z(origin, direction);
+                let placement_frame = Frame3::from_z(axis.origin, axis.direction);
                 let placement = Transform::from_frames(Frame3::WORLD, placement_frame);
                 let placed = push_op(GeometryOp::Transform {
                     target: cylinder,
@@ -1339,32 +1342,26 @@ impl<'a> Interpreter<'a> {
                     rhs: placed,
                 })?
             }
-            // `pocket(target, origin_x, origin_y, origin_z, width, length,
-            // depth)` (`AICAD-076`): places a `width` x `length` x `depth`
-            // box (the same corner-at-origin primitive `box`/`plate`
-            // themselves use) at `(origin_x, origin_y, origin_z)`,
-            // world-axis-aligned, then cuts it from `target` -- `plate`'s
-            // own precedent narrowed from an arbitrary profile to a
-            // rectangle applied identically here for `pocket`'s own
-            // cutting tool. Position is three flat scalars, not a `Frame3`
-            // value — see `cad_hir::builtins`'s own "Why no `Axis3`-typed
-            // parameter yet" note (which applies identically to `Frame3`).
+            // `pocket(target, frame, width, length, depth)` (`AICAD-076`,
+            // re-typed by `AICAD-076A`): places a `width` x `length` x
+            // `depth` box (the same corner-at-origin primitive `box`/
+            // `plate` themselves use) at the real `Frame3` value `frame`
+            // via `Transform::from_frames`, then cuts it from `target` --
+            // `plate`'s own precedent narrowed from an arbitrary profile
+            // to a rectangle applied identically here for `pocket`'s own
+            // cutting tool.
             BuiltinFnId::Pocket => {
                 let target = geometry(arg(0)?)?;
-                let origin_x = quantity(arg(1)?)?.magnitude;
-                let origin_y = quantity(arg(2)?)?.magnitude;
-                let origin_z = quantity(arg(3)?)?.magnitude;
-                let width = quantity(arg(4)?)?;
-                let length = quantity(arg(5)?)?;
-                let depth = quantity(arg(6)?)?;
+                let frame = spatial_frame(arg(1)?)?;
+                let width = quantity(arg(2)?)?;
+                let length = quantity(arg(3)?)?;
+                let depth = quantity(arg(4)?)?;
                 let tool = push_op(GeometryOp::Box {
                     dx: width,
                     dy: length,
                     dz: depth,
                 })?;
-                let placement = Transform::translation(cad_kernel_api::Vector3::new(
-                    origin_x, origin_y, origin_z,
-                ));
+                let placement = Transform::from_frames(Frame3::WORLD, frame);
                 let placed = push_op(GeometryOp::Transform {
                     target: tool,
                     transform: placement,
@@ -4335,7 +4332,10 @@ mod tests {
 
     #[test]
     fn extrude_call_selects_a_face_then_extrudes_it() {
-        let lowered = compiled_with_geometry_types(
+        // Plain `compiled` — `Vector3<Float>` (a `Generic` reference) was
+        // always safe without composition; this now also proves it stays
+        // that way after `AICAD-076A`'s standard-type seeding.
+        let lowered = compiled(
             "fn f() -> Geometry { \
                  return extrude(box(10mm, 10mm, 10mm), 0, \
                      Vector3(x = 1.0, y = 0.0, z = 0.0), 5mm); \
@@ -4372,11 +4372,17 @@ mod tests {
     }
 
     #[test]
-    fn revolve_call_selects_a_face_then_revolves_about_the_world_origin_axis() {
-        let lowered = compiled_with_geometry_types(
+    fn revolve_call_selects_a_face_then_revolves_about_an_arbitrary_axis() {
+        // Plain `compiled` (not `compiled_with_geometry_types`) — proving
+        // `Axis3` resolves with zero caller composition, `AICAD-076A`'s
+        // own `project/DECISION_LOG.md#DL-21` invariant, not just that
+        // `revolve` itself works.
+        let lowered = compiled(
             "fn f() -> Geometry { \
                  return revolve(box(10mm, 10mm, 10mm), 2, \
-                     Vector3(x = 0.0, y = 0.0, z = 1.0), 90deg); \
+                     Axis3(origin = Point3(x = 5mm, y = 5mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     90deg); \
              }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
@@ -4393,7 +4399,9 @@ mod tests {
                 angle,
             } => {
                 assert!((angle.magnitude - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
-                assert_eq!(axis.origin, cad_kernel_api::Point3::ORIGIN);
+                assert!((axis.origin.x - 0.005).abs() < 1e-12);
+                assert!((axis.origin.y - 0.005).abs() < 1e-12);
+                assert!((axis.origin.z - 0.0).abs() < 1e-12);
                 assert_eq!(axis.direction, cad_kernel_api::Direction3::Z);
                 match geometry_node(graph, *profile) {
                     cad_geometry_api::GeometryOp::GetFace { target, face } => {
@@ -4412,10 +4420,12 @@ mod tests {
 
     #[test]
     fn hole_call_builds_a_placed_cylinder_then_cuts_it_from_the_target() {
-        let lowered = compiled_with_geometry_types(
+        let lowered = compiled(
             "fn f() -> Geometry { \
-                 return hole(box(20mm, 20mm, 10mm), 5mm, 5mm, -1mm, \
-                     Vector3(x = 0.0, y = 0.0, z = 1.0), 4mm, 12mm); \
+                 return hole(box(20mm, 20mm, 10mm), \
+                     Axis3(origin = Point3(x = 5mm, y = 5mm, z = -1mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     4mm, 12mm); \
              }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
@@ -4463,9 +4473,14 @@ mod tests {
 
     #[test]
     fn pocket_call_builds_a_placed_box_then_cuts_it_from_the_target() {
-        let lowered = compiled_with_geometry_types(
+        let lowered = compiled(
             "fn f() -> Geometry { \
-                 return pocket(box(30mm, 30mm, 10mm), 5mm, 5mm, 0mm, 8mm, 6mm, 4mm); \
+                 return pocket(box(30mm, 30mm, 10mm), \
+                     Frame3(origin = Point3(x = 5mm, y = 5mm, z = 0mm), \
+                            x_axis = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                            y_axis = Vector3(x = 0.0, y = 1.0, z = 0.0), \
+                            z_axis = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     8mm, 6mm, 4mm); \
              }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
@@ -4505,8 +4520,27 @@ mod tests {
     }
 
     #[test]
-    fn a_degenerate_direction_argument_is_reported_as_an_invalid_spatial_argument() {
+    fn with_geometry_types_composition_still_works_alongside_the_always_seeded_standard_types() {
+        // `project/DECISION_LOG.md#DL-21`'s own idempotence requirement:
+        // a caller that still calls `with_geometry_types` explicitly (now
+        // redundant, but kept as a backward-compatible helper) must not
+        // get a duplicate/conflicting `Axis3` declaration.
         let lowered = compiled_with_geometry_types(
+            "fn f() -> Geometry { \
+                 return revolve(box(10mm, 10mm, 10mm), 0, \
+                     Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     45deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        assert!(matches!(result, Value::Geometry(_)));
+    }
+
+    #[test]
+    fn a_degenerate_direction_argument_is_reported_as_an_invalid_spatial_argument() {
+        let lowered = compiled(
             "fn f() -> Geometry { \
                  return extrude(box(10mm, 10mm, 10mm), 0, \
                      Vector3(x = 0.0, y = 0.0, z = 0.0), 5mm); \

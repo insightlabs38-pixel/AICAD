@@ -43,7 +43,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
 | D18 Geometry-operation invocation mechanism from `.aicad` source | RESOLVED (runtime-backed standard functions) — DL-15 |
 | D19 D5 v1 comparison-profile numeric tolerance constants | RESOLVED — DL-17 + AICAD-064A |
-| D20 Struct-typed parameters in the always-seeded `RuntimeBuiltin` catalogue | open (safe workaround shipped in `AICAD-076`) |
+| D20 Struct-typed parameters in the always-seeded `RuntimeBuiltin` catalogue | RESOLVED — DL-21 |
 
 ---
 
@@ -902,9 +902,21 @@ own.
 
 ## D20. Struct-typed parameters in the always-seeded `RuntimeBuiltin` catalogue
 
-**Status: open (a safe, fully-typed workaround was shipped in `AICAD-076`
-for that task's own four builtins; the underlying architecture question
-is not resolved).**
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-21`.** A
+`BuiltinFnId` signature may reference approved AICAD standard nominal
+types, including `Point3`/`Axis3`/`Frame3`/`Plane`; the always-seeded
+builtin environment must be type-closed (the compiler seeds every
+nominal type a builtin signature needs alongside the builtins
+themselves, with no optional caller composition required); the existing
+eager signature-collection model is preserved (no lazy per-call
+resolution); this remains a closed first-party standard environment
+only (no plugin-injected/runtime-registered types, no OCCT types in
+source/HIR signatures); the catalogue and its required type declarations
+must be independently type-validatable (a dedicated zero-diagnostics
+test against an otherwise-empty program); `with_geometry_types` may
+remain as an idempotent compatibility helper. Implemented by
+`AICAD-076A` (Batch S3-06, inserted before `AICAD-077`). Original
+question/context kept below for record.
 
 **Question:** Can a `cad_hir::builtins::BuiltinFnId` catalogue entry's
 signature reference a `cad_hir::geometry_types`-declared struct type

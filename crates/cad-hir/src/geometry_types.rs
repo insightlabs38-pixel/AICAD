@@ -49,10 +49,20 @@
 //! convert into, via the validated `cad_runtime::spatial` conversion
 //! boundary (`Value::Struct` -> `cad_kernel_api` value, rejecting a
 //! degenerate direction or a non-orthonormal frame explicitly rather than
-//! silently repairing or panicking). Wiring a `RuntimeBuiltin` (`revolve`,
-//! `mirror`, `radial_pattern`, ...) that actually consumes one of these
-//! shapes through that boundary remains `AICAD-076`/`AICAD-077`'s own
-//! task, not this one's — see `project/reports/AICAD-075A.md`.
+//! silently repairing or panicking).
+//!
+//! `AICAD-076` wired the first real `RuntimeBuiltin` consumers
+//! (`extrude`/`revolve`/`hole`/`pocket`) through that boundary, and in
+//! doing so found that a `BuiltinFnId` signature referencing one of these
+//! struct types by name is only safe to add once every compiled program
+//! can resolve that name — `project/DECISION_LOG.md#DL-21` (`AICAD-076A`)
+//! settled this: `crate::lower::lower_program` now seeds this module's
+//! own declarations unconditionally (`crate::lower::Lowerer::
+//! seed_standard_types`), alongside the builtin catalogue itself, so
+//! [`with_geometry_types`] below is no longer *required* for a program
+//! to construct/read/pass these types — it remains only as an optional,
+//! idempotent, backward-compatible composition helper (see its own doc
+//! comment).
 
 use cad_ast::Program;
 
@@ -104,9 +114,28 @@ struct Plane {
 ";
 
 /// Parses [`GEOMETRY_TYPES_SOURCE`] and returns a new [`Program`] whose
-/// items are these six struct declarations followed by every item in
+/// items are these seven struct declarations followed by every item in
 /// `user_program`, in that order — see [`crate::prelude::with_prelude`]
 /// for the identical mechanism and rationale this mirrors exactly.
+///
+/// # No longer required (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`)
+///
+/// `crate::lower::lower_program` now seeds these same declarations into
+/// *every* compiled program unconditionally (`crate::lower::Lowerer::
+/// seed_standard_types`), so calling this function is no longer necessary
+/// merely to make `Point3`/`Vector3<T>`/`Axis3`/`Frame3`/`Plane` resolve —
+/// every `BuiltinFnId` signature needing one of these types already gets
+/// that unconditionally. This function remains available purely as a
+/// backward-compatible, optional composition helper (e.g. for a caller
+/// that still wants these declarations to appear at a specific position
+/// among its own program's items, or for a caller that only has a
+/// `Program` and wants these names resolvable before calling `crate::
+/// lower::lower_program` at all — `crate::typeck::check_program` performs
+/// no seeding of its own). Calling it and relying on `lower_program`'s
+/// own seeding are **idempotent together**: `seed_standard_types` skips
+/// any of these seven names `user_program` already declares (by name, at
+/// the AST level), so composing this function never produces two
+/// distinct `BindingId`s nominally named the same standard type.
 ///
 /// # Panics
 ///

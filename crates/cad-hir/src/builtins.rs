@@ -144,104 +144,87 @@ pub enum BuiltinFnId {
     /// source-visible profile source today. Uses `AICAD-075A`'s
     /// `cad_runtime::spatial::direction3_from_value` for `direction`.
     Extrude,
-    /// `revolve(target: Geometry, face: Int, direction: Vector3<Float>,
-    /// angle: Angle) -> Geometry` (`AICAD-076`, Stage 3). Revolves one
-    /// face of an already-built `target` solid about the axis through
-    /// the **world origin** along `direction`, by `angle`, returning the
-    /// new standalone solid of revolution. Same face-selection/profile-
-    /// source narrowing as [`BuiltinFnId::Extrude`]'s own doc comment,
-    /// plus one more: **no arbitrary axis origin yet** — see this
-    /// module's own doc comment "Why no `Axis3`-typed parameter yet" for
-    /// why a full `Axis3` value cannot safely be a catalogue parameter
-    /// type today, and `project/OWNER_DECISIONS.md#D20` for the tracked
-    /// architecture question. A caller wanting an off-origin revolve axis
-    /// composes `transform` before/after, matching `cylinder`'s own
-    /// existing "+Z axis through origin, not user-relocatable" precedent
-    /// generalized from a fixed direction to a caller-chosen one.
+    /// `revolve(target: Geometry, face: Int, axis: Axis3, angle: Angle)
+    /// -> Geometry` (`AICAD-076`, re-typed by `AICAD-076A`). Revolves one
+    /// face of an already-built `target` solid about `axis` by `angle`,
+    /// returning the new standalone solid of revolution. Same
+    /// face-selection/profile-source narrowing as [`BuiltinFnId::
+    /// Extrude`]'s own doc comment. `axis` is a real `Axis3` value,
+    /// converted via `AICAD-075A`'s `cad_runtime::spatial::
+    /// axis3_from_value` — the standard type environment note below
+    /// explains why this is now safe to reference directly.
     Revolve,
-    /// `hole(target: Geometry, origin_x: Length, origin_y: Length,
-    /// origin_z: Length, direction: Vector3<Float>, diameter: Length,
-    /// depth: Length) -> Geometry` (`AICAD-076`, Stage 3). Cuts a
-    /// cylindrical hole of `diameter`/`depth` through `target`, its axis
-    /// passing through `(origin_x, origin_y, origin_z)` along `direction`
-    /// — dispatches to `GeometryOp::Cylinder`, `GeometryOp::Transform`
-    /// (placed via `Frame3::from_z`/`Transform::from_frames`, `AICAD-075A`),
-    /// and `GeometryOp::Cut`, no new `GeometryOp` variant needed (mirrors
-    /// [`BuiltinFnId::Plate`]'s own "domain-meaningful name over existing
-    /// ops" precedent). The axis origin is three flat `Length` scalars,
-    /// not an `Axis3`-typed parameter — see this module's own doc comment
-    /// "Why no `Axis3`-typed parameter yet" (`transform`'s own existing
-    /// `dx`/`dy`/`dz` scalar decomposition is the direct precedent for
-    /// this same narrowing). Also deliberately narrower than `docs/plan/
+    /// `hole(target: Geometry, axis: Axis3, diameter: Length, depth:
+    /// Length) -> Geometry` (`AICAD-076`, re-typed by `AICAD-076A`). Cuts
+    /// a cylindrical hole of `diameter`/`depth` along `axis` out of
+    /// `target` — dispatches to `GeometryOp::Cylinder`, `GeometryOp::
+    /// Transform` (placed via `Frame3::from_z`/`Transform::from_frames`,
+    /// `AICAD-075A`), and `GeometryOp::Cut`, no new `GeometryOp` variant
+    /// needed (mirrors [`BuiltinFnId::Plate`]'s own "domain-meaningful
+    /// name over existing ops" precedent). `axis` is a real `Axis3`
+    /// value, converted via `cad_runtime::spatial::axis3_from_value`.
+    /// Deliberately narrower than `docs/plan/
     /// 04_HIGH_LEVEL_MODELING_API.md`'s own `hole` signature: `depth` is
     /// a plain `Length` picked by the caller (no `ThroughAll` -- querying
     /// `target`'s own extent along `axis` to compute one automatically is
     /// a separate, not-yet-built capability), and no counterbore/
     /// countersink/thread metadata yet.
     Hole,
-    /// `pocket(target: Geometry, origin_x: Length, origin_y: Length,
-    /// origin_z: Length, width: Length, length: Length, depth: Length)
-    /// -> Geometry` (`AICAD-076`, Stage 3). Cuts a `width` x `length` x
-    /// `depth` rectangular pocket out of `target`, corner-at-`(origin_x,
-    /// origin_y, origin_z)`, world-axis-aligned (no orientation parameter
-    /// yet, matching `box`'s own "no `frame` parameter yet" precedent) --
-    /// dispatches to `GeometryOp::Box` + `GeometryOp::Transform` +
-    /// `GeometryOp::Cut`, no new `GeometryOp` variant needed. Position is
-    /// three flat `Length` scalars for the same reason
-    /// [`BuiltinFnId::Hole`]'s own doc comment gives. Deliberately
-    /// narrower than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own
+    /// `pocket(target: Geometry, frame: Frame3, width: Length, length:
+    /// Length, depth: Length) -> Geometry` (`AICAD-076`, re-typed by
+    /// `AICAD-076A`). Cuts a `width` x `length` x `depth` rectangular
+    /// pocket out of `target`, corner-at-`frame`'s-origin extending along
+    /// `frame`'s own `x`/`y`/`z` axes (matching `box`'s own
+    /// corner-at-origin convention, relocated by `frame` via
+    /// `Transform::from_frames`) -- dispatches to `GeometryOp::Box` +
+    /// `GeometryOp::Transform` + `GeometryOp::Cut`, no new `GeometryOp`
+    /// variant needed. `frame` is a real `Frame3` value, converted via
+    /// `cad_runtime::spatial::frame3_from_value`. Deliberately narrower
+    /// than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own
     /// `pocket(profile: Profile|Sketch, ...)` signature: narrowed from an
-    /// arbitrary profile to an axis-aligned rectangle, mirroring
-    /// `plate`'s own already-accepted box-only narrowing of the general
-    /// `Profile` concept.
+    /// arbitrary profile to a rectangle, mirroring `plate`'s own
+    /// already-accepted box-only narrowing of the general `Profile`
+    /// concept.
     Pocket,
 }
 
-// --- Why no `Axis3`/`Frame3`-typed parameter yet (`AICAD-076` finding) ---
+// --- The standard type environment (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`) ---
 //
 // `AICAD-075A` built `cad_hir::geometry_types::{Axis3, Frame3, Plane}` and
 // `cad_runtime::spatial::{axis3_from_value, frame3_from_value,
 // plane3_from_value}` specifically so a builtin like `revolve`/`hole`/
-// `pocket` could take a real `Axis3`/`Frame3` *value* — the design this
-// module's own `revolve`/`hole`/`pocket` doc comments were originally
-// written against. Attempting that revealed a genuine, repository-wide
-// architecture gap: `crate::lower::Lowerer::seed_builtins` seeds *every*
-// `BuiltinFnId` into *every* compiled program's global scope
-// unconditionally, and `cad_hir::typeck::Checker::collect_signatures`
-// eagerly resolves every seeded function's own parameter types up front —
-// including a function's own type that is never actually called. A
-// `HirTypeRef::Named` reference to a `cad_hir::geometry_types` struct
-// (`Axis3`, `Frame3`, `Point3`, `Plane`) that is not itself in scope (i.e.
-// any program that has not separately composed `cad_hir::geometry_types::
-// with_geometry_types`, which almost no existing program/test does) fails
-// eagerly with an `UNKNOWN_TYPE_NAME` diagnostic for *that program*, even
-// though the program never references `revolve`/`hole`/`pocket` at all —
-// confirmed empirically: adding one such parameter broke 149 previously-
-// passing `cad-hir` tests having nothing to do with Stage-3 modeling. A
-// `HirTypeRef::Generic` reference to a *user-defined* generic struct
-// (`Vector3<Float>`) does not have this problem (an unresolvable generic
-// base silently returns `None` with no diagnostic — `Checker::
-// resolve_generic_type_application`'s own `?`-early-return), which is
-// exactly why [`BuiltinFnId::Extrude`]'s `direction: Vector3<Float>`
-// parameter is safe while a hypothetical `axis: Axis3` parameter is not.
+// `pocket` could take a real `Axis3`/`Frame3` *value* — the design
+// `revolve`/`hole`/`pocket` use above. `AICAD-076` first attempted this and
+// found a genuine, repository-wide architecture gap: `crate::lower::
+// Lowerer::seed_builtins` seeds *every* `BuiltinFnId` into *every* compiled
+// program's global scope unconditionally, and `cad_hir::typeck::Checker::
+// collect_signatures` eagerly resolves every seeded function's own
+// parameter types up front — including a function's own type that is never
+// actually called. Before `AICAD-076A`, a `HirTypeRef::Named` reference to
+// a `cad_hir::geometry_types` struct that was not itself in scope (true for
+// almost every existing program, since `with_geometry_types` composition
+// was optional) failed eagerly with `UNKNOWN_TYPE_NAME` for *that other*
+// program — confirmed empirically: `AICAD-076`'s own first draft broke 149
+// previously-passing `cad-hir` tests unrelated to Stage-3 modeling.
 //
-// Reusing `Vector3<Length>` to stand in for a position instead of
-// `Point3` was considered and rejected: `AICAD-075A`'s own required
-// semantic distinctions explicitly forbid collapsing `Point3` (position)
-// into `Vector3` (displacement) merely because both would type-check —
-// that would repeat exactly the mistake `AGENTS.md`/`AICAD-075A` warn
-// against, just to dodge an unrelated compiler defect. Decomposing a
-// position into three flat `Length` scalars instead — the same
-// narrowing `BuiltinFnId::Transform`'s own `dx`/`dy`/`dz` already
-// established at Stage 2, for an analogous reason — preserves proper
-// typed-unit semantics with no semantic collapse, so that is what
-// `revolve`/`hole`/`pocket` do instead. This is a real, repository-wide
-// limitation (it blocks *any* future builtin wanting a struct-typed
-// parameter, including `AICAD-077`'s own planned `mirror(target, plane:
-// Plane)`), tracked as `project/OWNER_DECISIONS.md#D20` rather than
-// silently worked around at the architecture level — the scalar/`Vector3`
-// narrowing above is a safe, complete, typed *workaround* for this task's
-// own four builtins, not a resolution of the underlying question.
+// `project/OWNER_DECISIONS.md#D20`/`project/DECISION_LOG.md#DL-21` resolved
+// this: the always-seeded builtin environment must be type-closed, so
+// `crate::lower::Lowerer::seed_standard_types` (called by `crate::lower::
+// lower_program` unconditionally, alongside `seed_builtins`) now seeds
+// `cad_hir::geometry_types::GEOMETRY_TYPES_SOURCE`'s struct declarations
+// into every compiled program's global scope too — `Axis3`/`Frame3`/
+// `Point3`/`Plane` now always resolve, with no caller composition required.
+// `AICAD-076`'s original scalar-decomposed `revolve`/`hole`/`pocket`
+// signatures were an approved *temporary* compatibility workaround, not the
+// long-term pattern; `AICAD-076A` migrated them back to the real `Axis3`/
+// `Frame3`-typed signatures above, which is what should be used from here
+// on for any new struct-typed builtin (`AICAD-077`'s own planned
+// `mirror(target, plane: Plane)` included) — `extrude`'s `direction:
+// Vector3<Float>` was never affected by any of this (a `HirTypeRef::Generic`
+// reference to a user-defined generic struct resolves to `None` silently
+// when unresolved, not eagerly, per `Checker::resolve_generic_type_
+// application`'s own `?`-early-return — the asymmetry that made the
+// original gap possible in the first place).
 
 impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
@@ -407,7 +390,7 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             params: vec![
                 ("target", named("Geometry")),
                 ("face", named("Int")),
-                ("direction", vector3_of("Float")),
+                ("axis", named("Axis3")),
                 ("angle", named("Angle")),
             ],
             return_ty: named("Geometry"),
@@ -417,10 +400,7 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "hole",
             params: vec![
                 ("target", named("Geometry")),
-                ("origin_x", named("Length")),
-                ("origin_y", named("Length")),
-                ("origin_z", named("Length")),
-                ("direction", vector3_of("Float")),
+                ("axis", named("Axis3")),
                 ("diameter", named("Length")),
                 ("depth", named("Length")),
             ],
@@ -431,9 +411,7 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "pocket",
             params: vec![
                 ("target", named("Geometry")),
-                ("origin_x", named("Length")),
-                ("origin_y", named("Length")),
-                ("origin_z", named("Length")),
+                ("frame", named("Frame3")),
                 ("width", named("Length")),
                 ("length", named("Length")),
                 ("depth", named("Length")),
@@ -468,5 +446,49 @@ mod tests {
         let mut deduped = names.clone();
         deduped.dedup();
         assert_eq!(names, deduped, "duplicate builtin function name");
+    }
+
+    /// `project/DECISION_LOG.md#DL-21`'s own required invariant: the
+    /// always-seeded standard type environment must make every
+    /// `BuiltinFnId` signature resolvable with zero caller composition.
+    /// Proven directly here — a targeted, catalogue-wide check — rather
+    /// than left to be discovered by an unrelated test suite exploding,
+    /// which is exactly what happened during `AICAD-076`'s own
+    /// development (a draft `Axis3`/`Frame3` parameter broke 149
+    /// Stage-3-unrelated `cad-hir` tests before this invariant existed as
+    /// its own test).
+    #[test]
+    fn the_entire_builtin_catalogue_type_checks_against_an_otherwise_empty_program() {
+        let (program, parse_diagnostics) = cad_parser::parse_program("", "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let lowered = crate::lower::lower_program(&program, "test.aicad", "");
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "empty program + standard builtin catalogue failed to lower cleanly: {:?}",
+            lowered.diagnostics
+        );
+        let checked =
+            crate::typeck::check_program(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert!(
+            checked.diagnostics.is_empty(),
+            "empty program + standard builtin catalogue failed to type-check cleanly \
+             -- a BuiltinFnId signature references a nominal type the always-seeded \
+             standard environment does not provide: {:?}",
+            checked.diagnostics
+        );
+        // Every catalogue entry actually seeded a real `Fn` binding by its
+        // own declared name -- ruling out a vacuous pass where a
+        // signature silently resolved every parameter/return type to
+        // `None` and therefore produced no diagnostic by accident.
+        for spec in catalogue() {
+            assert!(
+                lowered
+                    .bindings
+                    .iter()
+                    .any(|b| b.name == spec.name && b.kind == crate::ids::BindingKind::Fn),
+                "builtin '{}' did not seed an Fn binding",
+                spec.name
+            );
+        }
     }
 }

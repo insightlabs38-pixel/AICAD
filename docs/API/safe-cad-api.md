@@ -185,14 +185,15 @@ call-construction/field-access syntax (`Point3(x = 1mm, y = 2mm, z = 3mm)`,
 had no runtime representation at all (`cad_runtime::error::RuntimeError::
 NotCallable`'s own prior doc comment documented this exact gap).
 
-**Not yet wired into any builtin signature.** No existing or new
-`RuntimeBuiltin` function accepts a `Vector3<Length>`/`Point3`/`Frame3`/
-`Axis3`/`Plane` parameter yet — Stage 2's `box`/`cylinder`/`transform` keep
-their existing flat scalar signatures unchanged (rewriting them risks the
-already-proven `AICAD-063` Stage-2 gate fixture), and `plate` (below)
-deliberately stays scalar-only for the same reason. Wiring one of these
-shapes into an actual builtin signature (`revolve`, `rotate`, `mirror`,
-`radial_pattern`, ...) is `AICAD-076`/`AICAD-077`'s own task.
+**Not wired into every builtin signature.** Stage 2's `box`/`cylinder`/
+`transform` keep their existing flat scalar signatures unchanged
+(rewriting them risks the already-proven `AICAD-063` Stage-2 gate
+fixture), and `plate` (below) deliberately stays scalar-only for the same
+reason. `extrude`/`revolve`/`hole`/`pocket` (`AICAD-076`, below) are the
+first builtins to accept one of these types directly (`Vector3<Float>`,
+`Axis3`, `Frame3`) — see "The standard type environment" below for how
+that became safe to do for every compiled program, not just ones that
+opt in.
 
 ### Axis/frame/rotation semantics (`AICAD-075A`)
 
@@ -208,11 +209,12 @@ must share — already reused directly, not duplicated, by
 [`cad_kernel_api::Plane3`] (origin + unit normal — a mirror-plane
 representation distinct from `Frame3` because many frames share one
 plane) and [`cad_runtime::spatial`], the validated `Value::Struct ->
-cad_kernel_api` conversion boundary a future `RuntimeBuiltin` dispatch arm
+cad_kernel_api` conversion boundary a `RuntimeBuiltin` dispatch arm
 converts a source-constructed `Axis3`/`Frame3`/`Plane` value through
 (rejecting a degenerate direction or non-orthonormal frame explicitly,
-never silently). See `project/reports/AICAD-075A.md` for the full
-rationale, conventions, and tests.
+never silently) — `revolve`/`hole`/`pocket` (`AICAD-076`/`AICAD-076A`,
+below) are its first real callers. See `project/reports/AICAD-075A.md`
+for the full rationale, conventions, and tests.
 
 ### `plate(width, depth, thickness) -> Geometry` (`AICAD-071`)
 
@@ -241,47 +243,53 @@ compound builtins").
   own `List<Int>` selection) via the new `GeometryOp::GetFace`, then
   extrudes it along `direction` by `distance`, returning the new
   standalone prism (compose with `union` for a boss).
-- **`revolve(target: Geometry, face: Int, direction: Vector3<Float>,
-  angle: Angle) -> Geometry`** — selects a face the same way, then
-  revolves it about the axis through the **world origin** along
-  `direction`, by `angle`.
-- **`hole(target: Geometry, origin_x: Length, origin_y: Length, origin_z:
-  Length, direction: Vector3<Float>, diameter: Length, depth: Length) ->
-  Geometry`** — cuts a cylindrical hole of `diameter`/`depth` out of
-  `target`, its axis through `(origin_x, origin_y, origin_z)` along
-  `direction`.
-- **`pocket(target: Geometry, origin_x: Length, origin_y: Length,
-  origin_z: Length, width: Length, length: Length, depth: Length) ->
-  Geometry`** — cuts a `width` x `length` x `depth` rectangular,
-  world-axis-aligned pocket out of `target`, corner-at-`(origin_x,
-  origin_y, origin_z)`.
+- **`revolve(target: Geometry, face: Int, axis: Axis3, angle: Angle) ->
+  Geometry`** — selects a face the same way, then revolves it about
+  `axis` by `angle`.
+- **`hole(target: Geometry, axis: Axis3, diameter: Length, depth: Length)
+  -> Geometry`** — cuts a cylindrical hole of `diameter`/`depth` along
+  `axis` out of `target`.
+- **`pocket(target: Geometry, frame: Frame3, width: Length, length:
+  Length, depth: Length) -> Geometry`** — cuts a `width` x `length` x
+  `depth` rectangular pocket out of `target`, corner-at-`frame`'s-origin
+  extending along `frame`'s own `x`/`y`/`z` axes.
 
-**Why a `Length`-scalar-decomposed axis/frame, not an `Axis3`/`Frame3`
-value, despite `AICAD-075A` building exactly that representation.** A
-real, load-bearing compiler limitation, not a style choice: see
-`crates/cad-hir/src/builtins.rs`'s own "Why no `Axis3`/`Frame3`-typed
-parameter yet" note and `project/OWNER_DECISIONS.md#D20` for the full
-finding (in short: every `BuiltinFnId` is seeded into every compiled
-program unconditionally, and the type checker eagerly resolves every
-seeded function's signature whether or not the program calls it — a
-`Named` reference to an `Axis3`/`Frame3`/`Point3` struct that is not
-separately in scope then fails every *other* program's compilation too).
-`direction: Vector3<Float>` is safe (a `Generic` reference resolves to
-`None` silently when unresolvable, not an eager diagnostic), which is why
-direction parameters use it while position parameters use flat `Length`
-scalars instead of `Point3`.
+**The standard type environment (`AICAD-076A`, `project/
+DECISION_LOG.md#DL-21`).** `AICAD-076`'s first attempt at these
+signatures found a real, repository-wide compiler limitation: every
+`BuiltinFnId` is seeded into every compiled program unconditionally, and
+the type checker eagerly resolves every seeded function's own signature
+whether or not the program calls it, so a `Named` reference to an
+`Axis3`/`Frame3`/`Point3` struct that was not separately in scope broke
+every *other* program's compilation too (confirmed empirically: 149
+unrelated `cad-hir` tests). `AICAD-076` shipped `revolve`/`hole`/`pocket`
+with a temporary scalar-decomposed workaround instead
+(`origin_x`/`origin_y`/`origin_z: Length` plus `Vector3<Float>`, mirroring
+`transform`'s own `dx`/`dy`/`dz` precedent), and the owner resolved the
+underlying question as `project/DECISION_LOG.md#DL-21`: the always-seeded
+builtin environment must be *type-closed* — `crate::lower::lower_program`
+now seeds `cad_hir::geometry_types`'s own struct declarations
+unconditionally too (`crate::lower::Lowerer::seed_standard_types`), so
+`Axis3`/`Frame3`/`Point3`/`Plane` always resolve, with no
+`with_geometry_types` composition required. `AICAD-076A` migrated
+`revolve`/`hole`/`pocket` to the real `Axis3`/`Frame3`-typed signatures
+shown above as a result — this is now the long-term pattern any future
+struct-typed builtin (`AICAD-077`'s own `mirror(target, plane: Plane)`
+included) should follow directly, not repeat the scalar-decomposition
+workaround. `extrude`'s `direction: Vector3<Float>` was never affected
+either way (a `Generic` reference to a user-defined generic struct
+resolves to `None` silently when unresolvable, not eagerly — the
+asymmetry that made the original gap possible).
 
 **Deliberately narrower than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s
-own signatures** in the ways `AICAD-071`'s `plate` and Stage-2's
-`transform` already established as this catalogue's own precedent:
-`extrude`/`revolve` operate on an existing solid's own face (no source-
-level `Sketch`/`Profile` construction exists yet — `cad_hir::sketch` has
-no grammar/lowering integration); `revolve`'s axis has no independent
-origin (through world origin only, like `cylinder`'s own fixed +Z axis);
-`hole` has no `ThroughAll` depth, counterbore, countersink, or thread
-metadata; `pocket` is always an axis-aligned rectangle, never an
-arbitrary profile or orientation. See `project/reports/AICAD-076.md` for
-the complete rationale and the geometry-backed tests proving each one.
+own signatures** in the ways `AICAD-071`'s `plate` already established as
+this catalogue's own precedent: `extrude`/`revolve` operate on an
+existing solid's own face (no source-level `Sketch`/`Profile`
+construction exists yet — `cad_hir::sketch` has no grammar/lowering
+integration); `hole` has no `ThroughAll` depth, counterbore, countersink,
+or thread metadata; `pocket` is always a rectangle, never an arbitrary
+profile. See `project/reports/AICAD-076.md`/`AICAD-076A.md` for the
+complete rationale and the geometry-backed tests proving each one.
 
 ### Part concept (`AICAD-071`)
 
