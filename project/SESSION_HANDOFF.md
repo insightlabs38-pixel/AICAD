@@ -1,85 +1,119 @@
 # Session Handoff
 
-## Latest: Batch S2-11 COMPLETE (`AICAD-060` then `AICAD-061`, in that
-required order, both in this same invocation). Per the fixed batch order,
-this invocation now stops — `AICAD-062` ("Create Tree-sitter grammar for
-the supported syntax subset", Batch S2-12) is its own, separate invocation.
+## Latest: Batch S2-12 COMPLETE (`AICAD-062`, its own single-task batch).
 
-This invocation resumed `AICAD-060` from its own prior-session partial
-state (commit `19edf0d`) after the owner supplied the `D18` ruling directly
-in this invocation's own prompt. `D18` is now resolved (`project/
-DECISION_LOG.md#DL-15`; `project/OWNER_DECISIONS.md#D18`'s status line
-updated to RESOLVED). `AICAD-060` completed and was committed
-(`456f5ed`), then `AICAD-061` was implemented and completed in the same
-invocation, per the fixed batch order requiring both before starting
-`AICAD-062`.
+This invocation implemented `tree-sitter-aicad/`, the Tree-sitter grammar
+for the syntax subset `crates/cad-parser` already implements (per
+`docs/plan/02_LANGUAGE_AND_COMPILER.md` §18-19's "must share a conformance
+test corpus so syntax never diverges" and the campaign brief's "must
+match the already-approved AICAD syntax... must not become a second
+independent language specification").
 
 ### What this invocation did
 
-**`AICAD-060`** (resumed and completed): implemented the owner-authorized
-general "runtime-backed standard function" mechanism
-(`cad_hir::hir::FunctionImplementation`, `cad_hir::builtins::BuiltinFnId`)
-and used it to make the Stage-2 Safe CAD geometry catalogue (`box`/
-`cylinder`/`transform`/`union`/`cut`/`intersect`/`fillet`/`chamfer`)
-callable from ordinary `.aicad` source with ordinary call syntax — see
-`project/reports/AICAD-060.md` for full detail. `Interpreter` now owns a
-`cad_geometry_api::GeometryGraph` that grows as these calls execute; the
-prior session's `cad-geometry-runtime::dispatch`/`bridge` modules were kept
-completely unchanged and proven to plug into this session's new output via
-a new end-to-end integration test (real `.aicad` source through parsing,
-binding, type checking, execution, and real OCCT kernel calls to a valid
-B-rep with the expected volume). New `docs/API/safe-cad-api.md` (the
-authoritative Stage-2 Safe CAD source API spec `DL-15` requires); RFC-0001
-§6a / RFC-0002 §3a document the general mechanism.
+Full detail in `project/reports/AICAD-062.md`. Summary:
 
-**`AICAD-061`** (implemented from scratch): populated the previously-empty
-`cad-cli` placeholder with a real `cad build <path> [--json] [--output
-<path>]` command — see `project/reports/AICAD-061.md` for full detail.
-Runs the complete pipeline (parse -> lower -> type check -> execute
-top-level -> dispatch any constructed geometry into a real kernel context
-and export STEP), reporting diagnostics in either human-readable or JSON
-form. Smoke-tested against the actual compiled binary, not only library
-unit tests — a real STEP file was written and read back, and a real type
-error was reported as JSON matching `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md`
-§11's schema.
+- `tree-sitter-aicad/grammar.js`: declarations, statements, the full
+  expression precedence chain (range/`||`/`&&`/equality/relational/
+  additive/multiplicative/unary/postfix/primary), patterns, both import
+  path forms — matching `crates/cad-parser`'s *actual* implemented subset
+  (not the fuller aspirational `specs/language/grammar.ebnf` sketch, which
+  still lists `interface`/`assembly`/`requirement`/`test` declarations no
+  parser implements yet).
+- Two of `crates/cad-parser`'s context-sensitive restrictions
+  (`no_record_literal` in `if`/`while`/`for`/`match` conditions; a bare
+  `if`/`match` never becoming a `block_expr`'s trailing value) are
+  reproduced despite Tree-sitter being a single context-free grammar — see
+  `grammar.js`'s own module doc comment and the report for exactly how
+  (a parallel expression hierarchy for the first; `prec.dynamic` +
+  declared GLR conflicts on `block`/`block_expr` and `match_stmt`/
+  `match_expr` for the second — a parallel hierarchy was tried first for
+  the second restriction too but produced an unresolvable reduce-reduce
+  conflict, documented in the report for the next person who considers
+  that approach).
+- A genuine Tree-sitter gotcha was found and worked around:
+  `alias(seq(...multiple fields...), Name)` does not alias the whole seq
+  as one node in this Tree-sitter version (0.27.0) — it fragments the
+  alias across each field instead. Fixed by giving every field-bearing
+  production its own separate `_..._impl` rule and aliasing only a
+  reference to that rule, never an inline `seq(...)`. Documented in
+  `grammar.js` itself so it isn't rediscovered.
+- `tree-sitter-aicad/test/corpus/` (49 cases, 100% passing): positive
+  coverage for every construct above, plus adversarial/negative cases
+  (missing semicolon, unmatched delimiters, malformed struct field/import,
+  non-chainable range, `if` without `else` in expression position) with
+  their exact `(ERROR ...)`/`(MISSING ...)` trees obtained via
+  `tree-sitter test --show-fields`, not guessed.
+- `tree-sitter-aicad/queries/highlights.scm`: basic highlighting query,
+  validated with `tree-sitter query`.
+- **The actual "shared conformance corpus" link**: new
+  `tests/parser/corpus/{positive,negative}/*.aicad` fixture files plus new
+  `crates/cad-parser/tests/shared_corpus.rs`, which runs
+  `cad_parser::parse_program` over every one of those same files
+  (positive => zero diagnostics; negative => at least one). This is a
+  concrete cross-parser check, not a restructuring of `cad-parser`'s
+  existing inline unit tests.
+- **Found via that same shared corpus**: a real, pre-existing
+  `cad-parser`/`cad-lexer` gap — a `///` doc comment immediately before a
+  top-level declaration produces a spurious `EXPECTED_ITEM` parse error
+  (`Parser::parse_item`'s `match` has no `TokenKind::DocComment` arm).
+  **Not fixed in this invocation** (out of `AICAD-062`'s scope — a defect
+  in an earlier task's parser dispatch, not the grammar this task owns).
+  The shared positive fixture works around it by simply not placing a doc
+  comment directly before a declaration. Flagged as a follow-up for
+  whichever task next touches `cad-parser`'s item dispatch; see
+  `tree-sitter-aicad/README.md`'s own "Known limitation" section and the
+  report's "Follow-up bugs".
 
-**Escalations filed this invocation:** none (`D18` was already resolved at
-the start of this invocation, supplied directly in the prompt).
+**Escalations filed this invocation:** none.
 
 ## Current state / next action
 
 - **Active stage**: Stage 2. D5/D16/D17/D18 all resolved (`DL-12`/`DL-13`/
-  `DL-14`/`DL-15`).
-- **Batch S2-11 is COMPLETE**: `AICAD-060` and `AICAD-061` both done.
-- **THE NEXT INVOCATION MUST START BATCH S2-12** (`AICAD-062`, "Create
-  Tree-sitter grammar for the supported syntax subset" — its own,
-  single-task batch, per the fixed order). Do not start `AICAD-063` in
-  that same invocation.
-- **Exact recent state**: `cargo build`/`cargo fmt --all -- --check`/
-  `cargo clippy --workspace --all-targets --all-features -- -D warnings`/
-  `cargo test --workspace` all clean, 0 failures anywhere. New this
-  invocation: `cad-cli` 15 tests (0 -> 15); `cad-hir` 197 (up from 189,
-  set by the `AICAD-060` half of this invocation); `cad-runtime` 89 (up
-  from 83); `cad-geometry-runtime` 10 (up from 9). All other crates
-  unchanged.
+  `DL-14`/`DL-15`), unchanged this invocation.
+- **Batch S2-12 is COMPLETE**: `AICAD-062` done (its own single-task
+  batch, per the fixed order).
+- **THE NEXT INVOCATION MUST START BATCH S2-13** (`AICAD-063`, "Implement
+  the complete end-to-end: `.aicad` source -> lexer/parser -> binding ->
+  units/type checking -> typed HIR -> ordinary execution/control flow ->
+  Geometry IR -> Stage-1 kernel API -> exact bracket -> valid STEP" — its
+  own single-task batch). Do not start `AICAD-064` in that same
+  invocation. Perform the complete Stage-2 integration proof before
+  starting `AICAD-064`.
+- **Exact recent state**: `tree-sitter generate` clean (no warnings/
+  conflicts); `tree-sitter test` 49/49 passing; `cargo fmt --all --
+  --check`/`cargo clippy --workspace --all-targets --all-features -- -D
+  warnings`/`cargo test --workspace` all clean, 0 failures anywhere. New
+  this invocation: `cad-parser` +2 tests (the new `shared_corpus.rs`
+  integration test file — its unit-test count is otherwise unchanged).
+  All other crates unchanged.
 - **No open regressions.**
 - **Unresolved owner decisions**: D3, D5 (concrete tolerance constants
   only), D10, D11, D12, D15 — all unchanged, pre-existing; nothing new
   added this invocation.
-- **Recommended next action**: read `project/TASKS.yaml`'s `AICAD-062`
-  entry and `specs/language/grammar.ebnf` (the frozen grammar this task's
-  Tree-sitter grammar must match — "must not become a second independent
-  language specification," per the campaign brief), then implement.
+- **Recommended next action**: read `project/TASKS.yaml`'s `AICAD-063`
+  entry, then the plan references it names, then design the end-to-end
+  proof program (parameters, engineering units, derived expressions,
+  functions, ordinary control flow, geometry operations) and its
+  verification (B-rep validity, bounds, dimensions, volume, center of
+  mass, solid count, topology sanity, STEP round-trip) per the campaign
+  brief's "END-TO-END STAGE-2 PROOF" section. No demo-specific interpreter
+  shortcuts are allowed; the program must flow through the ordinary
+  language/HIR/Geometry-IR/kernel-API mechanisms already built by
+  `AICAD-054`-`AICAD-061`.
 
 ## Environment
 
-Unchanged from the `AICAD-060` session's own record except: `crates/
-cad-cli` is now populated (previously an empty placeholder), depending on
-`cad-ast`, `cad-diagnostics`, `cad-geometry-api`, `cad-geometry-runtime`,
-`cad-hir`, `cad-occt-bridge`, `cad-parser`, `cad-runtime`. Zero new
-third-party (crates.io) dependencies anywhere this invocation (`cad-cli`'s
-own argument parsing is hand-rolled, matching every other Stage-2 crate's
-zero-external-dependency policy). Rust 1.98.1, edition 2024, unchanged.
+Unchanged from the `AICAD-061` session's own record, plus: `tree-sitter`
+CLI 0.27.0 and Node v22.22.2 are available in this environment (used to
+`generate`/`test` `tree-sitter-aicad/`; not a new Cargo workspace
+dependency — `tree-sitter-aicad` is intentionally not a member of the
+root `Cargo.toml` workspace, matching `docs/plan/
+22_REPOSITORY_WORK_PACKAGES.md`'s repository layout, which places it as a
+sibling of `crates/`, not inside it). Rust 1.98.1, edition 2024,
+unchanged. Zero new third-party Cargo dependencies; `crates/cad-parser`'s
+new `tests/shared_corpus.rs` uses only `std::fs`/`std::path` plus the
+crate's own public API.
 
 ## Git identity
 

@@ -1,0 +1,26 @@
+{
+  "name": "tree-sitter-aicad",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the AICAD language (editor-responsiveness parser; production compiler parser is crates/cad-parser)",
+  "license": "Apache-2.0",
+  "private": true,
+  "keywords": [
+    "incremental",
+    "parsing",
+    "tree-sitter",
+    "aicad"
+  ],
+  "repository": "https://github.com/insightlabs38-pixel/AICAD",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.aicad",
+      "file-types": [
+        "aicad"
+      ]
+    }
+  ]
+}

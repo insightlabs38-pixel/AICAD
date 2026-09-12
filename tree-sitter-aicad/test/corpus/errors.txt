@@ -1,0 +1,108 @@
+==================
+Missing semicolon after let value
+==================
+
+let x = 1
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (number_literal)
+    (MISSING ";")))
+
+==================
+Unmatched opening brace
+==================
+
+fn f() {
+  let x = 1;
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (let_stmt
+        name: (identifier)
+        value: (number_literal))
+      (MISSING "}"))))
+
+==================
+Unmatched closing paren in call
+==================
+
+let x = box(1mm, 2mm;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (call_expression
+      callee: (identifier)
+      args: (args
+        (number_literal)
+        (number_literal))
+      (MISSING ")"))))
+
+==================
+Unexpected token where an expression is expected
+==================
+
+let x = ;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (MISSING identifier)))
+
+==================
+Malformed struct missing colon before field type
+==================
+
+struct P {
+  x T,
+}
+
+---
+
+(source_file
+  (struct_decl
+    name: (identifier)
+    (ERROR
+      (identifier)
+      (identifier))))
+
+==================
+Malformed import missing path
+==================
+
+import ;
+
+---
+
+(source_file
+  (import_decl
+    path: (import_path
+      (package_import_path
+        (MISSING identifier)))))
+
+==================
+Chained if with no else is not valid in expression position
+==================
+
+let x = if a { 1 };
+
+---
+
+(source_file
+  (ERROR
+    (identifier)
+    (identifier)
+    (block_expr
+      (number_literal))))

@@ -1,0 +1,32 @@
+let x: mm = 5mm;
+const PI = 3.14159;
+param diameter: mm = 5mm;
+
+struct Point<T> {
+  x: T,
+  y: T,
+}
+
+enum Shape {
+  Empty,
+  Circle(f64),
+  Rect { w: f64, h: f64 },
+}
+
+pure fn area(r: f64) -> f64 {
+  return r * r;
+}
+
+fn identity<T>(x: T) -> T {
+  return x;
+}
+
+part Bracket {
+  param w: mm = 10mm;
+  fn build() -> Part {
+    return box(1mm, 2mm, 3mm);
+  }
+}
+
+import ./shapes::{Circle, Rect};
+import std.fasteners;

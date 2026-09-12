@@ -1,0 +1,36 @@
+enum Result {
+  Ok(Int),
+  Err(Int),
+}
+
+struct Point {
+  x: Int,
+  y: Int,
+}
+
+fn unwrap(x: Result) -> Int {
+  match x {
+    Ok(v) => v,
+    Err(e) => 0,
+  }
+}
+
+fn coordinate(p: Point) -> Int {
+  match p {
+    Point { x, y } => x,
+  }
+}
+
+fn explicit_subpattern(p: Point) -> Int {
+  match p {
+    Point { x: a, y: b } => a,
+  }
+}
+
+fn literal_and_wildcard(n: Int) -> Int {
+  match n {
+    0 => 1,
+    1 => 2,
+    _ => 0,
+  }
+}
