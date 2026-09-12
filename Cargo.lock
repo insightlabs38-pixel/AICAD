@@ -24,6 +24,16 @@ dependencies = [
 [[package]]
 name = "cad-cli"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-geometry-api",
+ "cad-geometry-runtime",
+ "cad-hir",
+ "cad-occt-bridge",
+ "cad-parser",
+ "cad-runtime",
+]
 
 [[package]]
 name = "cad-compiler"

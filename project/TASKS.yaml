@@ -1806,7 +1806,7 @@ tasks:
 - id: AICAD-061
   stage: 2
   title: Create cad-cli build command with human and JSON diagnostics
-  status: todo
+  status: done
   depends_on:
   - AICAD-060
   plan_references:
