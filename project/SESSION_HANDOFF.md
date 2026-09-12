@@ -1,120 +1,130 @@
 # Session Handoff
 
-## Latest: Batch S2-13 COMPLETE (`AICAD-063`, its own single-task batch).
+## Latest: Batch S2-14 COMPLETE (`AICAD-064`, its own single-task batch).
 
-This invocation implemented and proved the complete Stage-2 end-to-end
-slice the campaign brief's "END-TO-END STAGE-2 PROOF" section and
-`project/CURRENT_STAGE.md`'s own exit gate describe: `.aicad` source ->
-lexer/parser -> binding -> units/type checking -> typed HIR -> ordinary
-execution/control flow -> Geometry IR -> Stage-1 kernel API -> exact
-bracket -> valid STEP.
+This invocation audited the complete Stage-2 implementation
+(`AICAD-038`..`AICAD-063`, all already `status: done`) against actual
+current code and tests rather than only citing prior task reports, and
+produced `project/gates/stage-2-gate.md` — the Stage-2 owner gate packet
+— with an explicit recommendation. **Per `AGENTS.md`, this batch performed
+no new roadmap feature development**: no crate source, test, or fixture
+was touched.
 
 ### What this invocation did
 
-Full detail in `project/reports/AICAD-063.md`. Summary:
+Full detail in `project/reports/AICAD-064.md`. Summary:
 
-- `examples/brackets/stage2_mounting_plate.aicad` (new fixture): a
-  parameterized mounting plate — 9 `param`s with engineering units, 5
-  functions (one calling the other four), `if`/`while`/`for`/`match`/
-  `return` control flow, and `box`/`cylinder`/`transform`/`union`/`cut`/
-  `fillet`/`chamfer` geometry calls, every one an ordinary runtime-backed
-  standard function (`DL-15`). Deliberately a flat plate + central boss
-  rather than an L-shaped wall (Stage-2 `transform` is translate-only;
-  an L-bracket's cross-holes would need rotation, which has no
-  unambiguous source-level syntax yet — not silently worked around,
-  documented as a scope decision in both the fixture's own header
-  comment and the report). The two raw fillet/chamfer edge indices
-  (`[9]`/`[12]`) were determined empirically against the real kernel via
-  a temporary, never-committed discovery harness (the same
-  bounding-box-search technique `crates/cad-occt-bridge/src/lib.rs`'s own
-  `chamfer_single_edge_matches_analytic_volume` test already uses), not
-  guessed.
-- `crates/cad-cli/tests/stage2_end_to_end.rs` (new, 3 tests): drives
-  `cad_cli::build::build_source` — **the literal, unmodified `cad build`
-  pipeline**, not a `call_by_name` shortcut — over that fixture, then
-  re-imports the resulting STEP file through a second, independent
-  `OcctContext` and asserts exact/closed-form B-rep evidence: validity,
-  a closed-form volume (matched to ~13 significant figures — the
-  geometry genuinely does not overlap anywhere, so no
-  inclusion-exclusion correction was needed), a bounding box, an *exact*
-  mirror-symmetry invariant on `center_of_mass().x` (mirroring
-  `stage1_bracket.rs`'s own technique), solid count via the exported
-  STEP text (`MANIFOLD_SOLID_BREP(` occurs exactly once — no
-  `solid_count` Rust/native API exists or was added; this generalizes
-  `stage1_bracket.rs`'s own "STEP contains a manifold-solid entity"
-  presence check into an exact count), and nontrivial (not exact)
-  topology counts. A second test proves the same fixture is
-  deterministic across 3 independent builds (`D5`/`DL-12` evidence); a
-  third proves a dimensionally-broken variant is still rejected before
-  execution (`UNIT-E104`), with no artifact written.
-- No existing crate source was modified — `cad-cli`'s own `AICAD-061`
-  pipeline and every upstream phase it calls already implemented
-  everything this fixture needed. This task is a pure proof/fixture
-  addition.
-- Confirmatory (not required, but run): `tree-sitter parse` against the
-  new fixture produces zero `(ERROR ...)`/`(MISSING ...)` nodes,
-  confirming `AICAD-062`'s shared-syntax guarantee holds for it too; the
-  real compiled `cad-cli` binary (not just the library) was also run
-  directly against the fixture and produced a valid STEP file.
+- Re-ran the full verification suite from clean state: `cargo fmt --all
+  -- --check` (clean), `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` (zero warnings, 27 crates), `cargo test
+  --workspace` (0 failures anywhere), `cargo test -p cad-cli --test
+  stage2_end_to_end -- --test-threads=1` (3/3, re-run serially).
+- Independently re-verified (not just cited) the two most load-bearing
+  non-negotiables for a gate audit: the kernel/Geometry-IR boundary (full
+  `Cargo.toml` dependency-graph read plus an OCCT-leakage grep across
+  `cad-geometry-api`/`cad-hir`/`cad-kernel-api`/`cad-ast`/`cad-types` —
+  structurally clean) and the "no demo-specific interpreter shortcut for
+  `AICAD-063`" requirement (`git diff --stat cf21946..7c7bc6b --
+  crates/` shows only test files changed).
+- Audited the full 27-crate workspace for Stage-3+ scope creep: the 12
+  crates with later-stage-sounding names
+  (`cad-agent-tools`/`cad-assemblies`/`cad-configurations`/
+  `cad-constraints`/`cad-feature-graph`/`cad-interchange`/`cad-lsp`/
+  `cad-packages`/`cad-provenance`/`cad-query`/`cad-references`/
+  `cad-requirements`) are all still the unmodified 6-line `AICAD-002`
+  placeholder stub; `crates/cad-compiler` (1549 lines) is legitimately
+  in-scope `AICAD-044`/`AICAD-050` work, confirmed via `git log --follow`
+  on each. No scope creep found.
+- **New this invocation: `project/OWNER_DECISIONS.md#D19`.**
+  `DECISION_LOG.md#DL-12` explicitly assigned Stage 2 to derive the D5
+  comparison-profile's concrete v1 numeric tolerance constants and named
+  `AICAD-064` as the re-audit point; no batch task had actually done this
+  (`crates/cad-validation` is still an unmodified stub). This audit
+  re-read `project/reports/AICAD-034.md`'s numeric evidence and produced
+  an evidence-supported partial recommendation (`linear_abs = 1e-4`,
+  `volume_rel = 1e-3`, both directly evidenced) while explicitly
+  escalating `linear_rel`/`area_abs`/`area_rel`/`volume_abs` as
+  unsupported by any existing evidence, per `AGENTS.md`'s "produce the
+  measurements/recommendation and escalate the constants rather than
+  guessing." **This is open, not resolved** — needs an owner ruling,
+  ideally before any future task first implements `crates/cad-validation`.
+  Non-blocking for Stage-2 exit itself.
+- `project/gates/stage-2-gate.md` recommends **PASS WITH CONDITIONS** —
+  every Stage-2 exit-gate criterion is met with independently re-verified
+  evidence; the one condition is ruling on `D19` before
+  `crates/cad-validation` work begins (not a Stage-2-exit blocker, tied to
+  `DL-12`'s own "before the Stage 8/13 determinism benchmarks mature"
+  framing).
 
-**Escalations filed this invocation:** none.
+**Escalations filed this invocation:** `project/OWNER_DECISIONS.md#D19`
+(open, not a Stage-2 blocker — see above).
 
 ## Current state / next action
 
-- **Active stage**: Stage 2. D5/D16/D17/D18 all resolved (`DL-12`/`DL-13`/
-  `DL-14`/`DL-15`), unchanged this invocation.
-- **Batch S2-13 is COMPLETE**: `AICAD-063` done (its own single-task
-  batch, per the fixed order).
-- **THE NEXT INVOCATION MUST START BATCH S2-14** (`AICAD-064`, "Prepare
-  the Stage-2 owner gate packet" — its own single-task batch). Per the
-  campaign brief: "Perform no new roadmap feature development in this
-  batch. Audit the complete Stage-2 implementation against actual code
-  and tests. Produce an explicit recommendation: PASS / PASS WITH
-  CONDITIONS / DO NOT PASS. The recommendation is advisory only." Do
-  **not** begin `AICAD-065` — Stage 2 may not advance to Stage 3 without
-  a later explicit owner approval recorded in `project/DECISION_LOG.md`.
-- **Exact recent state**: `cargo test -p cad-cli --test
-  stage2_end_to_end` — 3/3 passing, run 10x in `cargo test`'s default
-  parallel mode with 0 failures. `cargo fmt --all -- --check` / `cargo
-  clippy --workspace --all-targets --all-features -- -D warnings` /
-  `cargo test --workspace` all clean, 0 failures anywhere. New this
-  invocation: `cad-cli` +3 tests (`stage2_end_to_end.rs`; its existing 15
-  unit tests are unchanged). All other crates unchanged from the
-  `AICAD-062` session's own baseline (`cad-hir` 197, `cad-runtime` 89,
-  `cad-occt-bridge` 84, `cad-parser` 119, `cad-units` 75, `cad-lexer` 29,
-  `cad-kernel-api` 23, `cad-types` 14, `cad-geometry-api` 17, `cad-ast`
-  7+19, ...).
+- **Active stage**: Stage 2, still `status: active` in
+  `project/CURRENT_STAGE.md` — **this invocation did NOT flip that to
+  closed.** Per `AGENTS.md` ("The agent may not approve a roadmap stage")
+  and `CURRENT_STAGE.md`'s own "Owner approval required to advance: Yes",
+  only an owner-recorded `project/DECISION_LOG.md` entry (following the
+  `DL-10`/`DL-11` pattern) closes Stage 2.
+- **Batch S2-14 is COMPLETE**: `AICAD-064` done (its own single-task
+  batch, the last in the fixed S2-01..S2-14 sequence).
+- **ALL FOURTEEN STAGE-2 BATCHES (S2-01 THROUGH S2-14) ARE NOW COMPLETE.**
+  Per the campaign brief: "When AICAD-064 completes: STOP ROADMAP
+  ADVANCEMENT. DO NOT BEGIN AICAD-065... Prepare the complete Stage-2 gate
+  packet [done, `project/gates/stage-2-gate.md`]. Then switch future
+  invocations on this branch into Stage-2 hardening mode." **THE NEXT
+  INVOCATION MUST NOT START `AICAD-065` OR ANY STAGE-3 WORK.** It should
+  operate in Stage-2 hardening mode instead: rerun full compiler/runtime
+  tests, expand parser/typechecker adversarial cases, run determinism
+  comparisons, fuzz parser/lexer inputs under bounds, audit HIR
+  invariants, audit Geometry-IR backend neutrality, reproduce the final
+  bracket, rerun STEP verification, minimize regressions, fix clear
+  internal defects. Hardening mode may NOT add Stage-3 features. A good
+  first hardening action: read `project/gates/stage-2-gate.md` §5 in
+  full and consider whether `D19`'s open sub-questions can be narrowed
+  with a small, bounded, evidence-only investigation (still not
+  implementing `crates/cad-validation` itself, which would be Stage-3+
+  feature work).
+- **Exact recent state**: `cargo fmt --all -- --check` clean; `cargo
+  clippy --workspace --all-targets --all-features -- -D warnings` clean,
+  27 crates, zero warnings; `cargo test --workspace` 0 failures anywhere
+  (~800+ tests across all crates with tests); `cargo test -p cad-cli
+  --test stage2_end_to_end -- --test-threads=1` 3/3 passing. No crate
+  source, test, or fixture changed this invocation — only
+  `project/gates/stage-2-gate.md` (new), `project/OWNER_DECISIONS.md`
+  (D19 added), `project/reports/AICAD-064.md` (new), `project/TASKS.yaml`
+  (AICAD-064 -> done), and this file.
 - **No open regressions.**
-- **Unresolved owner decisions**: D3, D5 (concrete tolerance constants
-  only), D10, D11, D12, D15 — all unchanged, pre-existing; nothing new
-  added this invocation.
-- **Recommended next action**: read `project/TASKS.yaml`'s `AICAD-064`
-  entry, then re-read every Stage-2 task report (`AICAD-038`..`AICAD-063`)
-  and every `project/gates/STAGE2-*.md` checkpoint already on this
-  branch, then audit the actual current code/tests (not just the reports'
-  own claims) against `project/CURRENT_STAGE.md`'s exit gate and
-  `AGENTS.md`'s non-negotiables, and write `project/gates/` Stage-2 gate
-  packet plus `project/reports/AICAD-064.md` with an explicit PASS/PASS
-  WITH CONDITIONS/DO NOT PASS recommendation. This is an audit task, not
-  an implementation task — no new roadmap feature work belongs in this
-  batch.
+- **Unresolved owner decisions**: `D3`, `D10`, `D11`, `D12`, `D15`
+  (pre-existing, unchanged, all explicitly Stage-3+ scope) plus the new
+  `D19` (D5 v1 tolerance constants, partially evidenced, non-blocking for
+  Stage-2 exit — see above).
+- **D5/D16/D17/D18 status**: all resolved (`DL-12`/`DL-13`/`DL-14`/
+  `DL-15`), unchanged this invocation, except that `D19` narrows a
+  specific sub-question `DL-12` left open (the concrete numeric
+  constants, not the policy shape, which stays frozen).
+- **Recommended next action**: read `project/gates/stage-2-gate.md` in
+  full, then operate in Stage-2 hardening mode per the campaign brief's
+  "WHEN AICAD-064 COMPLETES" section. Do not begin `AICAD-065`. If the
+  owner has since recorded a Stage-2 pass decision in
+  `project/DECISION_LOG.md` (check there first — this invocation did not
+  add one), that changes the situation and should be re-read against the
+  campaign brief's own Stage-3 authorization rules before proceeding.
 
 ## Environment
 
-Unchanged from the `AICAD-062` session's own record: Rust 1.98.1 (edition
-2024), OCCT 7.6.3, CMake 3.28.3, GCC/G++ 13.3.0, Ubuntu 24.04.4 LTS
-x86_64. `tree-sitter` CLI 0.27.0 / Node v22.22.2 remain available (used
-only for this invocation's own confirmatory parse, not a new workspace
-dependency). Zero new third-party Cargo dependencies; `crates/cad-cli`'s
-new `tests/stage2_end_to_end.rs` uses only `std::fs`/`std::path` plus
-`cad-cli`'s/`cad-occt-bridge`'s own existing public APIs.
+Unchanged from every prior Stage-2 session: Rust 1.98.1 (edition 2024,
+auto-installed via rustup this invocation with no `Cargo.toml`/toolchain
+file changes), OCCT 7.6.3, CMake 3.28.3, GCC/G++ 13.3.0, Ubuntu 24.04.4
+LTS x86_64. No new third-party dependency was added; this invocation ran
+only pre-existing `cargo`/`git` tooling.
 
 ## Git identity
 
-Unchanged from every prior session: global git config remains `Claude
-<noreply@anthropic.com>` with `core.hooksPath` pointed at the repo's
-identity-enforcing hooks, not modified by this invocation. Commits set
-`GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+Unchanged from every prior session: `core.hooksPath` (`/root/.config/git/
+aicad-hooks`) remains active and was not modified, disabled, or bypassed.
+Commits set `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
 `GIT_COMMITTER_EMAIL` to `insightlabs38-pixel`/`insightlabs38@gmail.com`
 as process-local environment variables for the `git commit` invocation
 only. No hook bypassed; `--no-verify` never used.

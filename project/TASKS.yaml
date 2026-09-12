@@ -1887,7 +1887,7 @@ tasks:
 - id: AICAD-064
   stage: 2
   title: Prepare Stage-2 owner gate packet
-  status: todo
+  status: done
   depends_on:
   - AICAD-063
   plan_references:

@@ -42,6 +42,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
 | D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
 | D18 Geometry-operation invocation mechanism from `.aicad` source | RESOLVED (runtime-backed standard functions) — DL-15 |
+| D19 D5 v1 comparison-profile numeric tolerance constants | open (measurements/recommendation produced) |
 
 ---
 
@@ -767,6 +768,90 @@ and implements the general `RuntimeBuiltin` mechanism plus the Stage-2 Safe
 CAD catalogue (`docs/API/safe-cad-api.md`) and source-to-`GeometryGraph`
 path per `DL-15`. `AICAD-061` proceeds only after `AICAD-060` fully
 completes, per the fixed Batch S2-11 order.
+
+---
+
+## D19. D5 v1 comparison-profile numeric tolerance constants
+
+**Status: open — measurements/recommendation produced, owner ruling
+requested.** `DECISION_LOG.md#DL-12` froze the *shape* of the D5
+comparison profile (`linear`/`area`/`volume`/`center-of-mass`, each scaled
+by characteristic linear scale `S`) but explicitly left the concrete v1
+numeric constants unfixed, assigning Stage 2 to "derive and document them
+from actual Stage-1 evidence ... and escalate the derived constants ...
+for ruling if Stage-2 evidence alone does not make a specific constant
+obvious," and named `AICAD-064` as the task that "must re-audit D5
+evidence." No Stage-2 task (`AICAD-038`..`AICAD-063`) implemented
+`crates/cad-validation`'s comparison-profile module or otherwise derived
+these constants; the crate remains the unmodified `AICAD-002` placeholder
+stub. This audit (`AICAD-064`) produces the measurements below rather than
+leaving the gap unaddressed, per `AGENTS.md`'s "produce the measurements/
+recommendation and escalate the constants rather than guessing."
+
+**Evidence (`project/reports/AICAD-034.md`, Stage-1 bracket, characteristic
+scale `S ≈ 80` mm):**
+- Pre-fillet/chamfer bounding box matched the closed-form
+  `(0,0,0)`–`(80,60,60)` corners to `~1.5e-7`. After fillet/chamfer, OCCT's
+  own curve-approximation widened this to `~1e-6`, empirically observed
+  identically (bit-for-bit) across 5 repeated runs — a genuine kernel
+  numerical-noise floor, not flakiness.
+- The bounding-box assertion used a `1e-4` absolute tolerance (two orders
+  of magnitude above the observed `~1e-6` noise floor) specifically
+  because it is a fillet/chamfer-affected quantity; the center-of-mass
+  symmetry check and edge-selection logic (quantities never run through
+  fillet/chamfer curve-fitting) instead used `1e-6`.
+- Closed-form volume (`88000 − 2010.62 + 274.69 − 160 ≈ 86104.07`) matched
+  the kernel-computed volume to within a `0.1%` (`1e-3`) relative
+  tolerance on every run.
+- Separately, `project/reports/AICAD-063.md`'s Stage-2 mounting-plate
+  fixture (deliberately non-self-overlapping geometry) matched its
+  closed-form volume to `~13` significant figures — far tighter than
+  `1e-3`, but not independent evidence for a *general* constant since that
+  fixture has no boolean-overlap or fillet/chamfer curve-fitting error
+  source to bound.
+
+**Recommended v1 constants, evidence-supported only:**
+- `linear_abs = 1e-4` (length units matching `S`, e.g. mm) — directly
+  evidenced (bounding-box tolerance, calibrated to `~100x` the observed
+  noise floor).
+- `volume_rel = 1e-3` — directly evidenced (closed-form-vs-kernel volume
+  agreement, used consistently and successfully across every Stage-1
+  boolean/fillet/chamfer combination tested).
+- `center-of-mass` linear tolerance = `linear_abs` (`1e-4`) for the
+  *general* profile. Note this is looser than the `1e-6` Stage-1 used for
+  its own mirror-symmetry invariant — that `1e-6` figure is a
+  fillet/chamfer-uninvolved quantity's much stronger *test-specific*
+  invariant, not evidence for the general cross-comparison constant.
+
+**Explicitly NOT evidence-supported — escalated rather than guessed:**
+- `linear_rel`: no Stage-1 evidence exercised a part at a different
+  characteristic scale, so no relative-term behavior was ever observed;
+  Stage 1/2 fixtures are all tens-of-mm scale. Recommend the owner either
+  set `linear_rel = 0` (pure absolute floor) until a multi-scale fixture
+  produces real evidence, or set a conservative placeholder (e.g. `1e-6`)
+  explicitly labeled provisional.
+- `area_abs`/`area_rel`: no report measured an area comparison directly
+  (only volume/bounding-box/center-of-mass were checked). A dimensional-
+  analogy guess (e.g. `area_rel ≈ volume_rel`) would be exactly the kind
+  of unsupported guess `AGENTS.md` prohibits; recommend either deferring
+  area constants until a fixture measures them, or an explicit owner
+  placeholder ruling.
+- `volume_abs`: no fixture ever compared a near-zero volume, so no floor
+  value has evidence either way.
+
+**Plan references:** `DECISION_LOG.md#DL-12` (D5 v1 policy, assigns this
+derivation to Stage 2 and names `AICAD-064` as the re-audit point);
+`project/reports/AICAD-034.md` (source of all cited measurements);
+`crates/cad-validation` (owns the eventual comparison-profile
+implementation once a task is assigned to it — none has been yet).
+
+**Blocking impact:** Non-blocking for the Stage-2 exit gate itself (no
+`AICAD-038`..`AICAD-063` acceptance criterion required these constants to
+exist), but `DECISION_LOG.md#DL-12` ties it to "before the Stage 8/13
+determinism benchmarks mature." Recommend the owner rule on this before
+`crates/cad-validation` is first implemented (a Stage-3-or-later task),
+so that task starts from owner-approved constants rather than picking its
+own.
 
 ---
 
