@@ -42,13 +42,13 @@
 //!
 //! ## What this module deliberately does not do (later tasks' scope)
 //!
-//! - **Cache keys / dirty propagation** (`AICAD-068`) and **source-to-
-//!   feature provenance** (`AICAD-069`) are explicitly separate tasks in
-//!   `project/TASKS.yaml`'s fixed Batch S3-01/S3-02 ordering; this module
-//!   builds the identity/dependency structure they will each build on top
-//!   of, nothing more — mirrors `cad_runtime::params`' own precedent
-//!   ("this task does not itself build a cache/dirty-propagation graph...
-//!   only the parameter layer it will sit on top of").
+//! - **Cache keys / dirty propagation** are `AICAD-068`'s own job
+//!   (`crate::cache` — see that module's doc comment); [`FeatureNode::
+//!   cache_key`]/[`FeatureNode::binding_refs`] are populated by [`Builder::
+//!   resolve_geometry_expr`] calling straight into `crate::cache::
+//!   node_cache_key`, but this module itself owns none of that hashing
+//!   logic. **Source-to-feature provenance** (`AICAD-069`) remains a
+//!   separate, later Batch-S3-02 task this module does not yet implement.
 //! - **Evaluating** a feature's own scalar parameters into actual
 //!   `cad_units` quantities is `cad_runtime`'s job. [`FeatureNode::
 //!   parameters`] stores each non-`Geometry` parameter's *expression*
@@ -85,13 +85,14 @@
 //!   own identical, explicitly documented scope boundary — `part`
 //!   instantiation semantics are `AICAD-072`'s job, not yet decided.
 
+use crate::cache::{CacheKey, node_cache_key};
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SourceSpan};
 use cad_hir::builtins::{BuiltinFnId, BuiltinFnSpec};
 use cad_hir::hir::{HirArg, HirCallee, HirExpr, HirItem, HirProgram};
 use cad_hir::ids::BindingId;
 use cad_hir::types::HirTypeRef;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// SSA-style identity of one node within a single [`FeatureGraph`] — see
@@ -147,6 +148,21 @@ pub struct FeatureNode<'a> {
     /// see this module's doc comment "What this module deliberately does
     /// not do".
     pub parameters: Vec<(&'static str, &'a HirExpr)>,
+    /// This node's own purely structural cache key (`AICAD-068`,
+    /// `crate::cache`) — a content hash of `op`, every `geometry_inputs`
+    /// node's own `cache_key` (so an upstream structural change propagates
+    /// downstream automatically), and `parameters`. See `crate::cache`'s
+    /// module doc comment for exactly what this is/is not a claim about.
+    pub cache_key: CacheKey,
+    /// Every [`BindingId`] this node's own `parameters` expressions
+    /// reference (deduplicated, first-occurrence order) — `AICAD-068`'s
+    /// other output, feeding [`FeatureGraph::dirty_set`]. Does **not**
+    /// include bindings referenced only by this node's `geometry_inputs`
+    /// (a dependency on an *upstream feature*, already covered by
+    /// `geometry_inputs` itself plus that node's own `binding_refs` —
+    /// `dirty_set`'s transitive propagation walks that edge, not this
+    /// field, to avoid double-representing the same dependency two ways).
+    pub binding_refs: Vec<BindingId>,
 }
 
 /// Every way [`FeatureGraph::build`] can fail — both are purely
@@ -332,6 +348,34 @@ impl<'a> FeatureGraph<'a> {
     pub fn find_by_binding(&self, binding: BindingId) -> Option<FeatureId> {
         self.named.get(&binding).copied()
     }
+
+    /// Every feature node that must be rebuilt after the top-level bindings
+    /// in `changed` had their own *value* overridden — `AICAD-068`,
+    /// `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §10 steps 1-3. A
+    /// node is in the returned set when either:
+    /// - one of its own [`FeatureNode::binding_refs`] is in `changed`
+    ///   (§10 step 1: "find parameter dependents"); or
+    /// - any of its own [`FeatureNode::geometry_inputs`] is itself in the
+    ///   returned set (§10 step 2: "mark affected feature nodes dirty" —
+    ///   propagated transitively downstream).
+    ///
+    /// Every node *not* in the returned set is unaffected and may keep its
+    /// existing cached build (§10 step 3: "preserve unaffected cached
+    /// nodes"). Correct in one linear pass over [`FeatureGraph::nodes`]
+    /// because that slice is already dependency-respecting order (every
+    /// `geometry_inputs` entry has a strictly smaller [`FeatureId`] than
+    /// the node containing it — see this module's own doc comment).
+    pub fn dirty_set(&self, changed: &HashSet<BindingId>) -> HashSet<FeatureId> {
+        let mut dirty = HashSet::new();
+        for node in &self.nodes {
+            let directly_dirty = node.binding_refs.iter().any(|b| changed.contains(b));
+            let transitively_dirty = node.geometry_inputs.iter().any(|dep| dirty.contains(dep));
+            if directly_dirty || transitively_dirty {
+                dirty.insert(node.id);
+            }
+        }
+        dirty
+    }
 }
 
 /// Owns the in-progress node list plus the lookup tables [`FeatureGraph::
@@ -414,6 +458,13 @@ impl<'a> Builder<'a> {
                     }
                 }
 
+                let geometry_input_keys: Vec<CacheKey> = geometry_inputs
+                    .iter()
+                    .map(|input_id| self.nodes[input_id.0 as usize].cache_key)
+                    .collect();
+                let (cache_key, binding_refs) =
+                    node_cache_key(fn_name, &geometry_input_keys, &parameters);
+
                 let id = FeatureId(self.nodes.len() as u32);
                 self.nodes.push(FeatureNode {
                     id,
@@ -422,6 +473,8 @@ impl<'a> Builder<'a> {
                     name: None,
                     geometry_inputs,
                     parameters,
+                    cache_key,
+                    binding_refs,
                 });
                 Ok(Some(id))
             }
@@ -762,5 +815,169 @@ mod tests {
             assert!(!diagnostic.message.is_empty());
             assert!(!err.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn identical_source_produces_identical_cache_keys() {
+        let source = "let base = box(10mm, 10mm, 10mm);\n\
+                       let hole = cylinder(1mm, 10mm);\n\
+                       let drilled = cut(base, hole);\n";
+        let lowered1 = lowered(source);
+        let graph1 = FeatureGraph::build(&lowered1.program).expect("builds cleanly");
+        let lowered2 = lowered(source);
+        let graph2 = FeatureGraph::build(&lowered2.program).expect("builds cleanly");
+
+        let keys1: Vec<CacheKey> = graph1.nodes().iter().map(|n| n.cache_key).collect();
+        let keys2: Vec<CacheKey> = graph2.nodes().iter().map(|n| n.cache_key).collect();
+        assert_eq!(
+            keys1, keys2,
+            "identical source must yield identical cache keys"
+        );
+    }
+
+    #[test]
+    fn changing_one_literal_changes_only_its_own_and_downstream_cache_keys() {
+        let base_source = |dx: &str| {
+            format!(
+                "let base = box({dx}, 10mm, 10mm);\n\
+                 let hole = cylinder(1mm, 10mm);\n\
+                 let drilled = cut(base, hole);\n"
+            )
+        };
+        let lowered1 = lowered(&base_source("10mm"));
+        let graph1 = FeatureGraph::build(&lowered1.program).expect("builds cleanly");
+        let lowered2 = lowered(&base_source("20mm"));
+        let graph2 = FeatureGraph::build(&lowered2.program).expect("builds cleanly");
+
+        let base1 = graph1
+            .get(
+                graph1
+                    .find_by_binding(binding_of(&lowered1, "base"))
+                    .unwrap(),
+            )
+            .unwrap();
+        let base2 = graph2
+            .get(
+                graph2
+                    .find_by_binding(binding_of(&lowered2, "base"))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_ne!(base1.cache_key, base2.cache_key);
+
+        let hole1 = graph1
+            .get(
+                graph1
+                    .find_by_binding(binding_of(&lowered1, "hole"))
+                    .unwrap(),
+            )
+            .unwrap();
+        let hole2 = graph2
+            .get(
+                graph2
+                    .find_by_binding(binding_of(&lowered2, "hole"))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            hole1.cache_key, hole2.cache_key,
+            "a sibling untouched by the edit must keep the same cache key"
+        );
+
+        let drilled1 = graph1
+            .get(
+                graph1
+                    .find_by_binding(binding_of(&lowered1, "drilled"))
+                    .unwrap(),
+            )
+            .unwrap();
+        let drilled2 = graph2
+            .get(
+                graph2
+                    .find_by_binding(binding_of(&lowered2, "drilled"))
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_ne!(
+            drilled1.cache_key, drilled2.cache_key,
+            "a downstream consumer of the edited node must also change key"
+        );
+    }
+
+    #[test]
+    fn parameter_referencing_a_param_is_recorded_as_a_binding_reference() {
+        let lowered = lowered(
+            "param radius: Length = 4mm;\n\
+             let boss = cylinder(radius, 12mm);\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let boss = graph
+            .get(graph.find_by_binding(binding_of(&lowered, "boss")).unwrap())
+            .unwrap();
+        let radius = param_binding(&lowered, "radius");
+        assert_eq!(boss.binding_refs, vec![radius]);
+    }
+
+    #[test]
+    fn dirty_set_marks_direct_and_transitive_dependents_only() {
+        let lowered = lowered(
+            "param radius: Length = 4mm;\n\
+             let base = box(10mm, 10mm, 10mm);\n\
+             let boss = cylinder(radius, 12mm);\n\
+             let combined = union(base, boss);\n\
+             let untouched = box(5mm, 5mm, 5mm);\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let radius = param_binding(&lowered, "radius");
+        let base = graph.find_by_binding(binding_of(&lowered, "base")).unwrap();
+        let boss = graph.find_by_binding(binding_of(&lowered, "boss")).unwrap();
+        let combined = graph
+            .find_by_binding(binding_of(&lowered, "combined"))
+            .unwrap();
+        let untouched = graph
+            .find_by_binding(binding_of(&lowered, "untouched"))
+            .unwrap();
+
+        let mut changed = std::collections::HashSet::new();
+        changed.insert(radius);
+        let dirty = graph.dirty_set(&changed);
+
+        assert!(dirty.contains(&boss), "boss directly references radius");
+        assert!(
+            dirty.contains(&combined),
+            "combined consumes boss, so it is transitively dirty"
+        );
+        assert!(
+            !dirty.contains(&base),
+            "base does not depend on radius at all"
+        );
+        assert!(
+            !dirty.contains(&untouched),
+            "untouched shares no edge with the changed param"
+        );
+    }
+
+    #[test]
+    fn dirty_set_is_empty_when_nothing_changed() {
+        let lowered = lowered(
+            "param radius: Length = 4mm;\n\
+             let boss = cylinder(radius, 12mm);\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let dirty = graph.dirty_set(&std::collections::HashSet::new());
+        assert!(dirty.is_empty());
+    }
+
+    fn param_binding(lowered: &LowerResult, name: &str) -> BindingId {
+        for item in &lowered.program.items {
+            if let HirItem::Param {
+                binding, name: n, ..
+            } = item
+                && n == name
+            {
+                return *binding;
+            }
+        }
+        panic!("no top-level param named {name:?}");
     }
 }

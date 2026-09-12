@@ -2026,7 +2026,7 @@ tasks:
 - id: AICAD-068
   stage: 3
   title: Implement cache keys and dirty propagation
-  status: todo
+  status: done
   depends_on:
   - AICAD-067
   plan_references:
