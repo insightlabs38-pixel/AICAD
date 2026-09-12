@@ -51,6 +51,13 @@ version = "0.0.0"
 [[package]]
 name = "cad-constraints"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-hir",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-diagnostics"
