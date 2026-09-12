@@ -2188,7 +2188,7 @@ tasks:
 - id: AICAD-074
   stage: 3
   title: Implement common sketch constraints needed by baseline parts
-  status: todo
+  status: done
   depends_on:
   - AICAD-073
   plan_references:

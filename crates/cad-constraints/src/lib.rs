@@ -8,18 +8,25 @@
 //!   solver-independent 2D sketch constraint IR and its solver-adapter
 //!   boundary. See that module's own doc comment for the full identity
 //!   model and deliberate scope cuts (which baseline constraint kinds are
-//!   covered, and why no concrete `SketchSolver` implementation ships
-//!   with this task).
+//!   covered).
+//! - [`sketch_solver`][]: [`sketch_solver::RelaxationSolver`] (`AICAD-074`)
+//!   — the first concrete [`sketch_constraint::SketchSolver`]
+//!   implementation `DL-20` permits ("exactly one initial solver
+//!   implementation... behind this interface"), a direct-projection
+//!   Gauss-Seidel relaxation solver covering every baseline constraint
+//!   kind. See that module's own doc comment for the algorithm,
+//!   classification rules, versioned tolerance profile, and scope cuts.
 //!
 //! Not yet implemented (future work, per this crate's own `README.md`):
-//! 3D geometric constraints, assembly mate/joint constraints, algebraic
-//! parameter constraints, and any concrete `SketchSolver`
-//! implementation (`AICAD-074`).
+//! 3D geometric constraints, assembly mate/joint constraints, and
+//! algebraic parameter constraints.
 
 pub mod sketch_constraint;
+pub mod sketch_solver;
 
 pub use sketch_constraint::{
     Constraint, ConstraintId, ConstraintIrError, ConstraintKind, ConstraintSet, PointRef,
     SketchSolver, SketchVariable, SolveReport, SolveStatus, SolvedValues, resolve_point,
     sketch_variables,
 };
+pub use sketch_solver::{RelaxationSolver, SketchSolverProfile};

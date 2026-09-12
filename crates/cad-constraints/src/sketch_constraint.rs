@@ -225,7 +225,11 @@ pub fn resolve_point(sketch: &Sketch, point: PointRef) -> Option<Point2> {
     }
 }
 
-fn arc_point(center: Point2, radius: Quantity, angle: Quantity) -> Point2 {
+/// `pub(crate)` (not private) so `sketch_solver`'s own working-copy point
+/// resolution (`AICAD-074`) can reuse the exact same arc-endpoint
+/// derivation as this module's own [`resolve_point`], rather than a
+/// second re-implementation of the same trigonometry.
+pub(crate) fn arc_point(center: Point2, radius: Quantity, angle: Quantity) -> Point2 {
     let (sin, cos) = angle.magnitude.sin_cos();
     Point2::new(
         center.x + radius.magnitude * cos,
@@ -891,6 +895,18 @@ pub enum SolveStatus {
     /// this to be a provably minimal conflict set in the Stage-3
     /// baseline.
     Overconstrained { conflicting: Vec<ConstraintId> },
+    /// A backend-specific extension beyond `DL-20`'s "at minimum" three
+    /// statuses (added by `AICAD-074`'s own `RelaxationSolver`, per
+    /// `crates/cad-constraints/src/sketch_solver.rs`'s own doc comment):
+    /// this particular backend has no way to act on one or more of the
+    /// listed constraints at all (e.g. both of a `coincident`'s operands
+    /// are points this backend cannot move). Reported explicitly rather
+    /// than silently folded into `Overconstrained` (which would wrongly
+    /// imply the constraints are in tension, not merely unsupported) or
+    /// `Solved` (which would wrongly imply the constraint was actually
+    /// enforced). A different backend implementing this same trait may
+    /// legitimately support what one backend reports `Unsupported` for.
+    Unsupported { constraints: Vec<ConstraintId> },
 }
 
 /// A solved [`SketchVariable`] -> magnitude assignment a [`SketchSolver`]
