@@ -1,0 +1,112 @@
+// Stage-2 end-to-end proof fixture (AICAD-063).
+//
+// A parameterized mounting plate: a flat base plate with a central
+// cylindrical boss, a row of through-holes whose positions are derived
+// from engineering-unit arithmetic inside an ordinary `for` loop, one
+// rounded (filleted) top edge, and one chamfered top edge whose fillet
+// radius is defensively clamped by an ordinary `while` loop. Every
+// geometry operation below (`box`/`cylinder`/`transform`/`union`/`cut`/
+// `fillet`/`chamfer`) is an ordinary runtime-backed standard function
+// (`docs/API/safe-cad-api.md`, `project/DECISION_LOG.md#DL-15`) called
+// with plain function-call syntax -- no special syntax, no interpreter
+// shortcut.
+//
+// The two raw edge indices below (`[9]` into the plain base box, `[12]`
+// into the box after its first fillet) were determined empirically by
+// enumerating `create_box`'s own edge order and searching by bounding
+// box -- exactly the "raw, kernel-enumeration-order" selection
+// `docs/API/safe-cad-api.md`'s own `fillet`/`chamfer` section documents
+// as this Stage's known limitation, pending the Stage-4 semantic-
+// reference layer (`project/DECISION_LOG.md#DL-9`). They are stable for
+// any positive box dimensions (verified directly against the kernel
+// bridge, not guessed) because `BRepPrimAPI_MakeBox`'s own edge
+// enumeration order depends only on its construction algorithm, not on
+// the magnitudes passed to it.
+
+param plate_dx: Length = 80mm;
+param plate_dy: Length = 60mm;
+param plate_dz: Length = 10mm;
+param hole_margin: Length = 15mm;
+param hole_radius: Length = 4mm;
+param boss_radius: Length = 8mm;
+param boss_height: Length = 12mm;
+param fillet_radius: Length = 2mm;
+param chamfer_distance: Length = 2mm;
+
+const HOLE_COUNT: Int = 2;
+const HOLE_OVERSHOOT: Length = 1mm;
+const BOSS_STYLE: Int = 1;
+
+// Derived expression: the x-position of the i-th hole in an evenly
+// spaced row spanning `[margin, margin + span]`.
+fn hole_center_x(margin: Length, span: Length, count: Int, i: Int) -> Length {
+    if count <= 1 {
+        return margin;
+    }
+    let spacing = span / (count - 1);
+    return margin + spacing * i;
+}
+
+// A clean through-hole cylinder translated into place, overshooting the
+// plate thickness on both ends so the resulting cut has no coincident
+// end faces.
+fn make_through_hole(x: Length, y: Length, radius: Length, thickness: Length, overshoot: Length) -> Geometry {
+    let height = thickness + overshoot * 2;
+    let z0 = -overshoot;
+    return transform(cylinder(radius, height), x, y, z0);
+}
+
+// Defensive clamp: halves a candidate fillet radius until it is safely
+// smaller than half of `limit`, via an ordinary `while` loop.
+fn clamp_fillet_radius(radius: Length, limit: Length) -> Length {
+    var r = radius;
+    while r * 2 > limit {
+        r = r / 2;
+    }
+    return r;
+}
+
+// The base plate, rounded on two of its own top edges (a fillet on the
+// front-top edge, a chamfer on the back-top edge), before any boss/hole
+// feature is added.
+fn rounded_plate(dx: Length, dy: Length, dz: Length, fillet_r: Length, chamfer_d: Length) -> Geometry {
+    let plate = box(dx, dy, dz);
+    let safe_fillet = clamp_fillet_radius(fillet_r, dz / 3);
+    let filleted = fillet(plate, [9], safe_fillet);
+    return chamfer(filleted, [12], chamfer_d);
+}
+
+// The whole part: rounded plate, unioned with a central boss (selected
+// via `match`, an ordinary non-geometry-specific Int code), then a row
+// of through-holes cut via an ordinary `for` loop over `0..HOLE_COUNT`.
+fn bracket(
+    dx: Length, dy: Length, dz: Length,
+    margin: Length, hole_r: Length,
+    boss_r: Length, boss_h: Length,
+    fillet_r: Length, chamfer_d: Length
+) -> Geometry {
+    let plate = rounded_plate(dx, dy, dz, fillet_r, chamfer_d);
+    let boss = transform(cylinder(boss_r, boss_h), dx / 2, dy / 2, dz);
+    let based = match BOSS_STYLE {
+        0 => plate,
+        _ => union(plate, boss),
+    };
+
+    var shape = based;
+    let span = dx - margin * 2;
+    if HOLE_COUNT > 0 {
+        for i in 0..HOLE_COUNT {
+            let hx = hole_center_x(margin, span, HOLE_COUNT, i);
+            let hole = make_through_hole(hx, dy / 2, hole_r, dz, HOLE_OVERSHOOT);
+            shape = cut(shape, hole);
+        }
+    }
+    return shape;
+}
+
+let mounting_plate = bracket(
+    plate_dx, plate_dy, plate_dz,
+    hole_margin, hole_radius,
+    boss_radius, boss_height,
+    fillet_radius, chamfer_distance
+);
