@@ -300,6 +300,31 @@ impl Frame3 {
         Frame3 { origin, x, y, z }
     }
 
+    /// Constructs a frame from an origin and only a `z` direction,
+    /// deriving `x`/`y` deterministically -- the same cyclic derivation as
+    /// [`Frame3::from_x`] with the roles of `x` and `z` permuted
+    /// (`x -> z -> y -> x`). Used to align a fixed-`+Z`-axis kernel
+    /// primitive (e.g. a cylinder, per `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own "axis along +Z" convention)
+    /// onto an arbitrary target [`Axis3`] via [`Transform::from_frames`]
+    /// (`AICAD-076`'s own `hole` feature).
+    pub fn from_z(origin: Point3, z: Direction3) -> Frame3 {
+        let seed = if z.dot(Direction3::X).abs() < 0.9 {
+            Direction3::X
+        } else {
+            Direction3::Y
+        };
+        // x = seed - (seed . z) z, normalized; always succeeds because
+        // `seed` was chosen to not be (anti)parallel to `z`.
+        let seed_v = seed.as_vector3();
+        let x_v = seed_v - z.as_vector3() * seed_v.dot(z.as_vector3());
+        let x = x_v
+            .normalize()
+            .expect("seed is never parallel to z by construction");
+        let y = z.cross(x).expect("z and x are orthonormal by construction");
+        Frame3 { origin, x, y, z }
+    }
+
     /// Constructs a frame from an explicit orthonormal right-handed
     /// triple. Returns [`KernelError::InvalidArgument`] if the triple is
     /// not orthonormal and right-handed within `1e-6` tolerance (matching
@@ -571,6 +596,27 @@ mod tests {
         ] {
             let x = v.normalize().unwrap();
             let frame = Frame3::from_x(Point3::ORIGIN, x);
+            assert_close(frame.x.dot(frame.y), 0.0, 1e-9);
+            assert_close(frame.x.dot(frame.z), 0.0, 1e-9);
+            assert_close(frame.y.dot(frame.z), 0.0, 1e-9);
+            let cross = frame.x.cross(frame.y).unwrap();
+            assert_close(cross.dot(frame.z), 1.0, 1e-9);
+        }
+    }
+
+    #[test]
+    fn frame_from_z_is_always_orthonormal_and_right_handed() {
+        for v in [
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(0.0, 0.0, -1.0),
+            Vector3::new(3.0, -2.0, 0.5),
+        ] {
+            let z = v.normalize().unwrap();
+            let frame = Frame3::from_z(Point3::ORIGIN, z);
+            assert_eq!(frame.z, z);
             assert_close(frame.x.dot(frame.y), 0.0, 1e-9);
             assert_close(frame.x.dot(frame.z), 0.0, 1e-9);
             assert_close(frame.y.dot(frame.z), 0.0, 1e-9);

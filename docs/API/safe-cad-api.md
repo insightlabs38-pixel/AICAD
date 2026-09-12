@@ -1,7 +1,8 @@
 # Safe CAD source API
 
 Status: Stage 2 (authoritative baseline) plus Stage 3 additions
-(`AICAD-070`/`AICAD-071`, see "Stage-3 additions" below).
+(`AICAD-070`/`AICAD-071`/`AICAD-075A`/`AICAD-076`, see "Stage-3
+additions" below).
 Owner ruling: `project/DECISION_LOG.md#DL-15` (resolving
 `project/OWNER_DECISIONS.md#D18`).
 Implementing crate/task: `AICAD-060`, `crates/cad-hir/src/builtins.rs`
@@ -224,6 +225,63 @@ signature (no `center`/`corner_radius`/`frame`/`centered` parameters yet —
 does not expose, per this document's own "Deliberately not exposed as
 Stage-2 source functions" section; `center`/`frame` placement is left to an
 ordinary `transform` call).
+
+### `extrude`/`revolve`/`hole`/`pocket` (`AICAD-076`)
+
+Four new builtins, each dispatching to already-existing `GeometryOp`s
+(`GetFace`, `Extrude`, `Revolve`, `Cylinder`, `Box`, `Transform`, `Cut`) —
+`extrude`/`revolve` are the first *compound* builtins, each pushing more
+than one Geometry IR node per call (`cad_runtime::interp::
+Interpreter::dispatch_builtin`'s own doc comment, "Single-node vs.
+compound builtins").
+
+- **`extrude(target: Geometry, face: Int, direction: Vector3<Float>,
+  distance: Length) -> Geometry`** — selects `target`'s own face `face`
+  (a raw kernel-enumeration-order index, mirroring `fillet`/`chamfer`'s
+  own `List<Int>` selection) via the new `GeometryOp::GetFace`, then
+  extrudes it along `direction` by `distance`, returning the new
+  standalone prism (compose with `union` for a boss).
+- **`revolve(target: Geometry, face: Int, direction: Vector3<Float>,
+  angle: Angle) -> Geometry`** — selects a face the same way, then
+  revolves it about the axis through the **world origin** along
+  `direction`, by `angle`.
+- **`hole(target: Geometry, origin_x: Length, origin_y: Length, origin_z:
+  Length, direction: Vector3<Float>, diameter: Length, depth: Length) ->
+  Geometry`** — cuts a cylindrical hole of `diameter`/`depth` out of
+  `target`, its axis through `(origin_x, origin_y, origin_z)` along
+  `direction`.
+- **`pocket(target: Geometry, origin_x: Length, origin_y: Length,
+  origin_z: Length, width: Length, length: Length, depth: Length) ->
+  Geometry`** — cuts a `width` x `length` x `depth` rectangular,
+  world-axis-aligned pocket out of `target`, corner-at-`(origin_x,
+  origin_y, origin_z)`.
+
+**Why a `Length`-scalar-decomposed axis/frame, not an `Axis3`/`Frame3`
+value, despite `AICAD-075A` building exactly that representation.** A
+real, load-bearing compiler limitation, not a style choice: see
+`crates/cad-hir/src/builtins.rs`'s own "Why no `Axis3`/`Frame3`-typed
+parameter yet" note and `project/OWNER_DECISIONS.md#D20` for the full
+finding (in short: every `BuiltinFnId` is seeded into every compiled
+program unconditionally, and the type checker eagerly resolves every
+seeded function's signature whether or not the program calls it — a
+`Named` reference to an `Axis3`/`Frame3`/`Point3` struct that is not
+separately in scope then fails every *other* program's compilation too).
+`direction: Vector3<Float>` is safe (a `Generic` reference resolves to
+`None` silently when unresolvable, not an eager diagnostic), which is why
+direction parameters use it while position parameters use flat `Length`
+scalars instead of `Point3`.
+
+**Deliberately narrower than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s
+own signatures** in the ways `AICAD-071`'s `plate` and Stage-2's
+`transform` already established as this catalogue's own precedent:
+`extrude`/`revolve` operate on an existing solid's own face (no source-
+level `Sketch`/`Profile` construction exists yet — `cad_hir::sketch` has
+no grammar/lowering integration); `revolve`'s axis has no independent
+origin (through world origin only, like `cylinder`'s own fixed +Z axis);
+`hole` has no `ThroughAll` depth, counterbore, countersink, or thread
+metadata; `pocket` is always an axis-aligned rectangle, never an
+arbitrary profile or orientation. See `project/reports/AICAD-076.md` for
+the complete rationale and the geometry-backed tests proving each one.
 
 ### Part concept (`AICAD-071`)
 

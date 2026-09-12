@@ -268,6 +268,10 @@ fn dispatch_op<'ctx>(
             let wire_shape = shape_operand(results, id, *wire, span)?;
             kernel_op(id, span, "MakeFace", wire_shape.make_face())?
         }
+        GeometryOp::GetFace { target, face } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(id, span, "GetFace", target_shape.get_face(face.0))?
+        }
         GeometryOp::Extrude {
             profile,
             direction,
@@ -1058,6 +1062,131 @@ mod tests {
                 );
             }
             other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    /// The `hole` Safe CAD builtin (`AICAD-076`) end to end from real
+    /// `.aicad` source through a real kernel: a through-hole (with a
+    /// deliberate 1mm overshoot on the entry side, `AICAD-034`'s own
+    /// "clean through-cut" precedent) bored along +Z through a box,
+    /// verified against the closed-form removed volume. Needs
+    /// `cad_hir::geometry_types` prepended (unlike `full_source_to_
+    /// kernel_pipeline_produces_a_valid_exact_brep` above) because `hole`
+    /// takes a `Vector3<Float>` direction argument.
+    #[test]
+    fn hole_builtin_end_to_end_bores_a_clean_through_hole() {
+        let source = "\
+            fn f() -> Geometry { \
+                return hole(box(20mm, 20mm, 10mm), 5mm, 5mm, -1mm, \
+                    Vector3(x = 0.0, y = 0.0, z = 1.0), 4mm, 12mm); \
+            }";
+        let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let program = cad_hir::geometry_types::with_geometry_types(&program);
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+
+        let mut interp = cad_runtime::interp::Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        let result = interp
+            .call_by_name("f", vec![])
+            .expect("execution should succeed");
+        let cad_runtime::value::Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results =
+            dispatch_graph(interp.geometry_graph(), &ctx).expect("dispatch should succeed");
+        match &results[id.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!(shape.is_valid().unwrap(), "bored box must be a valid B-rep");
+                let volume = shape.volume().unwrap();
+                let box_volume = 0.02 * 0.02 * 0.01;
+                // The hole overshoots the box's own 10mm thickness on both
+                // ends (entry at -1mm, 12mm tall), so the box's own full
+                // 10mm thickness is bored through cleanly -- the removed
+                // volume is bounded by the box's own material extent, not
+                // the cylinder's nominal 12mm height.
+                let hole_removed_volume = std::f64::consts::PI * 0.002 * 0.002 * 0.01;
+                let expected = box_volume - hole_removed_volume;
+                assert!(
+                    (volume - expected).abs() < expected * 1e-6,
+                    "volume {volume} far from expected {expected}"
+                );
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    /// `GetFace` (`AICAD-076`) selects a real, valid, non-degenerate face
+    /// out of an already-built box -- proving the new op actually
+    /// resolves to a real kernel face `Extrude`/`Revolve` can consume as
+    /// their own `profile` operand, not just that it constructs a
+    /// well-formed graph node (`ir::tests::get_face_accepts_a_valid_
+    /// target_and_assigns_the_next_sequential_id` already covers that).
+    /// A non-cubic box's face area must be exactly one of the three
+    /// possible face areas (kernel face-enumeration order is not part of
+    /// this dispatcher's own contract, so this test does not assume which
+    /// face index 0 happens to be).
+    #[test]
+    fn get_face_selects_a_real_valid_face_with_one_of_the_expected_areas() {
+        const DX: f64 = 0.03;
+        const DY: f64 = 0.05;
+        const DZ: f64 = 0.07;
+
+        let mut graph = GeometryGraph::new();
+        let target = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(DX),
+                    dy: length(DY),
+                    dz: length(DZ),
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(face), span())
+            .unwrap();
+        let area_q = graph.push_query(GeometryQuery::Area(face), span()).unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid, "selected face must be a valid B-rep"),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        let possible_areas = [DX * DY, DY * DZ, DX * DZ];
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => assert!(
+                possible_areas
+                    .iter()
+                    .any(|expected| (*area - expected).abs() < expected * 1e-6),
+                "face area {area} did not match any expected face area {possible_areas:?}"
+            ),
+            other => panic!("expected Number, got {other:?}"),
         }
     }
 }

@@ -389,6 +389,22 @@ pub enum RuntimeError {
         field: String,
         span: Span,
     },
+    /// A `RuntimeBuiltin` Safe CAD standard function's `Axis3`/`Frame3`/
+    /// `Plane` argument (`AICAD-075A`'s `crate::spatial` conversion
+    /// boundary) evaluated to a genuinely invalid spatial *value* — a
+    /// degenerate (zero/near-zero/non-finite) direction, or an explicit
+    /// `Frame3` axis triple that is not orthonormal and right-handed.
+    /// Unlike [`RuntimeError::BuiltinArgumentShape`] (a *shape* defect a
+    /// type-checked program cannot produce), this depends on the actual
+    /// evaluated numeric components, so type-checking cannot rule it out
+    /// — `AGENTS.md`'s "reject invalid/degenerate spatial values
+    /// explicitly" surfaces as this diagnostic, distinct from the generic
+    /// shape-mismatch one.
+    InvalidSpatialArgument {
+        name: &'static str,
+        span: Span,
+        reason: crate::spatial::SpatialValueError,
+    },
 }
 
 impl RuntimeError {
@@ -429,6 +445,7 @@ impl RuntimeError {
             RuntimeError::ParamOverrideTypeMismatch { .. } => "RUNTIME-E125".to_string(),
             RuntimeError::StructConstructionArgumentShape { .. } => "RUNTIME-E126".to_string(),
             RuntimeError::UnknownField { .. } => "RUNTIME-E127".to_string(),
+            RuntimeError::InvalidSpatialArgument { .. } => "RUNTIME-E128".to_string(),
         }
     }
 
@@ -478,7 +495,8 @@ impl RuntimeError {
             | RuntimeError::CyclicParamDependency { span, .. }
             | RuntimeError::ParamOverrideTypeMismatch { span, .. }
             | RuntimeError::StructConstructionArgumentShape { span, .. }
-            | RuntimeError::UnknownField { span, .. } => *span,
+            | RuntimeError::UnknownField { span, .. }
+            | RuntimeError::InvalidSpatialArgument { span, .. } => *span,
         }
     }
 
@@ -517,6 +535,7 @@ impl RuntimeError {
                 "STRUCT_CONSTRUCTION_ARGUMENT_SHAPE_MISMATCH"
             }
             RuntimeError::UnknownField { .. } => "UNKNOWN_FIELD",
+            RuntimeError::InvalidSpatialArgument { .. } => "INVALID_SPATIAL_ARGUMENT",
         }
     }
 
@@ -619,6 +638,9 @@ impl RuntimeError {
             ),
             RuntimeError::UnknownField { field, .. } => {
                 format!("value has no field named '{field}'")
+            }
+            RuntimeError::InvalidSpatialArgument { name, reason, .. } => {
+                format!("'{name}' received an invalid spatial value: {reason}")
             }
         }
     }

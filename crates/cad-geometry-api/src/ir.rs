@@ -234,6 +234,17 @@ pub enum GeometryOp {
     WireFromEdges { edges: Vec<GeomId> },
     /// Builds a planar face bounded by a wire (`Shape::make_face`).
     MakeFace { wire: GeomId },
+    /// Selects one face of `target` by raw, epoch-bound
+    /// kernel-enumeration-order index (`Shape::get_face`), producing it
+    /// as its own new geometry value (`AICAD-076`) -- the only
+    /// source-visible way to obtain a profile for `Extrude`/`Revolve`
+    /// before source-level sketch/profile construction exists (`cad_hir::
+    /// sketch` has no grammar/lowering integration yet), mirroring
+    /// `Fillet`/`Chamfer`'s own already-established raw-index selection
+    /// precedent. Like every other `FaceIndex`/`EdgeIndex` use in this
+    /// module, this is raw and epoch-bound, never a durable semantic
+    /// reference (`AGENTS.md`: "Raw topology is ephemeral/unsafe").
+    GetFace { target: GeomId, face: FaceIndex },
     /// Extrudes a profile along a direction by a `Length` distance
     /// (`Shape::extrude`).
     Extrude {
@@ -580,6 +591,9 @@ impl GeometryGraph {
             GeometryOp::MakeFace { wire } => {
                 self.check_geometry_operand(*wire, span)?;
             }
+            GeometryOp::GetFace { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
+            }
             GeometryOp::Extrude {
                 profile, distance, ..
             } => {
@@ -819,6 +833,53 @@ mod tests {
             .push_op(GeometryOp::MakeFace { wire: a_box }, span())
             .unwrap_err();
         assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+    }
+
+    #[test]
+    fn get_face_accepts_a_valid_target_and_assigns_the_next_sequential_id() {
+        let mut graph = GeometryGraph::new();
+        let target = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert_eq!(face.index(), 1);
+    }
+
+    #[test]
+    fn get_face_rejects_an_invalid_target_operand() {
+        let mut graph = GeometryGraph::new();
+        let bogus = GeomId(9);
+        let err = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target: bogus,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            GeometryIrError::InvalidOperand {
+                referenced: bogus,
+                span: span()
+            }
+        );
     }
 
     #[test]

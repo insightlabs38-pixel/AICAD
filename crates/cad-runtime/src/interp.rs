@@ -167,7 +167,7 @@
 use crate::error::RuntimeError;
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
-use cad_geometry_api::{EdgeIndex, GeomId, GeometryOp, Quantity};
+use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryOp, Quantity};
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
     BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
@@ -175,6 +175,7 @@ use cad_hir::hir::{
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::HirType;
+use cad_kernel_api::{Axis3, Direction3, Frame3, Transform};
 use cad_types::{AffineKind, PrimitiveType};
 use cad_units::{
     ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison, check_unary_neg,
@@ -1102,13 +1103,30 @@ impl<'a> Interpreter<'a> {
     /// AICAD-source function's own parameters, per `DL-15`'s "the same
     /// ordinary ... call-expression semantics" — converts them into the
     /// `cad_geometry_api` vocabulary `cad_hir::builtins::catalogue`'s own
-    /// signature for `id` promises, and appends one node to this run's
-    /// own accumulated [`Interpreter::geometry`]. Every argument's runtime
-    /// kind was already verified against that exact signature by
+    /// signature for `id` promises, and appends one or more nodes to this
+    /// run's own accumulated [`Interpreter::geometry`], returning the
+    /// *last* pushed node as the call's own result. Every argument's
+    /// runtime kind was already verified against that exact signature by
     /// `cad_hir::typeck` before this program ever executed, so the
     /// [`RuntimeError::BuiltinArgumentShape`] path below is defensive only
     /// (this evaluator's own "trusts, but verifies" precedent), never
     /// reachable for a type-checked program.
+    ///
+    /// # Single-node vs. compound builtins (`AICAD-076`)
+    ///
+    /// `Box`/`Cylinder`/`Transform`/`Union`/`Cut`/`Intersect`/`Fillet`/
+    /// `Chamfer`/`Plate` each push exactly one [`GeometryOp`] node,
+    /// matching every builtin's own behavior before this task. `Extrude`/
+    /// `Revolve` (select a face via a new [`GeometryOp::GetFace`] node,
+    /// then extrude/revolve it) and `Hole`/`Pocket` (place a cylinder/box
+    /// tool via a [`GeometryOp::Transform`] node, then [`GeometryOp::Cut`]
+    /// it from the target) are the first *compound* builtins, each
+    /// pushing more than one node per call — a domain-meaningful name
+    /// standing in for a short, fixed sequence of already-existing ops,
+    /// exactly like [`BuiltinFnId::Plate`]'s own "no new `GeometryOp`
+    /// variant needed" precedent, just spanning more than one node this
+    /// time. This is still the one ordinary `RuntimeBuiltin` mechanism
+    /// (`DL-15`) — no second geometry-invocation path is introduced.
     fn dispatch_builtin(
         &mut self,
         id: BuiltinFnId,
@@ -1159,67 +1177,204 @@ impl<'a> Interpreter<'a> {
                 _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
             }
         };
+        // A raw face index (`AICAD-076`), the single-value analogue of
+        // `edge_indices` above — see `GeometryOp::GetFace`'s own doc
+        // comment for why raw index selection, not a new reference type.
+        let face_index = |value: &Value| -> EvalResult<FaceIndex> {
+            match value {
+                Value::Number(n) => Ok(FaceIndex(n.magnitude as usize)),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `AICAD-075A`'s `crate::spatial` conversion boundary, wrapped
+        // here so a genuinely invalid (not merely wrongly-shaped) spatial
+        // argument surfaces as its own dedicated
+        // `RuntimeError::InvalidSpatialArgument` diagnostic rather than
+        // the generic `BuiltinArgumentShape` one.
+        let spatial_direction = |value: &Value| -> EvalResult<Direction3> {
+            crate::spatial::direction3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        // Pushes one `GeometryOp` node onto this run's own accumulated
+        // `Interpreter::geometry` graph — every builtin arm below ends in
+        // one or more calls to this, per this function's own doc comment
+        // "Single-node vs. compound builtins".
+        let mut push_op = |op: GeometryOp| -> EvalResult<GeomId> {
+            self.geometry
+                .push_op(op, span)
+                .map_err(|err| RuntimeError::GeometryConstruction { err }.into())
+        };
 
-        let op = match id {
-            BuiltinFnId::Box => GeometryOp::Box {
+        let node = match id {
+            BuiltinFnId::Box => push_op(GeometryOp::Box {
                 dx: quantity(arg(0)?)?,
                 dy: quantity(arg(1)?)?,
                 dz: quantity(arg(2)?)?,
-            },
-            BuiltinFnId::Cylinder => GeometryOp::Cylinder {
+            })?,
+            BuiltinFnId::Cylinder => push_op(GeometryOp::Cylinder {
                 radius: quantity(arg(0)?)?,
                 height: quantity(arg(1)?)?,
-            },
+            })?,
             BuiltinFnId::Transform => {
                 let target = geometry(arg(0)?)?;
                 let dx = quantity(arg(1)?)?.magnitude;
                 let dy = quantity(arg(2)?)?.magnitude;
                 let dz = quantity(arg(3)?)?.magnitude;
-                GeometryOp::Transform {
+                push_op(GeometryOp::Transform {
                     target,
-                    transform: cad_kernel_api::Transform::translation(cad_kernel_api::Vector3 {
+                    transform: Transform::translation(cad_kernel_api::Vector3 {
                         x: dx,
                         y: dy,
                         z: dz,
                     }),
-                }
+                })?
             }
-            BuiltinFnId::Union => GeometryOp::Union {
+            BuiltinFnId::Union => push_op(GeometryOp::Union {
                 lhs: geometry(arg(0)?)?,
                 rhs: geometry(arg(1)?)?,
-            },
-            BuiltinFnId::Cut => GeometryOp::Cut {
+            })?,
+            BuiltinFnId::Cut => push_op(GeometryOp::Cut {
                 lhs: geometry(arg(0)?)?,
                 rhs: geometry(arg(1)?)?,
-            },
-            BuiltinFnId::Intersect => GeometryOp::Intersect {
+            })?,
+            BuiltinFnId::Intersect => push_op(GeometryOp::Intersect {
                 lhs: geometry(arg(0)?)?,
                 rhs: geometry(arg(1)?)?,
-            },
-            BuiltinFnId::Fillet => GeometryOp::Fillet {
+            })?,
+            BuiltinFnId::Fillet => push_op(GeometryOp::Fillet {
                 target: geometry(arg(0)?)?,
                 edges: edge_indices(arg(1)?)?,
                 radius: quantity(arg(2)?)?,
-            },
-            BuiltinFnId::Chamfer => GeometryOp::Chamfer {
+            })?,
+            BuiltinFnId::Chamfer => push_op(GeometryOp::Chamfer {
                 target: geometry(arg(0)?)?,
                 edges: edge_indices(arg(1)?)?,
                 distance: quantity(arg(2)?)?,
-            },
+            })?,
             // `plate` dispatches to the identical `GeometryOp::Box`
             // construction `box` itself uses — see `BuiltinFnId::Plate`'s
             // own doc comment for why no new `GeometryOp` variant exists
             // for it.
-            BuiltinFnId::Plate => GeometryOp::Box {
+            BuiltinFnId::Plate => push_op(GeometryOp::Box {
                 dx: quantity(arg(0)?)?,
                 dy: quantity(arg(1)?)?,
                 dz: quantity(arg(2)?)?,
-            },
+            })?,
+            // `extrude(target, face, direction, distance)` (`AICAD-076`):
+            // selects `target`'s own face `face` via the new
+            // `GeometryOp::GetFace`, then extrudes it — the only
+            // source-visible profile source before sketch/profile
+            // construction is wired to the language (see
+            // `GeometryOp::GetFace`'s own doc comment).
+            BuiltinFnId::Extrude => {
+                let target = geometry(arg(0)?)?;
+                let face = face_index(arg(1)?)?;
+                let direction = spatial_direction(arg(2)?)?;
+                let distance = quantity(arg(3)?)?;
+                let profile = push_op(GeometryOp::GetFace { target, face })?;
+                push_op(GeometryOp::Extrude {
+                    profile,
+                    direction,
+                    distance,
+                })?
+            }
+            // `revolve(target, face, direction, angle)` (`AICAD-076`):
+            // selects `target`'s own face `face`, then revolves it about
+            // the axis through the *world origin* along `direction` — see
+            // `cad_hir::builtins`'s own "Why no `Axis3`-typed parameter
+            // yet" note for why the axis has no independent origin today.
+            BuiltinFnId::Revolve => {
+                let target = geometry(arg(0)?)?;
+                let face = face_index(arg(1)?)?;
+                let direction = spatial_direction(arg(2)?)?;
+                let angle = quantity(arg(3)?)?;
+                let profile = push_op(GeometryOp::GetFace { target, face })?;
+                let axis = Axis3::new(cad_kernel_api::Point3::ORIGIN, direction);
+                push_op(GeometryOp::Revolve {
+                    profile,
+                    axis,
+                    angle,
+                })?
+            }
+            // `hole(target, origin_x, origin_y, origin_z, direction,
+            // diameter, depth)` (`AICAD-076`): places a `diameter`/2-radius,
+            // `depth`-tall cylinder (the same fixed +Z-axis primitive
+            // `cylinder` itself uses) along the axis through
+            // `(origin_x, origin_y, origin_z)` in `direction`, via
+            // `Frame3::from_z`/`Transform::from_frames` (`AICAD-075A`),
+            // then cuts it from `target`. The axis origin is three flat
+            // scalars, not an `Axis3` value — see `cad_hir::builtins`'s
+            // own "Why no `Axis3`-typed parameter yet" note. Deliberately
+            // narrower than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s
+            // own `hole` signature: no `ThroughAll` depth (querying
+            // `target`'s own extent along the axis to compute one is a
+            // separate, not-yet-built capability), and no counterbore/
+            // countersink/thread metadata yet — the caller picks an
+            // explicit `depth` themselves, exactly like every other
+            // Stage-2/3 Safe CAD dimension parameter.
+            BuiltinFnId::Hole => {
+                let target = geometry(arg(0)?)?;
+                let origin = cad_kernel_api::Point3::new(
+                    quantity(arg(1)?)?.magnitude,
+                    quantity(arg(2)?)?.magnitude,
+                    quantity(arg(3)?)?.magnitude,
+                );
+                let direction = spatial_direction(arg(4)?)?;
+                let diameter = quantity(arg(5)?)?;
+                let depth = quantity(arg(6)?)?;
+                let radius = Quantity::new(diameter.magnitude / 2.0, diameter.ty);
+                let cylinder = push_op(GeometryOp::Cylinder {
+                    radius,
+                    height: depth,
+                })?;
+                let placement_frame = Frame3::from_z(origin, direction);
+                let placement = Transform::from_frames(Frame3::WORLD, placement_frame);
+                let placed = push_op(GeometryOp::Transform {
+                    target: cylinder,
+                    transform: placement,
+                })?;
+                push_op(GeometryOp::Cut {
+                    lhs: target,
+                    rhs: placed,
+                })?
+            }
+            // `pocket(target, origin_x, origin_y, origin_z, width, length,
+            // depth)` (`AICAD-076`): places a `width` x `length` x `depth`
+            // box (the same corner-at-origin primitive `box`/`plate`
+            // themselves use) at `(origin_x, origin_y, origin_z)`,
+            // world-axis-aligned, then cuts it from `target` -- `plate`'s
+            // own precedent narrowed from an arbitrary profile to a
+            // rectangle applied identically here for `pocket`'s own
+            // cutting tool. Position is three flat scalars, not a `Frame3`
+            // value — see `cad_hir::builtins`'s own "Why no `Axis3`-typed
+            // parameter yet" note (which applies identically to `Frame3`).
+            BuiltinFnId::Pocket => {
+                let target = geometry(arg(0)?)?;
+                let origin_x = quantity(arg(1)?)?.magnitude;
+                let origin_y = quantity(arg(2)?)?.magnitude;
+                let origin_z = quantity(arg(3)?)?.magnitude;
+                let width = quantity(arg(4)?)?;
+                let length = quantity(arg(5)?)?;
+                let depth = quantity(arg(6)?)?;
+                let tool = push_op(GeometryOp::Box {
+                    dx: width,
+                    dy: length,
+                    dz: depth,
+                })?;
+                let placement = Transform::translation(cad_kernel_api::Vector3::new(
+                    origin_x, origin_y, origin_z,
+                ));
+                let placed = push_op(GeometryOp::Transform {
+                    target: tool,
+                    transform: placement,
+                })?;
+                push_op(GeometryOp::Cut {
+                    lhs: target,
+                    rhs: placed,
+                })?
+            }
         };
-        let node = self
-            .geometry
-            .push_op(op, span)
-            .map_err(|err| RuntimeError::GeometryConstruction { err })?;
         Ok(Value::Geometry(node))
     }
 
@@ -2122,6 +2277,10 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::Fillet => "fillet",
         BuiltinFnId::Chamfer => "chamfer",
         BuiltinFnId::Plate => "plate",
+        BuiltinFnId::Extrude => "extrude",
+        BuiltinFnId::Revolve => "revolve",
+        BuiltinFnId::Hole => "hole",
+        BuiltinFnId::Pocket => "pocket",
     }
 }
 
@@ -2212,6 +2371,39 @@ mod tests {
             "test source failed to parse: {parse_diagnostics:?}"
         );
         let program = cad_hir::prelude::with_prelude(&program);
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "test source failed to lower cleanly: {:?}",
+            lowered.diagnostics
+        );
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        assert!(
+            checked.diagnostics.is_empty(),
+            "test source failed to type-check: {:?}",
+            checked.diagnostics
+        );
+        lowered
+    }
+
+    /// Same as [`compiled`], but first prepends `cad_hir::geometry_types`
+    /// (`Point3`/`Vector3<T>`/`Axis3`/`Frame3`/`Plane`, `AICAD-070`/
+    /// `AICAD-075A`) to `source`'s own already-parsed program — used only
+    /// by the `extrude`/`revolve`/`hole`/`pocket` (`AICAD-076`) test
+    /// section below, since only those builtins reference a
+    /// `cad_hir::geometry_types` type (`Vector3<Float>`, for `direction`).
+    fn compiled_with_geometry_types(source: &str) -> LowerResult {
+        let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
+        assert!(
+            parse_diagnostics.is_empty(),
+            "test source failed to parse: {parse_diagnostics:?}"
+        );
+        let program = cad_hir::geometry_types::with_geometry_types(&program);
         let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
         assert!(
             lowered.diagnostics.is_empty(),
@@ -4137,6 +4329,192 @@ mod tests {
         let result = interp.call_by_name("wrapper", vec![]).unwrap();
         assert!(matches!(result, Value::Geometry(_)));
         assert_eq!(interp.geometry_graph().nodes().len(), 1);
+    }
+
+    // --- AICAD-076: extrude/revolve/hole/pocket ---------------------
+
+    #[test]
+    fn extrude_call_selects_a_face_then_extrudes_it() {
+        let lowered = compiled_with_geometry_types(
+            "fn f() -> Geometry { \
+                 return extrude(box(10mm, 10mm, 10mm), 0, \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 3);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Extrude {
+                profile,
+                direction,
+                distance,
+            } => {
+                assert!((distance.magnitude - 0.005).abs() < 1e-12);
+                assert_eq!(*direction, cad_kernel_api::Direction3::X);
+                match geometry_node(graph, *profile) {
+                    cad_geometry_api::GeometryOp::GetFace { target, face } => {
+                        assert_eq!(face.0, 0);
+                        assert!(matches!(
+                            geometry_node(graph, *target),
+                            cad_geometry_api::GeometryOp::Box { .. }
+                        ));
+                    }
+                    other => panic!("expected GeometryOp::GetFace, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Extrude, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn revolve_call_selects_a_face_then_revolves_about_the_world_origin_axis() {
+        let lowered = compiled_with_geometry_types(
+            "fn f() -> Geometry { \
+                 return revolve(box(10mm, 10mm, 10mm), 2, \
+                     Vector3(x = 0.0, y = 0.0, z = 1.0), 90deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 3);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Revolve {
+                profile,
+                axis,
+                angle,
+            } => {
+                assert!((angle.magnitude - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+                assert_eq!(axis.origin, cad_kernel_api::Point3::ORIGIN);
+                assert_eq!(axis.direction, cad_kernel_api::Direction3::Z);
+                match geometry_node(graph, *profile) {
+                    cad_geometry_api::GeometryOp::GetFace { target, face } => {
+                        assert_eq!(face.0, 2);
+                        assert!(matches!(
+                            geometry_node(graph, *target),
+                            cad_geometry_api::GeometryOp::Box { .. }
+                        ));
+                    }
+                    other => panic!("expected GeometryOp::GetFace, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Revolve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hole_call_builds_a_placed_cylinder_then_cuts_it_from_the_target() {
+        let lowered = compiled_with_geometry_types(
+            "fn f() -> Geometry { \
+                 return hole(box(20mm, 20mm, 10mm), 5mm, 5mm, -1mm, \
+                     Vector3(x = 0.0, y = 0.0, z = 1.0), 4mm, 12mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // box, cylinder, transform, cut.
+        assert_eq!(graph.nodes().len(), 4);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Cut { lhs, rhs } => {
+                assert!(matches!(
+                    geometry_node(graph, *lhs),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                match geometry_node(graph, *rhs) {
+                    cad_geometry_api::GeometryOp::Transform { target, transform } => {
+                        match geometry_node(graph, *target) {
+                            cad_geometry_api::GeometryOp::Cylinder { radius, height } => {
+                                assert!((radius.magnitude - 0.002).abs() < 1e-12);
+                                assert!((height.magnitude - 0.012).abs() < 1e-12);
+                            }
+                            other => panic!("expected GeometryOp::Cylinder, got {other:?}"),
+                        }
+                        // The cylinder's own local +Z-axis base point (the
+                        // world origin, before placement) must land exactly
+                        // on the requested hole origin.
+                        let placed_base = transform.apply_point(cad_kernel_api::Point3::ORIGIN);
+                        assert!((placed_base.x - 0.005).abs() < 1e-9);
+                        assert!((placed_base.y - 0.005).abs() < 1e-9);
+                        assert!((placed_base.z - (-0.001)).abs() < 1e-9);
+                        // The cylinder's own local +Z direction must land on
+                        // the requested hole direction.
+                        let placed_direction =
+                            transform.apply_direction(cad_kernel_api::Direction3::Z);
+                        assert_eq!(placed_direction, cad_kernel_api::Direction3::Z);
+                    }
+                    other => panic!("expected GeometryOp::Transform, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pocket_call_builds_a_placed_box_then_cuts_it_from_the_target() {
+        let lowered = compiled_with_geometry_types(
+            "fn f() -> Geometry { \
+                 return pocket(box(30mm, 30mm, 10mm), 5mm, 5mm, 0mm, 8mm, 6mm, 4mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // target box, tool box, transform, cut.
+        assert_eq!(graph.nodes().len(), 4);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Cut { lhs, rhs } => {
+                assert!(matches!(
+                    geometry_node(graph, *lhs),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                match geometry_node(graph, *rhs) {
+                    cad_geometry_api::GeometryOp::Transform { target, transform } => {
+                        match geometry_node(graph, *target) {
+                            cad_geometry_api::GeometryOp::Box { dx, dy, dz } => {
+                                assert!((dx.magnitude - 0.008).abs() < 1e-12);
+                                assert!((dy.magnitude - 0.006).abs() < 1e-12);
+                                assert!((dz.magnitude - 0.004).abs() < 1e-12);
+                            }
+                            other => panic!("expected GeometryOp::Box, got {other:?}"),
+                        }
+                        let placed_corner = transform.apply_point(cad_kernel_api::Point3::ORIGIN);
+                        assert!((placed_corner.x - 0.005).abs() < 1e-12);
+                        assert!((placed_corner.y - 0.005).abs() < 1e-12);
+                        assert!((placed_corner.z - 0.0).abs() < 1e-12);
+                    }
+                    other => panic!("expected GeometryOp::Transform, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_degenerate_direction_argument_is_reported_as_an_invalid_spatial_argument() {
+        let lowered = compiled_with_geometry_types(
+            "fn f() -> Geometry { \
+                 return extrude(box(10mm, 10mm, 10mm), 0, \
+                     Vector3(x = 0.0, y = 0.0, z = 0.0), 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E128");
     }
 
     #[test]
