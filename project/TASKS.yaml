@@ -1972,7 +1972,7 @@ tasks:
 - id: AICAD-066
   stage: 3
   title: Create cad-feature-graph node identity/dependency model
-  status: todo
+  status: done
   depends_on:
   - AICAD-065
   plan_references:
@@ -1999,7 +1999,7 @@ tasks:
 - id: AICAD-067
   stage: 3
   title: Build feature DAG from supported modeling operations
-  status: todo
+  status: done
   depends_on:
   - AICAD-066
   plan_references:
