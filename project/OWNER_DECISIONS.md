@@ -42,7 +42,7 @@ rationale live in `project/DECISION_LOG.md`.
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
 | D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
 | D18 Geometry-operation invocation mechanism from `.aicad` source | RESOLVED (runtime-backed standard functions) — DL-15 |
-| D19 D5 v1 comparison-profile numeric tolerance constants | PARTIALLY RESOLVED — DL-17 |
+| D19 D5 v1 comparison-profile numeric tolerance constants | RESOLVED — DL-17 + AICAD-064A |
 
 ---
 
@@ -806,14 +806,17 @@ completes, per the fixed Batch S2-11 order.
 
 ## D19. D5 v1 comparison-profile numeric tolerance constants
 
-**Status: PARTIALLY RESOLVED — see `project/DECISION_LOG.md#DL-17`.** The
-owner accepts the three directly-evidenced constants below (`linear_abs =
-0.0001 mm`, `center_of_mass_abs = linear_abs`, `volume_rel = 0.001`) as v1
-defaults now. **Still open:** `linear_rel`/`area_abs`/`area_rel`/
-`volume_abs` require `AICAD-064A`'s bounded multi-scale calibration corpus
-(Batch S3-00) before they may be set — no guessed/dimensional-analogy
-default is authorized for them. Original question/context kept below for
-record.
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-17`.** `DL-17`
+accepted three directly-evidenced constants (`linear_abs = 0.0001 mm`,
+`center_of_mass_abs = linear_abs`, `volume_rel = 0.001`) as v1 defaults,
+and authorized `AICAD-064A`'s bounded multi-scale calibration corpus to
+derive the remaining four (`linear_rel`, `area_abs`, `area_rel`,
+`volume_abs`) without a further owner ruling unless that evidence proved
+ambiguous. `project/reports/AICAD-064A.md` derived all four from clear,
+unambiguous evidence (`linear_rel = 0.0`, `area_abs = 1e-6`, `area_rel =
+1e-3`, `volume_abs = 1e-6`) — no escalation was needed; the complete v1
+profile is implemented in `crates/cad-validation::profile::
+ComparisonProfile::v1`. Original question/context kept below for record.
 
 `DECISION_LOG.md#DL-12` froze the *shape* of the D5
 comparison profile (`linear`/`area`/`volume`/`center-of-mass`, each scaled
