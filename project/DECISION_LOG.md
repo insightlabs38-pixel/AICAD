@@ -524,3 +524,344 @@ them; do not add entries here unilaterally.
   concrete comparison-profile implementation once that crate's own task is
   reached).
 - Supersedes: none (first ruling on D5).
+
+## DL-13: D16 — collection/iteration semantics (Stage-2 minimum foundation)
+
+- Date: 2026-09-10
+- Resolves: `OWNER_DECISIONS.md#D16`.
+- Decision: `for var in iterable { ... }` is core language control flow,
+  operating over values satisfying AICAD's iteration protocol. This does
+  **not** authorize a general-purpose compiler-intrinsic mechanism. Stage 2
+  supports, at minimum: `List<T>` (immutable, via a new `[e1, e2, ...]`
+  list-literal expression — elements unify to one compatible element type
+  using the existing type/unit-conversion rules, e.g. `[5mm, 2cm, 1in] ->
+  List<Length>`; incompatible dimensional elements are a type error; an
+  empty `[]` requires contextual type information or a stable
+  type-inference diagnostic is emitted); `Range<Int>`/`Range<UInt>` (via
+  new `start..end` half-open and `start..=end` inclusive range-expression
+  syntax; automatic `for` iteration is ascending by one, empty rather than
+  reversing direction when `start` is beyond the terminal bound;
+  `Range<T>` may exist for other element types, dimensional ones included,
+  but is not automatically iterable without a future explicit-stepping
+  API this decision does not build); and `Iterator<T>` as an internal/
+  runtime iteration abstraction only, never exposed as compiler magic
+  (`for` may lower to `iter`/`next`-shaped operations internally, but
+  those are implementation machinery, not new source-level intrinsics).
+  `iterable` is evaluated exactly once per `for` loop; each iteration
+  introduces a fresh immutable loop binding scoped to the loop body and
+  participates in the approved execution resource-budget accounting;
+  iteration order is deterministic (list order for `List<T>`, numeric
+  ascending order for integer ranges). Explicitly **not** authorized by
+  this decision: full `Set<T>`/`Map<K,V>` semantics, collection
+  comprehensions, arbitrary user-defined iterator protocols, async/
+  parallel iteration, implicit dimensional-range stepping, or any new
+  general compiler-intrinsic facility — all remain future work requiring
+  their own decision.
+- Rationale: Owner ruling, in direct response to `AICAD-056`'s own
+  escalation (`project/reports/AICAD-056.md`'s first session): no
+  `.aicad` source program could construct a collection/iterator value
+  under the grammar as it stood after `AICAD-045` (no array/list-literal
+  or range-operator syntax, no compiler-intrinsic-function mechanism), so
+  `for`-loop execution — named by `AICAD-056`'s own title — could not
+  proceed without either new public syntax or a new intrinsic boundary,
+  both `AGENTS.md` owner-escalation triggers. This ruling supplies the
+  minimum coherent collection/iteration model `AICAD-056` needs while
+  preserving `AGENTS.md`'s "prefer library/std-package features over new
+  compiler intrinsics" principle: `List`/`Range` are ordinary expression
+  syntax reusing the existing type/unit-conversion machinery, not a new
+  intrinsic-function boundary, and `Iterator<T>`'s `iter`/`next` shape
+  stays private lowering machinery rather than surfaced language syntax.
+- Alternatives considered: A compiler-intrinsic `range(...)`/`list(...)`
+  constructor-function boundary requiring no new expression grammar
+  (rejected by the owner — "This does NOT authorize a general-purpose
+  compiler-intrinsic mechanism," and per D9/DL-7 a new intrinsic needs an
+  RFC showing a library solution cannot work, which is circular before any
+  collection primitive exists at all); implicit direction-reversing
+  iteration when `start > end` (rejected — "iteration is empty rather than
+  implicitly reversing direction," consistent with `AGENTS.md`'s "ambiguity
+  is an error, never an arbitrary selection"); automatic dimensional-range
+  stepping (e.g. inferring a 1mm step for `Range<Length>`) (rejected — no
+  step size is defined, and inventing one would be exactly the kind of
+  silent semantic invention `AGENTS.md` forbids; left to "a future explicit
+  stepping API"); building the complete `docs/plan/02_LANGUAGE_AND_COMPILER
+  .md` §9 collection list (`Optional<T>`, `Result<T,E>`, `Generator<T>`,
+  `Graph<N,E>`) now (rejected — explicitly out of scope: "AICAD-056 does
+  not need to implement the entire future collection library").
+- Affected RFCs/tasks: `AICAD-056` (resumes with this ruling — grammar/
+  AST/lexer/parser/HIR/type-checker/runtime changes are explicitly
+  authorized "even where those components were introduced by earlier
+  Stage-2 tasks", i.e. `AICAD-039`-`045`'s frozen grammar and
+  `specs/language/grammar.ebnf`); `AICAD-057` (`Result<T,E>`/error
+  propagation — D16 does not authorize `Result<T,E>` itself, only
+  `Iterator<T>`/`List<T>`/`Range<T>`; `AICAD-057` remains its own,
+  separate scope); any later task assuming a collection/iterator value or
+  type exists should re-check this entry's explicit scope limit before
+  extending it.
+- Supersedes: none (first ruling on D16).
+
+---
+
+## DL-14: D17 — generics, data-carrying enums, and Result/Optional
+
+- Date: 2026-09-10
+- Resolves: `OWNER_DECISIONS.md#D17`.
+- Decision: `AICAD-057` must not special-case `Result<T,E>`. Stage 2 is
+  authorized to add the minimum *general* language machinery for ordinary
+  generic algebraic data types and generic functions:
+  - **Data-carrying enums.** AICAD enums support three general variant
+    forms — `Unit`, `Tuple(T1, T2)`, `Record { x: T1, y: T2 }` — as
+    ordinary language constructs, not `Result`-specific machinery.
+    Variants are constructors usable as expressions. Pattern matching
+    supports corresponding destructuring (`Unit => ...`, `Tuple(a, b) =>
+    ...`, `Record { x, y } => ...`); pattern bindings have normal lexical
+    scope and are typed from the matched variant. For nominal enum types,
+    the compiler must diagnose non-exhaustive matches unless a wildcard or
+    otherwise-exhaustive pattern is present.
+  - **Generic types.** User-defined structs and enums may declare type
+    parameters (`struct Pair<T, U> { ... }`, `enum Optional<T> { Some(T),
+    None }`, `enum Result<T, E> { Ok(T), Err(E) }`); type application uses
+    `Name<T, U>`. Generic parameters are compile-time type parameters, not
+    runtime dynamic types.
+  - **Generic functions.** Functions may declare ordinary type parameters
+    (`fn identity<T>(value: T) -> T { return value; }`). Stage 2 must
+    support ordinary call-site instantiation and type inference when type
+    parameters are determinable unambiguously from arguments/expected
+    types; explicit type arguments may also be supported if the approved
+    grammar requires them.
+  - **Scope limit.** Stage 2 does *not* need higher-kinded types, variance
+    annotations, specialization, generic metaprogramming, variadic
+    generics, dependent types, generic associated types, or Rust-style
+    lifetime parameters. Interface/trait bounds (`T: MotorMount`) may
+    remain deferred until the interface system exists, unless the Stage-2
+    coverage audit demonstrates they are required by the Stage-2 gate —
+    `project/reports/AICAD-057A.md` found no such requirement. The generic
+    foundation must be designed so bounds can be added later without
+    replacing the generic type model.
+  - **Result/Optional.** `Result<T,E>` and `Optional<T>` are ordinary
+    generic prelude/library types built using the same enum/generic
+    machinery available to user code (conceptually `enum Result<T, E> {
+    Ok(T), Err(E) }`, `enum Optional<T> { Some(T), None }`). The compiler/
+    runtime must not contain `Result`-specific semantic machinery beyond
+    ordinary prelude registration/loading. Optimized internal
+    representations are permitted provided observable language semantics
+    remain identical to ordinary generic enum values.
+  - **Result propagation.** Stage 2 does not add a `?` operator or other
+    new propagation syntax merely to complete `AICAD-057`. `Result` values
+    are propagated explicitly via ordinary `match` (`match operation() {
+    Ok(value) => ..., Err(error) => return Err(error), }`); ergonomic
+    propagation syntax requires a later, separate language decision.
+  - **`List`/`Range` cleanup.** `D16`'s `List<T>`/`Range<T>` may retain
+    optimized runtime representations, but their type-application handling
+    should use the new general generic-type machinery wherever practical
+    rather than permanently accumulating name-specific generic parsing/
+    type-resolution special cases. No general compiler-intrinsic facility
+    is authorized.
+  - **Recursion policy (clarification, not new scope).** AICAD does not
+    define 64 calls as a language-level recursion limit. The existing
+    `DEFAULT_MAX_CALL_DEPTH = 64` (`AICAD-057`,
+    `crates/cad-runtime/src/interp.rs`) is a conservative *implementation
+    safety ceiling* for the Stage-2 tree-walking evaluator, distinct from
+    any future language-level resource budget (`AICAD-058`). A user may
+    request a stricter recursion budget but may not raise execution beyond
+    the engine-safe ceiling; a native host stack overflow is never an
+    acceptable AICAD program outcome. A future runtime may support
+    substantially deeper recursion (e.g. by moving call state onto an
+    explicit interpreter/VM stack) without changing AICAD language
+    semantics; that migration is not authorized as part of this
+    remediation unless evidence shows it is necessary for the Stage-2 gate.
+  - **Fixed remediation sequence**, required before the original
+    `AICAD-057` resumes: `AICAD-057A` (Stage-2 coverage audit — this
+    entry's own trigger, `project/reports/AICAD-057A.md`) ->
+    `AICAD-057B` (generic parameter/type-application syntax plus AST/HIR
+    representation) -> `AICAD-057C` (general data-carrying enum variants,
+    constructors, destructuring patterns, nominal-enum-match exhaustiveness)
+    -> `AICAD-057D` (generic instantiation/inference/type checking for the
+    approved subset) -> `AICAD-057E` (`Result<T,E>`/`Optional<T>` via the
+    ordinary generic-enum machinery) -> `AICAD-057F` (adversarial
+    integration pass proving the machinery is general, not hard-coded for
+    `Result`) -> original `AICAD-057` -> `AICAD-058` -> the
+    `STAGE2-C_EXECUTION` checkpoint. `AICAD-059` may not begin before that
+    checkpoint passes.
+  - **Required remediation tests (minimum):** generic struct with one type
+    parameter; generic struct with two type parameters; generic enum;
+    generic function; successful inferred generic call; ambiguous generic
+    call -> diagnostic; wrong number of type arguments -> diagnostic; unit/
+    tuple/record enum variants; payload construction; tuple destructuring;
+    record destructuring; payload binding has correct type; non-exhaustive
+    enum match -> diagnostic; `Result<Int,String>`; `Result<Length,
+    SomeErrorType>`; `Optional<Length>`; explicit successful `Result`
+    match; explicit `Err` propagation through nested function calls; nested
+    generic types (`Optional<Result<Int,E>>`); a user-defined generic enum
+    whose name is not `Result`/`Optional`/`List`/`Range`, proving the
+    machinery generalizes. No `?` syntax; no general compiler-intrinsic
+    mechanism.
+- Rationale: Owner ruling, in direct response to `AICAD-057`'s own
+  escalation (`project/reports/AICAD-057.md`, `OWNER_DECISIONS.md#D17`'s
+  original text) that `Result<T,E>` construction needs either general
+  data-carrying enums + generics, a `D16`-style narrow special case, or
+  deferral. The owner judged the narrow special case (option 2) would not
+  generalize to `Optional<T>` next and would accumulate unprincipled
+  special cases in `cad_hir::typeck::resolve_type_ref`, and that deferral
+  (option 3) would leave `AICAD-057` permanently incomplete, so authorized
+  the general mechanism (option 1) instead, scoped tightly to what
+  `Result`/`Optional`/ordinary user ADTs need and explicitly excluding
+  interface bounds, higher-kinded types, and every other item `AGENTS.md`
+  would otherwise treat as scope creep. The owner additionally required a
+  Stage-2 coverage audit (`AICAD-057A`) first, since `D16`'s and `D17`'s
+  back-to-back escalations both stemmed from `project/TASKS.yaml`'s
+  Stage-2 task list never having enumerated the full general-language
+  surface `docs/plan/` assumes, and directed that the audit classify gaps
+  rather than silently widen Stage 2 to match the long-term language plan.
+- Alternatives considered: narrow `Result`-only special-casing mirroring
+  `D16`'s `List`/`Range` treatment inside `resolve_type_ref` (rejected —
+  does not generalize to `Optional<T>`, accumulates special cases,
+  contradicts "prefer library/std-package features over new compiler
+  intrinsics" once a second data-carrying type is needed); deferring
+  `Result<T,E>` for all of Stage 2 (rejected — leaves `AICAD-057`
+  permanently incomplete and blocks `AICAD-063`'s end-to-end proof from
+  ever using typed error handling); adding a `?` propagation operator now
+  (rejected — explicit non-goal, "does not add a `?` operator... merely to
+  complete AICAD-057"); rewriting the evaluator into an explicit-stack VM
+  now to raise the recursion ceiling (rejected — explicit non-goal unless
+  the Stage-2 gate needs it; tracked as future architectural work instead).
+- Affected RFCs/tasks: `AICAD-057A` (this decision's own trigger, coverage
+  audit); `AICAD-057B`/`057C`/`057D`/`057E`/`057F` (new remediation tasks,
+  added to `project/TASKS.yaml` by `AICAD-057A`); `AICAD-057` (resumes only
+  after `057B`-`057F` pass); `AICAD-058` (must keep the language resource
+  budget distinct from the engine-safety recursion ceiling this decision
+  clarifies); `AICAD-059`/`STAGE2-C_EXECUTION` checkpoint (blocked until
+  the full remediation sequence and original `AICAD-057` complete); `D16`
+  (`List<T>`/`Range<T>` type-application handling should migrate onto this
+  decision's general generic machinery where practical, per "List/Range
+  cleanup" above, without being forced to before `AICAD-057F`).
+- Supersedes: none (first ruling on D17).
+
+---
+
+## DL-15: D18 — runtime-backed standard functions and safe geometry invocation
+
+- Date: 2026-09-12
+- Resolves: `OWNER_DECISIONS.md#D18`.
+- Decision: AICAD ordinary safe geometry operations (`box(...)`,
+  `cylinder(...)`, `cut(a, b)`, `transform(body, ...)`, ...) are invoked
+  using **ordinary function-call syntax**. No new geometry-specific call
+  syntax is introduced. AICAD supports a general, non-geometry-specific
+  mechanism: **compiler/runtime-owned standard functions** whose
+  implementation is provided by the runtime rather than by an AICAD-source
+  `HirBlock`.
+  - **Function representation.** A callable function retains ordinary
+    function binding and call semantics. The HIR function representation
+    distinguishes implementation source conceptually as
+    `FunctionImplementation::Aicad(HirBlock)` vs.
+    `FunctionImplementation::RuntimeBuiltin(BuiltinFnId)` (an equivalent
+    internal representation is acceptable). No geometry-specific
+    expression form (`HirExpr::GeometryCall`, `HirExpr::GeometryIntrinsic`)
+    is authorized. Runtime-backed functions participate in the same
+    ordinary name resolution, argument checking, type checking, overload
+    rules (if/when supported), source-span diagnostics, and call-expression
+    semantics as AICAD-defined functions.
+  - **Not a compiler intrinsic.** A runtime-backed standard function is not
+    a compiler intrinsic merely because its implementation is native/
+    runtime code: it uses ordinary syntax/binding/typing/`HirExpr::Call`,
+    only its implementation differs. A construct requiring compiler-
+    specific syntax, typing, lowering, or semantic rules unavailable to
+    ordinary functions remains a compiler intrinsic, still governed by
+    `D9`/`DL-7`'s RFC requirement, unweakened by this ruling.
+  - **No arbitrary native callback facility.** Stage 2 does not expose
+    arbitrary Rust/C++ callbacks, FFI functions, native plugins, or
+    user-defined host functions. `RuntimeBuiltin` ids are a closed,
+    compiler/runtime-owned, finite mechanism — never a serialized raw
+    function pointer, and never alters the later plugin/native-extension
+    security boundary (`D12`).
+  - **Tier B (Safe CAD).** Ordinary safe CAD operations use runtime-backed
+    standard functions whose implementations construct/extend the
+    backend-independent `GeometryGraph` (`box(...)` -> `GeometryOp::Box`,
+    `cut(a, b)` -> `GeometryOp::Cut`, ...), returning the appropriate AICAD
+    geometry value referencing the resulting `GeometryGraph` node. They
+    never expose an OCCT object, a raw kernel topology pointer, persistent
+    identity from an OCCT handle, or a call path around Geometry IR; kernel
+    execution continues through the Stage-1 kernel-neutral boundary.
+  - **Tier C (unsafe geometry) stays reserved.** RFC-0002's
+    `unsafe geometry { ... }` mechanism remains reserved for raw/kernel-
+    grade topology capabilities. Ordinary `box`/`cylinder`/`cut`/... must
+    never require an `unsafe geometry` block; Tier B and Tier C stay
+    semantically distinct.
+  - **Public API is not the Geometry IR.** The public AICAD Safe CAD
+    function catalogue must **not** automatically expose every
+    `GeometryOp`/`GeometryQuery` variant one-for-one — Geometry IR is an
+    internal, backend-independent execution representation that must
+    remain free to be refactored/split/combined/extended without
+    automatically changing the language API. A deliberate source-level Safe
+    CAD API sits above Geometry IR, documented in a small,
+    version-controlled specification (`docs/API/safe-cad-api.md`).
+  - **Stage-2 surface.** Stage 2 exposes only the Safe CAD operations
+    needed to prove the Stage-2 language-to-geometry slice
+    (`AICAD-063`'s bracket proof) plus operations already unambiguously
+    supported by the approved Safe CAD design: at minimum `box`,
+    `cylinder`, `transform`, `union`, `cut`, `intersect`, `fillet`,
+    `chamfer`. `export_step`/`import_step`/`tessellate`/low-level edge-wire
+    construction/raw topology traversal/`validate`/`adopt_validated`/
+    diagnostic-kernel-inspection operations do **not** automatically become
+    Stage-2 source functions merely because a corresponding IR/runtime
+    operation exists — STEP export for the `AICAD-063` gate may remain part
+    of the build/output pipeline rather than an arbitrary source-level I/O
+    operation, avoiding accidental file-I/O/effect semantics in the
+    language. Geometry queries (`volume`/`area`/`bounding_box`/
+    `center_of_mass`/`is_valid`) may use the same runtime-backed-function
+    architecture when/if their source-visible semantics are implemented;
+    this ruling does not require all of them to become source-visible in
+    Stage 2, and if letting source control flow depend on kernel-evaluated
+    queries needs a materially different execution/evaluation model, that
+    is its own separate architecture decision, not something to fold
+    silently into `AICAD-060`.
+  - **Standard function catalogue.** Runtime-backed standard functions are
+    described by typed declarations carrying at least: name (for
+    resolution), parameter types, return type, runtime builtin identity,
+    and diagnostics. A single authoritative declaration/catalogue feeds
+    both binding/type checking and runtime dispatch where practical — the
+    type checker must not independently duplicate geometry signatures.
+  - **Prelude/module binding.** Runtime-backed functions may be made
+    available through AICAD's existing module/prelude machinery. No new
+    import syntax is authorized. For Stage 2, preserve the
+    already-approved/illustrated ordinary call style without inventing new
+    grammar.
+  - **Determinism/resource accounting.** Runtime-backed functions remain
+    subject to `D5` deterministic-execution requirements, execution-
+    resource accounting, structured diagnostics, the approved kernel
+    abstraction, and normal error propagation — they cannot bypass AICAD
+    execution budgets merely because their implementation is runtime-
+    provided.
+- Rationale: Owner ruling. AICAD needs a controlled bridge between ordinary
+  language functions and capabilities the host runtime implements; geometry
+  is the first major use of that bridge, but the mechanism must not let
+  geometry-specific semantics infect the general compiler. This design
+  preserves ordinary AICAD call semantics, a backend-independent Geometry
+  IR, and a narrow kernel boundary simultaneously, without a general
+  compiler-intrinsic facility and without collapsing Safe CAD into unsafe
+  kernel access.
+- Alternatives considered (`OWNER_DECISIONS.md#D18`'s own three options):
+  option 1 (a new `BindingKind`/geometry-specific dispatch, e.g.
+  `BindingKind::GeometryIntrinsic`) — rejected as stated, in favor of the
+  more general `FunctionImplementation::RuntimeBuiltin` shape that is not
+  geometry-specific and reuses ordinary `HirExpr::Call`/`BindingKind::Fn`
+  machinery rather than adding a new binding kind or expression form;
+  option 2 (reusing/extending RFC-0002 §4's `unsafe geometry` blocks for
+  ordinary Safe CAD operations) — rejected, exactly as `D18`'s own option-2
+  writeup warned, to keep Tier B/Tier C semantically distinct; option 3
+  (deferring language-surface invocation further) — superseded by this
+  ruling authorizing the general mechanism now, resuming `AICAD-060` from
+  its existing partial implementation rather than deferring again.
+- Affected RFCs/tasks: `AICAD-060` (resumes, implementing the general
+  `RuntimeBuiltin` mechanism plus the Stage-2 Safe CAD catalogue and source-
+  to-`GeometryGraph` path; the already-tested `GeometryGraph -> kernel`
+  dispatcher and `NumberValue -> Quantity` bridge from this task's own
+  prior session are kept, not discarded, absent a concrete defect);
+  `AICAD-061` (proceeds only after `AICAD-060` fully completes, per the
+  fixed Batch S2-11 order); `RFC-0001`/`RFC-0002` (updated only as
+  necessary to document the general runtime-backed standard-function
+  mechanism and its Tier-B/Tier-C relationship — `RuntimeBuiltin` functions
+  must never be described as compiler intrinsics); a new
+  `docs/API/safe-cad-api.md` (the small, version-controlled Safe CAD
+  source API specification this ruling requires); `D9`/`DL-7` (unweakened —
+  a genuine future compiler intrinsic still needs its own RFC).
+- Supersedes: none (first ruling on D18).

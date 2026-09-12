@@ -98,6 +98,35 @@ Kernel-specific diagnostics may still appear in a nested `backend_details`
 field for debugging (`01` §8), but such a field is never the sole
 explanation in a diagnostic surfaced to a user or agent (RFC-0005).
 
+## 3a. Safe CAD source functions and the Tier B/C relationship (DL-15)
+
+- Ordinary safe CAD source functions (`box`, `cylinder`, `cut`, ...) are
+  **runtime-backed standard functions** (RFC-0001 §6a) — an ordinary
+  callable, checked and bound exactly like an AICAD-defined function, whose
+  implementation constructs/extends a `cad_geometry_api::GeometryGraph`
+  node instead of executing a `HirBlock`. This is the Tier B ("Safe CAD")
+  mechanism itself: a Safe CAD call never exposes an OCCT object, a raw
+  kernel topology pointer, or persistent identity derived from one, and
+  never bypasses the Geometry IR to call the kernel adapter directly.
+  Kernel execution for a built `GeometryGraph` happens later, and
+  separately, through `cad_geometry_runtime::dispatch::dispatch_graph`
+  against the ordinary Stage-1 kernel-neutral boundary this RFC already
+  defines (§3) — building the graph and dispatching it into real kernel
+  calls are two distinct phases, never conflated.
+- Tier C ("Unsafe geometry," §6 below) remains reserved for raw/kernel-grade
+  topology capabilities (`unsafe geometry { ... }` blocks,
+  `validate()`/`adopt_validated()`). Ordinary Safe CAD calls (`box`,
+  `cylinder`, `cut`, `transform`, ...) must never require an `unsafe
+  geometry` block — the two tiers stay semantically distinct, exactly as
+  already frozen below.
+- The public Safe CAD source-level function catalogue is **not** a 1:1
+  mirror of `cad_geometry_api::ir::GeometryOp`/`GeometryQuery` — see
+  `docs/API/safe-cad-api.md` (the authoritative Stage-2 catalogue) and
+  `project/DECISION_LOG.md#DL-15` for the full ruling and rationale
+  (including why `export_step`/`import_step`/`tessellate`/raw topology
+  traversal/geometry queries are deliberately not exposed as Stage-2 source
+  functions merely because a corresponding internal operation exists).
+
 ## 4. Raw topology safety model (frozen, from `00` §8 and `02` §16)
 
 - `FaceRef`, `EdgeRef`, etc. (RFC-0003) are stable/semantic references that

@@ -1,0 +1,48 @@
+let y1 = if true { 1mm } else { 2mm };
+let y2 = if true { 1mm } else if false { 2mm } else { 3mm };
+
+fn loops(n: Int) -> Int {
+  var total = 0;
+  for i in 0..n {
+    if i == 0 {
+      total = total + 1;
+    } else {
+      total = total + 2;
+    }
+  }
+  while total < n {
+    total = total + 1;
+  }
+  loop {
+    if total > n {
+      break;
+    }
+    continue;
+  }
+  return total;
+}
+
+fn matches(n: Int) -> Int {
+  match n {
+    0 => {
+      let x = 1;
+    }
+    _ => {}
+  }
+  return n;
+}
+
+fn suppressed_record_literal(Foo: Bool) -> Bool {
+  if Foo {
+    return true;
+  }
+  return false;
+}
+
+fn trailing_if_is_a_statement() -> Int {
+  var x = 0;
+  let y = {
+    if true { x = 1; } else { x = 2; }
+  };
+  return x;
+}

@@ -1,0 +1,209 @@
+==================
+Let declaration with type and value
+==================
+
+let x: mm = 5mm;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    type: (identifier)
+    value: (number_literal)))
+
+==================
+Const declaration
+==================
+
+const PI = 3.14159;
+
+---
+
+(source_file
+  (const_decl
+    name: (identifier)
+    value: (number_literal)))
+
+==================
+Param declaration with default
+==================
+
+param diameter: mm = 5mm;
+
+---
+
+(source_file
+  (param_decl
+    name: (identifier)
+    type: (identifier)
+    default: (number_literal)))
+
+==================
+Generic struct declaration
+==================
+
+struct Point<T> {
+  x: T,
+  y: T,
+}
+
+---
+
+(source_file
+  (struct_decl
+    name: (identifier)
+    type_params: (type_params
+      (identifier))
+    fields: (struct_fields
+      (field
+        name: (identifier)
+        type: (identifier))
+      (field
+        name: (identifier)
+        type: (identifier)))))
+
+==================
+Enum with unit, tuple, and record variants
+==================
+
+enum Shape {
+  Empty,
+  Circle(f64),
+  Rect { w: f64, h: f64 },
+}
+
+---
+
+(source_file
+  (enum_decl
+    name: (identifier)
+    variants: (enum_variants
+      (enum_variant
+        name: (identifier))
+      (enum_variant
+        name: (identifier)
+        payload: (tuple_variant_payload
+          (identifier)))
+      (enum_variant
+        name: (identifier)
+        payload: (record_variant_payload
+          (struct_fields
+            (field
+              name: (identifier)
+              type: (identifier))
+            (field
+              name: (identifier)
+              type: (identifier))))))))
+
+==================
+Pure function with return type
+==================
+
+pure fn area(r: f64) -> f64 {
+  return r * r;
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    params: (params
+      (param
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (return_stmt
+        value: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+==================
+Generic function with type params
+==================
+
+fn identity<T>(x: T) -> T {
+  return x;
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    type_params: (type_params
+      (identifier))
+    params: (params
+      (param
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (return_stmt
+        value: (identifier)))))
+
+==================
+Part declaration with nested items
+==================
+
+part Bracket {
+  param w: mm = 10mm;
+  fn build() -> Part {
+    return box(1mm, 2mm, 3mm);
+  }
+}
+
+---
+
+(source_file
+  (part_decl
+    name: (identifier)
+    items: (param_decl
+      name: (identifier)
+      type: (identifier)
+      default: (number_literal))
+    items: (fn_decl
+      name: (identifier)
+      return_type: (identifier)
+      body: (block
+        (return_stmt
+          value: (call_expression
+            callee: (identifier)
+            args: (args
+              (number_literal)
+              (number_literal)
+              (number_literal))))))))
+
+==================
+Relative import with selective names
+==================
+
+import ./shapes::{Circle, Rect};
+
+---
+
+(source_file
+  (import_decl
+    path: (import_path
+      (relative_import_path
+        (identifier)))
+    names: (import_names
+      (identifier)
+      (identifier))))
+
+==================
+Package import path
+==================
+
+import std.fasteners;
+
+---
+
+(source_file
+  (import_decl
+    path: (import_path
+      (package_import_path
+        (identifier)
+        (identifier)))))

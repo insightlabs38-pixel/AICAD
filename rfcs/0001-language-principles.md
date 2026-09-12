@@ -155,6 +155,42 @@ See §7 for a grammar sketch illustrating these rules concretely.
   instead of a compiler intrinsic? If yes, prefer the library") and the
   `AGENTS.md` non-negotiable/escalation trigger of the same shape.
 
+## 6a. Runtime-backed standard functions are not compiler intrinsics (DL-15)
+
+- AICAD supports a general (not geometry-specific) mechanism: a callable
+  function whose implementation is provided by the runtime rather than by
+  an AICAD-source function body — a compiler/runtime-owned "standard
+  function." Conceptually, a function's implementation is either
+  `FunctionImplementation::Aicad(HirBlock)` or
+  `FunctionImplementation::RuntimeBuiltin(BuiltinFnId)` (`cad_hir::hir::
+  FunctionImplementation`/`cad_hir::builtins::BuiltinFnId`).
+- A runtime-backed standard function is called with **ordinary
+  function-call syntax**, resolves through **ordinary name binding**, and
+  is checked through the **exact same argument/return-type checking** as
+  an AICAD-defined function (`cad_hir::typeck::Checker::
+  collect_signatures`/call-checking makes no distinction between the
+  two). No new expression form (no `HirExpr::GeometryCall`/
+  `HirExpr::GeometryIntrinsic`) and no new import/declaration syntax is
+  introduced to support it.
+- **This is not a compiler intrinsic under §6.** A compiler intrinsic (§6)
+  requires new syntax, typing, lowering, or semantic rules unavailable to
+  an ordinary function; a runtime-backed standard function requires none
+  of that — only its own implementation differs. §6's RFC-gate is
+  unweakened: a genuine future intrinsic (a construct no ordinary function
+  could express) still needs its own RFC under §6.
+- `BuiltinFnId` is a closed, compiler/runtime-owned identity set — never a
+  serialized function pointer, never dynamically extensible by a package,
+  plugin, or AICAD source itself (no arbitrary native-callback facility).
+  Adding one requires a compiler-team change to the closed catalogue
+  (`cad_hir::builtins::catalogue`), the single authoritative source both
+  the type checker and the runtime dispatcher read.
+- The first, and currently only, consumer of this mechanism is the Stage-2
+  Safe CAD geometry-construction catalogue (`docs/API/safe-cad-api.md`,
+  `crates/cad-geometry-runtime`) — see RFC-0002 §3a for how this relates to
+  the kernel abstraction boundary and the Tier B/Tier C distinction.
+- Full ruling: `project/DECISION_LOG.md#DL-15` (resolving `project/
+  OWNER_DECISIONS.md#D18`).
+
 ## 7. Grammar sketch
 
 This is a Stage-0 sketch, not the formal grammar (`specs/language/grammar.ebnf`

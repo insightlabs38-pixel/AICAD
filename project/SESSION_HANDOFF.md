@@ -1,197 +1,130 @@
 # Session Handoff
 
-## Latest: Stage 2 Batch S2-01 (AICAD-038, AICAD-039, AICAD-040) complete and canonical on `branch/determined-allen-4r42gi`.
+## Latest: Batch S2-14 COMPLETE (`AICAD-064`, its own single-task batch).
 
-### IMPORTANT — branch-naming note for the next invocation
+This invocation audited the complete Stage-2 implementation
+(`AICAD-038`..`AICAD-063`, all already `status: done`) against actual
+current code and tests rather than only citing prior task reports, and
+produced `project/gates/stage-2-gate.md` — the Stage-2 owner gate packet
+— with an explicit recommendation. **Per `AGENTS.md`, this batch performed
+no new roadmap feature development**: no crate source, test, or fixture
+was touched.
 
-The active scheduled-task brief for this campaign names
-`origin/claude/aicad-stage2-dev` as "the" canonical Stage-2 branch and
-instructs each invocation to fetch/rebuild on top of it. **That branch
-does not exist in this repository** (confirmed via `git fetch origin
---prune` + `git branch -a` at the start of this session — only
-`branch/loving-feynman-*`, `branch/festive-cori-*`,
-`branch/compassionate-wright-*`, `branch/epic-archimedes-*`,
-`branch/pensive-hopper-*`, `claude/aicad-stage-0-review-9leull`,
-`claude/first-prompt-execution-kzavou`, and `main` existed). This matches
-the repository's own established Stage-0/Stage-1 convention throughout
-`project/reports/`: every prior session worked on its own harness-assigned
-randomly-named branch and merged into `main` via a PR (see the git log —
-`branch/loving-feynman-qde9m3` -> PR #2, `branch/pensive-hopper-5cbjby` ->
-PR #3, `branch/compassionate-wright-lbvrc1` -> PR #4/#5,
-`branch/festive-cori-pe2fun` -> PR #6/#7, `branch/epic-archimedes-f6d1fe`
--> PR #8) — there has never actually been one persistent
-`claude/aicad-stage2-dev`-style branch spanning multiple sessions in this
-repo's real history; `main` (via sequential merged PRs) has always been
-that persistent lineage.
+### What this invocation did
 
-This session's own harness-assigned working branch (per the outer
-"Git Development Branch Requirements"/"NEVER push to a different branch
-without explicit permission" instructions, which are session-level
-policy, not campaign-prompt text) is `branch/determined-allen-4r42gi`,
-created from `origin/main` at `09fdef5` — exactly the owner-approved
-Stage-1 commit the campaign brief itself calls for. Given the conflict
-between "create/use `origin/claude/aicad-stage2-dev`" (campaign brief) and
-"never push to a different branch than the one this session was assigned"
-(harness policy), this session treated the harness-assigned branch as
-authoritative and did **not** create `origin/claude/aicad-stage2-dev`,
-consistent with how every real prior session in this repo actually
-operated (own branch -> PR -> `main`).
+Full detail in `project/reports/AICAD-064.md`. Summary:
 
-**Recommended for the next invocation**: check whether
-`origin/claude/aicad-stage2-dev` has been created by then (e.g. by a PR
-merge or owner action). If not, and your own harness assignment gives you
-a different branch name again, treat *your own* assigned branch the same
-way this session did — base it on the latest state of Stage-2 work (either
-`origin/main` if this branch has been merged, or this branch
-`branch/determined-allen-4r42gi` directly if not yet merged — check both)
-rather than trying to independently create the campaign brief's named
-branch. Whoever has commit access to `main` should decide whether/when to
-merge `branch/determined-allen-4r42gi`.
+- Re-ran the full verification suite from clean state: `cargo fmt --all
+  -- --check` (clean), `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` (zero warnings, 27 crates), `cargo test
+  --workspace` (0 failures anywhere), `cargo test -p cad-cli --test
+  stage2_end_to_end -- --test-threads=1` (3/3, re-run serially).
+- Independently re-verified (not just cited) the two most load-bearing
+  non-negotiables for a gate audit: the kernel/Geometry-IR boundary (full
+  `Cargo.toml` dependency-graph read plus an OCCT-leakage grep across
+  `cad-geometry-api`/`cad-hir`/`cad-kernel-api`/`cad-ast`/`cad-types` —
+  structurally clean) and the "no demo-specific interpreter shortcut for
+  `AICAD-063`" requirement (`git diff --stat cf21946..7c7bc6b --
+  crates/` shows only test files changed).
+- Audited the full 27-crate workspace for Stage-3+ scope creep: the 12
+  crates with later-stage-sounding names
+  (`cad-agent-tools`/`cad-assemblies`/`cad-configurations`/
+  `cad-constraints`/`cad-feature-graph`/`cad-interchange`/`cad-lsp`/
+  `cad-packages`/`cad-provenance`/`cad-query`/`cad-references`/
+  `cad-requirements`) are all still the unmodified 6-line `AICAD-002`
+  placeholder stub; `crates/cad-compiler` (1549 lines) is legitimately
+  in-scope `AICAD-044`/`AICAD-050` work, confirmed via `git log --follow`
+  on each. No scope creep found.
+- **New this invocation: `project/OWNER_DECISIONS.md#D19`.**
+  `DECISION_LOG.md#DL-12` explicitly assigned Stage 2 to derive the D5
+  comparison-profile's concrete v1 numeric tolerance constants and named
+  `AICAD-064` as the re-audit point; no batch task had actually done this
+  (`crates/cad-validation` is still an unmodified stub). This audit
+  re-read `project/reports/AICAD-034.md`'s numeric evidence and produced
+  an evidence-supported partial recommendation (`linear_abs = 1e-4`,
+  `volume_rel = 1e-3`, both directly evidenced) while explicitly
+  escalating `linear_rel`/`area_abs`/`area_rel`/`volume_abs` as
+  unsupported by any existing evidence, per `AGENTS.md`'s "produce the
+  measurements/recommendation and escalate the constants rather than
+  guessing." **This is open, not resolved** — needs an owner ruling,
+  ideally before any future task first implements `crates/cad-validation`.
+  Non-blocking for Stage-2 exit itself.
+- `project/gates/stage-2-gate.md` recommends **PASS WITH CONDITIONS** —
+  every Stage-2 exit-gate criterion is met with independently re-verified
+  evidence; the one condition is ruling on `D19` before
+  `crates/cad-validation` work begins (not a Stage-2-exit blocker, tied to
+  `DL-12`'s own "before the Stage 8/13 determinism benchmarks mature"
+  framing).
 
-### What this session did
-
-Started from `origin/main` at `09fdef5` (PR #8 merge: Stage-1 independent
-adversarial review + context-lifetime use-after-free fix). This session's
-own work is four commits on `branch/determined-allen-4r42gi`:
-
-```
-1c3c767 AICAD-040: Implement numeric literals with engineering-unit suffix tokenization
-2b3c6fe AICAD-039: Create cad-ast and cad-lexer with token/span model
-57a31d5 AICAD-038: Create cad-diagnostics crate and JSON-schema conformance tests
-1eaac7c Record Stage-1 owner approval (DL-11) and D5 determinism policy (DL-12); advance to Stage 2
-```
-
-**Canonical-publishing status**: pushed to `origin/branch/determined-allen-4r42gi`
-with `git push -u origin branch/determined-allen-4r42gi` (see below for the
-exact command/result). Not merged into `main` — no PR was opened this
-session (the task instructions did not ask for one; per the outer
-CLAUDE.md/harness policy, do not open a PR unless explicitly asked).
-
-1. **Recorded Stage-1 owner approval and the D5 owner ruling** (the task's
-   own explicit authorization to advance to Stage 2), per
-   `project/DECISION_LOG.md#DL-11`/`#DL-12`, and advanced
-   `project/CURRENT_STAGE.md` to Stage 2 with its own goal/exit-gate/
-   allowed-work sections. `project/OWNER_DECISIONS.md` D5 marked resolved
-   (policy shape only — concrete v1 tolerance constants still need
-   deriving from Stage-1 evidence during Stage 2, per DL-12's own text;
-   not yet done).
-2. **AICAD-038** — `crates/cad-diagnostics`: `Diagnostic`/`DiagnosticCode`/
-   `Severity`/`SourceSpan`/`Suggestion` types matching RFC-0005 §3-4
-   exactly; a dependency-free canonical `json` module (parser +
-   byte-identical-where-defined serializer — no third-party crate added,
-   first such decision point in this workspace, see that task's report);
-   a narrow JSON-Schema-subset validator (`type`/`required`/`properties`/
-   `items`/`enum`, no `$ref`/`pattern`); populated
-   `specs/schemas/diagnostic.schema.json`; conformance tests including
-   RFC-0005's own worked examples and adversarial negative cases. Found
-   and fixed one validator bug (`required` wrongly applied to a `null`
-   instance under a nullable object type) during testing.
-3. **AICAD-039** — `crates/cad-ast`: `Span`/`Spanned<T>`/`LineIndex`
-   (byte offset -> 1-based line/column). `crates/cad-lexer`: a
-   hand-written scanner producing spanned tokens for the 24 keywords
-   already reserved by `specs/language/grammar.ebnf` (deliberately not
-   `expose`/`query`/`unsafe`/etc. — not part of the frozen grammar
-   artifact yet), bool literals, raw numeric text, strings/raw strings,
-   `///` doc comments, and the evidenced operator set; lexical errors as
-   `cad_diagnostics::Diagnostic`s (`PARSE-E001..E003`). AST node types
-   (`Expr`/`Stmt`/`Item`) deliberately deferred to the parser tasks
-   (`AICAD-041`+) that will actually produce them. Found and fixed one
-   real lexer bug: the raw-string (`r"..."`) prefix check ran after the
-   generic identifier-start check, so raw strings were never recognized.
-4. **AICAD-040** — extended `TokenKind::Number` with an optional
-   immediately-adjacent unit suffix (`5mm`, `12.4MPa`, `30deg`, per
-   RFC-0004 §4), fused only with zero intervening whitespace and **not**
-   validated against the unit list (deferred to the future unit registry,
-   `AICAD-048`, per RFC-0004 §4's own "may expand without a grammar
-   change"). Verified every one of RFC-0004 §4's 26 initial units
-   individually. Found and resolved (by evidence, not by arbitrary
-   choice) a real spelling collision between the `in` (inches) unit and
-   the `in` for-loop keyword — they never compete for the same token
-   because of how each can actually appear in valid source; documented
-   in-code and tested both directions.
-
-**Batch S2-01 (`AICAD-038` -> `AICAD-039` -> `AICAD-040`) is now
-complete.** Per the fixed batch order in the campaign brief, do not begin
-Batch S2-02 (`AICAD-041`) in a session that hasn't yet confirmed this
-batch is on the canonical branch it will build on.
+**Escalations filed this invocation:** `project/OWNER_DECISIONS.md#D19`
+(open, not a Stage-2 blocker — see above).
 
 ## Current state / next action
 
-- **Active stage**: Stage 2 (`project/CURRENT_STAGE.md` updated this
-  session). Stage 1 is closed (DL-11).
-- **Current/next batch**: S2-01 done. **Next is Batch S2-02**
-  (`AICAD-041` expression parser and precedence -> `AICAD-042`
-  declarations -> `AICAD-043` control-flow syntax), strictly in that
-  order, per the campaign brief's fixed batching. Do not start
-  `AICAD-044` within that batch.
-- **No partial task.** All three of this batch's tasks (038/039/040) are
-  fully implemented, tested, reported, and committed.
-- **Exact recent test status** (this session's own fresh run, see each
-  task's report for the exact commands):
-  - `cargo test -p cad-ast -p cad-lexer -p cad-diagnostics`: 7 + 27 + 20 +
-    10 = 64 tests, all passing.
-  - `cargo build --workspace --all-targets`: clean.
-  - `cargo clippy --workspace --all-targets --all-features -- -D
-    warnings`: zero warnings.
-  - `cargo fmt --all -- --check`: clean.
-  - Native `ctest`/full Stage-1 Rust suite was **not** re-run this session
-    (no native/kernel code was touched) — last confirmed green at
-    `cad4422`/`e05d791` per the Stage-1 independent review.
-- **No open regressions.** Two real bugs were found and fixed within this
-  same session (the JSON-schema-validator `required`/`null` bug and the
-  lexer's raw-string-prefix-ordering bug) — both have permanent regression
-  tests, both are described above and in their tasks' own reports.
-- **Unresolved owner decisions** (unchanged by this session except D5):
-  D3 (sketch entity/object model), D5 **partially** — policy resolved
-  (DL-12) but the concrete v1 tolerance constants are NOT yet derived
-  (Stage-2 follow-up, see below), D10 (diagnostic code/schema stability —
-  `cad-diagnostics` treats every code as provisional per RFC-0005 §7), D11
-  (constraint IR/solver independence), D12 (trusted native plugin
-  boundary), D15 (plugin runtime). None of these blocked Batch S2-01.
-- **D5 status/evidence**: `DECISION_LOG.md#DL-12` records the layered
-  Level 1-4 policy and comparison-profile *shape*. The concrete numeric
-  constants (linear/area/volume/center-of-mass absolute+relative
-  tolerances) still need to be derived from Stage-1's own evidence
-  (`project/reports/AICAD-034.md`'s closed-form-vs-OCCT agreement, the
-  fillet/chamfer bounding-box tolerance already calibrated there) — **not
-  done this session**, since Batch S2-01 was diagnostics/lexer work, not
-  `crates/cad-validation`. A future batch (S2-09's execution-determinism
-  checkpoint, or whenever `cad-validation` is first implemented) should
-  do this derivation and either add the constants directly or escalate
-  them to `project/OWNER_DECISIONS.md` per DL-12's own instruction if
-  Stage-2 evidence alone doesn't make a specific constant obvious.
-- **Pre-existing TASKS.yaml staleness noticed (not fixed, out of this
-  batch's scope)**: every Stage-0/Stage-1 task (`AICAD-001` through
-  `AICAD-037`) still shows `status: todo` in `project/TASKS.yaml` despite
-  being long complete per `project/reports/` and git history — no prior
-  session ever updated that field. This session set `status: done`
-  correctly for its own three tasks (038/039/040) but did **not** attempt
-  to retroactively fix the pre-existing 037 stale entries (out of scope
-  for a Stage-2 batch; would be a large, unrelated diff). A future
-  session should not trust `status: todo` in `project/TASKS.yaml` alone
-  as evidence a pre-038 task is incomplete — check `project/reports/` and
-  git history instead.
-- **Recommended next action**: start Batch S2-02 (`AICAD-041`) from
-  `branch/determined-allen-4r42gi`'s current head (`1c3c767`), after
-  resolving the branch-naming situation described above (check if
-  `origin/claude/aicad-stage2-dev` or a merge of this branch into `main`
-  has happened in the meantime; if not, continue on this branch or your
-  own newly-assigned one, based on whichever already carries this
-  session's Batch S2-01 commits).
+- **Active stage**: Stage 2, still `status: active` in
+  `project/CURRENT_STAGE.md` — **this invocation did NOT flip that to
+  closed.** Per `AGENTS.md` ("The agent may not approve a roadmap stage")
+  and `CURRENT_STAGE.md`'s own "Owner approval required to advance: Yes",
+  only an owner-recorded `project/DECISION_LOG.md` entry (following the
+  `DL-10`/`DL-11` pattern) closes Stage 2.
+- **Batch S2-14 is COMPLETE**: `AICAD-064` done (its own single-task
+  batch, the last in the fixed S2-01..S2-14 sequence).
+- **ALL FOURTEEN STAGE-2 BATCHES (S2-01 THROUGH S2-14) ARE NOW COMPLETE.**
+  Per the campaign brief: "When AICAD-064 completes: STOP ROADMAP
+  ADVANCEMENT. DO NOT BEGIN AICAD-065... Prepare the complete Stage-2 gate
+  packet [done, `project/gates/stage-2-gate.md`]. Then switch future
+  invocations on this branch into Stage-2 hardening mode." **THE NEXT
+  INVOCATION MUST NOT START `AICAD-065` OR ANY STAGE-3 WORK.** It should
+  operate in Stage-2 hardening mode instead: rerun full compiler/runtime
+  tests, expand parser/typechecker adversarial cases, run determinism
+  comparisons, fuzz parser/lexer inputs under bounds, audit HIR
+  invariants, audit Geometry-IR backend neutrality, reproduce the final
+  bracket, rerun STEP verification, minimize regressions, fix clear
+  internal defects. Hardening mode may NOT add Stage-3 features. A good
+  first hardening action: read `project/gates/stage-2-gate.md` §5 in
+  full and consider whether `D19`'s open sub-questions can be narrowed
+  with a small, bounded, evidence-only investigation (still not
+  implementing `crates/cad-validation` itself, which would be Stage-3+
+  feature work).
+- **Exact recent state**: `cargo fmt --all -- --check` clean; `cargo
+  clippy --workspace --all-targets --all-features -- -D warnings` clean,
+  27 crates, zero warnings; `cargo test --workspace` 0 failures anywhere
+  (~800+ tests across all crates with tests); `cargo test -p cad-cli
+  --test stage2_end_to_end -- --test-threads=1` 3/3 passing. No crate
+  source, test, or fixture changed this invocation — only
+  `project/gates/stage-2-gate.md` (new), `project/OWNER_DECISIONS.md`
+  (D19 added), `project/reports/AICAD-064.md` (new), `project/TASKS.yaml`
+  (AICAD-064 -> done), and this file.
+- **No open regressions.**
+- **Unresolved owner decisions**: `D3`, `D10`, `D11`, `D12`, `D15`
+  (pre-existing, unchanged, all explicitly Stage-3+ scope) plus the new
+  `D19` (D5 v1 tolerance constants, partially evidenced, non-blocking for
+  Stage-2 exit — see above).
+- **D5/D16/D17/D18 status**: all resolved (`DL-12`/`DL-13`/`DL-14`/
+  `DL-15`), unchanged this invocation, except that `D19` narrows a
+  specific sub-question `DL-12` left open (the concrete numeric
+  constants, not the policy shape, which stays frozen).
+- **Recommended next action**: read `project/gates/stage-2-gate.md` in
+  full, then operate in Stage-2 hardening mode per the campaign brief's
+  "WHEN AICAD-064 COMPLETES" section. Do not begin `AICAD-065`. If the
+  owner has since recorded a Stage-2 pass decision in
+  `project/DECISION_LOG.md` (check there first — this invocation did not
+  add one), that changes the situation and should be re-read against the
+  campaign brief's own Stage-3 authorization rules before proceeding.
 
 ## Environment
-Unchanged from Stage 1 (reconfirm rather than assume): Rust 1.98.1
-(`rust-toolchain.toml`), edition 2024. This session's own three crates
-(`cad-diagnostics`, `cad-ast`, `cad-lexer`) added **zero** third-party
-crate dependencies — `Cargo.lock` still has no non-`cad-*` entries as of
-this session's own commits (see AICAD-038's report for the reasoning).
-No native/OCCT work was touched this session.
+
+Unchanged from every prior Stage-2 session: Rust 1.98.1 (edition 2024,
+auto-installed via rustup this invocation with no `Cargo.toml`/toolchain
+file changes), OCCT 7.6.3, CMake 3.28.3, GCC/G++ 13.3.0, Ubuntu 24.04.4
+LTS x86_64. No new third-party dependency was added; this invocation ran
+only pre-existing `cargo`/`git` tooling.
 
 ## Git identity
-This session found no git identity configured in the environment (fresh
-container) and explicitly ran `git config user.name
-"insightlabs38-pixel"` / `git config user.email
-"insightlabs38@gmail.com"` before any commit, per `CLAUDE.md`. All four of
-this session's commits use that identity. No hook was bypassed or
-modified; `core.hooksPath` was left untouched; `--no-verify` was never
-used.
+
+Unchanged from every prior session: `core.hooksPath` (`/root/.config/git/
+aicad-hooks`) remains active and was not modified, disabled, or bypassed.
+Commits set `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/`GIT_COMMITTER_NAME`/
+`GIT_COMMITTER_EMAIL` to `insightlabs38-pixel`/`insightlabs38@gmail.com`
+as process-local environment variables for the `git commit` invocation
+only. No hook bypassed; `--no-verify` never used.

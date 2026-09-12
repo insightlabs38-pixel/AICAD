@@ -1,0 +1,176 @@
+==================
+Tuple pattern destructuring
+==================
+
+fn f(x: Result) -> Int {
+  match x {
+    Ok(v) => v,
+    Err(e) => 0,
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    params: (params
+      (param
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (match_stmt
+        scrutinee: (identifier)
+        arms: (match_arm
+          pattern: (pattern
+            (tuple_pattern
+              name: (identifier)
+              (pattern
+                (identifier))))
+          body: (identifier))
+        arms: (match_arm
+          pattern: (pattern
+            (tuple_pattern
+              name: (identifier)
+              (pattern
+                (identifier))))
+          body: (number_literal))))))
+
+==================
+Record pattern with field shorthand
+==================
+
+fn f(p: Point) -> Int {
+  match p {
+    Point { x, y } => x,
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    params: (params
+      (param
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (match_stmt
+        scrutinee: (identifier)
+        arms: (match_arm
+          pattern: (pattern
+            (record_pattern
+              name: (identifier)
+              (record_pattern_fields
+                (record_pattern_field
+                  name: (identifier))
+                (record_pattern_field
+                  name: (identifier)))))
+          body: (identifier))))))
+
+==================
+Record pattern with explicit sub-pattern
+==================
+
+fn f(p: Point) -> Int {
+  match p {
+    Point { x: a, y: b } => a,
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    params: (params
+      (param
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (match_stmt
+        scrutinee: (identifier)
+        arms: (match_arm
+          pattern: (pattern
+            (record_pattern
+              name: (identifier)
+              (record_pattern_fields
+                (record_pattern_field
+                  name: (identifier)
+                  pattern: (pattern
+                    (identifier)))
+                (record_pattern_field
+                  name: (identifier)
+                  pattern: (pattern
+                    (identifier))))))
+          body: (identifier))))))
+
+==================
+Wildcard pattern
+==================
+
+fn f(n: Int) -> Int {
+  match n {
+    _ => 0,
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    params: (params
+      (param
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (match_stmt
+        scrutinee: (identifier)
+        arms: (match_arm
+          pattern: (pattern
+            (wildcard_pattern))
+          body: (number_literal))))))
+
+==================
+Literal patterns
+==================
+
+fn f(n: Int) -> Int {
+  match n {
+    0 => 1,
+    1 => 2,
+    _ => 0,
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    params: (params
+      (param
+        name: (identifier)
+        type: (identifier)))
+    return_type: (identifier)
+    body: (block
+      (match_stmt
+        scrutinee: (identifier)
+        arms: (match_arm
+          pattern: (pattern
+            (number_literal))
+          body: (number_literal))
+        arms: (match_arm
+          pattern: (pattern
+            (number_literal))
+          body: (number_literal))
+        arms: (match_arm
+          pattern: (pattern
+            (wildcard_pattern))
+          body: (number_literal))))))

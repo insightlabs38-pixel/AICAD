@@ -1,0 +1,280 @@
+==================
+Binary operator precedence
+==================
+
+let x = 1 + 2 * 3;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (binary_expression
+      left: (number_literal)
+      right: (binary_expression
+        left: (number_literal)
+        right: (number_literal)))))
+
+==================
+Left associativity of subtraction
+==================
+
+let x = 10 - 2 - 3;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (binary_expression
+      left: (binary_expression
+        left: (number_literal)
+        right: (number_literal))
+      right: (number_literal))))
+
+==================
+Comparison and logical operators
+==================
+
+let x = a < b && c >= d || e == f;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (binary_expression
+      left: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (binary_expression
+          left: (identifier)
+          right: (identifier)))
+      right: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+==================
+Unary operators
+==================
+
+let x = -a + !b;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (binary_expression
+      left: (unary_expression
+        operand: (identifier))
+      right: (unary_expression
+        operand: (identifier)))))
+
+==================
+Range expression
+==================
+
+let r = 0..n;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (range_expression
+      start: (number_literal)
+      end: (identifier))))
+
+==================
+Inclusive range expression
+==================
+
+let r = 0..=n;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (range_expression
+      start: (number_literal)
+      end: (identifier))))
+
+==================
+Second range operator is not chainable
+==================
+
+let x = 0..5..10;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (range_expression
+      start: (number_literal)
+      (ERROR
+        (number_literal))
+      end: (number_literal))))
+
+==================
+Parenthesized expression overrides precedence
+==================
+
+let x = (1 + 2) * 3;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (binary_expression
+      left: (paren_expr
+        (binary_expression
+          left: (number_literal)
+          right: (number_literal)))
+      right: (number_literal))))
+
+==================
+Call expression with named argument
+==================
+
+let x = box(w = 1mm, 2mm, 3mm);
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (call_expression
+      callee: (identifier)
+      args: (args
+        (named_arg
+          name: (identifier)
+          value: (number_literal))
+        (number_literal)
+        (number_literal)))))
+
+==================
+Method call chaining
+==================
+
+let x = box(1mm, 2mm, 3mm).fillet(2mm).chamfer(1mm);
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (method_call_expression
+      receiver: (method_call_expression
+        receiver: (call_expression
+          callee: (identifier)
+          args: (args
+            (number_literal)
+            (number_literal)
+            (number_literal)))
+        method: (identifier)
+        args: (args
+          (number_literal)))
+      method: (identifier)
+      args: (args
+        (number_literal)))))
+
+==================
+Field access
+==================
+
+let x = shape.width;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (field_expression
+      receiver: (identifier)
+      field: (identifier))))
+
+==================
+List literal with trailing comma
+==================
+
+let xs = [1, 2, 3,];
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (list_expr
+      (number_literal)
+      (number_literal)
+      (number_literal))))
+
+==================
+Record literal construction
+==================
+
+let p = Point { x: 1.0, y: 2.0 };
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (record_literal
+      name: (identifier)
+      (record_field_inits
+        (record_field_init
+          name: (identifier)
+          value: (number_literal))
+        (record_field_init
+          name: (identifier)
+          value: (number_literal))))))
+
+==================
+Numeric literal with engineering unit suffix
+==================
+
+let x = 12.4MPa;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (number_literal)))
+
+==================
+Numeric literal with exponent
+==================
+
+let x = 1.5e-3;
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (number_literal)))
+
+==================
+Doc comment and line comment as extras
+==================
+
+/// A comment.
+// another comment
+let x = 1; /* block */
+
+---
+
+(source_file
+  (doc_comment)
+  (line_comment)
+  (let_decl
+    name: (identifier)
+    value: (number_literal))
+  (block_comment))

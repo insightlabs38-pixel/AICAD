@@ -3,15 +3,27 @@
 //! test corpus, plus (starting with the parser tasks, `AICAD-041`
 //! onward) the AICAD abstract syntax tree node types themselves.
 //!
-//! **Scope of this task (`AICAD-039`):** only the span/position model
-//! lives here so far. `cad-lexer`'s tokens (`AICAD-039`/`AICAD-040`) and
-//! the real AST node types (`Expr`, `Stmt`, `Item`, ... — `AICAD-041`
-//! through `AICAD-045`) both need a shared notion of "a range of source
-//! text", so that model is built first and shared, rather than each
-//! consumer inventing its own. Defining the AST node enums themselves
-//! before the parser that produces them exists would risk guessing their
-//! shape wrong (`AGENTS.md` "No speculative future work") — those types
-//! are added when the parser tasks that need them are reached.
+//! History: `AICAD-039` established only the span/position model.
+//! `AICAD-041` added the first real AST node types (`expr` module).
+//! `AICAD-042` added declaration/statement node types (`item` module).
+//! `AICAD-043` adds control-flow node types to both modules. `AICAD-044`
+//! adds `import_decl` node types (`item::ImportPath`/`Item::Import`).
+//! `AICAD-045` adds the pretty-printer (`printer` module,
+//! [`print_program`]) — see each module's own doc comment for its exact
+//! scope.
+
+mod expr;
+mod item;
+mod printer;
+
+pub use expr::{
+    Arg, BinaryOp, BlockExpr, ElseBranch, Expr, Literal, MatchArm, MatchArmBody, Pattern,
+    RecordPatternField, UnaryOp,
+};
+pub use item::{
+    Block, ElseClause, EnumVariant, Field, FnParam, ImportPath, Item, Program, Stmt, Type,
+};
+pub use printer::print_program;
 
 /// A half-open byte-offset range into one source file: `[start, end)`.
 ///

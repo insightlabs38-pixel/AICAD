@@ -175,6 +175,11 @@ pub enum TokenKind {
     ColonColon,
     Comma,
     Dot,
+    /// `..`, the half-open range operator (`project/OWNER_DECISIONS.md#D16`,
+    /// owner-approved for `start..end` range expressions).
+    DotDot,
+    /// `..=`, the inclusive range operator (`start..=end`).
+    DotDotEq,
     At,
 
     Eq,

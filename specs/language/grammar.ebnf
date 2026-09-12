@@ -15,7 +15,52 @@
    Stage-0 paper example) already relies on if/match in expression
    position. No new syntax is introduced beyond RFC-0001 §4's "broadly
    Rust/TypeScript-like" framing (DL-1); no open OWNER_DECISIONS.md item is
-   touched. *)
+   touched.
+
+   Patched again (`AICAD-056`) to add list_expr/range_expr, per the owner
+   ruling recorded at `project/OWNER_DECISIONS.md#D16` (positive test:
+   `crates/cad-parser`'s `list_literal_*`/`*range*` tests; negative test:
+   `range_operator_is_not_chainable`/`reports_missing_closing_bracket_in_
+   list_literal`). Both are ordinary `expression` alternatives — no new
+   statement/declaration syntax, no compiler intrinsic.
+
+   Patched again (`AICAD-057B`) to add `type_params` to `fn_decl` (and,
+   informally — this file has never formally defined `struct_decl`/
+   `enum_decl` productions at all, only referenced them from `item`,
+   above — to `struct_decl`/`enum_decl` in the same shape), per the owner
+   ruling recorded at `project/OWNER_DECISIONS.md#D17`/`project/
+   DECISION_LOG.md#DL-14` (positive test: `crates/cad-parser`'s
+   `parses_generic_struct_with_one_type_parameter`/
+   `parses_generic_struct_with_two_type_parameters`/
+   `parses_generic_enum`/`parses_generic_function`; negative test:
+   `reports_missing_closing_angle_bracket_on_type_param_list`/
+   `reports_non_identifier_in_type_param_list`). An ordinary, additive
+   optional type-parameter list on three existing declaration forms — no
+   bounds, no variance, no defaults, no new expression/statement syntax.
+
+   Patched again (`AICAD-057C`) to add the three `enum_variant` shapes
+   (`enum_decl` remains informally specified overall, per `AICAD-057B`'s
+   own note above — this only formalizes the variant list's own shape),
+   plus the first formal `pattern` production (never previously spelled
+   out anywhere in this file, only referenced from `match_arm`) and its
+   two new tuple/record destructuring alternatives, plus `record_literal`
+   as a new `or_expr` alternative — per the owner ruling recorded at
+   `project/OWNER_DECISIONS.md#D17`/`project/DECISION_LOG.md#DL-14`
+   (positive test: `crates/cad-parser`'s
+   `parses_unit_tuple_and_record_enum_variants_in_one_enum`/
+   `parses_tuple_pattern_destructuring`/
+   `parses_record_pattern_shorthand_and_explicit_fields`/
+   `parses_record_literal_construction_expression`; negative test:
+   `unclosed_tuple_variant_paren_is_reported`/
+   `record_variant_field_missing_colon_is_reported`/
+   `unclosed_tuple_pattern_paren_is_reported`). Tuple-variant construction
+   reuses the existing `call_expr` production unchanged (no new syntax
+   needed — `Ok(value)` already parses as an ordinary call; which callee
+   names are functions vs. variant constructors is a name/type-resolution
+   concern, not a grammar one). `record_literal` uses brace syntax
+   (mirroring `record_pattern`'s own shape exactly, not `call_expr`'s
+   parens) since a record variant's fields are always named, never
+   positional. *)
 
 program        = { item } ;
 item           = let_decl | const_decl | param_decl
@@ -39,18 +84,99 @@ while_stmt     = "while" , expression , block ;
 loop_stmt      = "loop" , block ;
 match_stmt     = "match" , expression , "{" , { match_arm } , "}" ;
 match_arm      = pattern , "=>" , ( expression , "," | block ) ;
+pattern        = wildcard_pattern | literal | identifier
+               | tuple_pattern | record_pattern ;
+                 (* `identifier` alone is ambiguous between "match this
+                    enum variant" and "bind a fresh name" — resolved by
+                    name binding, not the grammar (`crates/cad-compiler/
+                    src/binder.rs`'s own documented rule). *)
+wildcard_pattern
+               = "_" ;
+tuple_pattern  = identifier , "(" , [ pattern , { "," , pattern } , [","] ] , ")" ;
+                 (* `AICAD-057C`, `project/OWNER_DECISIONS.md#D17` —
+                    destructures a tuple-variant's payload positionally. *)
+record_pattern = identifier , "{" ,
+                 [ record_pattern_field , { "," , record_pattern_field } , [","] ] ,
+                 "}" ;
+                 (* `AICAD-057C`. *)
+record_pattern_field
+               = identifier , [ ":" , pattern ] ;
+                 (* bare `identifier` is shorthand for
+                    `identifier ":" identifier` (bind a name equal to the
+                    field name) — `cad-parser` desugars this at parse
+                    time, so every later phase sees one uniform shape. *)
 return_stmt    = "return" , [ expression ] , ";" ;
 break_stmt     = "break" , ";" ;
 continue_stmt  = "continue" , ";" ;
 
-fn_decl        = [ "pure" ] , "fn" , identifier , "(" , [ params ] , ")" ,
-                 [ "->" , type ] , block ;
+fn_decl        = [ "pure" ] , "fn" , identifier , [ type_params ] ,
+                 "(" , [ params ] , ")" , [ "->" , type ] , block ;
 params         = param , { "," , param } ;
 param          = identifier , ":" , type , [ "=" , expression ] ;
 
-expression     = call_expr | method_call_expr | binary_expr | literal
+type_params    = "<" , identifier , { "," , identifier } , [","] , ">" ;
+                 (* `project/OWNER_DECISIONS.md#D17`. Also accepted, in the
+                    same shape, right after the declared name of a
+                    (currently informally-specified) struct_decl/enum_decl.
+                    Each parameter is a bare identifier only — no bounds
+                    (`T: Interface`), defaults, variance, or lifetime
+                    syntax; deliberately out of Stage-2 scope per that
+                    ruling. *)
+
+enum_variant   = identifier                                     (* unit *)
+               | identifier , "(" , [ type , { "," , type } , [","] ] , ")"
+               | identifier , "{" ,
+                 [ field , { "," , field } , [","] ] , "}" ;     (* record *)
+                 (* `AICAD-057C`, `project/OWNER_DECISIONS.md#D17`/`project/
+                    DECISION_LOG.md#DL-14` — the list `enum_decl`'s own
+                    (still informally-specified overall) brace body holds.
+                    `field` reuses struct_decl's own `identifier ":" type`
+                    field shape, also informally specified. *)
+
+expression     = range_expr ;
+range_expr     = or_expr , [ ( ".." | "..=" ) , or_expr ] ;
+                 (* `project/OWNER_DECISIONS.md#D16`. Non-associative: at
+                    most one range operator per range expression — a
+                    second ".."/"..=" on either side is not part of this
+                    production (e.g. "0..5..10" is "0..5" followed by
+                    trailing tokens, a parse error), matching every worked
+                    example in the owner ruling. *)
+or_expr        = call_expr | method_call_expr | binary_expr | literal
                | identifier | "(" , expression , ")" | block_expr
-               | if_expr | match_expr ;
+               | if_expr | match_expr | list_expr | record_literal ;
+                 (* "or_expr" names this production's precedence level
+                    (lowest of the non-range alternatives, `||`), not a
+                    restriction to boolean-or expressions only — every
+                    existing `expression` alternative from before
+                    `AICAD-056` is reachable through the ordinary
+                    precedence ladder `cad-parser`'s own module doc comment
+                    documents (range -> or -> and -> equality ->
+                    relational -> additive -> multiplicative -> unary ->
+                    postfix -> primary). *)
+list_expr      = "[" , [ expression , { "," , expression } , [","] ] , "]" ;
+                 (* `project/OWNER_DECISIONS.md#D16`. Produces an immutable
+                    List<T>; element-type unification is a type-checking
+                    concern, not a grammar one (mirrors match_expr's own
+                    "used in expression position when every arm yields a
+                    value" division of labor, above). *)
+record_literal = identifier , "{" ,
+                 [ record_field_init , { "," , record_field_init } , [","] ] ,
+                 "}" ;
+                 (* `AICAD-057C`, `project/OWNER_DECISIONS.md#D17` — a
+                    record-variant constructor call; mirrors
+                    `record_pattern`'s own brace shape exactly. Whether
+                    `identifier` actually resolves to a record-shaped enum
+                    variant is a name/type-resolution concern, not a
+                    grammar one (same division of labor `call_expr`'s own
+                    callee resolution already uses). Not ambiguous with
+                    `block_expr`/`if_stmt`'s own trailing `{`: `cad-parser`
+                    suppresses this alternative while parsing an
+                    `if`/`while` condition or a `match` scrutinee, the same
+                    restriction most brace-delimited-record-literal
+                    languages need (`crates/cad-parser`'s own `Parser::
+                    no_record_literal` doc comment has the full rationale). *)
+record_field_init
+               = identifier , ":" , expression ;
 block_expr     = "{" , { statement } , [ expression ] , "}" ;
                  (* optional trailing, non-semicolon-terminated expression
                     is the block's value *)

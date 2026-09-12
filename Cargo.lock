@@ -17,14 +17,32 @@ version = "0.0.0"
 [[package]]
 name = "cad-ast"
 version = "0.0.0"
+dependencies = [
+ "cad-parser",
+]
 
 [[package]]
 name = "cad-cli"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-geometry-api",
+ "cad-geometry-runtime",
+ "cad-hir",
+ "cad-occt-bridge",
+ "cad-parser",
+ "cad-runtime",
+]
 
 [[package]]
 name = "cad-compiler"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-parser",
+]
 
 [[package]]
 name = "cad-configurations"
@@ -45,14 +63,40 @@ version = "0.0.0"
 [[package]]
 name = "cad-geometry-api"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-kernel-api",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-geometry-runtime"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-geometry-api",
+ "cad-hir",
+ "cad-kernel-api",
+ "cad-occt-bridge",
+ "cad-parser",
+ "cad-runtime",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-hir"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-parser",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-interchange"
@@ -88,6 +132,11 @@ version = "0.0.0"
 [[package]]
 name = "cad-parser"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-lexer",
+]
 
 [[package]]
 name = "cad-provenance"
@@ -108,6 +157,16 @@ version = "0.0.0"
 [[package]]
 name = "cad-runtime"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-geometry-api",
+ "cad-hir",
+ "cad-kernel-api",
+ "cad-parser",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-types"
@@ -116,6 +175,9 @@ version = "0.0.0"
 [[package]]
 name = "cad-units"
 version = "0.0.0"
+dependencies = [
+ "cad-types",
+]
 
 [[package]]
 name = "cad-validation"

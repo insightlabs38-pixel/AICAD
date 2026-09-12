@@ -39,6 +39,10 @@ rationale live in `project/DECISION_LOG.md`.
 | D13 OCCT/standards licensing | PARTIALLY RESOLVED (development policy) — DL-6 |
 | D14 File extension/branding | RESOLVED — DL-4 |
 | D15 Plugin runtime (WASM vs. external) | open |
+| D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
+| D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
+| D18 Geometry-operation invocation mechanism from `.aicad` source | RESOLVED (runtime-backed standard functions) — DL-15 |
+| D19 D5 v1 comparison-profile numeric tolerance constants | open (measurements/recommendation produced) |
 
 ---
 
@@ -411,6 +415,443 @@ before committing to one implementation.
 
 **Status:** Open; plan explicitly calls for prototyping both. Low urgency —
 relevant starting at Stage 11.
+
+---
+
+## D16. Collection/iterator construction syntax (for `for`-loop execution)
+
+**Status: RESOLVED (Stage-2 minimum foundation) — see `project/
+DECISION_LOG.md#DL-13`.** `for` operates over AICAD's iteration protocol;
+Stage 2 supports at minimum `List<T>` (new `[e1, e2, ...]` list-literal
+syntax), `Range<Int>`/`Range<UInt>` (new `start..end`/`start..=end` range
+syntax, auto-iterable ascending by one), and `Iterator<T>` as an internal/
+runtime abstraction never exposed as compiler magic — explicitly not a
+general-purpose compiler-intrinsic mechanism, and explicitly not
+authorizing `Set<T>`/`Map<K,V>`/comprehensions/user-defined iterator
+protocols/async-or-parallel iteration/implicit dimensional-range stepping.
+Original question/context kept below for record.
+
+**Question:** `AICAD-056` ("Implement loops and basic collections/
+iterators") needs to give `for var in iterable { ... }` a real runtime
+meaning, which requires at least one constructible collection/iterator
+`Value` — but no `.aicad` source program can construct one today.
+`specs/language/grammar.ebnf`'s frozen `expression` production (`call_expr
+| method_call_expr | binary_expr | literal | identifier | "(" expression
+")" | block_expr | if_expr | match_expr`) has no array/list-literal syntax
+and no range operator; `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md`'s
+own `for i in 0..count { ... }` generator example and `docs/plan/
+02_LANGUAGE_AND_COMPILER.md` §9's required `List<T>`/`Range<T>`/
+`Iterator<T>`/`Generator<T>` collections are plan-level sketches that were
+never promoted into the grammar any completed Stage-2 batch actually
+implements (`AICAD-039`-`045`'s frozen lexer/parser/grammar-checkpoint
+scope has no such production, confirmed by `project/gates/
+STAGE2-A_FRONTEND.md`). Nor does a compiler-intrinsic/builtin-function
+mechanism exist as an alternative path: `cad_hir`'s name binding only ever
+resolves user-declared `fn`/`struct`/`enum`/`let`/`const`/`param` items, so
+even a `range(a, b)`-shaped built-in constructor callable through the
+existing `call_expr` syntax would need a new kind of binding the language
+does not have yet.
+
+Three live options, none decided here:
+1. Add a range-operator expression (`a..b`, possibly `a..=b`) as new
+   grammar/AST/HIR surface syntax, with `for`/`Value` runtime support for a
+   `Range` value specifically (narrowest scope, matches the plan's own
+   `for i in 0..count` example, but is new public expression syntax).
+2. Add array/list-literal expression syntax (`[e1, e2, ...]`) plus a `List`
+   runtime value (broader — also gives `struct`/function code a way to
+   build ad hoc collections — but is new public expression syntax and a
+   real generic-type-system question for `List<T>`'s own typing).
+3. Introduce a narrow compiler-intrinsic constructor-function boundary
+   (e.g. `range`/`list` resolved specially by binding resolution rather
+   than through ordinary `fn` declarations) so no new *expression* grammar
+   is needed — but this is itself a `D9`/`DL-7`-governed decision ("a new
+   compiler intrinsic requires an RFC demonstrating it cannot reasonably be
+   ordinary source, a standard package, or an existing kernel API
+   operation") and needs its own justification for why a library solution
+   (option 1/2, once collections exist as real values) would not do.
+
+**Plan references:** `docs/plan/02_LANGUAGE_AND_COMPILER.md` §9;
+`docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` (the `0..count` generator
+example); `specs/language/grammar.ebnf` (frozen `expression` production,
+no collection-literal/range syntax); `AGENTS.md` escalation triggers
+"change public language syntax or semantics beyond an approved RFC" and
+"add a compiler intrinsic where a library solution may work"; `project/
+TASKS.yaml`'s `AICAD-056` entry lists both as its own `escalate_if`
+conditions verbatim.
+
+**Prior framing (superseded — see resolution above):** Raised by
+`AICAD-056` (`project/reports/AICAD-056.md`'s first session), which had
+implemented `while`/`loop`/`break`/`continue` without needing a collection
+value at all and left `for` reporting `RuntimeError::Unsupported` pending
+this ruling.
+
+**Blocking impact:** `AICAD-056` (resumed and completed with this ruling —
+see `project/reports/AICAD-056.md`'s second session); any later task that
+assumes a `List<T>`/`Range<T>`/`Iterator<T>` value or type exists should
+check this entry's explicit scope limit (`Set<T>`/`Map<K,V>`/
+comprehensions/user-defined iterators/dimensional stepping remain future
+work) before extending it — `AICAD-059`'s Geometry IR and `AICAD-063`'s
+end-to-end proof may need to iterate over geometry query results per
+`docs/plan/02_LANGUAGE_AND_COMPILER.md` §"All major collections should be
+iterable", which this decision's `List<T>`/`Range<T>` foundation can now
+support.
+
+---
+
+## D17. `Result<T,E>` construction syntax (data-carrying enum variants + user-defined generics)
+
+**Question:** `AICAD-057` ("Implement recursion and Result/error
+propagation") needs to give the language a real `Result<T,E>` value a
+program can construct (`Ok(value)`) and match (`Ok(x) => ...`/`Err(e) =>
+...`) — but no `.aicad` source program can do either today, for two
+independent, more fundamental reasons than `D16`'s collection-syntax gap:
+
+1. **AICAD enum variants cannot carry data at all.** `cad-ast`'s own enum-
+   declaration parser (`Parser::parse_enum_variants`) returns
+   `Vec<Spanned<String>>` — bare variant names only, confirmed by direct
+   inspection, and `cad_ast::item`'s own module doc comment independently
+   records the identical finding ("no evidence anywhere supports enum
+   variants carrying data at all"). `Result<T,E>` (`Ok(T)` / `Err(E)`) is
+   structurally a two-variant tagged union where *each variant carries a
+   payload* — a different, larger kind of enum than anything approved so
+   far (every existing AICAD enum, including the paper example's
+   `MotorType`, is unit-variants-only).
+2. **AICAD has no user-defined generic types or functions at all.**
+   `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §12's own `fn
+   mount<T: MotorMount>(...)` example is listed as a still-to-support
+   future feature, not implemented syntax — confirmed against
+   `cad-parser`'s `parse_type`/function-declaration parsing, neither of
+   which accepts a type-parameter list anywhere. `D16` special-cased
+   exactly two built-in generic names (`List`, `Range`) inside
+   `cad_hir::typeck::resolve_type_ref` specifically *because* no general
+   generic-type system exists — `Result<T,E>` as a *user-visible, fully
+   general* two-parameter generic type is a different, larger question
+   `D16` explicitly did not answer (see that entry's own "Blocking
+   impact": "`AICAD-057` remains its own, separate scope").
+
+Both are `AGENTS.md` owner-escalation triggers in their own right
+("change public language syntax or semantics beyond an approved RFC" for
+new enum-variant-payload/generic-type-parameter grammar; "select between
+major unresolved architecture alternatives" for how generics/data-carrying
+enums should work at all), and both are listed verbatim as `AICAD-057`'s
+own `project/TASKS.yaml` `escalate_if` conditions.
+
+**What `AICAD-057` implemented without needing this ruling:** recursion
+(self- and mutual-recursive function calls, already expressible via
+ordinary function-call syntax with no new grammar) and error propagation
+through the call stack (a `RuntimeError` raised at any depth, through any
+control-flow construct, correctly unwinds to the top as one diagnostic,
+never silently swallowed) — both real WP-04 execution-layer requirements
+with zero syntax gap, plus a new recursion-depth budget
+(`RuntimeError::RecursionLimitExceeded`) satisfying `AGENTS.md`'s
+"Recursion... must fail with structured diagnostics rather than crashing
+the host process" (a *native Rust stack overflow* was actually reproduced
+during this task's own testing at a surprisingly shallow depth in this
+crate's debug-build environment — see `project/reports/AICAD-057.md` and
+`crates/cad-runtime/src/interp.rs`'s own `DEFAULT_MAX_CALL_DEPTH` doc
+comment for the exact empirical finding). See that report for the full
+scope split.
+
+Live options for `Result<T,E>` itself, none decided here:
+1. Add general data-carrying enum-variant syntax (`enum Name { Variant(T),
+   ... }`) plus general user-defined generic type parameters (`enum
+   Result<T,E> { Ok(T), Err(E) }`, `fn f<T>(...)`), then define `Result<T,
+   E>` as an ordinary standard-library enum built from those two features
+   — broadest, most general-purpose, but the largest new-syntax surface
+   (touches declaration grammar, typed HIR, pattern matching, and the type
+   checker's whole nominal-type story at once).
+2. Special-case `Result<T,E>`/`Ok`/`Err` narrowly (mirroring `D16`'s own
+   `List`/`Range` special-casing inside `resolve_type_ref`) without
+   general user-defined generics or general data-carrying enums — smaller
+   surface, but does not generalize to any other future data-carrying type
+   (`Optional<T>` next, from the same §9 collection list) without
+   repeating the same special-case exercise.
+3. Defer `Result<T,E>` entirely for Stage 2 and scope `AICAD-057` to
+   recursion + call-stack error propagation only (already implemented,
+   see above) — `Result<T,E>` becomes explicit future work, tracked here
+   rather than silently dropped.
+
+**Plan references:** `docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §9
+(`Result<T,E>` in the required-collections list), §12 (`fn mount<T:
+MotorMount>` generics example, unimplemented); `docs/plan/
+04_HIGH_LEVEL_MODELING_API.md` ("`try_*` forms can expose `Result<T,E>`
+explicitly" — a future high-level API detail, not concrete syntax);
+`cad_ast::item`'s own module doc comment (unit-only enum variants);
+`AGENTS.md` escalation triggers "change public language syntax or
+semantics beyond an approved RFC" and "select between major unresolved
+architecture alternatives"; `project/TASKS.yaml`'s `AICAD-057` entry
+lists both as its own `escalate_if` conditions verbatim.
+
+**Status: RESOLVED (option 1 — general generics + general data-carrying
+enums) — see `project/DECISION_LOG.md#DL-14`.** The owner selected option 1
+above, not the narrow `D16`-style special case (option 2) or deferral
+(option 3): Stage 2 adds the minimum *general* language machinery for
+ordinary generic algebraic data types and generic functions (type
+parameters on `struct`/`enum`/`fn` declarations, `Name<T,U>` type
+application at declaration sites, tuple/record enum-variant payloads,
+corresponding destructuring patterns, nominal-enum match-exhaustiveness
+checking, and call-site generic instantiation/inference for the approved
+subset), and `Result<T,E>`/`Optional<T>` are then defined as ordinary
+prelude enums built from that machinery — no `Result`-specific compiler
+semantics beyond ordinary prelude registration. Higher-kinded types,
+variance, specialization, generic metaprogramming, variadic generics,
+dependent types, generic associated types, and lifetime parameters remain
+out of scope; interface/trait bounds (`T: MotorMount`) remain deferred
+until the interface system exists, unless a later Stage-2 coverage-audit
+finding shows otherwise (`project/reports/AICAD-057A.md` found no such
+requirement). No `?`-operator or other new propagation syntax is
+authorized — `Result` values are propagated with ordinary `match` for now.
+See `project/DECISION_LOG.md#DL-14` for the full ruling text and the fixed
+remediation task sequence (`AICAD-057A`..`AICAD-057F`) it prescribes before
+the original `AICAD-057` resumes.
+
+**Blocking impact:** Resolved; implementation proceeds via
+`AICAD-057B`(generics syntax/AST/HIR) -> `AICAD-057C` (data-carrying enums/
+patterns/exhaustiveness) -> `AICAD-057D` (generic instantiation/inference)
+-> `AICAD-057E` (`Result<T,E>`/`Optional<T>` as ordinary prelude generics)
+-> `AICAD-057F` (adversarial generality proof) -> original `AICAD-057`
+resumes -> `AICAD-058` -> the `STAGE2-C_EXECUTION` checkpoint, in that fixed
+order (`project/TASKS.yaml`, `project/SESSION_HANDOFF.md`).
+
+---
+
+## D18. Geometry-operation invocation mechanism from `.aicad` source
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-15`.** Ordinary safe
+geometry operations use ordinary function-call syntax, backed by a general
+(not geometry-specific) compiler/runtime-owned "standard function"
+mechanism — `FunctionImplementation::Aicad(HirBlock)` vs.
+`FunctionImplementation::RuntimeBuiltin(BuiltinFnId)` — participating in
+the same ordinary binding/typing/call-expression semantics as
+AICAD-defined functions, explicitly not a compiler intrinsic and not an
+arbitrary native-callback facility. A deliberate, documented Safe CAD
+source API sits above Geometry IR (not a 1:1 exposure of every
+`GeometryOp`/`GeometryQuery` variant). Original question/context kept below
+for record.
+
+**Question:** `AICAD-060` ("Implement HIR/runtime geometry dispatch into
+Geometry IR/kernel API") needs to give a running `.aicad` program a way to
+actually *invoke* a geometry operation (`box(...)`, `cylinder(...)`,
+`cut(...)`, `fillet(...)`, ...) so that evaluating an ordinary expression
+builds `cad_geometry_api::GeometryGraph` nodes — but today, for the same
+structural reason `D16`/`D17` each found before it, no `.aicad` source
+program can do this at all, and this task's own coverage audit (below)
+found no existing extension point.
+
+**What this task's own audit found (see
+`project/reports/AICAD-060.md` for the full research trail):**
+
+1. `cad_runtime::interp::Interpreter::call` dispatches exactly two callee
+   kinds today: `BindingKind::Fn` (looks up the callee's own
+   `HirItem::Fn { body: HirBlock, .. }` and executes that body via
+   `run_fn_body`/`exec_block`) and `BindingKind::EnumVariant` (constructs a
+   `Value::EnumVariant` directly, no HIR body at all). `HirItem::Fn::body`
+   is a mandatory `HirBlock` field — there is no variant, no `BindingKind`,
+   and no field anywhere that lets a function's implementation be "a Rust
+   callback" instead of real AICAD-source-derived HIR. Confirmed by direct
+   inspection of `cad-hir`'s `hir.rs`/`ids.rs` and `cad-runtime`'s
+   `interp.rs`; grepping the whole workspace for
+   `Builtin|NativeFn|intrinsic|host_fn` (excluding the English word
+   "intrinsically" in one doc comment) returns nothing structural.
+2. The existing precedent for "a compiler-builtin construct with no
+   user-visible source declaration" (`D16`'s `List<T>`/`Range<T>`) lives
+   entirely at the *type-checker/HIR-node* level
+   (`cad_hir::typeck::CheckedType::List`/`CheckedType::Range`,
+   `HirExpr::ListLiteral`/`HirExpr::Range`) — it special-cases new
+   *expression syntax*, not a *callable name*. There is no analogous
+   precedent for a function whose implementation is not an AICAD-source
+   `HirBlock`; `BindingKind::EnumVariant`'s own special-casing in
+   `Interpreter::call` is the closest thing (a callee dispatched without
+   running a `HirBlock`), but it is enum-construction-specific, not a
+   general mechanism.
+3. RFC-0002 §4 already froze a *raw/unsafe* topology-handle mechanism
+   (`unsafe geometry { ... }` blocks, `validate()`/`adopt_validated()`) for
+   Tier-C direct kernel-grade access, but that is explicitly the *unsafe*
+   tier (RFC-0002 §6's Capability Tiers table) — collapsing ordinary
+   Tier-B "Safe CAD" operations like `box(...)`/`cylinder(...)` onto that
+   mechanism would erase the Tier B/C distinction the same RFC freezes, and
+   `docs/plan/02_LANGUAGE_AND_COMPILER.md`'s own illustrative examples
+   (`let body = box(...);`, `cut(working, hole)`) show ordinary call syntax
+   with no `unsafe geometry` wrapper at all.
+4. No `docs/plan/` document defines an authoritative builtin-function name/
+   signature catalogue (`box`, `cylinder`, `extrude`, ...) — only
+   illustrative example syntax. `AICAD-060`'s author must derive the exact
+   surface from `cad_geometry_api::ir::GeometryOp`/`GeometryQuery`'s own
+   variant set, which is itself only Stage-2-authorized IR shape, not a
+   frozen language-surface spec.
+
+This is squarely both `AGENTS.md` escalation triggers `AICAD-060`'s own
+`project/TASKS.yaml` entry lists verbatim ("public syntax/semantics must
+change beyond an approved RFC" and "an unresolved architecture alternative
+must be selected") for the same reason `D16`/`D17` each were: giving a
+program a way to invoke a geometry operation requires *some* new
+binding/dispatch mechanism `cad-hir`/`cad-runtime` do not have today, and
+more than one shape for that mechanism is defensible.
+
+**Live options, none decided here:**
+
+1. **A new `BindingKind` dispatched specially at the call site**, mirroring
+   `BindingKind::EnumVariant`'s own existing precedent exactly: add e.g.
+   `BindingKind::GeometryIntrinsic(GeometryIntrinsicOp)` (or similar), have
+   a prelude-like mechanism (extending `cad_hir::prelude`'s existing
+   `with_prelude` pattern, currently type-only for `Result`/`Optional`)
+   pre-populate global scope with names mapping 1:1 onto every
+   `GeometryOp`/`GeometryQuery` variant (`box`, `cylinder`, `extrude`,
+   `revolve`, `sweep`, `loft`, `union`, `cut`, `intersect`, `fillet`,
+   `chamfer`, `shell`, `offset`, `transform`, `import_step`, `line_edge`,
+   `circle_wire`, `wire_from_edges`, `make_face`, `is_valid`, `volume`,
+   `area`, `bounding_box`, `center_of_mass`, `validate`, `tessellate`,
+   `export_step`), and dispatch each specially in `Interpreter::call`
+   without ever running a `HirBlock` for it. Broadest and most direct match
+   to `cad-geometry-api`'s already-frozen IR surface; requires an RFC-0001
+   §6/RFC-0002 amendment documenting why this is "a kernel API operation
+   exposed through existing language mechanisms" (DL-7's own carve-out,
+   since every one of these names maps 1:1 onto an already-RFC-0002-frozen
+   Stage-1 kernel capability) rather than a from-scratch intrinsic needing
+   its own per-operation RFC.
+2. **Reuse/extend RFC-0002 §4's already-frozen `unsafe geometry { ... }`
+   mechanism** for ordinary geometry construction too, rather than adding a
+   second mechanism. Smaller surface (no new binding kind), but blurs the
+   Tier B ("Safe CAD", validated operations) / Tier C ("Unsafe geometry",
+   raw topology, requires explicit `validate()`/`adopt_validated()`)
+   distinction RFC-0002 §6 already froze for a different purpose — every
+   ordinary `box(...)`/`cut(...)` call would need to run inside an
+   `unsafe` block and be explicitly validated back out, which
+   `docs/plan/02_LANGUAGE_AND_COMPILER.md`'s own example syntax does not
+   show and which would make routine modeling code visually and
+   semantically "unsafe" for no safety reason (a freshly-constructed,
+   already-kernel-validated `Box`/`Cylinder` is never raw/stale topology in
+   the sense §4 protects against).
+3. **Defer language-surface invocation for this task**, scoping
+   `AICAD-060` down to exactly what this session implemented: the
+   `GeometryGraph -> kernel` dispatcher (`crates/cad-geometry-runtime::
+   dispatch`) plus the `NumberValue -> Quantity` conversion helper
+   (`crates/cad-geometry-runtime::bridge`), both fully tested against a
+   real `OcctContext`, with "wire this into actual `.aicad` call syntax"
+   left as explicit follow-up work once this ruling lands — mirrors `D16`/
+   `D17`'s own precedent of leaving the *introducing* task (`AICAD-056`/
+   `AICAD-057`) blocked rather than silently inventing a mechanism.
+   `AICAD-063`'s own end-to-end gate ("no demo-specific interpreter
+   shortcut... `.aicad` source -> ... -> Geometry IR -> Stage-1 kernel
+   API") cannot pass without *some* ruling on this question eventually, so
+   this option only postpones the decision, it does not remove the need
+   for one.
+
+**What this task implemented without needing this ruling:** the complete
+`GeometryGraph -> kernel` dispatch executor (`crates/cad-geometry-runtime::
+dispatch::dispatch_graph`, covering every `GeometryOp`/`GeometryQuery`
+variant, with `EdgeIndex`/`FaceIndex` resolved to real edge/face `Shape`s at
+dispatch time per `AGENTS.md`'s raw-topology-is-ephemeral rule) and the
+`NumberValue -> Quantity` bridge (`crates/cad-geometry-runtime::bridge`) — a
+direct field-copy conversion, since both types already store a canonical-
+unit magnitude plus `cad_units::OperandType` by independent design on each
+side. Both are proven against a real `cad_occt_bridge::OcctContext` with
+exact B-rep validity/closed-form volume/bounding-box/center-of-mass/STEP-
+export-and-reimport evidence (never a render-only check), not merely unit
+tests of data conversion. See `project/reports/AICAD-060.md`.
+
+**Plan references:** `docs/plan/02_LANGUAGE_AND_COMPILER.md` (illustrative
+`box(...)`/`cut(...)` example syntax, no frozen builtin catalogue);
+`rfcs/0001-language-principles.md` §6 (DL-7, compiler intrinsics require an
+RFC); `rfcs/0002-geometry-runtime-kernel-abstraction.md` §4 (raw topology/
+`unsafe geometry` blocks), §6 (capability tiers); `cad_hir::prelude`'s own
+module doc comment (the existing type-only prelude mechanism); `AGENTS.md`
+escalation triggers "change public language syntax or semantics beyond an
+approved RFC" and "select between major unresolved architecture
+alternatives"; `project/TASKS.yaml`'s `AICAD-060` entry lists both verbatim
+as its own `escalate_if` conditions.
+
+**Blocking impact:** Resolved; `AICAD-060` resumes from its existing
+partial implementation (the already-tested `GeometryGraph -> kernel`
+dispatcher and `NumberValue -> Quantity` bridge are kept, not discarded)
+and implements the general `RuntimeBuiltin` mechanism plus the Stage-2 Safe
+CAD catalogue (`docs/API/safe-cad-api.md`) and source-to-`GeometryGraph`
+path per `DL-15`. `AICAD-061` proceeds only after `AICAD-060` fully
+completes, per the fixed Batch S2-11 order.
+
+---
+
+## D19. D5 v1 comparison-profile numeric tolerance constants
+
+**Status: open — measurements/recommendation produced, owner ruling
+requested.** `DECISION_LOG.md#DL-12` froze the *shape* of the D5
+comparison profile (`linear`/`area`/`volume`/`center-of-mass`, each scaled
+by characteristic linear scale `S`) but explicitly left the concrete v1
+numeric constants unfixed, assigning Stage 2 to "derive and document them
+from actual Stage-1 evidence ... and escalate the derived constants ...
+for ruling if Stage-2 evidence alone does not make a specific constant
+obvious," and named `AICAD-064` as the task that "must re-audit D5
+evidence." No Stage-2 task (`AICAD-038`..`AICAD-063`) implemented
+`crates/cad-validation`'s comparison-profile module or otherwise derived
+these constants; the crate remains the unmodified `AICAD-002` placeholder
+stub. This audit (`AICAD-064`) produces the measurements below rather than
+leaving the gap unaddressed, per `AGENTS.md`'s "produce the measurements/
+recommendation and escalate the constants rather than guessing."
+
+**Evidence (`project/reports/AICAD-034.md`, Stage-1 bracket, characteristic
+scale `S ≈ 80` mm):**
+- Pre-fillet/chamfer bounding box matched the closed-form
+  `(0,0,0)`–`(80,60,60)` corners to `~1.5e-7`. After fillet/chamfer, OCCT's
+  own curve-approximation widened this to `~1e-6`, empirically observed
+  identically (bit-for-bit) across 5 repeated runs — a genuine kernel
+  numerical-noise floor, not flakiness.
+- The bounding-box assertion used a `1e-4` absolute tolerance (two orders
+  of magnitude above the observed `~1e-6` noise floor) specifically
+  because it is a fillet/chamfer-affected quantity; the center-of-mass
+  symmetry check and edge-selection logic (quantities never run through
+  fillet/chamfer curve-fitting) instead used `1e-6`.
+- Closed-form volume (`88000 − 2010.62 + 274.69 − 160 ≈ 86104.07`) matched
+  the kernel-computed volume to within a `0.1%` (`1e-3`) relative
+  tolerance on every run.
+- Separately, `project/reports/AICAD-063.md`'s Stage-2 mounting-plate
+  fixture (deliberately non-self-overlapping geometry) matched its
+  closed-form volume to `~13` significant figures — far tighter than
+  `1e-3`, but not independent evidence for a *general* constant since that
+  fixture has no boolean-overlap or fillet/chamfer curve-fitting error
+  source to bound.
+
+**Recommended v1 constants, evidence-supported only:**
+- `linear_abs = 1e-4` (length units matching `S`, e.g. mm) — directly
+  evidenced (bounding-box tolerance, calibrated to `~100x` the observed
+  noise floor).
+- `volume_rel = 1e-3` — directly evidenced (closed-form-vs-kernel volume
+  agreement, used consistently and successfully across every Stage-1
+  boolean/fillet/chamfer combination tested).
+- `center-of-mass` linear tolerance = `linear_abs` (`1e-4`) for the
+  *general* profile. Note this is looser than the `1e-6` Stage-1 used for
+  its own mirror-symmetry invariant — that `1e-6` figure is a
+  fillet/chamfer-uninvolved quantity's much stronger *test-specific*
+  invariant, not evidence for the general cross-comparison constant.
+
+**Explicitly NOT evidence-supported — escalated rather than guessed:**
+- `linear_rel`: no Stage-1 evidence exercised a part at a different
+  characteristic scale, so no relative-term behavior was ever observed;
+  Stage 1/2 fixtures are all tens-of-mm scale. Recommend the owner either
+  set `linear_rel = 0` (pure absolute floor) until a multi-scale fixture
+  produces real evidence, or set a conservative placeholder (e.g. `1e-6`)
+  explicitly labeled provisional.
+- `area_abs`/`area_rel`: no report measured an area comparison directly
+  (only volume/bounding-box/center-of-mass were checked). A dimensional-
+  analogy guess (e.g. `area_rel ≈ volume_rel`) would be exactly the kind
+  of unsupported guess `AGENTS.md` prohibits; recommend either deferring
+  area constants until a fixture measures them, or an explicit owner
+  placeholder ruling.
+- `volume_abs`: no fixture ever compared a near-zero volume, so no floor
+  value has evidence either way.
+
+**Plan references:** `DECISION_LOG.md#DL-12` (D5 v1 policy, assigns this
+derivation to Stage 2 and names `AICAD-064` as the re-audit point);
+`project/reports/AICAD-034.md` (source of all cited measurements);
+`crates/cad-validation` (owns the eventual comparison-profile
+implementation once a task is assigned to it — none has been yet).
+
+**Blocking impact:** Non-blocking for the Stage-2 exit gate itself (no
+`AICAD-038`..`AICAD-063` acceptance criterion required these constants to
+exist), but `DECISION_LOG.md#DL-12` ties it to "before the Stage 8/13
+determinism benchmarks mature." Recommend the owner rule on this before
+`crates/cad-validation` is first implemented (a Stage-3-or-later task),
+so that task starts from owner-approved constants rather than picking its
+own.
 
 ---
 

@@ -371,8 +371,20 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_punctuation(&mut self) -> Option<TokenKind> {
+        // Three-char operators are checked first (maximal munch): `..=`
+        // must not be tokenized as `..` followed by a separate `=`.
+        if let (Some('.'), Some('.'), Some('=')) =
+            (self.peek_char(), self.peek_at(1), self.peek_at(2))
+        {
+            self.bump();
+            self.bump();
+            self.bump();
+            return Some(TokenKind::DotDotEq);
+        }
+
         let two: Option<(char, char)> = self.peek_char().zip(self.peek_at(1));
         let kind = match two {
+            Some(('.', '.')) => Some(TokenKind::DotDot),
             Some(('-', '>')) => Some(TokenKind::Arrow),
             Some(('=', '>')) => Some(TokenKind::FatArrow),
             Some((':', ':')) => Some(TokenKind::ColonColon),
@@ -551,6 +563,34 @@ mod tests {
                 TokenKind::TildeEq,
                 TokenKind::Eof,
             ]
+        );
+    }
+
+    #[test]
+    fn lexes_range_operators() {
+        // `project/OWNER_DECISIONS.md#D16`.
+        assert_eq!(
+            kinds("0..count 0..=10"),
+            vec![
+                num("0"),
+                TokenKind::DotDot,
+                TokenKind::Ident("count".to_string()),
+                num("0"),
+                TokenKind::DotDotEq,
+                num("10"),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn range_operator_does_not_confuse_number_decimal_point_scanning() {
+        // "5.5..10.5": the lexer must scan "5.5" and "10.5" as whole
+        // numbers (each dot followed by a digit), then ".." as one
+        // separate token — not "5", ".", "5..10", ".", "5".
+        assert_eq!(
+            kinds("5.5..10.5"),
+            vec![num("5.5"), TokenKind::DotDot, num("10.5"), TokenKind::Eof]
         );
     }
 

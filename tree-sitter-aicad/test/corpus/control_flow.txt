@@ -1,0 +1,286 @@
+==================
+If expression as a value
+==================
+
+let y = if a { 1mm } else { 2mm };
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (if_expr
+      condition: (identifier)
+      consequence: (block_expr
+        trailing: (number_literal))
+      alternative: (block_expr
+        trailing: (number_literal)))))
+
+==================
+If/else if/else expression chain
+==================
+
+let y = if a { 1mm } else if b { 2mm } else { 3mm };
+
+---
+
+(source_file
+  (let_decl
+    name: (identifier)
+    value: (if_expr
+      condition: (identifier)
+      consequence: (block_expr
+        trailing: (number_literal))
+      alternative: (if_expr
+        condition: (identifier)
+        consequence: (block_expr
+          trailing: (number_literal))
+        alternative: (block_expr
+          trailing: (number_literal))))))
+
+==================
+For loop over range
+==================
+
+fn f() {
+  for i in 0..10 {
+    let x = i;
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (for_stmt
+        variable: (identifier)
+        iterable: (range_expression
+          start: (number_literal)
+          end: (number_literal))
+        body: (block
+          (let_stmt
+            name: (identifier)
+            value: (identifier)))))))
+
+==================
+While loop
+==================
+
+fn f() {
+  while a < b {
+    a = a + 1;
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (while_stmt
+        condition: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        body: (block
+          (assign_stmt
+            name: (identifier)
+            value: (binary_expression
+              left: (identifier)
+              right: (number_literal))))))))
+
+==================
+Loop with break and continue
+==================
+
+fn f() {
+  loop {
+    if a {
+      break;
+    }
+    continue;
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (loop_stmt
+        body: (block
+          (if_stmt
+            condition: (identifier)
+            consequence: (block
+              (break_stmt)))
+          (continue_stmt))))))
+
+==================
+Match statement with block arm
+==================
+
+fn f() {
+  match n {
+    0 => {
+      let x = 1;
+    }
+    _ => {}
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (match_stmt
+        scrutinee: (identifier)
+        arms: (match_arm
+          pattern: (pattern
+            (number_literal))
+          body: (block_expr
+            (let_stmt
+              name: (identifier)
+              value: (number_literal))))
+        arms: (match_arm
+          pattern: (pattern
+            (wildcard_pattern))
+          body: (block_expr))))))
+
+==================
+Record literal suppressed in if condition
+==================
+
+fn f() {
+  if Foo {
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (if_stmt
+        condition: (identifier)
+        consequence: (block)))))
+
+==================
+Record literal allowed again once parenthesized in a condition
+==================
+
+fn f() {
+  if (Foo { x: 1 }) == y {
+  }
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (if_stmt
+        condition: (binary_expression
+          left: (paren_expr
+            (record_literal
+              name: (identifier)
+              (record_field_inits
+                (record_field_init
+                  name: (identifier)
+                  value: (number_literal)))))
+          right: (identifier))
+        consequence: (block)))))
+
+==================
+Bare if inside a value block stays a statement, never becomes the trailing value
+==================
+
+fn f() {
+  let y = {
+    if a { x = 1; } else { x = 2; }
+  };
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (let_stmt
+        name: (identifier)
+        value: (block_expr
+          (if_stmt
+            condition: (identifier)
+            consequence: (block
+              (assign_stmt
+                name: (identifier)
+                value: (number_literal)))
+            alternative: (block
+              (assign_stmt
+                name: (identifier)
+                value: (number_literal)))))))))
+
+==================
+Bare match inside a value block stays a statement
+==================
+
+fn f() {
+  let y = {
+    match a {
+      _ => { x = 1; }
+    }
+  };
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (let_stmt
+        name: (identifier)
+        value: (block_expr
+          (match_stmt
+            scrutinee: (identifier)
+            arms: (match_arm
+              pattern: (pattern
+                (wildcard_pattern))
+              body: (block_expr
+                (assign_stmt
+                  name: (identifier)
+                  value: (number_literal))))))))))
+
+==================
+A unary-prefixed if is still a valid trailing value
+==================
+
+fn f() {
+  let y = {
+    -if a { 1 } else { 2 }
+  };
+}
+
+---
+
+(source_file
+  (fn_decl
+    name: (identifier)
+    body: (block
+      (let_stmt
+        name: (identifier)
+        value: (block_expr
+          trailing: (unary_expression
+            operand: (if_expr
+              condition: (identifier)
+              consequence: (block_expr
+                trailing: (number_literal))
+              alternative: (block_expr
+                trailing: (number_literal)))))))))

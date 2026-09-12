@@ -1,6 +1,14 @@
-//! `cad-geometry-api` — placeholder crate created by AICAD-002/AICAD-003 repository
-//! scaffolding. No implementation yet.
+//! `cad-geometry-api` — WP-05 (Geometry language API).
 //!
-//! See this crate's `README.md` for its owning work package and plan
-//! references, and `project/TASKS.yaml` for the task(s) that will
-//! populate it.
+//! `AICAD-059` populates this crate with the backend-independent Geometry
+//! IR (`ir` module) — see that module's doc comment for the full design.
+//! Safe language-facing high-level/low-level geometry API surfaces and the
+//! lowering from typed HIR into this IR remain later tasks
+//! (`AICAD-060` onward) per this crate's own `README.md`.
+
+pub mod ir;
+
+pub use ir::{
+    EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryIrError, GeometryNode, GeometryNodeKind,
+    GeometryOp, GeometryQuery, Quantity,
+};
