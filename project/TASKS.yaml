@@ -2134,7 +2134,7 @@ tasks:
 - id: AICAD-072
   stage: 3
   title: Create minimal sketch entity IR
-  status: todo
+  status: done
   depends_on:
   - AICAD-071
   plan_references:
