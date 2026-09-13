@@ -1,161 +1,136 @@
 # Session Handoff
 
-## Canonical branch and HEAD
+## Canonical working branch
 
-`origin/claude/aicad-stage3-dev`. This invocation's own commit — the
-`AICAD-079B` gate-remediation commit — lands immediately after `f9320fc`
-(the original `AICAD-079B` gate-packet commit). Pushed to
-`origin/claude/aicad-stage3-dev` (verified — see "Push verification" below).
+`origin/claude/aicad-stage4-transition`
 
-## Stage 3 status
+This branch is a strict descendant of the owner-approved Stage-3 `main`
+merge `15fc5a37e4382de717e426ccc5317a491be264cd`; it must not be restarted
+from `main` or rebased in a way that discards the transition history.
 
-**Stage 3 implementation and gate work is complete.** The entire fixed
-batch sequence (`S3-00` through `S3-10`) finished with `AICAD-079B`
-(`project/reports/AICAD-079B.md`); this invocation performed a single,
-narrowly-scoped **gate remediation** against that already-complete gate —
-not a new roadmap task, not a new batch, and `AICAD-079B` remains the final
-Stage-3 batch in `project/TASKS.yaml` (still `status: done`, unrenumbered).
+## Current status
 
-**The incremental-build gate finding has been remediated.** The Stage-3
-gate's own original recommendation (`project/gates/stage-3-gate.md`, before
-this invocation) flagged one gap for the owner's judgment: `ParamModel` and
-`FeatureGraph` were each independently correct but never connected through
-one production `cad-cli` execution path. This invocation closed it:
-`cad_cli::parametric_build::ParametricBuildSession` (new) now connects both
-through a real, tested, production orchestration path, and also found and
-fixed a genuine pre-existing root-cause defect in `Interpreter::
-run_top_level_parametric` (evaluated `let`/`const` before `param`s,
-breaking every realistic parametric model) along the way. Full detail:
-`project/reports/AICAD-079B-INCREMENTAL-REMEDIATION.md`.
+**Stage 3 is complete, owner-approved, and merged.** The approval is now
+recorded in `project/DECISION_LOG.md#DL-22`, following the same governance
+pattern as the earlier stage approvals. `project/CURRENT_STAGE.md` has been
+updated from the stale pre-approval Stage-3 state to the active Stage-3 ->
+Stage-4 transition state.
 
-**Current gate recommendation: PASS, with no incremental-rebuild condition
-remaining.** `project/gates/stage-3-gate.md` §2.2A/§4/§7 were updated to
-record the remediation, re-verified directly against current source at this
-exact HEAD (not merely cited from the remediation's own report) — full
-workspace suite, the four new integration tests, and every other
-Stage-2/Stage-3 integration suite all re-run clean. No unrelated gate
-finding was rewritten.
+**Stage 4 implementation has not started.** `AICAD-080` remains
+`status: todo`. The current transition work does not authorize semantic-
+reference implementation, Stage-5 work, CI expansion, or AICAD-101+ tasks.
 
-**Owner approval is still required — nothing in this invocation changes
-that.** Per `AGENTS.md` and `CURRENT_STAGE.md` ("Owner approval required to
-advance: Yes"), Stage 3 is not approved until the owner records that
-decision in `project/DECISION_LOG.md`, following the same pattern as
-`DL-10`/`DL-11`/`DL-16`. This invocation did not record any such decision
-and does not claim to.
+## Accepted Stage-3 implementation
 
-**Stage 4 remains forbidden.** `AICAD-080` and all Stage-4 scope
-(persistent semantic-reference resolution, `VertexRef`/`EdgeRef`/.../
-`SolidRef`, query AST/IR, ambiguity resolution) must not begin under any
-circumstance without a separate, later, explicit owner approval recorded in
-`project/DECISION_LOG.md`. `project/TASKS.yaml`'s `AICAD-080` remains
-`status: todo`; no Stage-4 task was touched.
+The Stage-3 `main` merge is:
 
-## Last completed task
+`15fc5a37e4382de717e426ccc5317a491be264cd`
 
-The `AICAD-079B` gate remediation (this invocation) — see
-`project/reports/AICAD-079B-INCREMENTAL-REMEDIATION.md` for full detail.
+Its lineage includes final remediation commit:
 
-## Partial task
+`99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`
 
-None. The remediation completed cleanly, end to end, in this invocation.
+That remediation connected `ParamModel` and `FeatureGraph` through the real
+`cad_cli::parametric_build::ParametricBuildSession` production path, fixed
+the discovered parameter-evaluation ordering defect, and added the
+in-process selective geometry reuse/recompute proof. The final Stage-3 gate
+records PASS after remediation.
 
-## Next task
+The last Stage-3 verification recorded by that remediation remains
+historical evidence, not a fresh test run for this documentation branch:
 
-**None for routine roadmap-development invocations.** Read "Stage 3 status"
-above before doing anything else. If a future invocation finds a Stage-3
-approval decision recorded in `project/DECISION_LOG.md`, the campaign may
-proceed to Stage 4 planning under separate, later instructions; if not, no
-roadmap-development invocation should run at all.
+- `cargo fmt --all -- --check` — clean;
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` —
+  zero warnings;
+- `cargo test --workspace` — 1047 passed, 0 failed;
+- Stage-3 parametric incremental rebuild integration — 4/4;
+- Stage-3 ordinary-part integration — 7/7;
+- frozen Stage-4 benchmark fixture integration — 20/20.
 
-## Exact recent test status
+See the archived original at
+`project/reports/archive/stage3/AICAD-079B-INCREMENTAL-REMEDIATION.md` for
+exact commands/results.
 
-- `cargo fmt --all -- --check` → clean.
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings` →
-  zero warnings, full workspace (29 crates).
-- `cargo test --workspace` → 1047 passed, 0 failed (+11 from the
-  pre-remediation baseline of 1036 — see
-  `project/reports/AICAD-079B-INCREMENTAL-REMEDIATION.md` for the exact
-  per-crate breakdown).
-- `cargo test -p cad-cli --test stage3_parametric_incremental_rebuild --
-  --test-threads=1` → 4/4 (new).
-- `cargo test -p cad-cli --test stage2_end_to_end -- --test-threads=1` →
-  3/3.
-- `cargo test -p cad-cli --test stage3_ordinary_parts -- --test-threads=1`
-  → 7/7.
-- `cargo test -p cad-cli --test stage3_skill_doc_snippets -- --test-threads=1`
-  → 4/4.
-- `cargo test -p cad-cli --test stage4_reference_benchmark_fixtures --
-  --test-threads=1` → 20/20.
-- `cargo test -p cad-geometry-runtime --test spatial_axis_frame_foundation`
-  → 4/4.
-- `sha256sum -c project/benchmarks/stage4_semantic_reference/held_out/
-  MANIFEST.sha256` (run from that directory) → all 10 lines `OK`.
+## Transition work completed so far
 
-## Regressions/failures
+### First reconciliation pass
 
-None shipped. Two were found and fixed *during* this invocation's own
-work (both disclosed in full in `project/reports/
-AICAD-079B-INCREMENTAL-REMEDIATION.md`'s own "Regressions found/fixed"
-section): a genuine pre-existing defect in `Interpreter::
-run_top_level_parametric`'s evaluation order (found while wiring the
-orchestration, fixed at the root, two permanent regressions added), and a
-design bug in this invocation's own first `changed_param_bindings`
-implementation (caught by this invocation's own test-writing before
-landing, fixed before this report was written). No existing test was
-weakened or deleted to land either fix.
+- created/preserved `claude/aicad-stage4-transition` from the exact Stage-3
+  `main` merge;
+- imported the post-100 architecture/roadmap audit as a frozen, non-
+  normative snapshot under `project/planning/roadmap/post100/`;
+- preserved Stage-0..3 task reports and gate/checkpoint evidence under
+  stage-specific archive directories while retaining compatibility pointers;
+- established separate `docs/user/`, `docs/developer/`, and `project/`
+  information surfaces;
+- preserved the frozen `docs/plan/` bundle in place because moving it would
+  create broad historical-reference churn;
+- created the Stage-3 -> Stage-4 transition record.
 
-## Unresolved owner decisions
+### Second documentation pass
 
-`D7`/`D8`/`D12`/`D15` remain open/partially-resolved, none blocking Stage-3
-exit (unchanged from every prior batch and from the original `AICAD-079B`
-gate packet). No new `OWNER_DECISIONS.md` item was opened or closed by this
-invocation. Stage-3 approval itself remains the pending owner decision (see
-"Stage 3 status" above).
+- rewrote the repository root README as a post-Stage-3 project landing page;
+- populated the Stage-3 user guide with installation, first-part, language,
+  parameters, current Safe CAD modeling, CLI, examples, and troubleshooting;
+- documented the critical user boundary that the sketch/constraint engine
+  exists but source-level `sketch { ... }` authoring is not yet integrated;
+- populated current developer architecture docs for frontend/HIR/runtime,
+  Geometry IR, the OCCT boundary, parametrics/incremental rebuild,
+  constraints, testing, and contributing;
+- documented the remediated incremental path accurately as an in-process
+  session capability, not a persistent cross-process cache;
+- recorded the already-issued Stage-3 approval as DL-22 without reopening
+  or changing any owner architecture decision.
 
-## D5/D19 calibration status
+## Documentation sources and precedence
 
-Unchanged — complete (`project/OWNER_DECISIONS.md#D19`,
-`DECISION_LOG.md#DL-17`, `project/reports/AICAD-064A.md`). Not touched by
-this invocation.
+When current documentation needs verification, prefer:
 
-## Current checkpoint status
+1. current code;
+2. accepted owner decisions;
+3. accepted RFC/spec semantics;
+4. final gate evidence;
+5. relevant archived task reports;
+6. old planning prose.
 
-`project/gates/stage-3-gate.md` (updated this invocation, §2.2A/§4/§7) now
-recommends **PASS with no incremental-rebuild condition remaining** —
-still advisory only, not an owner approval. Builds on
-`STAGE3-A_PARAMETRIC_GRAPH.md`/`STAGE3-B_SKETCH_CONSTRAINTS.md`/
-`STAGE3-C_MODELING.md` (all three PASS, unchanged) and `AICAD-079A`'s own
-report (unchanged). No further Stage-3 checkpoint remains.
+Completed reports/gates are evidence and should be retrieved when relevant;
+they are not routine startup context or the current developer manual.
 
-## Environment
+## Known current boundaries
 
-Rust 1.98.1 (edition 2024), container Linux environment. No new third-party
-(crates.io) dependency was added this invocation — `Cargo.lock`'s own diff
-is limited to internal path-dependency additions (`cad-cli` now depends on
-`cad-feature-graph`, plus `cad-types`/`cad-units` as test-only
-dev-dependencies), confirmed by direct inspection. No native build/link
-pipeline change.
+- `.aicad` source has no supported `sketch { ... }` authoring syntax even
+  though the sketch/constraint subsystem is implemented below the source
+  layer.
+- Stage-3 raw face/edge integer selectors are not persistent references.
+- `FeatureGraph` does not yet provide general interprocedural flattening of
+  arbitrary geometry-producing source functions/branches.
+- `ParametricBuildSession` reuses geometry only within the live in-process
+  session/kernel context; no persistent disk/remote cache is implied.
+- the implemented CLI is `cad build <path.aicad> [--json] [--output <path>]
+  [--name <binding>[.<field>]]`; broader planned commands are not current.
 
-## Git identity
+## Remaining transition work
 
-`core.hooksPath` remained active and was not modified, disabled, or
-bypassed. Every commit set `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL`/
-`GIT_COMMITTER_NAME`/`GIT_COMMITTER_EMAIL` to `insightlabs38-pixel`/
-`insightlabs38@gmail.com` as process-local environment variables for the
-`git commit` invocation only. No hook bypassed; `--no-verify` never used.
+After owner review of the documentation pass, the major transition work
+still intentionally deferred is:
 
-## Push verification
+1. normative specification/decision cleanup identified by the post-100
+   audit;
+2. expanded Stage-4 CI/CD preparation;
+3. final Stage-4 initialization and explicit implementation authorization.
 
-Before the final push, `git fetch origin claude/aicad-stage3-dev` is re-run
-and the remote branch confirmed unchanged from this invocation's own prior
-state (no concurrent writer) before `git push -u origin
-claude/aicad-stage3-dev` runs as a fast-forward.
+Do not begin those merely because they are listed here; use the next owner-
+provided transition instructions.
 
-## Recommended next action
+## Next action
 
-**None for routine roadmap-development invocations.** The Stage-3 gate's
-only remaining open item is now closed. Per the campaign's own final stop
-rule, no future invocation may begin `AICAD-080` or any Stage-4 work without
-a separate, explicit, later owner approval recorded in
-`project/DECISION_LOG.md`. Read this handoff's own "Stage 3 status" section
-before doing anything else.
+**Owner review of this documentation/governance pass.** Do not start
+AICAD-080, do not expand CI/CD, and do not begin the normative-spec pass in
+this session.
+
+## Git policy
+
+Required commit author/committer identity is
+`insightlabs38-pixel <insightlabs38@gmail.com>`. Keep repository hooks
+active; never use `--no-verify`, never force-push transition history, and do
+not add AI/session attribution metadata.
