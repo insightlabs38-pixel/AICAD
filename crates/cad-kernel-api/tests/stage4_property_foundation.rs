@@ -24,7 +24,9 @@ fn every_bounded_nonzero_finite_vector_normalizes_to_unit_length() {
                 let d = v.normalize().expect("bounded nonzero finite vector");
                 assert!(close(d.as_vector3().length(), 1.0), "vector={v:?}");
                 for scale in [0.25, 2.0, 100.0] {
-                    let scaled = (v * scale).normalize().expect("positive scaling stays valid");
+                    let scaled = (v * scale)
+                        .normalize()
+                        .expect("positive scaling stays valid");
                     assert!(
                         d.dot(scaled) > 1.0 - 1e-12,
                         "normalization changed direction: v={v:?}, scale={scale}"
@@ -43,7 +45,10 @@ fn invalid_direction_inputs_fail_closed() {
         Vector3::new(f64::INFINITY, 0.0, 0.0),
         Vector3::new(1e-14, 0.0, 0.0),
     ] {
-        assert!(v.normalize().is_none(), "invalid vector unexpectedly normalized: {v:?}");
+        assert!(
+            v.normalize().is_none(),
+            "invalid vector unexpectedly normalized: {v:?}"
+        );
     }
 }
 
@@ -66,7 +71,10 @@ fn derived_frames_are_orthonormal_and_right_handed_over_bounded_directions() {
                     assert!(frame.x.dot(frame.z).abs() < 1e-12);
                     assert!(frame.y.dot(frame.z).abs() < 1e-12);
                     let cross = frame.x.cross(frame.y).expect("orthogonal axes cross");
-                    assert!(cross.dot(frame.z) > 1.0 - 1e-12, "frame is not right-handed: {frame:?}");
+                    assert!(
+                        cross.dot(frame.z) > 1.0 - 1e-12,
+                        "frame is not right-handed: {frame:?}"
+                    );
                 }
             }
         }

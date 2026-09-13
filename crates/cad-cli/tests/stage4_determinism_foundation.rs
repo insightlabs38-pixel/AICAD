@@ -62,12 +62,24 @@ fn repeated_exact_builds_are_engineering_equivalent_under_d5_v1() {
     let second_path = std::env::temp_dir().join("aicad_079c_determinism_second.step");
     let first = build_step(&first_path);
     let second = build_step(&second_path);
-    assert_eq!(first.status, BuildStatus::Ok, "first build: {:?}", first.diagnostics);
-    assert_eq!(second.status, BuildStatus::Ok, "second build: {:?}", second.diagnostics);
+    assert_eq!(
+        first.status,
+        BuildStatus::Ok,
+        "first build: {:?}",
+        first.diagnostics
+    );
+    assert_eq!(
+        second.status,
+        BuildStatus::Ok,
+        "second build: {:?}",
+        second.diagnostics
+    );
 
     let ctx = cad_occt_bridge::OcctContext::new().expect("context creation");
     let first_shape = ctx.import_step(&first_path).expect("first STEP re-import");
-    let second_shape = ctx.import_step(&second_path).expect("second STEP re-import");
+    let second_shape = ctx
+        .import_step(&second_path)
+        .expect("second STEP re-import");
     assert!(first_shape.is_valid().expect("first validity"));
     assert!(second_shape.is_valid().expect("second validity"));
 
