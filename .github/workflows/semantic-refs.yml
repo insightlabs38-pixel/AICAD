@@ -1,0 +1,62 @@
+name: Stage-4 semantic-reference harness
+
+on:
+  push:
+    branches:
+      - main
+      - claude/aicad-stage4-transition
+      - claude/aicad-stage4-dev
+    paths:
+      - 'project/benchmarks/stage4_semantic_reference/**'
+      - 'tests/semantic_refs/**'
+      - 'scripts/ci/semantic_ref_harness.py'
+      - 'crates/cad-cli/tests/stage4_reference_benchmark_fixtures.rs'
+      - '.github/workflows/semantic-refs.yml'
+  pull_request:
+    paths:
+      - 'project/benchmarks/stage4_semantic_reference/**'
+      - 'tests/semantic_refs/**'
+      - 'scripts/ci/semantic_ref_harness.py'
+      - 'crates/cad-cli/tests/stage4_reference_benchmark_fixtures.rs'
+      - '.github/workflows/semantic-refs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semantic-refs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  corpus-and-harness:
+    name: corpus and harness contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Validate corpus, taxonomy, held-out checksums, and regression records
+        run: python scripts/ci/semantic_ref_harness.py validate
+      - name: Exercise result-grading contract without a resolver
+        run: python scripts/ci/semantic_ref_harness.py self-test
+
+  fixture-buildability:
+    name: frozen corpus exact geometry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-semantic-fixtures-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-semantic-fixtures-
+            ${{ runner.os }}-
+      - name: Run frozen-corpus exact-geometry tests
+        run: cargo test -p cad-cli --test stage4_reference_benchmark_fixtures --locked -- --test-threads=1

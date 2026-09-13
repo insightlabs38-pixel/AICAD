@@ -1,0 +1,42 @@
+name: Performance baseline
+
+on:
+  schedule:
+    - cron: '23 6 * * 6'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stage3-baseline:
+    name: implemented-capability baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-performance-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-performance-
+            ${{ runner.os }}-
+      - name: Run controlled performance baseline
+        run: python scripts/ci/performance_baseline.py --output artifacts/performance.json
+      - name: Upload benchmark JSON
+        uses: actions/upload-artifact@v7
+        with:
+          name: performance-${{ github.run_id }}
+          path: artifacts/performance.json
+          retention-days: 30

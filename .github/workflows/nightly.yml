@@ -1,0 +1,80 @@
+name: Nightly hardening
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-sanitizers:
+    name: native ${{ matrix.sanitizer }} sanitizer
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            flags: -fsanitize=address -fno-omit-frame-pointer
+          - sanitizer: ubsan
+            flags: -fsanitize=undefined -fno-omit-frame-pointer
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - name: Configure native bridge with sanitizer
+        env:
+          SANITIZER_FLAGS: ${{ matrix.flags }}
+        run: |
+          cmake -S native/occt_bridge -B native/occt_bridge/build-${{ matrix.sanitizer }} \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS="$SANITIZER_FLAGS" \
+            -DCMAKE_EXE_LINKER_FLAGS="$SANITIZER_FLAGS" \
+            -DCMAKE_SHARED_LINKER_FLAGS="$SANITIZER_FLAGS"
+      - name: Build native bridge
+        run: cmake --build native/occt_bridge/build-${{ matrix.sanitizer }} --parallel 2
+      - name: Run native lifetime/topology/ownership tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir native/occt_bridge/build-${{ matrix.sanitizer }} --output-on-failure
+
+  parser-fuzz:
+    name: bounded parser fuzzing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+      - name: Fuzz parser for 90 seconds
+        run: cargo +nightly fuzz run parser -- -max_total_time=90 -timeout=5 -max_len=4096
+
+  determinism-stress:
+    name: determinism repetition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-nightly-determinism-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-nightly-determinism-
+            ${{ runner.os }}-
+      - name: Repeat deterministic-state proof
+        run: |
+          for run in 1 2 3; do
+            echo "determinism repetition $run"
+            cargo test -p cad-cli --test stage4_determinism_foundation --locked -- --test-threads=1
+          done

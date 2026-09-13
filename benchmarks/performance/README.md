@@ -1,9 +1,19 @@
-# benchmarks/performance
+# Performance regression foundation
 
-Tracks parse/type time, full build time, incremental parameter-edit time,
-B-rep operation time, mesh generation time, memory, and cache hit rate
-across tiny/normal/complex/100-component/10k-instance/stress benchmark
-scales. Do not set aspirational thresholds before an early prototype
-establishes a measured baseline.
+Performance evidence is intentionally measurement-first. No noisy
+microbenchmark threshold blocks routine pull requests.
 
-Plan references: `docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md` §10.
+AICAD-079C adds `scripts/ci/performance_baseline.py` and a scheduled/manual
+workflow that records coarse wall-clock measurements for **implemented**
+capabilities only:
+
+- feature/dependency-graph tests;
+- Stage-3 in-process parametric incremental rebuild integration.
+
+The JSON artifact is retained for controlled comparisons. Stage 4 has two
+explicit extension points once real resolver behavior exists: reference
+resolution and adversarial candidate-set scaling. AICAD-079C does not fake
+those measurements before AICAD-080+ provides the code under test.
+
+Future performance gates must be based on measured baselines and controlled
+comparison methodology rather than aspirational thresholds.

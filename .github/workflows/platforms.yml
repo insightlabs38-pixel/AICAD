@@ -1,0 +1,40 @@
+name: Supported platforms
+
+on:
+  schedule:
+    - cron: '41 7 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platforms-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tier-1-linux:
+    name: Tier 1 Linux / Ubuntu hosted runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-platform-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-platform-
+            ${{ runner.os }}-
+      - name: Build workspace
+        run: cargo build --workspace --all-targets --locked
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Native bridge CTest
+        run: |
+          cmake -S native/occt_bridge -B native/occt_bridge/build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build native/occt_bridge/build --parallel 2
+          ctest --test-dir native/occt_bridge/build --output-on-failure
