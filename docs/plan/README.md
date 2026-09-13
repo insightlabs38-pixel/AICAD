@@ -1,6 +1,10 @@
 # AI-Native CAD Language & Engineering Platform — Full Implementation Plan
 
-**Working names:** `AICAD`, `CAD-IR`, `CADLang` (placeholder; choose branding later)
+> **Frozen foundation/planning corpus.** This directory is retained at its historical path because Stage-0..3 tasks, reports, RFC-era material, source comments, and gates cite it extensively. Its examples and architecture sketches are valuable design history, but they are **not automatically current normative truth**. Current authority is: explicit owner decisions / `project/DECISION_LOG.md` > accepted `specs/` and RFC semantics > implemented behavior where the specification intentionally defines it > current gate evidence > this frozen planning corpus. Future-looking syntax shown here is illustrative unless it has been separately approved and promoted into the canonical specs/current implementation.
+>
+> D14/DL-4 resolved the historical branding question: the public product/language is **AICAD**, source uses `.aicad`, the project manifest is `aicad.toml`, and `.aicadpkg` is the approved packaged-artifact direction if/when such a bundle is defined. `CAD-IR` may remain an internal IR/compiler label; `CADLang` is a historical working name, not current product branding.
+
+**Historical working names:** `AICAD`, `CAD-IR`, `CADLang` (the original placeholder set; current public naming is resolved above)
 
 This package consolidates the complete design developed in the conversation into a buildable implementation plan. The core idea is not merely a new CAD file format. It is a **typed, compiled, Turing-complete programming language and execution environment for mechanical engineering**, designed to be equally usable by humans and general-purpose AI coding models.
 
