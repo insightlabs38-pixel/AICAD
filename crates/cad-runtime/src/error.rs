@@ -405,6 +405,19 @@ pub enum RuntimeError {
         span: Span,
         reason: crate::spatial::SpatialValueError,
     },
+    /// `linear_pattern`/`radial_pattern` (`AICAD-077`) received a `count`
+    /// argument less than 1. `cad_hir::typeck` verifies `count` is `Int`-
+    /// shaped but not its runtime value (an `Int` parameter's own sign/
+    /// range is never a compile-time-checkable property, the same reason
+    /// [`RuntimeError::InvalidSpatialArgument`] exists for a spatial
+    /// value's numeric components) — a genuine run-time failure, reported
+    /// explicitly rather than silently returning `target` unmoved (`count
+    /// == 0`) or panicking on an empty/negative-length loop.
+    InvalidPatternCount {
+        name: &'static str,
+        count: i64,
+        span: Span,
+    },
 }
 
 impl RuntimeError {
@@ -446,6 +459,7 @@ impl RuntimeError {
             RuntimeError::StructConstructionArgumentShape { .. } => "RUNTIME-E126".to_string(),
             RuntimeError::UnknownField { .. } => "RUNTIME-E127".to_string(),
             RuntimeError::InvalidSpatialArgument { .. } => "RUNTIME-E128".to_string(),
+            RuntimeError::InvalidPatternCount { .. } => "RUNTIME-E129".to_string(),
         }
     }
 
@@ -496,7 +510,8 @@ impl RuntimeError {
             | RuntimeError::ParamOverrideTypeMismatch { span, .. }
             | RuntimeError::StructConstructionArgumentShape { span, .. }
             | RuntimeError::UnknownField { span, .. }
-            | RuntimeError::InvalidSpatialArgument { span, .. } => *span,
+            | RuntimeError::InvalidSpatialArgument { span, .. }
+            | RuntimeError::InvalidPatternCount { span, .. } => *span,
         }
     }
 
@@ -536,6 +551,7 @@ impl RuntimeError {
             }
             RuntimeError::UnknownField { .. } => "UNKNOWN_FIELD",
             RuntimeError::InvalidSpatialArgument { .. } => "INVALID_SPATIAL_ARGUMENT",
+            RuntimeError::InvalidPatternCount { .. } => "INVALID_PATTERN_COUNT",
         }
     }
 
@@ -641,6 +657,9 @@ impl RuntimeError {
             }
             RuntimeError::InvalidSpatialArgument { name, reason, .. } => {
                 format!("'{name}' received an invalid spatial value: {reason}")
+            }
+            RuntimeError::InvalidPatternCount { name, count, .. } => {
+                format!("'{name}' requires a 'count' of at least 1, found {count}")
             }
         }
     }

@@ -186,6 +186,63 @@ pub enum BuiltinFnId {
     /// already-accepted box-only narrowing of the general `Profile`
     /// concept.
     Pocket,
+    /// `mirror(target: Geometry, plane: Plane) -> Geometry` (`AICAD-077`).
+    /// Mirrors `target` across `plane` — a true reflection (determinant
+    /// -1), dispatching to the new `GeometryOp::Mirror`/`Shape::mirror`
+    /// kernel capability (`project/OWNER_DECISIONS.md#D20`'s own "Next
+    /// dependency" note: mirror cannot be expressed as a `Transform`,
+    /// which is proper-rigid-only). `plane` is a real `Plane` value,
+    /// converted via `cad_runtime::spatial::plane3_from_value` — safe to
+    /// reference directly per the type-closed standard environment
+    /// `AICAD-076A` established. Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `mirror(item: Shape|Feature,
+    /// plane: Plane|FaceRef, merge: Bool)` signature: no `FaceRef` plane
+    /// source (no source-level face-reference type exists yet, same gap
+    /// `Extrude`/`Revolve`'s own `face: Int` raw-index narrowing
+    /// documents) and no `merge` option (the caller composes `union`
+    /// itself if a merged result is wanted, exactly like `extrude`'s own
+    /// "returns the new standalone prism, compose with `union` for a
+    /// boss" precedent).
+    Mirror,
+    /// `linear_pattern(target: Geometry, direction: Vector3<Float>,
+    /// count: Int, spacing: Length) -> Geometry` (`AICAD-077`). Returns
+    /// the union of `count` copies of `target`, the first left in place
+    /// and each subsequent one translated along `direction` (normalized)
+    /// by an additional `spacing`, i.e. positioned at `0, spacing,
+    /// 2*spacing, ..., (count-1)*spacing`. No new `GeometryOp` variant —
+    /// built entirely from the already-existing `GeometryOp::Transform`/
+    /// `GeometryOp::Union`, mirroring `Hole`/`Pocket`'s own "domain-
+    /// meaningful name over existing ops" precedent, just looped `count`
+    /// times. Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `linear_pattern` signature:
+    /// `item` is a built `Geometry` value (no `Feature|Shape|Fn` source
+    /// polymorphism — no `Feature`/`FeatureGroup` concept exists yet, per
+    /// this catalogue's own established "a builtin returns `Geometry`,
+    /// not a provenance-bearing feature handle" precedent) and no
+    /// `centered` option (the caller's own choice of `direction`'s sign
+    /// already controls which way the pattern extends from `target`'s
+    /// unmoved first copy).
+    LinearPattern,
+    /// `radial_pattern(target: Geometry, axis: Axis3, count: Int, angle:
+    /// Angle) -> Geometry` (`AICAD-077`). Returns the union of `count`
+    /// copies of `target`, the first left in place and each subsequent
+    /// one rotated about `axis` by an additional `angle / count`, i.e.
+    /// positioned at angular offsets `0, angle/count, 2*angle/count, ...,
+    /// (count-1)*angle/count` — the standard "full circle divided evenly"
+    /// convention for a closed pattern (`angle = 360deg` places `count`
+    /// evenly spaced copies with no duplicate at the seam). `axis` is a
+    /// real `Axis3` value, the same axis representation `revolve`/`hole`
+    /// already share (`AICAD-075A`'s own integration requirement). No new
+    /// `GeometryOp` variant — built from `GeometryOp::Transform`/
+    /// `GeometryOp::Union`, exactly like [`BuiltinFnId::LinearPattern`].
+    /// Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `radial_pattern` signature: no
+    /// `include_endpoint` option (this builtin's own fixed "divide `angle`
+    /// into `count` equal steps, never repeating the `angle`-degree
+    /// position" convention already matches that option's own documented
+    /// `false` default), matching [`BuiltinFnId::LinearPattern`]'s own
+    /// narrowing rationale otherwise.
+    RadialPattern,
 }
 
 // --- The standard type environment (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`) ---
@@ -230,7 +287,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 13] = [
+    pub const ALL: [BuiltinFnId; 16] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -244,6 +301,9 @@ impl BuiltinFnId {
         BuiltinFnId::Revolve,
         BuiltinFnId::Hole,
         BuiltinFnId::Pocket,
+        BuiltinFnId::Mirror,
+        BuiltinFnId::LinearPattern,
+        BuiltinFnId::RadialPattern,
     ];
 }
 
@@ -415,6 +475,34 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("width", named("Length")),
                 ("length", named("Length")),
                 ("depth", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Mirror,
+            name: "mirror",
+            params: vec![("target", named("Geometry")), ("plane", named("Plane"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::LinearPattern,
+            name: "linear_pattern",
+            params: vec![
+                ("target", named("Geometry")),
+                ("direction", vector3_of("Float")),
+                ("count", named("Int")),
+                ("spacing", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::RadialPattern,
+            name: "radial_pattern",
+            params: vec![
+                ("target", named("Geometry")),
+                ("axis", named("Axis3")),
+                ("count", named("Int")),
+                ("angle", named("Angle")),
             ],
             return_ty: named("Geometry"),
         },

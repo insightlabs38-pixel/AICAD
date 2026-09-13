@@ -375,6 +375,10 @@ fn dispatch_op<'ctx>(
             let target_shape = shape_operand(results, id, *target, span)?;
             kernel_op(id, span, "Transform", target_shape.transform(transform))?
         }
+        GeometryOp::Mirror { target, plane } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(id, span, "Mirror", target_shape.mirror(*plane))?
+        }
     };
     Ok(NodeResult::Shape(shape))
 }
@@ -710,6 +714,82 @@ mod tests {
                 )
             }
             other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    /// `GeometryOp::Mirror` (`AICAD-077`) dispatches through
+    /// `Shape::mirror` against a real kernel context: volume is preserved
+    /// (a reflection is volume-preserving) and the bounding box lands on
+    /// the expected far side of the mirror plane -- the same evidence
+    /// style `full_pipeline_dispatches_a_notched_filleted_box_through_the_
+    /// kernel`'s own `Transform` coverage uses, not a render-only check.
+    #[test]
+    fn mirror_op_dispatches_through_the_kernel_and_preserves_volume() {
+        const DX: f64 = 0.02;
+        const DY: f64 = 0.03;
+        const DZ: f64 = 0.04;
+
+        let mut graph = GeometryGraph::new();
+        let base = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(DX),
+                    dy: length(DY),
+                    dz: length(DZ),
+                },
+                span(),
+            )
+            .unwrap();
+        let mirrored = graph
+            .push_op(
+                GeometryOp::Mirror {
+                    target: base,
+                    plane: cad_kernel_api::Plane3::new(
+                        Point3::ORIGIN,
+                        cad_kernel_api::Direction3::X,
+                    ),
+                },
+                span(),
+            )
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(mirrored), span())
+            .unwrap();
+        let volume_q = graph
+            .push_query(GeometryQuery::Volume(mirrored), span())
+            .unwrap();
+        let bbox_q = graph
+            .push_query(GeometryQuery::BoundingBox(mirrored), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid, "mirrored box must be a valid B-rep"),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        let expected_volume = DX * DY * DZ;
+        match &results[volume_q.index() as usize] {
+            NodeResult::Number(volume) => assert!(
+                (*volume - expected_volume).abs() < expected_volume * 1e-9,
+                "volume {volume} did not match expected {expected_volume}"
+            ),
+            other => panic!("expected Number, got {other:?}"),
+        }
+        match &results[bbox_q.index() as usize] {
+            // The source box occupies x in [0, DX]; reflecting across the
+            // x=0 plane (normal +X) moves it to x in [-DX, 0].
+            // `1e-4` tolerance, matching `project/OWNER_DECISIONS.md#D19`'s
+            // own evidenced `linear_abs` bounding-box floor: OCCT's own
+            // bounding-box computation carries a small (~1e-6/1e-7)
+            // numerical margin, confirmed empirically here exactly like
+            // `project/reports/AICAD-034.md`'s own documented finding.
+            NodeResult::BoundingBox(bbox) => {
+                assert!((bbox.min.x - -DX).abs() < 1e-4);
+                assert!((bbox.max.x - 0.0).abs() < 1e-4);
+            }
+            other => panic!("expected BoundingBox, got {other:?}"),
         }
     }
 

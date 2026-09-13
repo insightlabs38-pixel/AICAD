@@ -89,7 +89,7 @@
 
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SourceSpan};
-use cad_kernel_api::{Axis3, Direction3, Point3, Transform};
+use cad_kernel_api::{Axis3, Direction3, Plane3, Point3, Transform};
 use cad_types::Dimension;
 use cad_units::OperandType;
 use std::fmt;
@@ -302,6 +302,15 @@ pub enum GeometryOp {
         target: GeomId,
         transform: Transform,
     },
+    /// Mirrors `target` across a plane (`Shape::mirror`, `AICAD-077`). A
+    /// mirror is an *improper* isometry (determinant -1) and therefore
+    /// deliberately its own variant rather than a special case of
+    /// [`GeometryOp::Transform`], whose `transform: Transform` field can
+    /// only ever represent a proper rigid motion
+    /// (`cad_kernel_api::geometry`'s own "Rigidity (no reflection)"
+    /// invariant) -- see that module's doc comment for the full
+    /// rationale.
+    Mirror { target: GeomId, plane: Plane3 },
 }
 
 /// A property/validation query against an already-constructed geometry
@@ -647,6 +656,9 @@ impl GeometryGraph {
                 Self::check_dimension(distance, Dimension::Length, "Offset.distance", span)?;
             }
             GeometryOp::Transform { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
+            }
+            GeometryOp::Mirror { target, .. } => {
                 self.check_geometry_operand(*target, span)?;
             }
         }
@@ -1150,6 +1162,54 @@ mod tests {
         assert!(!graph.nodes()[5].kind.produces_geometry()); // IsValid query
         assert!(!graph.nodes()[6].kind.produces_geometry()); // Volume query
         assert!(!graph.nodes()[7].kind.produces_geometry()); // ExportStep query
+    }
+
+    #[test]
+    fn mirror_accepts_a_valid_target_and_assigns_the_next_sequential_id() {
+        let mut graph = GeometryGraph::new();
+        let target = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let mirrored = graph
+            .push_op(
+                GeometryOp::Mirror {
+                    target,
+                    plane: cad_kernel_api::Plane3::new(Point3::ORIGIN, Direction3::X),
+                },
+                span(),
+            )
+            .unwrap();
+        assert_eq!(mirrored.index(), 1);
+        assert!(graph.get(mirrored).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn mirror_rejects_an_invalid_target_operand() {
+        let mut graph = GeometryGraph::new();
+        let bogus = GeomId(4);
+        let err = graph
+            .push_op(
+                GeometryOp::Mirror {
+                    target: bogus,
+                    plane: cad_kernel_api::Plane3::new(Point3::ORIGIN, Direction3::X),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            GeometryIrError::InvalidOperand {
+                referenced: bogus,
+                span: span()
+            }
+        );
     }
 
     #[test]

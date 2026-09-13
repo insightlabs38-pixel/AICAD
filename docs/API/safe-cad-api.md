@@ -291,6 +291,55 @@ or thread metadata; `pocket` is always a rectangle, never an arbitrary
 profile. See `project/reports/AICAD-076.md`/`AICAD-076A.md` for the
 complete rationale and the geometry-backed tests proving each one.
 
+### `mirror`/`linear_pattern`/`radial_pattern` (`AICAD-077`)
+
+- **`mirror(target: Geometry, plane: Plane) -> Geometry`** — mirrors
+  `target` across `plane`. `plane` is a real `Plane` value (`plane3_from_
+  value`, already safe to reference directly per the `AICAD-076A` type-
+  closed standard environment — this is the first builtin to actually use
+  that, confirmed by `project/OWNER_DECISIONS.md#D20`'s own "Next
+  dependency" note). A mirror is an *improper* isometry (determinant -1)
+  and therefore cannot be expressed as `GeometryOp::Transform` (proper-
+  rigid-only, `cad_kernel_api::geometry`'s own "Rigidity (no reflection)"
+  invariant) — this is the reason `mirror` dispatches to a brand new
+  `GeometryOp::Mirror`/`Shape::mirror`/`aicad_occt_mirror_shape` kernel
+  capability end to end, rather than reusing `transform`'s existing path.
+- **`linear_pattern(target: Geometry, direction: Vector3<Float>, count:
+  Int, spacing: Length) -> Geometry`** — the union of `count` copies of
+  `target`: the first left in place, each subsequent one translated an
+  additional `spacing` along the normalized `direction` (positions `0,
+  spacing, 2*spacing, ..., (count-1)*spacing`).
+- **`radial_pattern(target: Geometry, axis: Axis3, count: Int, angle:
+  Angle) -> Geometry`** — the union of `count` copies of `target`: the
+  first left in place, each subsequent one rotated an additional
+  `angle/count` about `axis` (positions `0, angle/count, ...,
+  (count-1)*angle/count` — the "divide evenly, no duplicate at the seam"
+  convention a `360deg`/`count` full-circle pattern needs). `axis` is the
+  same `Axis3` representation `revolve`/`hole` already share.
+
+Both patterns are compound builtins pushing no new `GeometryOp` variant —
+built entirely from the existing `GeometryOp::Transform`/`GeometryOp::
+Union`, looped `count - 1` times, mirroring `hole`/`pocket`'s own
+"domain-meaningful name over existing ops" precedent. `count < 1` is a
+genuine run-time failure (`RuntimeError::InvalidPatternCount`,
+`RUNTIME-E129`) — an `Int` parameter's sign/range is never a compile-time-
+checkable property, the same reason `RuntimeError::InvalidSpatialArgument`
+exists for a spatial value's numeric components.
+
+**Deliberately narrower than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s
+own signatures**, matching this catalogue's own established precedent:
+`target`/`item` is a built `Geometry` value, not a `Shape|Feature|Fn`
+polymorphic source (no `Feature`/`FeatureGroup` concept exists yet — a
+pattern builtin here returns `Geometry`, not a provenance-bearing feature
+handle); `mirror` has no `FaceRef` plane source and no `merge` option (the
+caller composes `union` itself, exactly like `extrude`'s own "compose with
+`union` for a boss" precedent); `linear_pattern` has no `centered` option
+(the caller's own choice of `direction`'s sign already controls which way
+the pattern extends); `radial_pattern` has no `include_endpoint` option
+(this builtin's fixed "divide evenly" convention already matches that
+option's own documented default). See `project/reports/AICAD-077.md` for
+the complete rationale and the kernel-backed tests proving each one.
+
 ### Part concept (`AICAD-071`)
 
 A `part { ... }` body's own top-level `let`/`const`/`param`-with-default

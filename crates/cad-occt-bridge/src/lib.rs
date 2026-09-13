@@ -15,7 +15,7 @@
 mod ffi;
 
 use cad_kernel_api::{
-    Axis3, Direction3, KernelError, KernelId, KernelResult, KernelShape, Point3, Transform,
+    Axis3, Direction3, KernelError, KernelId, KernelResult, KernelShape, Plane3, Point3, Transform,
 };
 use std::os::raw::c_int;
 
@@ -443,6 +443,44 @@ impl<'ctx> Shape<'ctx> {
                 self.context.raw,
                 self.raw_handle(),
                 matrix.as_ptr(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Mirrors this shape across `plane`, producing a new [`Shape`] in the
+    /// same context (`AICAD-077`). A mirror is an *improper* isometry
+    /// (determinant -1), so this is its own native entry point
+    /// (`aicad_occt_mirror_shape`) rather than going through
+    /// [`Shape::transform`]'s `matrix`, which `aicad_occt_transform_shape`
+    /// correctly rejects for not being a proper rigid displacement (see
+    /// `cad_kernel_api::geometry`'s own "Rigidity (no reflection)" module
+    /// doc comment). Never mutates `self` -- functional/value-oriented
+    /// semantics, `project/DECISION_LOG.md#DL-2`, matching `transform`'s
+    /// own precedent exactly.
+    pub fn mirror(&self, plane: Plane3) -> KernelResult<Shape<'ctx>> {
+        let origin = [plane.origin.x, plane.origin.y, plane.origin.z];
+        let n = plane.normal.as_vector3();
+        let normal = [n.x, n.y, n.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `origin`/`normal` are valid, live `[f64; 3]` arrays for
+        // the duration of this call; other arguments as in
+        // `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_mirror_shape(
+                self.context.raw,
+                self.raw_handle(),
+                origin.as_ptr(),
+                normal.as_ptr(),
                 &mut handle,
             )
         };
@@ -1374,6 +1412,67 @@ mod tests {
             original_bbox, bbox_after,
             "transform must not mutate the source shape"
         );
+    }
+
+    // --- AICAD-077: mirror ---
+
+    #[test]
+    fn mirror_across_a_world_plane_flips_the_bounding_box_and_produces_a_new_handle() {
+        let context = OcctContext::new().unwrap();
+        // A box with one corner at the origin, extending into +x/+y/+z.
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let plane = Plane3::new(Point3::ORIGIN, Direction3::X);
+        let mirrored = box_shape.mirror(plane).unwrap();
+        assert_ne!(box_shape.handle(), mirrored.handle());
+        // Volume is preserved by a reflection.
+        assert!((mirrored.volume().unwrap() - 24.0).abs() < 1e-9);
+        let bbox = mirrored.bounding_box().unwrap();
+        // Reflected across x=0: the box's own [0, 2] x-extent becomes
+        // [-2, 0].
+        assert!((bbox.min.x - -2.0).abs() < 1e-6);
+        assert!((bbox.max.x - 0.0).abs() < 1e-6);
+        // y/z extents are unaffected (the mirror plane's normal is +X).
+        assert!((bbox.min.y - 0.0).abs() < 1e-6);
+        assert!((bbox.max.y - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mirror_across_an_offset_plane_reflects_about_that_plane_not_the_origin() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 1.0, 1.0).unwrap();
+        // Mirror plane at x = 5, normal +X.
+        let plane = Plane3::new(Point3::new(5.0, 0.0, 0.0), Direction3::X);
+        let mirrored = box_shape.mirror(plane).unwrap();
+        let bbox = mirrored.bounding_box().unwrap();
+        // [0, 2] reflected about x=5 becomes [8, 10].
+        assert!((bbox.min.x - 8.0).abs() < 1e-6);
+        assert!((bbox.max.x - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mirror_does_not_mutate_the_source_shape() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let original_bbox = box_shape.bounding_box().unwrap();
+        let _mirrored = box_shape.mirror(Plane3::new(Point3::ORIGIN, Direction3::X));
+        let bbox_after = box_shape.bounding_box().unwrap();
+        assert_eq!(
+            original_bbox, bbox_after,
+            "mirror must not mutate the source shape"
+        );
+    }
+
+    #[test]
+    fn mirroring_twice_across_the_same_plane_returns_to_the_original_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 1.0).unwrap();
+        let plane = Plane3::new(Point3::new(5.0, 0.0, 0.0), Direction3::X);
+        let once = box_shape.mirror(plane).unwrap();
+        let twice = once.mirror(plane).unwrap();
+        let original_bbox = box_shape.bounding_box().unwrap();
+        let twice_bbox = twice.bounding_box().unwrap();
+        assert!((original_bbox.min.x - twice_bbox.min.x).abs() < 1e-6);
+        assert!((original_bbox.max.x - twice_bbox.max.x).abs() < 1e-6);
     }
 
     // --- AICAD-022: curves/edges/wires ---

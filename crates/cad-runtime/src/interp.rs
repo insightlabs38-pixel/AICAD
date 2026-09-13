@@ -175,7 +175,7 @@ use cad_hir::hir::{
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::HirType;
-use cad_kernel_api::{Axis3, Direction3, Frame3, Transform};
+use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Transform, Vector3};
 use cad_types::{AffineKind, PrimitiveType};
 use cad_units::{
     ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison, check_unary_neg,
@@ -1206,6 +1206,28 @@ impl<'a> Interpreter<'a> {
                 RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
             })
         };
+        let spatial_plane = |value: &Value| -> EvalResult<Plane3> {
+            crate::spatial::plane3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        // A plain `Int` pattern-instance count (`AICAD-077`). Shape
+        // (`Value::Number`) is already guaranteed by `cad_hir::typeck`'s
+        // own `Int` parameter check; the `>= 1` range check is a genuine
+        // run-time condition no type check can rule out, mirroring
+        // `spatial_direction`/`spatial_axis`/`spatial_frame`'s own "shape
+        // vs. value" split for `RuntimeError::InvalidSpatialArgument`.
+        let pattern_count = |value: &Value| -> EvalResult<u32> {
+            let n = match value {
+                Value::Number(n) => n.magnitude,
+                _ => return Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            };
+            let count = n.round() as i64;
+            if count < 1 {
+                return Err(RuntimeError::InvalidPatternCount { name, count, span }.into());
+            }
+            Ok(count as u32)
+        };
         // Pushes one `GeometryOp` node onto this run's own accumulated
         // `Interpreter::geometry` graph — every builtin arm below ends in
         // one or more calls to this, per this function's own doc comment
@@ -1233,7 +1255,7 @@ impl<'a> Interpreter<'a> {
                 let dz = quantity(arg(3)?)?.magnitude;
                 push_op(GeometryOp::Transform {
                     target,
-                    transform: Transform::translation(cad_kernel_api::Vector3 {
+                    transform: Transform::translation(Vector3 {
                         x: dx,
                         y: dy,
                         z: dz,
@@ -1370,6 +1392,65 @@ impl<'a> Interpreter<'a> {
                     lhs: target,
                     rhs: placed,
                 })?
+            }
+            // `mirror(target, plane)` (`AICAD-077`): a single
+            // `GeometryOp::Mirror` node — see that variant's own doc
+            // comment for why a mirror is not a `GeometryOp::Transform`.
+            BuiltinFnId::Mirror => {
+                let target = geometry(arg(0)?)?;
+                let plane = spatial_plane(arg(1)?)?;
+                push_op(GeometryOp::Mirror { target, plane })?
+            }
+            // `linear_pattern(target, direction, count, spacing)`
+            // (`AICAD-077`): `target` left in place, then `count - 1`
+            // further copies translated along the normalized `direction`
+            // by `spacing`, `2*spacing`, ..., unioned together in order —
+            // see `BuiltinFnId::LinearPattern`'s own doc comment for the
+            // exact placement convention.
+            BuiltinFnId::LinearPattern => {
+                let target = geometry(arg(0)?)?;
+                let direction = spatial_direction(arg(1)?)?;
+                let count = pattern_count(arg(2)?)?;
+                let spacing = quantity(arg(3)?)?;
+                let step = direction.as_vector3() * spacing.magnitude;
+                let mut accumulated = target;
+                for i in 1..count {
+                    let offset = step * f64::from(i);
+                    let copy = push_op(GeometryOp::Transform {
+                        target,
+                        transform: Transform::translation(offset),
+                    })?;
+                    accumulated = push_op(GeometryOp::Union {
+                        lhs: accumulated,
+                        rhs: copy,
+                    })?;
+                }
+                accumulated
+            }
+            // `radial_pattern(target, axis, count, angle)` (`AICAD-077`):
+            // `target` left in place, then `count - 1` further copies
+            // rotated about `axis` by `angle/count`, `2*angle/count`,
+            // ..., unioned together in order — see
+            // `BuiltinFnId::RadialPattern`'s own doc comment for the
+            // exact placement convention.
+            BuiltinFnId::RadialPattern => {
+                let target = geometry(arg(0)?)?;
+                let axis = spatial_axis(arg(1)?)?;
+                let count = pattern_count(arg(2)?)?;
+                let angle = quantity(arg(3)?)?;
+                let step_radians = angle.magnitude / f64::from(count);
+                let mut accumulated = target;
+                for i in 1..count {
+                    let copy = push_op(GeometryOp::Transform {
+                        target,
+                        transform: Transform::rotation(axis, step_radians * f64::from(i)),
+                    })?;
+                    accumulated = push_op(GeometryOp::Union {
+                        lhs: accumulated,
+                        rhs: copy,
+                    })?;
+                }
+                accumulated
             }
         };
         Ok(Value::Geometry(node))
@@ -2278,6 +2359,9 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::Revolve => "revolve",
         BuiltinFnId::Hole => "hole",
         BuiltinFnId::Pocket => "pocket",
+        BuiltinFnId::Mirror => "mirror",
+        BuiltinFnId::LinearPattern => "linear_pattern",
+        BuiltinFnId::RadialPattern => "radial_pattern",
     }
 }
 
@@ -4517,6 +4601,182 @@ mod tests {
             }
             other => panic!("expected GeometryOp::Cut, got {other:?}"),
         }
+    }
+
+    // --- AICAD-077: mirror/linear_pattern/radial_pattern -------------
+
+    #[test]
+    fn mirror_call_builds_a_single_mirror_node() {
+        // Plain `compiled` — proving `Plane` resolves with zero caller
+        // composition, exactly like `revolve`'s own `Axis3` test above.
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return mirror(box(10mm, 10mm, 10mm), \
+                     Plane(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           normal = Vector3(x = 1.0, y = 0.0, z = 0.0))); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 2);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Mirror { target, plane } => {
+                assert!(matches!(
+                    geometry_node(graph, *target),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                assert_eq!(plane.origin, cad_kernel_api::Point3::ORIGIN);
+                assert_eq!(plane.normal, cad_kernel_api::Direction3::X);
+            }
+            other => panic!("expected GeometryOp::Mirror, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_builds_count_minus_one_translated_copies_unioned_in_order() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return linear_pattern(box(2mm, 2mm, 2mm), \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 3, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // box, then 2 (transform, union) pairs for the 2 additional copies.
+        assert_eq!(graph.nodes().len(), 5);
+        let (second_union_lhs, second_copy) = match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Union { lhs, rhs } => (*lhs, *rhs),
+            other => panic!("expected GeometryOp::Union, got {other:?}"),
+        };
+        match geometry_node(graph, second_copy) {
+            cad_geometry_api::GeometryOp::Transform { target, transform } => {
+                assert!(matches!(
+                    geometry_node(graph, *target),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                let expected = cad_kernel_api::Transform::translation(
+                    cad_kernel_api::Vector3::new(0.01, 0.0, 0.0),
+                );
+                assert_eq!(*transform, expected);
+            }
+            other => panic!("expected GeometryOp::Transform, got {other:?}"),
+        }
+        let (first_union_lhs, first_copy) = match geometry_node(graph, second_union_lhs) {
+            cad_geometry_api::GeometryOp::Union { lhs, rhs } => (*lhs, *rhs),
+            other => panic!("expected GeometryOp::Union, got {other:?}"),
+        };
+        assert!(matches!(
+            geometry_node(graph, first_union_lhs),
+            cad_geometry_api::GeometryOp::Box { .. }
+        ));
+        match geometry_node(graph, first_copy) {
+            cad_geometry_api::GeometryOp::Transform { transform, .. } => {
+                let expected = cad_kernel_api::Transform::translation(
+                    cad_kernel_api::Vector3::new(0.005, 0.0, 0.0),
+                );
+                assert_eq!(*transform, expected);
+            }
+            other => panic!("expected GeometryOp::Transform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_with_count_one_returns_the_target_unmoved() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return linear_pattern(box(2mm, 2mm, 2mm), \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 1, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(
+            graph.nodes().len(),
+            1,
+            "count == 1 must build no extra nodes"
+        );
+        assert!(matches!(
+            geometry_node(graph, id),
+            cad_geometry_api::GeometryOp::Box { .. }
+        ));
+    }
+
+    #[test]
+    fn linear_pattern_with_a_non_positive_count_is_rejected() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return linear_pattern(box(2mm, 2mm, 2mm), \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 0, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E129");
+    }
+
+    #[test]
+    fn radial_pattern_builds_count_minus_one_rotated_copies_dividing_angle_evenly() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return radial_pattern(box(10mm, 10mm, 10mm), \
+                     Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     4, 360deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // box, then 3 (transform, union) pairs for the 3 additional copies.
+        assert_eq!(graph.nodes().len(), 7);
+        let axis = cad_kernel_api::Axis3::new(
+            cad_kernel_api::Point3::ORIGIN,
+            cad_kernel_api::Direction3::Z,
+        );
+        let (last_union_lhs, last_copy) = match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Union { lhs, rhs } => (*lhs, *rhs),
+            other => panic!("expected GeometryOp::Union, got {other:?}"),
+        };
+        // The last (3rd additional) copy is rotated by 3 * (360/4) = 270deg.
+        match geometry_node(graph, last_copy) {
+            cad_geometry_api::GeometryOp::Transform { transform, .. } => {
+                let expected =
+                    cad_kernel_api::Transform::rotation(axis, 3.0 * std::f64::consts::FRAC_PI_2);
+                assert_eq!(*transform, expected);
+            }
+            other => panic!("expected GeometryOp::Transform, got {other:?}"),
+        }
+        let _ = last_union_lhs;
+    }
+
+    #[test]
+    fn radial_pattern_with_a_non_positive_count_is_rejected() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return radial_pattern(box(10mm, 10mm, 10mm), \
+                     Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     -1, 360deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E129");
     }
 
     #[test]

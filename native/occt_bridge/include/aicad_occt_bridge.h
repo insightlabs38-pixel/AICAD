@@ -159,6 +159,27 @@ aicad_occt_status_t aicad_occt_transform_shape(aicad_occt_context_t* context,
                                                 const double matrix[12],
                                                 aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-077: mirror across a plane. A mirror is an IMPROPER isometry
+ * (determinant -1) and therefore cannot be expressed as the rigid
+ * `matrix` `aicad_occt_transform_shape` accepts and re-validates as
+ * proper-rotation-only (`project/OWNER_DECISIONS.md`/`cad-kernel-api`'s
+ * own "Rigidity (no reflection)" invariant) -- this is its own entry
+ * point, taking a plane (origin + unit normal) directly rather than a
+ * 12-element matrix, so no caller can construct a reflection the other
+ * function would (correctly) reject.
+ *
+ * `origin`/`normal` are each a 3-element point/unit-vector; `normal` is
+ * re-normalized defensively (the OCCT `gp_Ax2` constructor the
+ * implementation uses already rejects a zero-length direction on its
+ * own). Always produces a NEW shape handle, never mutates the input in
+ * place (DL-2's functional/value-oriented semantics), matching
+ * `aicad_occt_transform_shape`'s own contract. */
+aicad_occt_status_t aicad_occt_mirror_shape(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             const double origin[3],
+                                             const double normal[3],
+                                             aicad_shape_handle_t* out_handle);
+
 /* --- AICAD-022: minimal curve/edge/wire construction. A raw
  * `Geom_Curve` is not exposed as its own handle kind yet (no Stage-1 task
  * needs curve evaluation independent of an edge) -- curves are
