@@ -1,0 +1,23 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// HELD-OUT CASE — see held_out/HELD_OUT_README.md before reading further.
+// Category: boolean topology changes. See ./case.md for the intended
+// query target, expected classification, and measured evidence.
+
+param block_y: Length = 20mm;
+param block_z: Length = 10mm;
+param half_x: Length = 30mm;
+param hole_diameter: Length = 10mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Seam {
+    let a: Geometry = box(half_x, block_y, block_z);
+    let b: Geometry = transform(box(half_x, block_y, block_z), half_x, 0mm, 0mm);
+    let combined: Geometry = union(a, b);
+    let body: Geometry = hole(
+        combined,
+        Axis3(origin = Point3(x = half_x, y = block_y / 2, z = 0mm - HOLE_OVERSHOOT), direction = Vector3(x = 0.0, y = 0.0, z = 1.0)),
+        hole_diameter,
+        block_z + HOLE_OVERSHOOT * 2,
+    );
+}

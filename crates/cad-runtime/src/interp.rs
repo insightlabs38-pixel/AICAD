@@ -167,7 +167,7 @@
 use crate::error::RuntimeError;
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
-use cad_geometry_api::{EdgeIndex, GeomId, GeometryOp, Quantity};
+use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryOp, Quantity};
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
     BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
@@ -175,6 +175,7 @@ use cad_hir::hir::{
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::HirType;
+use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Transform, Vector3};
 use cad_types::{AffineKind, PrimitiveType};
 use cad_units::{
     ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison, check_unary_neg,
@@ -236,6 +237,12 @@ pub struct Interpreter<'a> {
     /// declare-before-call shape so a function may call a sibling
     /// declared later in source.
     fns: HashMap<BindingId, &'a HirItem>,
+    /// Every `struct` item, indexed by its own declaring `BindingId`
+    /// (`AICAD-070`) — mirrors [`Interpreter::fns`] exactly (including
+    /// recursing into `part` nesting via [`index_structs`]), used by
+    /// [`Interpreter::construct_struct`] to look up a struct's own
+    /// declared field name/order at construction time.
+    structs: HashMap<BindingId, &'a HirItem>,
     /// Top-level `let`/`const`/`param` values, populated by
     /// [`Interpreter::run_top_level`].
     globals: Frame,
@@ -265,6 +272,25 @@ pub struct Interpreter<'a> {
     /// Value::Geometry`] referencing it. Never dispatched into actual
     /// kernel calls by this crate — see [`Interpreter::into_geometry_graph`].
     geometry: cad_geometry_api::GeometryGraph,
+    /// The exact, contiguous `GeomId` range [`Interpreter::dispatch_builtin`]
+    /// pushed onto [`Interpreter::geometry`] for one successfully-dispatched
+    /// `RuntimeBuiltin` call, keyed by that call's own `Span` (`AICAD-079B`
+    /// gate remediation). A single-node builtin (`box`/`cylinder`/`union`/
+    /// ...) always maps to a length-1 range; a compound builtin (`hole`/
+    /// `pocket`/`extrude`/`revolve`/`mirror`/pattern builtins/`shell`) maps
+    /// to every internal node its own decomposition pushed, since all of
+    /// them must be recomputed together whenever the call itself is dirty
+    /// (`cad_feature_graph::FeatureGraph::dirty_set` marks dirtiness at
+    /// exactly this same call-span granularity — one `FeatureNode` per
+    /// call, regardless of how many raw nodes it decomposes into). Lets a
+    /// caller (`cad-cli`'s own parametric build orchestration) translate a
+    /// dirty `FeatureId` (which carries the identical call span) into the
+    /// precise raw-graph `GeomId`s `cad_geometry_runtime::dispatch::
+    /// dispatch_graph_incremental` must recompute, with no positional
+    /// guesswork and no dependency on every builtin being exactly one node.
+    /// Not populated for a call that fails partway through (irrelevant: the
+    /// whole build fails too in that case).
+    call_geom_ranges: HashMap<Span, std::ops::Range<u32>>,
 }
 
 /// The single coherent configuration surface for every execution resource
@@ -391,18 +417,32 @@ impl<'a> Interpreter<'a> {
     ) -> Interpreter<'a> {
         let mut fns = HashMap::new();
         index_fns(&program.items, &mut fns);
+        let mut structs = HashMap::new();
+        index_structs(&program.items, &mut structs);
         Interpreter {
             bindings,
             file,
             source,
             fns,
+            structs,
             globals: HashMap::new(),
             iterations_consumed: 0,
             call_depth: 0,
             peak_call_depth: 0,
             budget: ResourceBudget::default(),
             geometry: cad_geometry_api::GeometryGraph::new(),
+            call_geom_ranges: HashMap::new(),
         }
+    }
+
+    /// The [`GeomId`] range [`Interpreter::dispatch_builtin`] pushed for the
+    /// `RuntimeBuiltin` call at `span`, if that call has already run
+    /// successfully this execution — see [`Interpreter::call_geom_ranges`]'s
+    /// own doc comment. `None` for a span this interpreter never dispatched
+    /// a builtin call at (not a top-level call at all, or a call that
+    /// failed before completing).
+    pub fn geom_range_for_call(&self, span: Span) -> Option<std::ops::Range<u32>> {
+        self.call_geom_ranges.get(&span).cloned()
     }
 
     /// The complete `GeometryGraph` this run has built so far (`project/
@@ -448,8 +488,11 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Evaluates every top-level `let`/`const`/`param` item's value
-    /// expression, in source order, populating [`Interpreter::globals`].
-    /// `fn`/`struct`/`enum`/`import`/`part` items are declarations with no
+    /// expression, in source order, populating [`Interpreter::globals`],
+    /// and (`AICAD-071`) executes every top-level `part { ... }` body via
+    /// [`Interpreter::eval_part_body`], binding the resulting
+    /// [`Value::Part`] into `globals` under the part's own binding.
+    /// `fn`/`struct`/`enum`/`import` items remain declarations with no
     /// value of their own to compute and are silently skipped (not a
     /// scope gap — `cad_hir::typeck`'s own `register_type_names`/
     /// `collect_signatures` passes skip them identically, for the same
@@ -461,13 +504,93 @@ impl<'a> Interpreter<'a> {
         program: &'a HirProgram,
     ) -> Result<(), Box<cad_diagnostics::Diagnostic>> {
         for item in &program.items {
-            let (binding, value) = match item {
+            match item {
                 HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
-                    (*binding, Some(value))
+                    self.eval_top_level_value(*binding, value)?;
                 }
                 HirItem::Param {
                     binding, default, ..
-                } => (*binding, default.as_ref()),
+                } => {
+                    if let Some(value) = default {
+                        self.eval_top_level_value(*binding, value)?;
+                    }
+                }
+                HirItem::Part { binding, items, .. } => {
+                    let value = self.eval_part_body(*binding, items)?;
+                    self.globals.insert(*binding, value);
+                }
+                HirItem::Fn { .. }
+                | HirItem::Struct { .. }
+                | HirItem::Enum { .. }
+                | HirItem::Import { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Evaluates one `part { ... }` body's own top-level `let`/`const`/
+    /// `param`-with-default items (`AICAD-071`), in source order, into a
+    /// fresh nested scope — the same naive source-order evaluation
+    /// [`Interpreter::run_top_level`] already performs for the whole
+    /// program, confined to one part's own item list and collected as a
+    /// [`Value::Part`] rather than written into `self.globals` directly.
+    ///
+    /// # Deliberately narrow scope
+    ///
+    /// This gives a `part` body real execution semantics for the first
+    /// time — previously `HirItem::Part` was silently skipped by both
+    /// [`Interpreter::run_top_level`]/[`Interpreter::
+    /// run_top_level_parametric`] (a pure declaration with no runtime
+    /// effect at all). It deliberately does **not** implement:
+    /// - parameterized part *instantiation* (`Bracket()`-style
+    ///   construction call syntax) — no such syntax exists in the grammar
+    ///   today (`part` is a plain item-scope declaration, never callable,
+    ///   unlike `struct`);
+    /// - `.`-syntax source-level access to a part's own named outputs
+    ///   (`Bracket.body`) — `cad_hir::typeck` has no `CheckedType::Part`
+    ///   and no `struct_fields`-style entry for a part's own binding, so
+    ///   this stays unresolved at the type level; only this crate's own
+    ///   runtime [`Value::Part`] and [`Interpreter::global`] exist so far,
+    ///   for introspection (tests, a future `cad-cli` reporting a part's
+    ///   outputs), not general `.aicad` source syntax;
+    /// - nested `part`-in-`part` bodies — skipped exactly like `fn`/
+    ///   `struct`/`enum`/`import` are, matching this method's own
+    ///   top-level-only precedent, with no forcing evidence requiring
+    ///   recursion here yet.
+    ///
+    /// `fn`/`struct` items declared *inside* a part body are unaffected by
+    /// any of the above: [`Interpreter::fns`]/[`Interpreter::structs`]
+    /// already index them via `index_fns`/`index_structs`'s own
+    /// pre-existing recursion into `part` nesting, so calling/constructing
+    /// one from inside (or outside) a part body already worked before this
+    /// task and needs no change here.
+    fn eval_part_body(
+        &mut self,
+        part_binding: BindingId,
+        items: &'a [HirItem],
+    ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
+        let mut frame: Frame = HashMap::new();
+        let mut fields = Vec::new();
+        for item in items {
+            let (binding, item_name, value) = match item {
+                HirItem::Let {
+                    binding,
+                    name,
+                    value,
+                    ..
+                }
+                | HirItem::Const {
+                    binding,
+                    name,
+                    value,
+                    ..
+                } => (*binding, name, Some(value)),
+                HirItem::Param {
+                    binding,
+                    name,
+                    default,
+                    ..
+                } => (*binding, name, default.as_ref()),
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
@@ -475,23 +598,16 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Import { .. } => continue,
             };
             let Some(value) = value else { continue };
-            let mut scratch: Frame = HashMap::new();
-            match self.eval_expr(&mut scratch, value) {
+            match self.eval_expr(&mut frame, value) {
                 Ok(v) => {
-                    self.globals.insert(binding, v);
+                    frame.insert(binding, v.clone());
+                    fields.push((item_name.clone(), v));
                 }
                 Err(Signal::Return(_)) => unreachable!(
-                    "a top-level let/const/param value expression can never contain a \
-                     `return` statement — `return` is only reachable inside a block, and no \
-                     top-level item value is a block-position statement sequence"
+                    "a part item's own value expression can never contain a 'return' \
+                     statement, exactly like Interpreter::eval_top_level_value's identical \
+                     precedent"
                 ),
-                // Unlike `return`, `break`/`continue` *can* syntactically
-                // appear inside a top-level value's nested block
-                // expression (e.g. `let x: Float = { break; };`) even
-                // though no loop encloses it there — a genuinely reachable
-                // "escaped every enclosing loop" case, not a `return`-style
-                // impossibility, so it gets the same real diagnostic
-                // `run_fn_body` gives it for a function body.
                 Err(Signal::Break(span)) => {
                     return Err(Box::new(
                         RuntimeError::BreakOutsideLoop { span }
@@ -509,7 +625,168 @@ impl<'a> Interpreter<'a> {
                 }
             }
         }
+        Ok(Value::Part {
+            binding: part_binding,
+            fields,
+        })
+    }
+
+    /// The current value of a top-level `let`/`const`/`param` binding, or
+    /// (`AICAD-071`) a top-level `part`'s own [`Value::Part`], if
+    /// [`Interpreter::run_top_level`] has already populated it — `None`
+    /// beforehand, or for a `param` with no default (`AICAD-065`'s own
+    /// documented "left unpopulated" convention). Note
+    /// [`Interpreter::run_top_level_parametric`] does **not** execute
+    /// `part` bodies (still silently skips `HirItem::Part`, unchanged by
+    /// this task — see [`Interpreter::eval_part_body`]'s own doc comment
+    /// for why `part` execution is `run_top_level`-only so far). Added for
+    /// `AICAD-071`'s `part` execution: a test/future `cad-cli` caller's
+    /// only way to observe a part's own named outputs today, since no
+    /// `.`-syntax source access exists yet.
+    pub fn global(&self, binding: BindingId) -> Option<&Value> {
+        self.globals.get(&binding)
+    }
+
+    /// Evaluates top-level `let`/`const` items in source order (identical
+    /// to [`Interpreter::run_top_level`]'s own first pass), then evaluates
+    /// every top-level `param` item via `model`'s dependency-ordered,
+    /// override-aware, deterministic schedule (`AICAD-065`,
+    /// `project/DECISION_LOG.md#DL-12` Level-1 determinism) instead of
+    /// `run_top_level`'s naive source-order pass. A `param` with an
+    /// `overrides` entry uses that value instead of its own `default`
+    /// expression — the parametric modeling system's edit/rebuild entry
+    /// point (`crate::params`' own module doc comment). When
+    /// `type_check` is `Some`, an override whose runtime type does not
+    /// match the param's own checked declared type is a real
+    /// [`RuntimeError::ParamOverrideTypeMismatch`] diagnostic, never a
+    /// silent coercion; `None` skips that check (a caller that has not
+    /// run [`cad_hir::typeck::check_program`] at all, e.g. a hand-built
+    /// test program).
+    ///
+    /// This is a complete alternative to [`Interpreter::run_top_level`],
+    /// not an addition to it — a caller wanting ordinary Stage-2 source-
+    /// order semantics with no parametric edit/rebuild behavior keeps
+    /// using that method; a caller wanting first-class parameter
+    /// identity/dependency/override semantics uses this one instead.
+    /// Wiring this into an actual build pipeline/CLI flag is a future
+    /// task's job (`AICAD-061`'s existing `cad-cli build` command predates
+    /// this task and calls neither parametrically yet) — mirrors
+    /// `project/DECISION_LOG.md#DL-15`'s own precedent of a task
+    /// establishing a mechanism and leaving source/CLI wiring to a later
+    /// task.
+    pub fn run_top_level_parametric(
+        &mut self,
+        program: &'a HirProgram,
+        model: &crate::params::ParamModel<'a>,
+        overrides: &crate::params::ParamOverrides,
+        type_check: Option<&cad_hir::typeck::TypeCheckResult>,
+    ) -> Result<(), Box<cad_diagnostics::Diagnostic>> {
+        // Params first, in `model`'s own dependency-ordered schedule, THEN
+        // `let`/`const` in source order — not the other way around. Every
+        // real Stage-3 model (every fixture under `examples/`, every case
+        // in `project/benchmarks/`) declares `param`s before the geometry
+        // `let`s that consume them, exactly the ordinary, expected pattern
+        // `crate::feature_graph`'s own `parameter_referencing_a_param_is_
+        // recorded_as_a_binding_reference` test already assumes at the
+        // dependency-graph layer. Evaluating `let`/`const` first (the
+        // order this method used before this fix) left every top-level
+        // `param` unpopulated in `self.globals` at that point, so any
+        // `let` referencing one failed with `RuntimeError::UnboundValue`
+        // ("has no value yet at this point in execution") — a real,
+        // previously-undiscovered defect that made this method unusable
+        // for any realistic parametric model, found while wiring
+        // `cad-cli`'s build orchestration to actually call it
+        // (`AICAD-079B` gate remediation). `crate::params::ParamModel`'s
+        // own documented scope boundary ("a param's default expression
+        // may also reference a top-level let/const... it just is not
+        // part of *this* dependency graph") is not violated by this
+        // reordering — no test anywhere exercises a `param` whose default
+        // references an earlier `let`/`const` under *this* method (that
+        // pattern remains `Interpreter::run_top_level`'s own, unaffected,
+        // plain-source-order scope), so swapping the pass order does not
+        // regress any previously-passing case, only fixes the far more
+        // common and previously-broken "let references param" direction.
+        for &id in model.evaluation_order() {
+            let decl = model.decl(id).expect(
+                "ParamModel::evaluation_order only ever yields ids the model itself declared",
+            );
+            if let Some(value) = overrides.get(&id) {
+                if let Some(Some(checked)) =
+                    type_check.and_then(|tc| tc.binding_types.get(id.0.index()))
+                    && !crate::params::value_matches_checked_type(value, checked)
+                {
+                    return Err(Box::new(
+                        RuntimeError::ParamOverrideTypeMismatch {
+                            name: decl.name.to_string(),
+                            expected: format!("{checked:?}"),
+                            found: value.kind_name(),
+                            span: decl.span,
+                        }
+                        .to_diagnostic(self.file, self.source),
+                    ));
+                }
+                self.globals.insert(id.0, value.clone());
+                continue;
+            }
+            let Some(default) = decl.default else {
+                continue;
+            };
+            self.eval_top_level_value(id.0, default)?;
+        }
+
+        for item in &program.items {
+            let (binding, value) = match item {
+                HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
+                    (*binding, value)
+                }
+                HirItem::Param { .. }
+                | HirItem::Fn { .. }
+                | HirItem::Struct { .. }
+                | HirItem::Enum { .. }
+                | HirItem::Part { .. }
+                | HirItem::Import { .. } => continue,
+            };
+            self.eval_top_level_value(binding, value)?;
+        }
         Ok(())
+    }
+
+    /// Shared by [`Interpreter::run_top_level`] and [`Interpreter::
+    /// run_top_level_parametric`]: evaluates one top-level value
+    /// expression and stores it in `globals`, converting every non-`Ok`
+    /// [`Signal`] exactly like both call sites already did before this
+    /// helper existed.
+    fn eval_top_level_value(
+        &mut self,
+        binding: BindingId,
+        value: &'a HirExpr,
+    ) -> Result<(), Box<cad_diagnostics::Diagnostic>> {
+        let mut scratch: Frame = HashMap::new();
+        match self.eval_expr(&mut scratch, value) {
+            Ok(v) => {
+                self.globals.insert(binding, v);
+                Ok(())
+            }
+            Err(Signal::Return(_)) => unreachable!(
+                "a top-level let/const/param value expression can never contain a \
+                 `return` statement — `return` is only reachable inside a block, and no \
+                 top-level item value is a block-position statement sequence"
+            ),
+            // Unlike `return`, `break`/`continue` *can* syntactically
+            // appear inside a top-level value's nested block
+            // expression (e.g. `let x: Float = { break; };`) even
+            // though no loop encloses it there — a genuinely reachable
+            // "escaped every enclosing loop" case, not a `return`-style
+            // impossibility, so it gets the same real diagnostic
+            // `run_fn_body` gives it for a function body.
+            Err(Signal::Break(span)) => Err(Box::new(
+                RuntimeError::BreakOutsideLoop { span }.to_diagnostic(self.file, self.source),
+            )),
+            Err(Signal::Continue(span)) => Err(Box::new(
+                RuntimeError::ContinueOutsideLoop { span }.to_diagnostic(self.file, self.source),
+            )),
+            Err(Signal::Error(err)) => Err(Box::new(err.to_diagnostic(self.file, self.source))),
+        }
     }
 
     /// Calls the (unique, top-level, `BindingKind::Fn`) function named
@@ -650,6 +927,14 @@ impl<'a> Interpreter<'a> {
                     payload: VariantPayload::Tuple(values),
                 });
             }
+            // Struct-literal construction via ordinary call syntax
+            // (`AICAD-053` type-checks this; `AICAD-070` gives it a real
+            // runtime value — see `Interpreter::construct_struct`'s own
+            // doc comment).
+            BindingKind::Struct => {
+                let struct_binding = *binding_id;
+                return self.construct_struct(caller_frame, struct_binding, name, args, span);
+            }
             _ => {
                 return Err(RuntimeError::NotCallable {
                     name: name.clone(),
@@ -723,7 +1008,129 @@ impl<'a> Interpreter<'a> {
             };
             frame.insert(param.binding, value);
         }
-        self.run_fn_body(fn_item, frame)
+
+        // `AICAD-079B` gate remediation: for a `RuntimeBuiltin` call
+        // specifically, bracket the raw `GeomId` range this exact call
+        // site pushes onto `self.geometry` by its own call-expression
+        // `span` — deliberately *not* `fn_item`'s own internal span
+        // (`run_fn_body`'s `enter_call`/diagnostic span), which is the
+        // builtin's shared *declaration* span and identical for every
+        // call to the same builtin anywhere in the program (recording
+        // under that key would let a later call silently overwrite an
+        // earlier one's range). `span` here is this call expression's own
+        // unique source span, matching `cad_feature_graph::FeatureGraph`'s
+        // own `FeatureNode::span` one-for-one (both are built from the
+        // same `HirExpr::Call { span, .. }`), which is exactly the
+        // correlation `Interpreter::geom_range_for_call`'s own doc comment
+        // requires. An ordinary AICAD-source function call needs no such
+        // tracking (`cad_feature_graph::FeatureGraph` never treats one as
+        // a feature node — see that module's own "Interprocedural
+        // construction" scope note), so this stays narrowly scoped to
+        // `RuntimeBuiltin` bodies only.
+        let is_runtime_builtin = matches!(
+            fn_item,
+            HirItem::Fn {
+                body: FunctionImplementation::RuntimeBuiltin(_),
+                ..
+            }
+        );
+        if is_runtime_builtin {
+            let start = self.geometry.nodes().len() as u32;
+            let result = self.run_fn_body(fn_item, frame);
+            if result.is_ok() {
+                let end = self.geometry.nodes().len() as u32;
+                self.call_geom_ranges.insert(span, start..end);
+            }
+            result
+        } else {
+            self.run_fn_body(fn_item, frame)
+        }
+    }
+
+    /// Constructs a [`Value::Struct`] from a struct-literal call-syntax
+    /// construction (`Point(1mm, 2mm)`/`Point(x: 1mm, y: 2mm)`, `AICAD-070`
+    /// — completes `cad_hir::typeck::Checker::check_struct_construction`'s
+    /// already-approved type-checking with an actual runtime value).
+    /// `struct_binding` names the struct's own declaration (looked up in
+    /// [`Interpreter::structs`] for its declared field name/order — generic
+    /// or not, field order is independent of any type-parameter
+    /// instantiation, which is erased at runtime exactly like
+    /// [`crate::value::Value::List`]'s own element type already is).
+    ///
+    /// Positional and named arguments may be mixed exactly like an
+    /// ordinary function call (`Interpreter::call`'s own positional/named
+    /// slot-filling, mirrored here). Every error path below is defensive
+    /// only (already-checked for a type-checked program by
+    /// `check_struct_construction`) — see [`RuntimeError::
+    /// StructConstructionArgumentShape`]'s own doc comment.
+    fn construct_struct(
+        &mut self,
+        frame: &mut Frame,
+        struct_binding: BindingId,
+        name: &str,
+        args: &[HirArg],
+        span: Span,
+    ) -> EvalResult<Value> {
+        let struct_item = *self.structs.get(&struct_binding).ok_or_else(|| {
+            RuntimeError::StructConstructionArgumentShape {
+                name: name.to_string(),
+                span,
+            }
+        })?;
+        let HirItem::Struct {
+            fields: field_decls,
+            ..
+        } = struct_item
+        else {
+            unreachable!("structs only ever indexes HirItem::Struct (see index_structs)")
+        };
+
+        let mut slots: Vec<Option<Value>> = vec![None; field_decls.len()];
+        let mut next_positional = 0usize;
+        for arg in args {
+            match arg {
+                HirArg::Positional(expr) => {
+                    let value = self.eval_expr(frame, expr)?;
+                    if next_positional >= slots.len() {
+                        return Err(RuntimeError::StructConstructionArgumentShape {
+                            name: name.to_string(),
+                            span,
+                        }
+                        .into());
+                    }
+                    slots[next_positional] = Some(value);
+                    next_positional += 1;
+                }
+                HirArg::Named {
+                    name: field_name,
+                    value,
+                    ..
+                } => {
+                    let evaluated = self.eval_expr(frame, value)?;
+                    let idx = field_decls
+                        .iter()
+                        .position(|f| f.name == *field_name)
+                        .ok_or_else(|| RuntimeError::StructConstructionArgumentShape {
+                            name: name.to_string(),
+                            span,
+                        })?;
+                    slots[idx] = Some(evaluated);
+                }
+            }
+        }
+
+        let mut fields = Vec::with_capacity(field_decls.len());
+        for (decl, slot) in field_decls.iter().zip(slots) {
+            let value = slot.ok_or_else(|| RuntimeError::StructConstructionArgumentShape {
+                name: name.to_string(),
+                span,
+            })?;
+            fields.push((decl.name.clone(), value));
+        }
+        Ok(Value::Struct {
+            ty: struct_binding,
+            fields,
+        })
     }
 
     fn run_fn_body(&mut self, fn_item: &'a HirItem, mut frame: Frame) -> EvalResult<Value> {
@@ -787,13 +1194,30 @@ impl<'a> Interpreter<'a> {
     /// AICAD-source function's own parameters, per `DL-15`'s "the same
     /// ordinary ... call-expression semantics" — converts them into the
     /// `cad_geometry_api` vocabulary `cad_hir::builtins::catalogue`'s own
-    /// signature for `id` promises, and appends one node to this run's
-    /// own accumulated [`Interpreter::geometry`]. Every argument's runtime
-    /// kind was already verified against that exact signature by
+    /// signature for `id` promises, and appends one or more nodes to this
+    /// run's own accumulated [`Interpreter::geometry`], returning the
+    /// *last* pushed node as the call's own result. Every argument's
+    /// runtime kind was already verified against that exact signature by
     /// `cad_hir::typeck` before this program ever executed, so the
     /// [`RuntimeError::BuiltinArgumentShape`] path below is defensive only
     /// (this evaluator's own "trusts, but verifies" precedent), never
     /// reachable for a type-checked program.
+    ///
+    /// # Single-node vs. compound builtins (`AICAD-076`)
+    ///
+    /// `Box`/`Cylinder`/`Transform`/`Union`/`Cut`/`Intersect`/`Fillet`/
+    /// `Chamfer`/`Plate` each push exactly one [`GeometryOp`] node,
+    /// matching every builtin's own behavior before this task. `Extrude`/
+    /// `Revolve` (select a face via a new [`GeometryOp::GetFace`] node,
+    /// then extrude/revolve it) and `Hole`/`Pocket` (place a cylinder/box
+    /// tool via a [`GeometryOp::Transform`] node, then [`GeometryOp::Cut`]
+    /// it from the target) are the first *compound* builtins, each
+    /// pushing more than one node per call — a domain-meaningful name
+    /// standing in for a short, fixed sequence of already-existing ops,
+    /// exactly like [`BuiltinFnId::Plate`]'s own "no new `GeometryOp`
+    /// variant needed" precedent, just spanning more than one node this
+    /// time. This is still the one ordinary `RuntimeBuiltin` mechanism
+    /// (`DL-15`) — no second geometry-invocation path is introduced.
     fn dispatch_builtin(
         &mut self,
         id: BuiltinFnId,
@@ -844,58 +1268,320 @@ impl<'a> Interpreter<'a> {
                 _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
             }
         };
+        // A raw face index (`AICAD-076`), the single-value analogue of
+        // `edge_indices` above — see `GeometryOp::GetFace`'s own doc
+        // comment for why raw index selection, not a new reference type.
+        let face_index = |value: &Value| -> EvalResult<FaceIndex> {
+            match value {
+                Value::Number(n) => Ok(FaceIndex(n.magnitude as usize)),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // A raw face index list (`AICAD-078`, `shell`'s own
+        // `removed_faces`) — the plural analogue of `face_index` above,
+        // mirroring `edge_indices`'s own existing `List<Int>` shape.
+        let face_indices = |value: &Value| -> EvalResult<Vec<FaceIndex>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(FaceIndex(n.magnitude as usize)),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `AICAD-075A`'s `crate::spatial` conversion boundary, wrapped
+        // here so a genuinely invalid (not merely wrongly-shaped) spatial
+        // argument surfaces as its own dedicated
+        // `RuntimeError::InvalidSpatialArgument` diagnostic rather than
+        // the generic `BuiltinArgumentShape` one.
+        let spatial_direction = |value: &Value| -> EvalResult<Direction3> {
+            crate::spatial::direction3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_axis = |value: &Value| -> EvalResult<Axis3> {
+            crate::spatial::axis3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_frame = |value: &Value| -> EvalResult<Frame3> {
+            crate::spatial::frame3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_plane = |value: &Value| -> EvalResult<Plane3> {
+            crate::spatial::plane3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        // A plain `Int` pattern-instance count (`AICAD-077`). Shape
+        // (`Value::Number`) is already guaranteed by `cad_hir::typeck`'s
+        // own `Int` parameter check; the `>= 1` range check is a genuine
+        // run-time condition no type check can rule out, mirroring
+        // `spatial_direction`/`spatial_axis`/`spatial_frame`'s own "shape
+        // vs. value" split for `RuntimeError::InvalidSpatialArgument`.
+        let pattern_count = |value: &Value| -> EvalResult<u32> {
+            let n = match value {
+                Value::Number(n) => n.magnitude,
+                _ => return Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            };
+            let count = n.round() as i64;
+            if count < 1 {
+                return Err(RuntimeError::InvalidPatternCount { name, count, span }.into());
+            }
+            Ok(count as u32)
+        };
+        // Pushes one `GeometryOp` node onto this run's own accumulated
+        // `Interpreter::geometry` graph — every builtin arm below ends in
+        // one or more calls to this, per this function's own doc comment
+        // "Single-node vs. compound builtins".
+        let mut push_op = |op: GeometryOp| -> EvalResult<GeomId> {
+            self.geometry
+                .push_op(op, span)
+                .map_err(|err| RuntimeError::GeometryConstruction { err }.into())
+        };
 
-        let op = match id {
-            BuiltinFnId::Box => GeometryOp::Box {
+        let node = match id {
+            BuiltinFnId::Box => push_op(GeometryOp::Box {
                 dx: quantity(arg(0)?)?,
                 dy: quantity(arg(1)?)?,
                 dz: quantity(arg(2)?)?,
-            },
-            BuiltinFnId::Cylinder => GeometryOp::Cylinder {
+            })?,
+            BuiltinFnId::Cylinder => push_op(GeometryOp::Cylinder {
                 radius: quantity(arg(0)?)?,
                 height: quantity(arg(1)?)?,
-            },
+            })?,
             BuiltinFnId::Transform => {
                 let target = geometry(arg(0)?)?;
                 let dx = quantity(arg(1)?)?.magnitude;
                 let dy = quantity(arg(2)?)?.magnitude;
                 let dz = quantity(arg(3)?)?.magnitude;
-                GeometryOp::Transform {
+                push_op(GeometryOp::Transform {
                     target,
-                    transform: cad_kernel_api::Transform::translation(cad_kernel_api::Vector3 {
+                    transform: Transform::translation(Vector3 {
                         x: dx,
                         y: dy,
                         z: dz,
                     }),
-                }
+                })?
             }
-            BuiltinFnId::Union => GeometryOp::Union {
+            BuiltinFnId::Union => push_op(GeometryOp::Union {
                 lhs: geometry(arg(0)?)?,
                 rhs: geometry(arg(1)?)?,
-            },
-            BuiltinFnId::Cut => GeometryOp::Cut {
+            })?,
+            BuiltinFnId::Cut => push_op(GeometryOp::Cut {
                 lhs: geometry(arg(0)?)?,
                 rhs: geometry(arg(1)?)?,
-            },
-            BuiltinFnId::Intersect => GeometryOp::Intersect {
+            })?,
+            BuiltinFnId::Intersect => push_op(GeometryOp::Intersect {
                 lhs: geometry(arg(0)?)?,
                 rhs: geometry(arg(1)?)?,
-            },
-            BuiltinFnId::Fillet => GeometryOp::Fillet {
+            })?,
+            BuiltinFnId::Fillet => push_op(GeometryOp::Fillet {
                 target: geometry(arg(0)?)?,
                 edges: edge_indices(arg(1)?)?,
                 radius: quantity(arg(2)?)?,
-            },
-            BuiltinFnId::Chamfer => GeometryOp::Chamfer {
+            })?,
+            BuiltinFnId::Chamfer => push_op(GeometryOp::Chamfer {
                 target: geometry(arg(0)?)?,
                 edges: edge_indices(arg(1)?)?,
                 distance: quantity(arg(2)?)?,
-            },
+            })?,
+            // `plate` dispatches to the identical `GeometryOp::Box`
+            // construction `box` itself uses — see `BuiltinFnId::Plate`'s
+            // own doc comment for why no new `GeometryOp` variant exists
+            // for it.
+            BuiltinFnId::Plate => push_op(GeometryOp::Box {
+                dx: quantity(arg(0)?)?,
+                dy: quantity(arg(1)?)?,
+                dz: quantity(arg(2)?)?,
+            })?,
+            // `extrude(target, face, direction, distance)` (`AICAD-076`):
+            // selects `target`'s own face `face` via the new
+            // `GeometryOp::GetFace`, then extrudes it — the only
+            // source-visible profile source before sketch/profile
+            // construction is wired to the language (see
+            // `GeometryOp::GetFace`'s own doc comment).
+            BuiltinFnId::Extrude => {
+                let target = geometry(arg(0)?)?;
+                let face = face_index(arg(1)?)?;
+                let direction = spatial_direction(arg(2)?)?;
+                let distance = quantity(arg(3)?)?;
+                let profile = push_op(GeometryOp::GetFace { target, face })?;
+                push_op(GeometryOp::Extrude {
+                    profile,
+                    direction,
+                    distance,
+                })?
+            }
+            // `revolve(target, face, axis, angle)` (`AICAD-076`, re-typed
+            // by `AICAD-076A` per `project/DECISION_LOG.md#DL-21`):
+            // selects `target`'s own face `face`, then revolves it about
+            // the real `Axis3` value `axis` — the same axis representation
+            // `hole` shares below, per `AICAD-075A`'s own integration
+            // requirement ("no feature invents its own coordinate
+            // convention").
+            BuiltinFnId::Revolve => {
+                let target = geometry(arg(0)?)?;
+                let face = face_index(arg(1)?)?;
+                let axis = spatial_axis(arg(2)?)?;
+                let angle = quantity(arg(3)?)?;
+                let profile = push_op(GeometryOp::GetFace { target, face })?;
+                push_op(GeometryOp::Revolve {
+                    profile,
+                    axis,
+                    angle,
+                })?
+            }
+            // `hole(target, axis, diameter, depth)` (`AICAD-076`, re-typed
+            // by `AICAD-076A`): places a `diameter`/2-radius, `depth`-tall
+            // cylinder (the same fixed +Z-axis primitive `cylinder` itself
+            // uses) along the real `Axis3` value `axis`, via `Frame3::
+            // from_z`/`Transform::from_frames` (`AICAD-075A`), then cuts
+            // it from `target`. Deliberately narrower than `docs/plan/
+            // 04_HIGH_LEVEL_MODELING_API.md`'s own `hole` signature: no
+            // `ThroughAll` depth (querying `target`'s own extent along
+            // the axis to compute one is a separate, not-yet-built
+            // capability), and no counterbore/countersink/thread metadata
+            // yet — the caller picks an explicit `depth` themselves,
+            // exactly like every other Stage-2/3 Safe CAD dimension
+            // parameter.
+            BuiltinFnId::Hole => {
+                let target = geometry(arg(0)?)?;
+                let axis = spatial_axis(arg(1)?)?;
+                let diameter = quantity(arg(2)?)?;
+                let depth = quantity(arg(3)?)?;
+                let radius = Quantity::new(diameter.magnitude / 2.0, diameter.ty);
+                let cylinder = push_op(GeometryOp::Cylinder {
+                    radius,
+                    height: depth,
+                })?;
+                let placement_frame = Frame3::from_z(axis.origin, axis.direction);
+                let placement = Transform::from_frames(Frame3::WORLD, placement_frame);
+                let placed = push_op(GeometryOp::Transform {
+                    target: cylinder,
+                    transform: placement,
+                })?;
+                push_op(GeometryOp::Cut {
+                    lhs: target,
+                    rhs: placed,
+                })?
+            }
+            // `pocket(target, frame, width, length, depth)` (`AICAD-076`,
+            // re-typed by `AICAD-076A`): places a `width` x `length` x
+            // `depth` box (the same corner-at-origin primitive `box`/
+            // `plate` themselves use) at the real `Frame3` value `frame`
+            // via `Transform::from_frames`, then cuts it from `target` --
+            // `plate`'s own precedent narrowed from an arbitrary profile
+            // to a rectangle applied identically here for `pocket`'s own
+            // cutting tool.
+            BuiltinFnId::Pocket => {
+                let target = geometry(arg(0)?)?;
+                let frame = spatial_frame(arg(1)?)?;
+                let width = quantity(arg(2)?)?;
+                let length = quantity(arg(3)?)?;
+                let depth = quantity(arg(4)?)?;
+                let tool = push_op(GeometryOp::Box {
+                    dx: width,
+                    dy: length,
+                    dz: depth,
+                })?;
+                let placement = Transform::from_frames(Frame3::WORLD, frame);
+                let placed = push_op(GeometryOp::Transform {
+                    target: tool,
+                    transform: placement,
+                })?;
+                push_op(GeometryOp::Cut {
+                    lhs: target,
+                    rhs: placed,
+                })?
+            }
+            // `mirror(target, plane)` (`AICAD-077`): a single
+            // `GeometryOp::Mirror` node — see that variant's own doc
+            // comment for why a mirror is not a `GeometryOp::Transform`.
+            BuiltinFnId::Mirror => {
+                let target = geometry(arg(0)?)?;
+                let plane = spatial_plane(arg(1)?)?;
+                push_op(GeometryOp::Mirror { target, plane })?
+            }
+            // `linear_pattern(target, direction, count, spacing)`
+            // (`AICAD-077`): `target` left in place, then `count - 1`
+            // further copies translated along the normalized `direction`
+            // by `spacing`, `2*spacing`, ..., unioned together in order —
+            // see `BuiltinFnId::LinearPattern`'s own doc comment for the
+            // exact placement convention.
+            BuiltinFnId::LinearPattern => {
+                let target = geometry(arg(0)?)?;
+                let direction = spatial_direction(arg(1)?)?;
+                let count = pattern_count(arg(2)?)?;
+                let spacing = quantity(arg(3)?)?;
+                let step = direction.as_vector3() * spacing.magnitude;
+                let mut accumulated = target;
+                for i in 1..count {
+                    let offset = step * f64::from(i);
+                    let copy = push_op(GeometryOp::Transform {
+                        target,
+                        transform: Transform::translation(offset),
+                    })?;
+                    accumulated = push_op(GeometryOp::Union {
+                        lhs: accumulated,
+                        rhs: copy,
+                    })?;
+                }
+                accumulated
+            }
+            // `radial_pattern(target, axis, count, angle)` (`AICAD-077`):
+            // `target` left in place, then `count - 1` further copies
+            // rotated about `axis` by `angle/count`, `2*angle/count`,
+            // ..., unioned together in order — see
+            // `BuiltinFnId::RadialPattern`'s own doc comment for the
+            // exact placement convention.
+            BuiltinFnId::RadialPattern => {
+                let target = geometry(arg(0)?)?;
+                let axis = spatial_axis(arg(1)?)?;
+                let count = pattern_count(arg(2)?)?;
+                let angle = quantity(arg(3)?)?;
+                let step_radians = angle.magnitude / f64::from(count);
+                let mut accumulated = target;
+                for i in 1..count {
+                    let copy = push_op(GeometryOp::Transform {
+                        target,
+                        transform: Transform::rotation(axis, step_radians * f64::from(i)),
+                    })?;
+                    accumulated = push_op(GeometryOp::Union {
+                        lhs: accumulated,
+                        rhs: copy,
+                    })?;
+                }
+                accumulated
+            }
+            // `shell(target, removed_faces, thickness)` (`AICAD-078`): a
+            // single `GeometryOp::Shell` node, mirroring `Fillet`/
+            // `Chamfer`'s own single-node shape exactly (no new
+            // `GeometryOp` variant or kernel capability needed — see
+            // `BuiltinFnId::Shell`'s own doc comment). `Shape::shell`'s
+            // own established sign convention (`crates/cad-occt-bridge`'s
+            // own `shell_hollowed_box_matches_analytic_volume` test) is
+            // "negative thickness hollows inward, positive builds
+            // material outward" — negated here so the Safe CAD source
+            // parameter stays an ordinary positive `Length` meaning
+            // "wall thickness, hollowed inward", matching `docs/plan/
+            // 04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool = true`
+            // default with no separate parameter needed for it.
+            BuiltinFnId::Shell => {
+                let target = geometry(arg(0)?)?;
+                let removed_faces = face_indices(arg(1)?)?;
+                let thickness = quantity(arg(2)?)?;
+                push_op(GeometryOp::Shell {
+                    target,
+                    removed_faces,
+                    thickness: Quantity::new(-thickness.magnitude, thickness.ty),
+                })?
+            }
         };
-        let node = self
-            .geometry
-            .push_op(op, span)
-            .map_err(|err| RuntimeError::GeometryConstruction { err })?;
         Ok(Value::Geometry(node))
     }
 
@@ -1229,11 +1915,37 @@ impl<'a> Interpreter<'a> {
             HirExpr::Unary { op, operand, span } => self.eval_unary(frame, *op, operand, *span),
             HirExpr::Binary { op, lhs, rhs, span } => self.eval_binary(frame, *op, lhs, rhs, *span),
             HirExpr::Call { callee, args, span } => self.call(frame, callee, args, *span),
-            HirExpr::Field { span, .. } => Err(RuntimeError::Unsupported {
-                construct: "field access (no runtime struct value exists yet)",
-                span: *span,
+            // `receiver.field` (`AICAD-070`) — `receiver`'s own type was
+            // already verified by `cad_hir::typeck::Checker::
+            // check_field_access` to be a struct with this field for a
+            // type-checked program (`Value::Part` has no such compile-time
+            // check yet — see that variant's own doc comment — so the
+            // `UnknownField` path below is genuinely reachable for it, not
+            // only defensive).
+            HirExpr::Field {
+                receiver,
+                field,
+                span,
+            } => {
+                let receiver_value = self.eval_expr(frame, receiver)?;
+                match &receiver_value {
+                    Value::Struct { fields, .. } | Value::Part { fields, .. } => {
+                        match fields.iter().find(|(name, _)| name == field) {
+                            Some((_, value)) => Ok(value.clone()),
+                            None => Err(RuntimeError::UnknownField {
+                                field: field.clone(),
+                                span: *span,
+                            }
+                            .into()),
+                        }
+                    }
+                    _ => Err(RuntimeError::Unsupported {
+                        construct: "field access on a non-struct value",
+                        span: *span,
+                    }
+                    .into()),
+                }
             }
-            .into()),
             HirExpr::Block(block) => self.exec_block(frame, block),
             HirExpr::If {
                 cond,
@@ -1771,6 +2483,15 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::Intersect => "intersect",
         BuiltinFnId::Fillet => "fillet",
         BuiltinFnId::Chamfer => "chamfer",
+        BuiltinFnId::Plate => "plate",
+        BuiltinFnId::Extrude => "extrude",
+        BuiltinFnId::Revolve => "revolve",
+        BuiltinFnId::Hole => "hole",
+        BuiltinFnId::Pocket => "pocket",
+        BuiltinFnId::Mirror => "mirror",
+        BuiltinFnId::LinearPattern => "linear_pattern",
+        BuiltinFnId::RadialPattern => "radial_pattern",
+        BuiltinFnId::Shell => "shell",
     }
 }
 
@@ -1784,6 +2505,24 @@ fn index_fns<'a>(items: &'a [HirItem], out: &mut HashMap<BindingId, &'a HirItem>
                 out.insert(*binding, item);
             }
             HirItem::Part { items, .. } => index_fns(items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Indexes every `struct` item by its own `BindingId` (`AICAD-070`),
+/// mirroring [`index_fns`] exactly — including recursing into `part`
+/// bodies for indexing completeness, for the identical reason `index_fns`
+/// already does (a struct declared inside a `part` is constructible from
+/// anywhere, `part` *instantiation* itself is a separate, narrower concern
+/// — see [`Interpreter::eval_part_body`]'s own doc comment).
+fn index_structs<'a>(items: &'a [HirItem], out: &mut HashMap<BindingId, &'a HirItem>) {
+    for item in items {
+        match item {
+            HirItem::Struct { binding, .. } => {
+                out.insert(*binding, item);
+            }
+            HirItem::Part { items, .. } => index_structs(items, out),
             _ => {}
         }
     }
@@ -1843,6 +2582,39 @@ mod tests {
             "test source failed to parse: {parse_diagnostics:?}"
         );
         let program = cad_hir::prelude::with_prelude(&program);
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "test source failed to lower cleanly: {:?}",
+            lowered.diagnostics
+        );
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        assert!(
+            checked.diagnostics.is_empty(),
+            "test source failed to type-check: {:?}",
+            checked.diagnostics
+        );
+        lowered
+    }
+
+    /// Same as [`compiled`], but first prepends `cad_hir::geometry_types`
+    /// (`Point3`/`Vector3<T>`/`Axis3`/`Frame3`/`Plane`, `AICAD-070`/
+    /// `AICAD-075A`) to `source`'s own already-parsed program — used only
+    /// by the `extrude`/`revolve`/`hole`/`pocket` (`AICAD-076`) test
+    /// section below, since only those builtins reference a
+    /// `cad_hir::geometry_types` type (`Vector3<Float>`, for `direction`).
+    fn compiled_with_geometry_types(source: &str) -> LowerResult {
+        let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
+        assert!(
+            parse_diagnostics.is_empty(),
+            "test source failed to parse: {parse_diagnostics:?}"
+        );
+        let program = cad_hir::geometry_types::with_geometry_types(&program);
         let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
         assert!(
             lowered.diagnostics.is_empty(),
@@ -2141,6 +2913,110 @@ mod tests {
         // `run_top_level` deliberately not called first.
         let err = interp.call_by_name("f", vec![number(2.0)]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E102");
+    }
+
+    // --- AICAD-071: part body execution ---------------------------------
+
+    fn binding_named(lowered: &LowerResult, name: &str) -> BindingId {
+        lowered
+            .bindings
+            .iter()
+            .find(|b| b.name == name)
+            .unwrap_or_else(|| panic!("no binding named '{name}' in {:?}", lowered.bindings))
+            .id
+    }
+
+    #[test]
+    fn part_body_executes_and_exposes_named_outputs() {
+        let lowered = compiled(
+            "part Bracket { \
+                 param width: Length = 80mm; \
+                 let doubled: Length = width * 2.0; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "width");
+                assert_number_eq(fields[0].1.clone(), 0.08);
+                assert_eq!(fields[1].0, "doubled");
+                assert_number_eq(fields[1].1.clone(), 0.16);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn part_body_can_call_safe_cad_builtins_and_expose_geometry() {
+        let lowered = compiled(
+            "part Bracket { \
+                 let body: Geometry = box(10mm, 20mm, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].0, "body");
+                assert!(matches!(fields[0].1, Value::Geometry(_)));
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+    }
+
+    #[test]
+    fn a_param_with_no_default_is_left_out_of_a_part_s_exposed_fields() {
+        let lowered = compiled(
+            "part Bracket { \
+                 param width: Length; \
+                 let doubled: Length = 1mm; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].0, "doubled");
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_part_not_yet_run_top_level_ed_has_no_global_value() {
+        let lowered = compiled("part Bracket { let x: Float = 1.0; }");
+        let interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // `run_top_level` deliberately not called first.
+        let bracket = binding_named(&lowered, "Bracket");
+        assert_eq!(interp.global(bracket), None);
+    }
+
+    #[test]
+    fn a_part_body_can_call_a_fn_declared_inside_the_same_part() {
+        let lowered = compiled(
+            "part Bracket { \
+                 fn helper(x: Float) -> Float { return x + 1.0; } \
+                 let result: Float = helper(41.0); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let bracket = binding_named(&lowered, "Bracket");
+        match interp.global(bracket) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 1);
+                assert_number_eq(fields[0].1.clone(), 42.0);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
     }
 
     // --- Conditional execution (AICAD-055) ---
@@ -3110,15 +3986,74 @@ mod tests {
         assert_eq!(diag_code(&err), "RUNTIME-E111");
     }
 
+    // --- AICAD-070: struct-value construction and field access ---------
+
     #[test]
-    fn struct_construction_is_not_yet_supported() {
+    fn struct_construction_with_named_arguments_produces_a_struct_value() {
         let lowered = compiled(
             "struct Point { x: Float, y: Float } \
              fn f() -> Point { return Point(x = 1.0, y = 2.0); }",
         );
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
-        let err = interp.call_by_name("f", vec![]).unwrap_err();
-        assert_eq!(diag_code(&err), "RUNTIME-E111");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        match result {
+            Value::Struct { fields, .. } => {
+                assert_eq!(fields.len(), 2);
+                assert_number_eq(fields[0].1.clone(), 1.0);
+                assert_number_eq(fields[1].1.clone(), 2.0);
+            }
+            other => panic!("expected Value::Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn struct_construction_with_positional_arguments_matches_declared_field_order() {
+        let lowered = compiled(
+            "struct Point { x: Float, y: Float } \
+             fn f() -> Point { return Point(3.0, 4.0); }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        match result {
+            Value::Struct { fields, .. } => {
+                assert_eq!(fields[0].0, "x");
+                assert_number_eq(fields[0].1.clone(), 3.0);
+                assert_eq!(fields[1].0, "y");
+                assert_number_eq(fields[1].1.clone(), 4.0);
+            }
+            other => panic!("expected Value::Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn field_access_reads_a_constructed_struct_field() {
+        let lowered = compiled(
+            "struct Point { x: Float, y: Float } \
+             fn f() -> Float { return Point(x = 5.0, y = 6.0).y; }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 6.0);
+    }
+
+    #[test]
+    fn generic_struct_construction_and_field_access_work_for_any_instantiation() {
+        // `check_struct_construction`'s own generic-instantiation
+        // substitution only fires when the construction's own contextual
+        // `expected` type is a genuine `Pair<Float, Bool>` instantiation
+        // (an explicit `let` type annotation here) — matching
+        // `AICAD-057D`'s documented call-site-inference scope, which
+        // (unlike a generic *function* call) does not infer a generic
+        // *struct* construction's type arguments from its own field
+        // values alone.
+        let lowered = compiled(
+            "struct Pair<T, U> { first: T, second: U } \
+             fn f() -> Float { \
+                 let p: Pair<Float, Bool> = Pair(first = 7.0, second = true); \
+                 return p.first; \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 7.0);
     }
 
     // --- AICAD-057E: Result<T,E>/Optional<T> via the ordinary prelude
@@ -3491,6 +4426,29 @@ mod tests {
     }
 
     #[test]
+    fn plate_call_dispatches_to_a_box_geometry_node() {
+        // `plate` (`AICAD-071`) deliberately reuses `GeometryOp::Box`
+        // verbatim (`width`/`depth`/`thickness` -> `dx`/`dy`/`dz`) — see
+        // `BuiltinFnId::Plate`'s own doc comment for why no new
+        // `GeometryOp` variant exists for it.
+        let lowered = compiled("fn f() -> Geometry { return plate(40mm, 25mm, 3mm); }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+        match geometry_node(interp.geometry_graph(), id) {
+            cad_geometry_api::GeometryOp::Box { dx, dy, dz } => {
+                assert!((dx.magnitude - 0.040).abs() < 1e-12);
+                assert!((dy.magnitude - 0.025).abs() < 1e-12);
+                assert!((dz.magnitude - 0.003).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Box, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn cylinder_call_creates_the_expected_geometry_node() {
         let lowered = compiled("fn f() -> Geometry { return cylinder(5mm, 12mm); }");
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
@@ -3584,6 +4542,461 @@ mod tests {
         assert_eq!(interp.geometry_graph().nodes().len(), 1);
     }
 
+    // --- AICAD-076: extrude/revolve/hole/pocket ---------------------
+
+    #[test]
+    fn extrude_call_selects_a_face_then_extrudes_it() {
+        // Plain `compiled` — `Vector3<Float>` (a `Generic` reference) was
+        // always safe without composition; this now also proves it stays
+        // that way after `AICAD-076A`'s standard-type seeding.
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return extrude(box(10mm, 10mm, 10mm), 0, \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 3);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Extrude {
+                profile,
+                direction,
+                distance,
+            } => {
+                assert!((distance.magnitude - 0.005).abs() < 1e-12);
+                assert_eq!(*direction, cad_kernel_api::Direction3::X);
+                match geometry_node(graph, *profile) {
+                    cad_geometry_api::GeometryOp::GetFace { target, face } => {
+                        assert_eq!(face.0, 0);
+                        assert!(matches!(
+                            geometry_node(graph, *target),
+                            cad_geometry_api::GeometryOp::Box { .. }
+                        ));
+                    }
+                    other => panic!("expected GeometryOp::GetFace, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Extrude, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn revolve_call_selects_a_face_then_revolves_about_an_arbitrary_axis() {
+        // Plain `compiled` (not `compiled_with_geometry_types`) — proving
+        // `Axis3` resolves with zero caller composition, `AICAD-076A`'s
+        // own `project/DECISION_LOG.md#DL-21` invariant, not just that
+        // `revolve` itself works.
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return revolve(box(10mm, 10mm, 10mm), 2, \
+                     Axis3(origin = Point3(x = 5mm, y = 5mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     90deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 3);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Revolve {
+                profile,
+                axis,
+                angle,
+            } => {
+                assert!((angle.magnitude - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+                assert!((axis.origin.x - 0.005).abs() < 1e-12);
+                assert!((axis.origin.y - 0.005).abs() < 1e-12);
+                assert!((axis.origin.z - 0.0).abs() < 1e-12);
+                assert_eq!(axis.direction, cad_kernel_api::Direction3::Z);
+                match geometry_node(graph, *profile) {
+                    cad_geometry_api::GeometryOp::GetFace { target, face } => {
+                        assert_eq!(face.0, 2);
+                        assert!(matches!(
+                            geometry_node(graph, *target),
+                            cad_geometry_api::GeometryOp::Box { .. }
+                        ));
+                    }
+                    other => panic!("expected GeometryOp::GetFace, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Revolve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hole_call_builds_a_placed_cylinder_then_cuts_it_from_the_target() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return hole(box(20mm, 20mm, 10mm), \
+                     Axis3(origin = Point3(x = 5mm, y = 5mm, z = -1mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     4mm, 12mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // box, cylinder, transform, cut.
+        assert_eq!(graph.nodes().len(), 4);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Cut { lhs, rhs } => {
+                assert!(matches!(
+                    geometry_node(graph, *lhs),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                match geometry_node(graph, *rhs) {
+                    cad_geometry_api::GeometryOp::Transform { target, transform } => {
+                        match geometry_node(graph, *target) {
+                            cad_geometry_api::GeometryOp::Cylinder { radius, height } => {
+                                assert!((radius.magnitude - 0.002).abs() < 1e-12);
+                                assert!((height.magnitude - 0.012).abs() < 1e-12);
+                            }
+                            other => panic!("expected GeometryOp::Cylinder, got {other:?}"),
+                        }
+                        // The cylinder's own local +Z-axis base point (the
+                        // world origin, before placement) must land exactly
+                        // on the requested hole origin.
+                        let placed_base = transform.apply_point(cad_kernel_api::Point3::ORIGIN);
+                        assert!((placed_base.x - 0.005).abs() < 1e-9);
+                        assert!((placed_base.y - 0.005).abs() < 1e-9);
+                        assert!((placed_base.z - (-0.001)).abs() < 1e-9);
+                        // The cylinder's own local +Z direction must land on
+                        // the requested hole direction.
+                        let placed_direction =
+                            transform.apply_direction(cad_kernel_api::Direction3::Z);
+                        assert_eq!(placed_direction, cad_kernel_api::Direction3::Z);
+                    }
+                    other => panic!("expected GeometryOp::Transform, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Cut, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pocket_call_builds_a_placed_box_then_cuts_it_from_the_target() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return pocket(box(30mm, 30mm, 10mm), \
+                     Frame3(origin = Point3(x = 5mm, y = 5mm, z = 0mm), \
+                            x_axis = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                            y_axis = Vector3(x = 0.0, y = 1.0, z = 0.0), \
+                            z_axis = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     8mm, 6mm, 4mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // target box, tool box, transform, cut.
+        assert_eq!(graph.nodes().len(), 4);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Cut { lhs, rhs } => {
+                assert!(matches!(
+                    geometry_node(graph, *lhs),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                match geometry_node(graph, *rhs) {
+                    cad_geometry_api::GeometryOp::Transform { target, transform } => {
+                        match geometry_node(graph, *target) {
+                            cad_geometry_api::GeometryOp::Box { dx, dy, dz } => {
+                                assert!((dx.magnitude - 0.008).abs() < 1e-12);
+                                assert!((dy.magnitude - 0.006).abs() < 1e-12);
+                                assert!((dz.magnitude - 0.004).abs() < 1e-12);
+                            }
+                            other => panic!("expected GeometryOp::Box, got {other:?}"),
+                        }
+                        let placed_corner = transform.apply_point(cad_kernel_api::Point3::ORIGIN);
+                        assert!((placed_corner.x - 0.005).abs() < 1e-12);
+                        assert!((placed_corner.y - 0.005).abs() < 1e-12);
+                        assert!((placed_corner.z - 0.0).abs() < 1e-12);
+                    }
+                    other => panic!("expected GeometryOp::Transform, got {other:?}"),
+                }
+            }
+            other => panic!("expected GeometryOp::Cut, got {other:?}"),
+        }
+    }
+
+    // --- AICAD-077: mirror/linear_pattern/radial_pattern -------------
+
+    #[test]
+    fn mirror_call_builds_a_single_mirror_node() {
+        // Plain `compiled` — proving `Plane` resolves with zero caller
+        // composition, exactly like `revolve`'s own `Axis3` test above.
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return mirror(box(10mm, 10mm, 10mm), \
+                     Plane(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           normal = Vector3(x = 1.0, y = 0.0, z = 0.0))); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 2);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Mirror { target, plane } => {
+                assert!(matches!(
+                    geometry_node(graph, *target),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                assert_eq!(plane.origin, cad_kernel_api::Point3::ORIGIN);
+                assert_eq!(plane.normal, cad_kernel_api::Direction3::X);
+            }
+            other => panic!("expected GeometryOp::Mirror, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_builds_count_minus_one_translated_copies_unioned_in_order() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return linear_pattern(box(2mm, 2mm, 2mm), \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 3, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // box, then 2 (transform, union) pairs for the 2 additional copies.
+        assert_eq!(graph.nodes().len(), 5);
+        let (second_union_lhs, second_copy) = match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Union { lhs, rhs } => (*lhs, *rhs),
+            other => panic!("expected GeometryOp::Union, got {other:?}"),
+        };
+        match geometry_node(graph, second_copy) {
+            cad_geometry_api::GeometryOp::Transform { target, transform } => {
+                assert!(matches!(
+                    geometry_node(graph, *target),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                let expected = cad_kernel_api::Transform::translation(
+                    cad_kernel_api::Vector3::new(0.01, 0.0, 0.0),
+                );
+                assert_eq!(*transform, expected);
+            }
+            other => panic!("expected GeometryOp::Transform, got {other:?}"),
+        }
+        let (first_union_lhs, first_copy) = match geometry_node(graph, second_union_lhs) {
+            cad_geometry_api::GeometryOp::Union { lhs, rhs } => (*lhs, *rhs),
+            other => panic!("expected GeometryOp::Union, got {other:?}"),
+        };
+        assert!(matches!(
+            geometry_node(graph, first_union_lhs),
+            cad_geometry_api::GeometryOp::Box { .. }
+        ));
+        match geometry_node(graph, first_copy) {
+            cad_geometry_api::GeometryOp::Transform { transform, .. } => {
+                let expected = cad_kernel_api::Transform::translation(
+                    cad_kernel_api::Vector3::new(0.005, 0.0, 0.0),
+                );
+                assert_eq!(*transform, expected);
+            }
+            other => panic!("expected GeometryOp::Transform, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn linear_pattern_with_count_one_returns_the_target_unmoved() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return linear_pattern(box(2mm, 2mm, 2mm), \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 1, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(
+            graph.nodes().len(),
+            1,
+            "count == 1 must build no extra nodes"
+        );
+        assert!(matches!(
+            geometry_node(graph, id),
+            cad_geometry_api::GeometryOp::Box { .. }
+        ));
+    }
+
+    #[test]
+    fn linear_pattern_with_a_non_positive_count_is_rejected() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return linear_pattern(box(2mm, 2mm, 2mm), \
+                     Vector3(x = 1.0, y = 0.0, z = 0.0), 0, 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E129");
+    }
+
+    #[test]
+    fn radial_pattern_builds_count_minus_one_rotated_copies_dividing_angle_evenly() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return radial_pattern(box(10mm, 10mm, 10mm), \
+                     Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     4, 360deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        // box, then 3 (transform, union) pairs for the 3 additional copies.
+        assert_eq!(graph.nodes().len(), 7);
+        let axis = cad_kernel_api::Axis3::new(
+            cad_kernel_api::Point3::ORIGIN,
+            cad_kernel_api::Direction3::Z,
+        );
+        let (last_union_lhs, last_copy) = match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Union { lhs, rhs } => (*lhs, *rhs),
+            other => panic!("expected GeometryOp::Union, got {other:?}"),
+        };
+        // The last (3rd additional) copy is rotated by 3 * (360/4) = 270deg.
+        match geometry_node(graph, last_copy) {
+            cad_geometry_api::GeometryOp::Transform { transform, .. } => {
+                let expected =
+                    cad_kernel_api::Transform::rotation(axis, 3.0 * std::f64::consts::FRAC_PI_2);
+                assert_eq!(*transform, expected);
+            }
+            other => panic!("expected GeometryOp::Transform, got {other:?}"),
+        }
+        let _ = last_union_lhs;
+    }
+
+    #[test]
+    fn radial_pattern_with_a_non_positive_count_is_rejected() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return radial_pattern(box(10mm, 10mm, 10mm), \
+                     Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     -1, 360deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E129");
+    }
+
+    // --- AICAD-078: shell -------------------------------------------
+
+    #[test]
+    fn shell_call_builds_a_single_shell_node_with_the_given_removed_faces() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return shell(box(10mm, 10mm, 10mm), [0, 2], 1mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 2);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Shell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
+                assert!(matches!(
+                    geometry_node(graph, *target),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                assert_eq!(
+                    removed_faces,
+                    &[
+                        cad_geometry_api::FaceIndex(0),
+                        cad_geometry_api::FaceIndex(2)
+                    ]
+                );
+                // Negated from the source's own positive `1mm` — see
+                // `BuiltinFnId::Shell`'s own doc comment: the Safe CAD
+                // source parameter is always a positive "inward wall
+                // thickness," but `Shape::shell`'s own established sign
+                // convention requires a negative magnitude for that.
+                assert!((thickness.magnitude - -0.001).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Shell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shell_call_permits_an_empty_removed_face_list() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return shell(box(10mm, 10mm, 10mm), [], 1mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        assert!(matches!(result, Value::Geometry(_)));
+    }
+
+    #[test]
+    fn with_geometry_types_composition_still_works_alongside_the_always_seeded_standard_types() {
+        // `project/DECISION_LOG.md#DL-21`'s own idempotence requirement:
+        // a caller that still calls `with_geometry_types` explicitly (now
+        // redundant, but kept as a backward-compatible helper) must not
+        // get a duplicate/conflicting `Axis3` declaration.
+        let lowered = compiled_with_geometry_types(
+            "fn f() -> Geometry { \
+                 return revolve(box(10mm, 10mm, 10mm), 0, \
+                     Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                           direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     45deg); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        assert!(matches!(result, Value::Geometry(_)));
+    }
+
+    #[test]
+    fn a_degenerate_direction_argument_is_reported_as_an_invalid_spatial_argument() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return extrude(box(10mm, 10mm, 10mm), 0, \
+                     Vector3(x = 0.0, y = 0.0, z = 0.0), 5mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E128");
+    }
+
     #[test]
     fn local_lexical_bindings_and_function_calls_still_work_alongside_builtins() {
         // Requirement 13: ordinary `let`/`var`/arithmetic keeps working
@@ -3609,5 +5022,296 @@ mod tests {
         // Both `box(...)` calls actually ran (the `var` reassignment did
         // not skip the second one) -- two independent geometry nodes.
         assert_eq!(interp.geometry_graph().nodes().len(), 2);
+    }
+
+    // AICAD-065: first-class param declarations / derived expressions —
+    // `Interpreter::run_top_level_parametric`'s own end-to-end behavior
+    // (dependency-graph construction/cycle detection is `crate::params`'
+    // own test module's job; these tests exercise evaluation + edit/
+    // rebuild + override type validation specifically).
+
+    fn param_model_and_checked(source: &str) -> (LowerResult, cad_hir::typeck::TypeCheckResult) {
+        let lowered = compiled(source);
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        (lowered, checked)
+    }
+
+    #[test]
+    fn parametric_run_evaluates_derived_param_from_its_default() {
+        let source = "param width: Length = 40mm;\nparam double_width: Length = width * 2.0;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        let width_id = model.find_by_name("width").unwrap();
+        let double_id = model.find_by_name("double_width").unwrap();
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.04);
+        assert_number_eq(interp.globals[&double_id.0].clone(), 0.08);
+    }
+
+    #[test]
+    fn overriding_a_param_recomputes_its_dependents_deterministically() {
+        let source = "param width: Length = 40mm;\nparam double_width: Length = width * 2.0;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model.find_by_name("width").unwrap();
+        let double_id = model.find_by_name("double_width").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(width_id, dimensional(0.1, Dimension::Length));
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect("edit/rebuild should succeed");
+
+        // width used the override (0.1 m), and double_width recomputed
+        // from that override, not from its own stale default expression.
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.1);
+        assert_number_eq(interp.globals[&double_id.0].clone(), 0.2);
+    }
+
+    #[test]
+    fn override_with_wrong_type_is_a_structured_diagnostic_not_a_silent_coercion() {
+        let source = "param width: Length = 40mm;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model.find_by_name("width").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(width_id, Value::Bool(true));
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect_err("a Bool override for a Length param must be rejected");
+        assert_eq!(diag_code(&err), "RUNTIME-E125");
+    }
+
+    #[test]
+    fn cyclic_param_dependency_converts_to_a_structured_diagnostic() {
+        let source = "param a: Length = b;\nparam b: Length = a;\n";
+        let lowered = compiled(source);
+        let err = crate::params::ParamModel::build(&lowered.program)
+            .expect_err("cycle must be rejected")
+            .into_runtime_error();
+        let diag = err.to_diagnostic("test.aicad", source);
+        assert_eq!(diag.code.as_string(), "RUNTIME-E124");
+    }
+
+    #[test]
+    fn rebuild_is_deterministic_across_repeated_runs_with_the_same_overrides() {
+        // D5 Level-1 determinism: identical source + identical overrides
+        // must produce identical results on every rebuild, not merely the
+        // first one.
+        let source = "param a: Length = 1mm;\n\
+                       param b: Length = a * 3.0;\n\
+                       param c: Length = b + a;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let a_id = model.find_by_name("a").unwrap();
+        let c_id = model.find_by_name("c").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(a_id, dimensional(0.005, Dimension::Length));
+
+        let mut results = Vec::new();
+        for _ in 0..5 {
+            let mut interp =
+                Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+            interp
+                .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+                .expect("rebuild should succeed");
+            match &interp.globals[&c_id.0] {
+                Value::Number(n) => results.push(n.magnitude),
+                other => panic!("expected Number, got {other:?}"),
+            }
+        }
+        assert!(results.windows(2).all(|w| w[0] == w[1]));
+        // c = b + a = (a*3) + a = 4*a = 4*0.005 = 0.02
+        assert!((results[0] - 0.02).abs() < 1e-12);
+    }
+
+    /// Regression for the exact defect `AICAD-079B`'s gate remediation
+    /// found and fixed: `run_top_level_parametric` used to evaluate every
+    /// top-level `let`/`const` *before* any `param`, so a `let`
+    /// referencing an earlier `param` (the ordinary, universal Stage-3
+    /// pattern — every fixture under `examples/`/`project/benchmarks/`
+    /// declares params before the geometry that consumes them) failed
+    /// with `RuntimeError::UnboundValue`. This is not a synthetic
+    /// worst-case: it is the *only* realistic shape a parametric geometry
+    /// model takes, which is exactly why the bug went undetected until an
+    /// actual end-to-end parametric-rebuild integration was attempted.
+    #[test]
+    fn a_geometry_let_referencing_an_earlier_param_evaluates_correctly_under_parametric_run() {
+        let source = "param radius: Length = 4mm;\nlet boss = cylinder(radius, 12mm);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("a let referencing an earlier param must evaluate cleanly");
+        let radius_id = model.find_by_name("radius").unwrap();
+        assert_number_eq(interp.globals[&radius_id.0].clone(), 0.004);
+        let boss_binding = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let { binding, name, .. } if name == "boss" => Some(*binding),
+                _ => None,
+            })
+            .expect("boss is declared");
+        assert!(
+            matches!(interp.globals.get(&boss_binding), Some(Value::Geometry(_))),
+            "boss must have evaluated to a real Geometry value, using radius's own value"
+        );
+    }
+
+    /// A `let`'s own dependency on a param that is itself derived from
+    /// another param (a two-hop chain) also evaluates correctly — proves
+    /// the fix handles `model.evaluation_order()`'s own transitive
+    /// dependency ordering, not just a single directly-referenced param.
+    #[test]
+    fn a_geometry_let_referencing_a_derived_param_evaluates_correctly_under_parametric_run() {
+        let source = "param width: Length = 40mm;\n\
+                       param half_width: Length = width / 2.0;\n\
+                       let base = box(width, half_width, 5mm);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("a let referencing a derived param must evaluate cleanly");
+        let base_binding = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let { binding, name, .. } if name == "base" => Some(*binding),
+                _ => None,
+            })
+            .expect("base is declared");
+        assert!(matches!(
+            interp.globals.get(&base_binding),
+            Some(Value::Geometry(_))
+        ));
+    }
+
+    // --- AICAD-079B: per-call GeomId range tracking ---------------------
+
+    #[test]
+    fn a_single_node_builtin_call_gets_a_length_one_geom_range() {
+        let source = "let base = box(10mm, 10mm, 10mm);\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        let call_span = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let {
+                    name,
+                    value: HirExpr::Call { span, .. },
+                    ..
+                } if name == "base" => Some(*span),
+                _ => None,
+            })
+            .expect("base's own value is a Call expression");
+        let range = interp
+            .geom_range_for_call(call_span)
+            .expect("a successfully-dispatched call must have a recorded range");
+        assert_eq!(range.end - range.start, 1, "box is a single-node builtin");
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+    }
+
+    #[test]
+    fn a_compound_builtin_call_gets_a_multi_node_geom_range() {
+        // `hole` decomposes into Cylinder + Transform + Cut internally
+        // (`AICAD-076`) -- one call, three raw nodes.
+        let source = "let bored = hole(box(20mm, 20mm, 10mm), \
+                       Axis3(origin = Point3(x = 5mm, y = 5mm, z = -1mm), \
+                             direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                       4mm, 12mm);\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        let call_span = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let {
+                    name,
+                    value: HirExpr::Call { span, .. },
+                    ..
+                } if name == "bored" => Some(*span),
+                _ => None,
+            })
+            .expect("bored's own value is a Call expression");
+        let range = interp
+            .geom_range_for_call(call_span)
+            .expect("a successfully-dispatched call must have a recorded range");
+        assert_eq!(
+            range.end - range.start,
+            3,
+            "hole decomposes into exactly 3 raw nodes (Cylinder, Transform, Cut)"
+        );
+        // The nested `box(...)` argument is itself a separate, earlier
+        // call with its own (length-1) range, not merged into `hole`'s own.
+        let box_span = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let {
+                    name,
+                    value: HirExpr::Call { args, .. },
+                    ..
+                } if name == "bored" => match &args[0] {
+                    HirArg::Positional(HirExpr::Call { span, .. }) => Some(*span),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("bored's own first argument is a nested box(...) call");
+        let box_range = interp
+            .geom_range_for_call(box_span)
+            .expect("the nested box(...) call has its own recorded range");
+        assert_eq!(box_range.end - box_range.start, 1);
+        assert!(
+            box_range.end <= range.start,
+            "box is built before hole's own nodes"
+        );
     }
 }

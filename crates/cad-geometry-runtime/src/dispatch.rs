@@ -48,6 +48,7 @@ use cad_geometry_api::{GeometryOp, GeometryQuery, Quantity};
 use cad_kernel_api::KernelError;
 use cad_kernel_api::Point3;
 use cad_occt_bridge::{BoundingBox, OcctContext, Shape, TriangleMesh, ValidationReport};
+use std::collections::HashSet;
 
 /// One node's dispatched result. [`NodeResult::Shape`] is the only variant
 /// usable as a later node's geometry operand (mirroring
@@ -252,6 +253,9 @@ fn dispatch_op<'ctx>(
             "CircleWire",
             ctx.make_circle_wire(*center, *normal, mag(radius)),
         )?,
+        GeometryOp::ArcEdge { start, mid, end } => {
+            kernel_op(id, span, "ArcEdge", ctx.make_arc_edge(*start, *mid, *end))?
+        }
         GeometryOp::WireFromEdges { edges } => {
             let edge_shapes = shape_operands(results, id, edges, span)?;
             kernel_op(
@@ -264,6 +268,10 @@ fn dispatch_op<'ctx>(
         GeometryOp::MakeFace { wire } => {
             let wire_shape = shape_operand(results, id, *wire, span)?;
             kernel_op(id, span, "MakeFace", wire_shape.make_face())?
+        }
+        GeometryOp::GetFace { target, face } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(id, span, "GetFace", target_shape.get_face(face.0))?
         }
         GeometryOp::Extrude {
             profile,
@@ -368,6 +376,10 @@ fn dispatch_op<'ctx>(
             let target_shape = shape_operand(results, id, *target, span)?;
             kernel_op(id, span, "Transform", target_shape.transform(transform))?
         }
+        GeometryOp::Mirror { target, plane } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(id, span, "Mirror", target_shape.mirror(*plane))?
+        }
     };
     Ok(NodeResult::Shape(shape))
 }
@@ -465,6 +477,150 @@ pub fn dispatch_graph<'ctx>(
         results.push(result);
     }
     Ok(results)
+}
+
+/// Every [`GeomId`] a construction op reads as its own operand (never a
+/// `Quantity`/`EdgeIndex`/`FaceIndex`/kernel-neutral-math field) — the
+/// forward-propagation edges [`dispatch_graph_incremental`] walks to
+/// decide whether a node downstream of a recomputed input must itself
+/// recompute, mirroring `cad_geometry_api::ir::GeometryGraph::push_op`'s
+/// own operand-validation match one-for-one (every operand it validates
+/// here is exactly the set this function returns).
+fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
+    match op {
+        GeometryOp::Box { .. }
+        | GeometryOp::Cylinder { .. }
+        | GeometryOp::ImportStep { .. }
+        | GeometryOp::LineEdge { .. }
+        | GeometryOp::CircleWire { .. }
+        | GeometryOp::ArcEdge { .. } => Vec::new(),
+        GeometryOp::WireFromEdges { edges } => edges.clone(),
+        GeometryOp::MakeFace { wire } => vec![*wire],
+        GeometryOp::GetFace { target, .. } => vec![*target],
+        GeometryOp::Extrude { profile, .. } => vec![*profile],
+        GeometryOp::Revolve { profile, .. } => vec![*profile],
+        GeometryOp::Sweep { profile, spine } => vec![*profile, *spine],
+        GeometryOp::Loft { sections } => sections.clone(),
+        GeometryOp::Union { lhs, rhs }
+        | GeometryOp::Cut { lhs, rhs }
+        | GeometryOp::Intersect { lhs, rhs } => vec![*lhs, *rhs],
+        GeometryOp::Fillet { target, .. }
+        | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::Offset { target, .. }
+        | GeometryOp::Transform { target, .. }
+        | GeometryOp::Mirror { target, .. } => vec![*target],
+    }
+}
+
+/// The single [`GeomId`] every [`GeometryQuery`] variant reads as its own
+/// target — see [`op_input_ids`]'s identical purpose for constructions.
+fn query_input_id(query: &GeometryQuery) -> GeomId {
+    match query {
+        GeometryQuery::IsValid(target)
+        | GeometryQuery::Volume(target)
+        | GeometryQuery::Area(target)
+        | GeometryQuery::BoundingBox(target)
+        | GeometryQuery::CenterOfMass(target)
+        | GeometryQuery::Validate(target)
+        | GeometryQuery::Tessellate { target, .. }
+        | GeometryQuery::ExportStep { target, .. } => *target,
+    }
+}
+
+/// Deterministic, internal per-rebuild evidence (`AICAD-079B` gate
+/// remediation): exactly which raw [`GeomId`]s [`dispatch_graph_incremental`]
+/// actually recomputed against the kernel this round, and which it reused
+/// directly from the prior round's own [`GraphResults`] with no kernel call
+/// at all. Both lists are in node (build) order, never a `HashSet`'s own
+/// iteration order (`project/DECISION_LOG.md#DL-12` Level-1 determinism) —
+/// callers needing membership tests should build their own `HashSet` from
+/// these, since this type itself only guarantees stable, replayable order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IncrementalStats {
+    pub recomputed: Vec<GeomId>,
+    pub reused: Vec<GeomId>,
+}
+
+impl IncrementalStats {
+    pub fn was_recomputed(&self, id: GeomId) -> bool {
+        self.recomputed.contains(&id)
+    }
+
+    pub fn was_reused(&self, id: GeomId) -> bool {
+        self.reused.contains(&id)
+    }
+}
+
+/// The incremental counterpart to [`dispatch_graph`]: given `graph` (freshly
+/// rebuilt from the same source this rebuild round, so `GeomId` positions
+/// are stable across rounds — see `crates/cad-cli`'s own orchestration doc
+/// comment for why that assumption holds), `prior` (the previous round's own
+/// [`GraphResults`] for the *same* `ctx`, or `None` for the first build), and
+/// `dirty` (the raw `GeomId`s known to need recomputation because their own
+/// evaluated parameters actually changed — never inferred here, always
+/// supplied by the caller from `cad_feature_graph::FeatureGraph::dirty_set`,
+/// which remains the sole semantic authority for *what* is dirty; this
+/// function only decides, mechanically, how far that dirtiness propagates
+/// through the raw graph and what to do about it), dispatches only the
+/// nodes that must be recomputed (a `dirty` node, or any node whose own
+/// operand was itself recomputed this round — forward propagation, correct
+/// because `GeometryGraph`'s own SSA/append-only shape guarantees every
+/// operand has a strictly smaller `GeomId` and is therefore already decided
+/// by the time this walk reaches a node that consumes it) and reuses every
+/// other node's `NodeResult` directly from `prior` (a real move of the
+/// already-computed [`Shape`], not a fresh kernel call — `Shape` is not
+/// `Clone`, by design, since it uniquely owns a kernel-side resource
+/// released on drop, so genuine reuse is the *only* way to avoid
+/// recomputation here, not an implementation shortcut).
+///
+/// On the first build (`prior: None`) every node is necessarily recomputed
+/// (there is nothing to reuse yet), regardless of `dirty`.
+pub fn dispatch_graph_incremental<'ctx>(
+    graph: &GeometryGraph,
+    ctx: &'ctx OcctContext,
+    prior: Option<GraphResults<'ctx>>,
+    dirty: &HashSet<GeomId>,
+) -> Result<(GraphResults<'ctx>, IncrementalStats), DispatchError> {
+    let mut prior_slots: Vec<Option<NodeResult<'ctx>>> = prior
+        .map(|results| results.into_iter().map(Some).collect())
+        .unwrap_or_default();
+
+    let mut results: GraphResults<'ctx> = Vec::with_capacity(graph.nodes().len());
+    let mut recomputed_ids: HashSet<GeomId> = HashSet::new();
+    let mut stats = IncrementalStats::default();
+
+    for node in graph.nodes() {
+        let inputs = match &node.kind {
+            GeometryNodeKind::Construct(op) => op_input_ids(op),
+            GeometryNodeKind::Query(query) => vec![query_input_id(query)],
+        };
+        let has_reusable_slot = prior_slots
+            .get(node.id.index() as usize)
+            .is_some_and(Option::is_some);
+        let must_recompute = !has_reusable_slot
+            || dirty.contains(&node.id)
+            || inputs.iter().any(|input| recomputed_ids.contains(input));
+
+        if !must_recompute
+            && let Some(slot) = prior_slots.get_mut(node.id.index() as usize)
+            && let Some(reused) = slot.take()
+        {
+            results.push(reused);
+            stats.reused.push(node.id);
+            continue;
+        }
+
+        let result = match &node.kind {
+            GeometryNodeKind::Construct(op) => dispatch_op(node.id, node.span, op, ctx, &results)?,
+            GeometryNodeKind::Query(query) => dispatch_query(node.id, node.span, query, &results)?,
+        };
+        results.push(result);
+        recomputed_ids.insert(node.id);
+        stats.recomputed.push(node.id);
+    }
+
+    Ok((results, stats))
 }
 
 #[cfg(test)]
@@ -706,6 +862,82 @@ mod tests {
         }
     }
 
+    /// `GeometryOp::Mirror` (`AICAD-077`) dispatches through
+    /// `Shape::mirror` against a real kernel context: volume is preserved
+    /// (a reflection is volume-preserving) and the bounding box lands on
+    /// the expected far side of the mirror plane -- the same evidence
+    /// style `full_pipeline_dispatches_a_notched_filleted_box_through_the_
+    /// kernel`'s own `Transform` coverage uses, not a render-only check.
+    #[test]
+    fn mirror_op_dispatches_through_the_kernel_and_preserves_volume() {
+        const DX: f64 = 0.02;
+        const DY: f64 = 0.03;
+        const DZ: f64 = 0.04;
+
+        let mut graph = GeometryGraph::new();
+        let base = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(DX),
+                    dy: length(DY),
+                    dz: length(DZ),
+                },
+                span(),
+            )
+            .unwrap();
+        let mirrored = graph
+            .push_op(
+                GeometryOp::Mirror {
+                    target: base,
+                    plane: cad_kernel_api::Plane3::new(
+                        Point3::ORIGIN,
+                        cad_kernel_api::Direction3::X,
+                    ),
+                },
+                span(),
+            )
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(mirrored), span())
+            .unwrap();
+        let volume_q = graph
+            .push_query(GeometryQuery::Volume(mirrored), span())
+            .unwrap();
+        let bbox_q = graph
+            .push_query(GeometryQuery::BoundingBox(mirrored), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid, "mirrored box must be a valid B-rep"),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        let expected_volume = DX * DY * DZ;
+        match &results[volume_q.index() as usize] {
+            NodeResult::Number(volume) => assert!(
+                (*volume - expected_volume).abs() < expected_volume * 1e-9,
+                "volume {volume} did not match expected {expected_volume}"
+            ),
+            other => panic!("expected Number, got {other:?}"),
+        }
+        match &results[bbox_q.index() as usize] {
+            // The source box occupies x in [0, DX]; reflecting across the
+            // x=0 plane (normal +X) moves it to x in [-DX, 0].
+            // `1e-4` tolerance, matching `project/OWNER_DECISIONS.md#D19`'s
+            // own evidenced `linear_abs` bounding-box floor: OCCT's own
+            // bounding-box computation carries a small (~1e-6/1e-7)
+            // numerical margin, confirmed empirically here exactly like
+            // `project/reports/AICAD-034.md`'s own documented finding.
+            NodeResult::BoundingBox(bbox) => {
+                assert!((bbox.min.x - -DX).abs() < 1e-4);
+                assert!((bbox.max.x - 0.0).abs() < 1e-4);
+            }
+            other => panic!("expected BoundingBox, got {other:?}"),
+        }
+    }
+
     #[test]
     fn extruded_circle_wire_matches_the_closed_form_volume() {
         const RADIUS: f64 = 0.004;
@@ -830,6 +1062,71 @@ mod tests {
         match &results[area_q.index() as usize] {
             NodeResult::Number(area) => {
                 let expected = SIDE * SIDE;
+                assert!(
+                    (*area - expected).abs() < expected * 1e-6,
+                    "area {area} did not match expected {expected}"
+                )
+            }
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arc_edge_and_line_edge_build_a_semicircular_face_with_the_expected_area() {
+        // A "D" shape: a straight diameter plus a semicircular arc edge,
+        // proving `GeometryOp::ArcEdge` dispatches through the same
+        // `WireFromEdges`/`MakeFace` path `LineEdge` already does.
+        const RADIUS: f64 = 0.01;
+        let p_top = Point3::new(0.0, RADIUS, 0.0);
+        let p_bottom = Point3::new(0.0, -RADIUS, 0.0);
+        let p_right = Point3::new(RADIUS, 0.0, 0.0);
+
+        let mut graph = GeometryGraph::new();
+        let diameter = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: p_bottom,
+                    end: p_top,
+                },
+                span(),
+            )
+            .unwrap();
+        let arc = graph
+            .push_op(
+                GeometryOp::ArcEdge {
+                    start: p_top,
+                    mid: p_right,
+                    end: p_bottom,
+                },
+                span(),
+            )
+            .unwrap();
+        let wire = graph
+            .push_op(
+                GeometryOp::WireFromEdges {
+                    edges: vec![diameter, arc],
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(GeometryOp::MakeFace { wire }, span())
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(face), span())
+            .unwrap();
+        let area_q = graph.push_query(GeometryQuery::Area(face), span()).unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => {
+                let expected = std::f64::consts::PI * RADIUS * RADIUS / 2.0;
                 assert!(
                     (*area - expected).abs() < expected * 1e-6,
                     "area {area} did not match expected {expected}"
@@ -991,5 +1288,394 @@ mod tests {
             }
             other => panic!("expected Shape, got {other:?}"),
         }
+    }
+
+    /// The `hole` Safe CAD builtin (`AICAD-076`, re-typed by `AICAD-076A`)
+    /// end to end from real `.aicad` source through a real kernel: a
+    /// through-hole (with a deliberate 1mm overshoot on the entry side,
+    /// `AICAD-034`'s own "clean through-cut" precedent) bored along +Z
+    /// through a box, verified against the closed-form removed volume.
+    /// No `cad_hir::geometry_types::with_geometry_types` composition is
+    /// needed (unlike this test's own pre-`AICAD-076A` version) — `hole`'s
+    /// `axis: Axis3` and `Vector3<Float>` direction field both resolve
+    /// from the standard type environment `AICAD-076A`'s `crate::lower::
+    /// Lowerer::seed_standard_types` now seeds unconditionally
+    /// (`project/DECISION_LOG.md#DL-21`).
+    #[test]
+    fn hole_builtin_end_to_end_bores_a_clean_through_hole() {
+        let source = "\
+            fn f() -> Geometry { \
+                return hole(box(20mm, 20mm, 10mm), \
+                    Axis3(origin = Point3(x = 5mm, y = 5mm, z = -1mm), \
+                          direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                    4mm, 12mm); \
+            }";
+        let (program, parse_diagnostics) = cad_parser::parse_program(source, "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+
+        let mut interp = cad_runtime::interp::Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source,
+        );
+        let result = interp
+            .call_by_name("f", vec![])
+            .expect("execution should succeed");
+        let cad_runtime::value::Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results =
+            dispatch_graph(interp.geometry_graph(), &ctx).expect("dispatch should succeed");
+        match &results[id.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!(shape.is_valid().unwrap(), "bored box must be a valid B-rep");
+                let volume = shape.volume().unwrap();
+                let box_volume = 0.02 * 0.02 * 0.01;
+                // The hole overshoots the box's own 10mm thickness on both
+                // ends (entry at -1mm, 12mm tall), so the box's own full
+                // 10mm thickness is bored through cleanly -- the removed
+                // volume is bounded by the box's own material extent, not
+                // the cylinder's nominal 12mm height.
+                let hole_removed_volume = std::f64::consts::PI * 0.002 * 0.002 * 0.01;
+                let expected = box_volume - hole_removed_volume;
+                assert!(
+                    (volume - expected).abs() < expected * 1e-6,
+                    "volume {volume} far from expected {expected}"
+                );
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    /// The `shell` Safe CAD builtin (`AICAD-078`) end to end from real
+    /// `.aicad` source through a real kernel: hollowing a box to a
+    /// uniform thickness with one face removed, verified against the
+    /// closed-form remaining-material volume (outer box minus the inner
+    /// cavity) rather than a render-only check. `GeometryOp::Shell`/
+    /// `Shape::shell`/`aicad_occt_shell` all predate this task
+    /// (`AICAD-026`/`AICAD-059`/`AICAD-060`) — this is the first proof
+    /// that the Safe CAD *builtin* wired to them this task adds actually
+    /// dispatches through the same already-proven kernel path.
+    #[test]
+    fn shell_builtin_end_to_end_hollows_a_box_with_one_face_removed() {
+        const DX: f64 = 0.02;
+        const DY: f64 = 0.02;
+        const DZ: f64 = 0.02;
+        const THICKNESS: f64 = 0.002;
+
+        let source = format!(
+            "fn f() -> Geometry {{ return shell(box({}mm, {}mm, {}mm), [0], {}mm); }}",
+            DX * 1000.0,
+            DY * 1000.0,
+            DZ * 1000.0,
+            THICKNESS * 1000.0,
+        );
+        let (program, parse_diagnostics) = cad_parser::parse_program(&source, "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", &source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            &source,
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+
+        let mut interp = cad_runtime::interp::Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            &source,
+        );
+        let result = interp
+            .call_by_name("f", vec![])
+            .expect("execution should succeed");
+        let cad_runtime::value::Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results =
+            dispatch_graph(interp.geometry_graph(), &ctx).expect("dispatch should succeed");
+        match &results[id.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!(
+                    shape.is_valid().unwrap(),
+                    "shelled box must be a valid B-rep"
+                );
+                let volume = shape.volume().unwrap();
+                // One face removed, so the cavity extends to that open
+                // face: the remaining material is the outer box minus an
+                // inner box inset by THICKNESS on the five *other* faces
+                // and flush with the removed face on the sixth.
+                let outer = DX * DY * DZ;
+                let inner = (DX - 2.0 * THICKNESS) * (DY - 2.0 * THICKNESS) * (DZ - THICKNESS);
+                let expected = outer - inner;
+                assert!(
+                    (volume - expected).abs() < expected * 0.05,
+                    "volume {volume} far from expected {expected} (exact removed face is kernel-\
+                     enumeration-order-dependent, so this tolerance covers either removed-face \
+                     orientation)"
+                );
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    /// `GetFace` (`AICAD-076`) selects a real, valid, non-degenerate face
+    /// out of an already-built box -- proving the new op actually
+    /// resolves to a real kernel face `Extrude`/`Revolve` can consume as
+    /// their own `profile` operand, not just that it constructs a
+    /// well-formed graph node (`ir::tests::get_face_accepts_a_valid_
+    /// target_and_assigns_the_next_sequential_id` already covers that).
+    /// A non-cubic box's face area must be exactly one of the three
+    /// possible face areas (kernel face-enumeration order is not part of
+    /// this dispatcher's own contract, so this test does not assume which
+    /// face index 0 happens to be).
+    #[test]
+    fn get_face_selects_a_real_valid_face_with_one_of_the_expected_areas() {
+        const DX: f64 = 0.03;
+        const DY: f64 = 0.05;
+        const DZ: f64 = 0.07;
+
+        let mut graph = GeometryGraph::new();
+        let target = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(DX),
+                    dy: length(DY),
+                    dz: length(DZ),
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(face), span())
+            .unwrap();
+        let area_q = graph.push_query(GeometryQuery::Area(face), span()).unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid, "selected face must be a valid B-rep"),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        let possible_areas = [DX * DY, DY * DZ, DX * DZ];
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => assert!(
+                possible_areas
+                    .iter()
+                    .any(|expected| (*area - expected).abs() < expected * 1e-6),
+                "face area {area} did not match any expected face area {possible_areas:?}"
+            ),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    // --- AICAD-079B: `dispatch_graph_incremental` -----------------------
+
+    /// Two disjoint boxes unioned together (`boss` translated well clear of
+    /// `base` first, so the union's volume is genuinely additive, not
+    /// swallowed by one box containing the other). Rebuilding with only
+    /// `boss`'s own dimension changed must recompute `boss`, the `Transform`
+    /// that moves it (a second-hop transitive dependent), and the `Union`
+    /// that consumes both — while reusing `base`'s own already-dispatched
+    /// `Shape` with no second kernel call for it at all.
+    #[test]
+    fn incremental_dispatch_reuses_an_independent_node_and_recomputes_only_the_affected_branch() {
+        use cad_kernel_api::{Transform, Vector3};
+
+        fn build_graph(boss_side: f64) -> (GeometryGraph, GeomId, GeomId, GeomId, GeomId) {
+            let mut graph = GeometryGraph::new();
+            let base = graph
+                .push_op(
+                    GeometryOp::Box {
+                        dx: length(0.01),
+                        dy: length(0.01),
+                        dz: length(0.01),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let boss = graph
+                .push_op(
+                    GeometryOp::Box {
+                        dx: length(boss_side),
+                        dy: length(boss_side),
+                        dz: length(boss_side),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let boss_moved = graph
+                .push_op(
+                    GeometryOp::Transform {
+                        target: boss,
+                        transform: Transform::translation(Vector3::new(1.0, 0.0, 0.0)),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let combined = graph
+                .push_op(
+                    GeometryOp::Union {
+                        lhs: base,
+                        rhs: boss_moved,
+                    },
+                    span(),
+                )
+                .unwrap();
+            (graph, base, boss, boss_moved, combined)
+        }
+
+        let (graph1, base1, boss1, boss_moved1, combined1) = build_graph(0.02);
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results1, stats1) = dispatch_graph_incremental(&graph1, &ctx, None, &HashSet::new())
+            .expect("first build should succeed");
+        // First build: nothing to reuse yet, every node recomputed.
+        assert_eq!(
+            stats1.recomputed,
+            vec![base1, boss1, boss_moved1, combined1]
+        );
+        assert!(stats1.reused.is_empty());
+
+        // "Edit" boss's own dimension only -- base is untouched. Identical
+        // source structure (same op sequence) means identical GeomId
+        // positions, exactly the stability the orchestration layer relies
+        // on across a real parameter-driven rebuild.
+        let (graph2, base2, boss2, boss_moved2, combined2) = build_graph(0.03);
+        assert_eq!(
+            (base1, boss1, boss_moved1, combined1),
+            (base2, boss2, boss_moved2, combined2)
+        );
+
+        let mut dirty = HashSet::new();
+        dirty.insert(boss2);
+        let (results2, stats2) = dispatch_graph_incremental(&graph2, &ctx, Some(results1), &dirty)
+            .expect("incremental rebuild should succeed");
+
+        assert!(
+            stats2.was_reused(base2),
+            "base did not change and must be reused, not recomputed"
+        );
+        assert!(
+            stats2.was_recomputed(boss2),
+            "boss was directly marked dirty"
+        );
+        assert!(
+            stats2.was_recomputed(boss_moved2),
+            "boss_moved consumes boss, so it is transitively dirty (depth 2) and must recompute"
+        );
+        assert!(
+            stats2.was_recomputed(combined2),
+            "combined consumes boss_moved, so it is transitively dirty (depth 3) and must recompute"
+        );
+        assert!(!stats2.was_reused(boss2));
+        assert!(!stats2.was_reused(boss_moved2));
+        assert!(!stats2.was_reused(combined2));
+
+        // Correctness, not just bookkeeping: the rebuilt union's own volume
+        // reflects boss's *new* (0.03) dimension, not its old (0.02) one,
+        // and is genuinely additive (the two boxes no longer overlap).
+        match &results2[combined2.index() as usize] {
+            NodeResult::Shape(shape) => {
+                let volume = shape.volume().unwrap();
+                let expected = 0.01 * 0.01 * 0.01 + 0.03 * 0.03 * 0.03;
+                assert!(
+                    (volume - expected).abs() < expected * 1e-6,
+                    "volume {volume} did not reflect boss's updated dimension \
+                     (expected ~{expected})"
+                );
+                assert!(shape.is_valid().unwrap());
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    /// An empty `dirty` set (a rebuild where nothing actually changed) must
+    /// reuse every single node -- zero kernel recomputation.
+    #[test]
+    fn incremental_dispatch_with_no_dirty_nodes_reuses_everything() {
+        let mut graph = GeometryGraph::new();
+        let a = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(0.01),
+                    dy: length(0.01),
+                    dz: length(0.01),
+                },
+                span(),
+            )
+            .unwrap();
+        let b = graph
+            .push_op(
+                GeometryOp::Cylinder {
+                    radius: length(0.002),
+                    height: length(0.01),
+                },
+                span(),
+            )
+            .unwrap();
+        let c = graph
+            .push_op(GeometryOp::Cut { lhs: a, rhs: b }, span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results1, _) = dispatch_graph_incremental(&graph, &ctx, None, &HashSet::new())
+            .expect("first build should succeed");
+        let (_, stats2) = dispatch_graph_incremental(&graph, &ctx, Some(results1), &HashSet::new())
+            .expect("no-op rebuild should succeed");
+        assert!(stats2.recomputed.is_empty(), "{:?}", stats2.recomputed);
+        assert_eq!(stats2.reused, vec![a, b, c]);
+    }
+
+    /// Every node dirty (e.g. a change with no known-clean survivors) must
+    /// recompute everything -- the degenerate case at the other extreme.
+    #[test]
+    fn incremental_dispatch_with_every_node_dirty_recomputes_everything() {
+        let mut graph = GeometryGraph::new();
+        let a = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(0.01),
+                    dy: length(0.01),
+                    dz: length(0.01),
+                },
+                span(),
+            )
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results1, _) = dispatch_graph_incremental(&graph, &ctx, None, &HashSet::new())
+            .expect("first build should succeed");
+        let mut dirty = HashSet::new();
+        dirty.insert(a);
+        let (_, stats2) = dispatch_graph_incremental(&graph, &ctx, Some(results1), &dirty)
+            .expect("rebuild should succeed");
+        assert_eq!(stats2.recomputed, vec![a]);
+        assert!(stats2.reused.is_empty());
     }
 }

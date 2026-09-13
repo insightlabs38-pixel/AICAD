@@ -1910,12 +1910,44 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage
+- id: AICAD-064A
+  stage: 3
+  title: Implement/calibrate the D5 v1 cad-validation comparison profile
+  status: done
+  depends_on:
+  - AICAD-064
+  plan_references:
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - The comparison-profile module exists in crates/cad-validation, preserving D5's dimensional/scale-aware
+    shape (DECISION_LOG.md#DL-12).
+  - A bounded multi-scale calibration corpus (approximately 1mm/10mm/100mm/1000mm; primitives, transforms,
+    booleans, fillets/chamfers, analytically checkable area, analytically checkable volume, center of mass,
+    repeated rebuilds) runs and its measured absolute error, relative error, and repeat-run drift are recorded
+    separately in the task report.
+  - The three owner-accepted v1 constants from DECISION_LOG.md#DL-17 (linear_abs, center_of_mass_abs,
+    volume_rel) are implemented; any remaining constant the calibration evidence does not clearly justify is
+    escalated to project/OWNER_DECISIONS.md rather than guessed.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-064A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+  - calibration evidence does not clearly justify a specific constant (escalate rather than guess)
 - id: AICAD-065
   stage: 3
   title: Implement first-class param declarations and derived expressions
-  status: todo
+  status: done
   depends_on:
-  - AICAD-064
+  - AICAD-064A
   plan_references:
   - docs/plan/04_HIGH_LEVEL_MODELING_API.md
   - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
@@ -1940,7 +1972,7 @@ tasks:
 - id: AICAD-066
   stage: 3
   title: Create cad-feature-graph node identity/dependency model
-  status: todo
+  status: done
   depends_on:
   - AICAD-065
   plan_references:
@@ -1967,7 +1999,7 @@ tasks:
 - id: AICAD-067
   stage: 3
   title: Build feature DAG from supported modeling operations
-  status: todo
+  status: done
   depends_on:
   - AICAD-066
   plan_references:
@@ -1994,7 +2026,7 @@ tasks:
 - id: AICAD-068
   stage: 3
   title: Implement cache keys and dirty propagation
-  status: todo
+  status: done
   depends_on:
   - AICAD-067
   plan_references:
@@ -2021,7 +2053,7 @@ tasks:
 - id: AICAD-069
   stage: 3
   title: Implement source-to-feature mapping and provenance
-  status: todo
+  status: done
   depends_on:
   - AICAD-068
   plan_references:
@@ -2048,7 +2080,7 @@ tasks:
 - id: AICAD-070
   stage: 3
   title: Create safe language-facing geometry types
-  status: todo
+  status: done
   depends_on:
   - AICAD-069
   plan_references:
@@ -2075,7 +2107,7 @@ tasks:
 - id: AICAD-071
   stage: 3
   title: Implement part concept plus box/cylinder/plate standard helpers
-  status: todo
+  status: done
   depends_on:
   - AICAD-070
   plan_references:
@@ -2102,7 +2134,7 @@ tasks:
 - id: AICAD-072
   stage: 3
   title: Create minimal sketch entity IR
-  status: todo
+  status: done
   depends_on:
   - AICAD-071
   plan_references:
@@ -2129,7 +2161,7 @@ tasks:
 - id: AICAD-073
   stage: 3
   title: Create solver-independent sketch constraint IR/adapter
-  status: todo
+  status: done
   depends_on:
   - AICAD-072
   plan_references:
@@ -2156,7 +2188,7 @@ tasks:
 - id: AICAD-074
   stage: 3
   title: Implement common sketch constraints needed by baseline parts
-  status: todo
+  status: done
   depends_on:
   - AICAD-073
   plan_references:
@@ -2183,7 +2215,7 @@ tasks:
 - id: AICAD-075
   stage: 3
   title: Lower solved closed sketch profiles to exact faces
-  status: todo
+  status: done
   depends_on:
   - AICAD-074
   plan_references:
@@ -2207,12 +2239,42 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage
+- id: AICAD-075A
+  stage: 3
+  title: Establish general axis/frame/rotation semantics needed by revolve, mirror, circular pattern, and non-translation transforms
+  status: done
+  depends_on:
+  - AICAD-075
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  acceptance:
+  - One coherent axis/frame/rotation representation serves transform, revolve, mirror, and circular pattern —
+    no feature invents its own coordinate convention.
+  - Existing RFC/plan semantics and the Stage-1 kernel-api Frame3/Axis3/Transform primitives
+    (crates/cad-kernel-api/src/geometry.rs) are audited first and reused rather than duplicated.
+  - No larger spatial-math system than Stage 3 needs is introduced.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-075A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+  - exact public syntax/semantics remain materially ambiguous after reading the approved plan/RFCs
 - id: AICAD-076
   stage: 3
   title: Implement high-level extrude/revolve/hole/pocket
-  status: todo
+  status: done
   depends_on:
-  - AICAD-075
+  - AICAD-075A
   plan_references:
   - docs/plan/04_HIGH_LEVEL_MODELING_API.md
   - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
@@ -2234,12 +2296,54 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage
+- id: AICAD-076A
+  stage: 3
+  title: Make the RuntimeBuiltin catalogue's standard type environment type-closed
+  status: done
+  depends_on:
+  - AICAD-076
+  plan_references:
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/22_REPOSITORY_WORK_PACKAGES.md
+  - project/DECISION_LOG.md#DL-21
+  acceptance:
+  - Every nominal type referenced by any BuiltinFnId signature (including Point3/Axis3/Frame3/Plane) is resolvable
+    without the compiling program separately composing cad_hir::geometry_types::with_geometry_types.
+  - A dedicated test proves the entire BuiltinFnId catalogue type-checks against an otherwise-empty valid program
+    with zero diagnostics (project/DECISION_LOG.md#DL-21's own required invariant), separate from any test of an
+    individual builtin's own expected signature.
+  - with_geometry_types remains safe to call on top of the now-always-seeded standard types (idempotent; no
+    duplicate/conflicting declaration).
+  - AICAD-076's scalar-decomposed revolve/hole/pocket signatures are migrated to real Axis3/Frame3-typed parameters
+    where AICAD-075A already defines the needed type; the "Why no Axis3/Frame3-typed parameter yet" note in
+    crates/cad-hir/src/builtins.rs is removed/updated accordingly.
+  - The existing eager function-signature-collection model is preserved unchanged (no lazy per-call-site resolution).
+  - No plugin-injected/runtime-registered builtin types, arbitrary host callbacks, or kernel/OCCT types in
+    source/HIR signatures are introduced.
+  - cargo test -p cad-hir and the full workspace suite pass with zero failures (the 149-test regression AICAD-076
+    found during development must not recur).
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-hir
+  - cargo test --workspace
+  - cargo test -p cad-cli --test stage2_end_to_end -- --test-threads=1
+  report: project/reports/AICAD-076A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected (beyond what project/DECISION_LOG.md#DL-21 already
+    settled)
+  - work would expand into a later roadmap stage
+  - lazy per-call-site signature resolution would be required to proceed (DL-21 explicitly does not authorize this)
 - id: AICAD-077
   stage: 3
   title: Implement mirror and linear/circular pattern basics
-  status: todo
+  status: done
   depends_on:
-  - AICAD-076
+  - AICAD-076A
   plan_references:
   - docs/plan/04_HIGH_LEVEL_MODELING_API.md
   - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
@@ -2264,7 +2368,7 @@ tasks:
 - id: AICAD-078
   stage: 3
   title: Implement high-level fillet/chamfer/shell wrappers and normalized diagnostics
-  status: todo
+  status: done
   depends_on:
   - AICAD-077
   plan_references:
@@ -2291,7 +2395,7 @@ tasks:
 - id: AICAD-079
   stage: 3
   title: Implement named semantic outputs baseline + ordinary-part examples + AI benchmark seed
-  status: todo
+  status: done
   depends_on:
   - AICAD-078
   plan_references:
@@ -2315,12 +2419,80 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage
+- id: AICAD-079A
+  stage: 3
+  title: Freeze the Stage-4 semantic-reference benchmark and held-out corpus; minimal docs/archive scaffolding
+  status: done
+  depends_on:
+  - AICAD-079
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  acceptance:
+  - A curated Stage-4 semantic-reference benchmark/held-out corpus is frozen, covering at minimum topology
+    splits/merges, disappearing/newly-created entities, symmetric candidates, pattern-count changes, boolean
+    topology changes, fillet/chamfer viability changes, valid operation reordering, upstream suppression,
+    changing sketch regions, and near-degenerate but valid geometry.
+  - Expected-result classification distinguishes correct resolved reference, explicit ambiguity, explicit
+    broken reference, silent wrong selection, kernel failure, and unrelated build failure.
+  - A held-out corpus/process is established and is not routine Stage-4 tuning material.
+  - This task implements no Stage-4 semantic-reference resolution itself.
+  - Minimal docs/archive directory scaffolding exists only where git requires a placeholder (docs/site/user/,
+    docs/site/language/, docs/site/modeling/, docs/site/developer/, project/reports/archive/stage{0,1,2,3}/),
+    with no MkDocs config, tutorials, README rewrite, or report migration performed.
+  required_checks:
+  - cargo fmt --all -- --check (when Rust workspace exists)
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings (when applicable)
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-079A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
+  - any Stage-4 semantic-reference resolution logic would need to be implemented to build the benchmark
+- id: AICAD-079B
+  stage: 3
+  title: Prepare the Stage-3 owner gate packet
+  status: done
+  depends_on:
+  - AICAD-079A
+  plan_references:
+  - docs/plan/15_IMPLEMENTATION_ROADMAP.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  acceptance:
+  - No new roadmap feature development occurs in this task; it audits current code/tests, not merely
+    previous report claims, and re-runs the complete required workspace suite.
+  - The gate packet proves the parametric-build slice and the sketch/high-level modeling slice end to end,
+    per the campaign brief's exact acceptance list (D5 determinism, kernel neutrality, no persistent
+    raw-topology identity, source/provenance traceability, no leaked Stage-4 semantic-reference
+    implementation, no weakened tests/gates, ordinary-part examples use ordinary public paths, Stage-4
+    benchmark frozen before Stage-4 work, unresolved owner decisions enumerated).
+  - Exactly one recommendation (PASS / PASS WITH CONDITIONS / DO NOT PASS) is produced; the recommendation
+    is advisory only and does not itself approve Stage 3.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - run task-specific tests/benchmarks; record exact commands and outputs
+  report: project/reports/AICAD-079B.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage
 - id: AICAD-080
   stage: 4
   title: Define stable VertexRef/EdgeRef/WireRef/FaceRef/ShellRef/SolidRef semantic-recipe representations
   status: todo
   depends_on:
-  - AICAD-079
+  - AICAD-079B
   plan_references:
   - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
   - docs/plan/15_IMPLEMENTATION_ROADMAP.md

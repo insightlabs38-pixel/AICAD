@@ -27,12 +27,15 @@ version = "0.0.0"
 dependencies = [
  "cad-ast",
  "cad-diagnostics",
+ "cad-feature-graph",
  "cad-geometry-api",
  "cad-geometry-runtime",
  "cad-hir",
  "cad-occt-bridge",
  "cad-parser",
  "cad-runtime",
+ "cad-types",
+ "cad-units",
 ]
 
 [[package]]
@@ -51,14 +54,31 @@ version = "0.0.0"
 [[package]]
 name = "cad-constraints"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-hir",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-diagnostics"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-geometry-api",
+]
 
 [[package]]
 name = "cad-feature-graph"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-diagnostics",
+ "cad-hir",
+ "cad-parser",
+]
 
 [[package]]
 name = "cad-geometry-api"
@@ -76,6 +96,7 @@ name = "cad-geometry-runtime"
 version = "0.0.0"
 dependencies = [
  "cad-ast",
+ "cad-constraints",
  "cad-diagnostics",
  "cad-geometry-api",
  "cad-hir",
@@ -182,3 +203,7 @@ dependencies = [
 [[package]]
 name = "cad-validation"
 version = "0.0.0"
+dependencies = [
+ "cad-kernel-api",
+ "cad-occt-bridge",
+]

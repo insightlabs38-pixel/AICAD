@@ -118,11 +118,200 @@ fn has_error(diagnostics: &[Diagnostic]) -> bool {
     diagnostics.iter().any(|d| d.severity == Severity::Error)
 }
 
+/// One `--name <binding>[.<field>]` resolution failure (`AICAD-079`) —
+/// always an `EXPORT`-family error, since it only ever affects which
+/// geometry `--output` exports, never the build's own diagnostics.
+enum NamedOutputError {
+    /// No top-level binding named `binding` exists (a plain `let`/`const`/
+    /// `param`, or a `part`) in this program at all.
+    UnknownBinding { binding: String },
+    /// `binding` resolved, but to a value that is neither `Geometry` nor a
+    /// `part` instance (e.g. a `Length` or a plain `struct`) — there is no
+    /// field to look inside, so `.field` (if any) is meaningless.
+    NotGeometryOrPart { binding: String, kind: &'static str },
+    /// `binding` is a `part`, but it has no field named `field` at all.
+    NoSuchField { binding: String, field: String },
+    /// `binding.field` resolved to a value that is not `Geometry`.
+    FieldNotGeometry {
+        binding: String,
+        field: String,
+        kind: &'static str,
+    },
+    /// `binding` is a `part` and no `.field` was given, but it exposes
+    /// zero `Geometry`-typed fields — there is nothing to export.
+    NoGeometryFields { binding: String },
+    /// `binding` is a `part` and no `.field` was given, but it exposes
+    /// more than one `Geometry`-typed field — `explicit` durability
+    /// (`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §11) requires
+    /// naming exactly one, never guessing.
+    AmbiguousFields {
+        binding: String,
+        candidates: Vec<String>,
+    },
+}
+
+impl NamedOutputError {
+    fn diagnostic(&self, file: &str, source: &str) -> Diagnostic {
+        let message = match self {
+            NamedOutputError::UnknownBinding { binding } => {
+                format!("no top-level binding named '{binding}' in this program")
+            }
+            NamedOutputError::NotGeometryOrPart { binding, kind } => format!(
+                "'{binding}' is a {kind}, not a Geometry value or a part instance; --name \
+                 can only select Geometry-typed named outputs"
+            ),
+            NamedOutputError::NoSuchField { binding, field } => {
+                format!("part '{binding}' has no named output '{field}'")
+            }
+            NamedOutputError::FieldNotGeometry {
+                binding,
+                field,
+                kind,
+            } => format!("'{binding}.{field}' is a {kind}, not a Geometry value"),
+            NamedOutputError::NoGeometryFields { binding } => {
+                format!("part '{binding}' exposes no Geometry-typed named outputs to export")
+            }
+            NamedOutputError::AmbiguousFields {
+                binding,
+                candidates,
+            } => format!(
+                "part '{binding}' exposes more than one Geometry-typed named output ({}); \
+                 use --name {binding}.<field> to pick one",
+                candidates.join(", ")
+            ),
+        };
+        environment_diagnostic(
+            "EXPORT",
+            2,
+            "export",
+            "NAMED_OUTPUT_NOT_RESOLVED",
+            file,
+            source,
+            &message,
+        )
+    }
+}
+
+/// Resolves `--name <binding>[.<field>]` (`AICAD-079`) against the
+/// program's own top-level bindings and the values [`cad_runtime::interp::
+/// Interpreter::run_top_level`] already produced for them, to exactly one
+/// [`cad_geometry_api::GeomId`] to export.
+///
+/// This is deliberately the *only* named-output selection Stage 3
+/// implements: an ordinary lookup by the exact declared name of a
+/// top-level `let`/`const`/`param` binding, or one named field of a
+/// top-level `part`'s own already-executed outputs (`AICAD-071`) — the
+/// `explicit` durability level in `docs/plan/06_REFERENCES_QUERIES_
+/// FEATURE_DAG.md` §11 ("Feature exported the entity by semantic name").
+/// It performs no query, no topology/geometry-fingerprint search, and no
+/// lineage tracking across rebuilds — that is Stage-4 semantic-reference
+/// resolution (`AGENTS.md`'s own Stage-3 boundary: "Stage-4 persistent
+/// topology identity" is explicitly out of scope here).
+fn resolve_named_output(
+    interpreter: &cad_runtime::interp::Interpreter<'_>,
+    bindings: &[cad_hir::ids::Binding],
+    name: &str,
+) -> Result<cad_geometry_api::GeomId, NamedOutputError> {
+    let (binding_name, field_name) = match name.split_once('.') {
+        Some((head, tail)) => (head, Some(tail)),
+        None => (name, None),
+    };
+
+    let binding = bindings
+        .iter()
+        .find(|b| b.name == binding_name)
+        .ok_or_else(|| NamedOutputError::UnknownBinding {
+            binding: binding_name.to_string(),
+        })?;
+    let value = interpreter
+        .global(binding.id)
+        .ok_or_else(|| NamedOutputError::UnknownBinding {
+            binding: binding_name.to_string(),
+        })?;
+
+    match value {
+        cad_runtime::value::Value::Geometry(id) => {
+            // A bare `Geometry`-typed binding has no field of its own —
+            // a trailing `.field` on it is simply a name that does not
+            // resolve, reported the same way an unknown part field is.
+            if let Some(field) = field_name {
+                return Err(NamedOutputError::NoSuchField {
+                    binding: binding_name.to_string(),
+                    field: field.to_string(),
+                });
+            }
+            Ok(*id)
+        }
+        cad_runtime::value::Value::Part { fields, .. } => {
+            if let Some(field) = field_name {
+                let (_, field_value) =
+                    fields.iter().find(|(n, _)| n == field).ok_or_else(|| {
+                        NamedOutputError::NoSuchField {
+                            binding: binding_name.to_string(),
+                            field: field.to_string(),
+                        }
+                    })?;
+                match field_value {
+                    cad_runtime::value::Value::Geometry(id) => Ok(*id),
+                    other => Err(NamedOutputError::FieldNotGeometry {
+                        binding: binding_name.to_string(),
+                        field: field.to_string(),
+                        kind: other.kind_name(),
+                    }),
+                }
+            } else {
+                let geometry_fields: Vec<&str> = fields
+                    .iter()
+                    .filter_map(|(n, v)| match v {
+                        cad_runtime::value::Value::Geometry(_) => Some(n.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                match geometry_fields.as_slice() {
+                    [] => Err(NamedOutputError::NoGeometryFields {
+                        binding: binding_name.to_string(),
+                    }),
+                    [only] => {
+                        let (_, field_value) = fields
+                            .iter()
+                            .find(|(n, _)| n == only)
+                            .expect("the field name just collected above is present in `fields`");
+                        match field_value {
+                            cad_runtime::value::Value::Geometry(id) => Ok(*id),
+                            _ => unreachable!("already filtered to Geometry-typed fields above"),
+                        }
+                    }
+                    many => Err(NamedOutputError::AmbiguousFields {
+                        binding: binding_name.to_string(),
+                        candidates: many.iter().map(|s| s.to_string()).collect(),
+                    }),
+                }
+            }
+        }
+        other => Err(NamedOutputError::NotGeometryOrPart {
+            binding: binding_name.to_string(),
+            kind: other.kind_name(),
+        }),
+    }
+}
+
 /// Runs the full `cad build` pipeline against `source`, as if it were the
 /// contents of `file`. Exposed separately from [`run_build`] (which reads
 /// `file` off disk) so tests can exercise the pipeline against an in-memory
 /// string with no filesystem dependency.
-pub fn build_source(file: &str, source: &str, output: Option<&Path>) -> BuildReport {
+///
+/// `output_name` is `--name`'s own optional `<binding>[.<field>]` argument
+/// (`AICAD-079`) — when given, [`resolve_named_output`] alone decides what
+/// `output` exports; when omitted, the pre-existing Stage-2 default
+/// applies unchanged (the last geometry-producing node created anywhere in
+/// the program's shared `GeometryGraph`), so every already-passing
+/// Stage-2/Stage-3 caller is unaffected.
+pub fn build_source(
+    file: &str,
+    source: &str,
+    output: Option<&Path>,
+    output_name: Option<&str>,
+) -> BuildReport {
     let mut diagnostics = Vec::new();
 
     let (program, parse_diagnostics) = cad_parser::parse_program(source, file);
@@ -168,14 +357,25 @@ pub fn build_source(file: &str, source: &str, output: Option<&Path>) -> BuildRep
 
     let mut artifacts = Vec::new();
     if let Some(output_path) = output {
+        let target = match output_name {
+            Some(name) => resolve_named_output(&interpreter, &lowered.bindings, name)
+                .map(Some)
+                .unwrap_or_else(|err| {
+                    diagnostics.push(err.diagnostic(file, source));
+                    None
+                }),
+            None => {
+                let graph = interpreter.geometry_graph();
+                graph
+                    .nodes()
+                    .iter()
+                    .rev()
+                    .find(|node| node.kind.produces_geometry())
+                    .map(|node| node.id)
+            }
+        };
         let graph = interpreter.geometry_graph();
-        let last_geometry = graph
-            .nodes()
-            .iter()
-            .rev()
-            .find(|node| node.kind.produces_geometry())
-            .map(|node| node.id);
-        if let Some(id) = last_geometry {
+        if let Some(id) = target {
             match cad_occt_bridge::OcctContext::new() {
                 Ok(ctx) => match cad_geometry_runtime::dispatch_graph(graph, &ctx) {
                     Ok(results) => match &results[id.index() as usize] {
@@ -266,10 +466,10 @@ fn export_step_diagnostic(file: &str, source: &str, message: &str) -> Diagnostic
 /// itself (`build_source` takes an in-memory string for testability). A
 /// read failure is reported under the `PARSE` family (a precondition of
 /// parsing: there is no source text to parse at all).
-pub fn run_build(path: &Path, output: Option<&Path>) -> BuildReport {
+pub fn run_build(path: &Path, output: Option<&Path>, output_name: Option<&str>) -> BuildReport {
     let file = path.display().to_string();
     match std::fs::read_to_string(path) {
-        Ok(source) => build_source(&file, &source, output),
+        Ok(source) => build_source(&file, &source, output, output_name),
         Err(err) => BuildReport {
             status: BuildStatus::Failed,
             diagnostics: vec![environment_diagnostic(
@@ -279,8 +479,11 @@ pub fn run_build(path: &Path, output: Option<&Path>) -> BuildReport {
                 // program-level diagnostics (`PARSE-E001`..); this is a
                 // CLI/environment-level failure (no source text exists to
                 // parse at all), kept in the same family only because no
-                // more specific family fits and D10 (diagnostic-code
-                // stability policy) is still open regardless.
+                // more specific family fits, chosen well clear of that
+                // range specifically to avoid colliding with a future
+                // `cad-lexer`/`cad-parser` code — `project/
+                // DECISION_LOG.md#DL-18` now makes any such collision a
+                // real stability violation, not merely a style concern.
                 900,
                 "parse",
                 "SOURCE_FILE_UNREADABLE",
@@ -299,7 +502,7 @@ mod tests {
 
     #[test]
     fn a_parse_error_stops_the_pipeline_and_is_reported() {
-        let report = build_source("test.aicad", "let x = ;", None);
+        let report = build_source("test.aicad", "let x = ;", None, None);
         assert_eq!(report.status, BuildStatus::Failed);
         assert!(!report.diagnostics.is_empty());
         assert!(report.artifacts.is_empty());
@@ -315,7 +518,7 @@ mod tests {
 
     #[test]
     fn a_type_error_stops_the_pipeline_before_execution() {
-        let report = build_source("test.aicad", "let x = box(1mm, 2kg, 3mm);", None);
+        let report = build_source("test.aicad", "let x = box(1mm, 2kg, 3mm);", None, None);
         assert_eq!(report.status, BuildStatus::Failed);
         assert!(
             report
@@ -329,7 +532,7 @@ mod tests {
 
     #[test]
     fn a_clean_program_with_no_output_requested_succeeds_with_no_artifacts() {
-        let report = build_source("test.aicad", "let x = 5mm + 2cm;", None);
+        let report = build_source("test.aicad", "let x = 5mm + 2cm;", None, None);
         assert_eq!(report.status, BuildStatus::Ok);
         assert!(report.diagnostics.is_empty());
         assert!(report.artifacts.is_empty());
@@ -343,6 +546,7 @@ mod tests {
             "test.aicad",
             "let piece = box(10mm, 10mm, 10mm);",
             Some(&output_path),
+            None,
         );
         assert_eq!(report.status, BuildStatus::Ok, "{:?}", report.diagnostics);
         assert_eq!(report.artifacts, vec![output_path.clone()]);
@@ -359,7 +563,7 @@ mod tests {
     fn a_program_with_no_geometry_and_output_requested_produces_no_artifact() {
         let output_path = std::env::temp_dir().join("aicad_cli_build_test_no_geometry.step");
         let _ = std::fs::remove_file(&output_path);
-        let report = build_source("test.aicad", "let x = 5mm;", Some(&output_path));
+        let report = build_source("test.aicad", "let x = 5mm;", Some(&output_path), None);
         assert_eq!(report.status, BuildStatus::Ok);
         assert!(report.artifacts.is_empty());
         assert!(!output_path.exists());
@@ -367,7 +571,7 @@ mod tests {
 
     #[test]
     fn human_and_json_rendering_both_reflect_a_failed_build() {
-        let report = build_source("test.aicad", "let x = ;", None);
+        let report = build_source("test.aicad", "let x = ;", None, None);
         let human = report.to_human_string();
         assert!(human.contains("error["));
         assert!(human.contains("build failed"));
@@ -391,11 +595,162 @@ mod tests {
             "test.aicad",
             "let piece = box(5mm, 5mm, 5mm);",
             Some(&output_path),
+            None,
         );
         let json = report.to_json();
         assert_eq!(json.get("status").and_then(Json::as_str), Some("ok"));
         let artifacts = json.get("artifacts").unwrap().as_array().unwrap();
         assert_eq!(artifacts.len(), 1);
         let _ = std::fs::remove_file(&output_path);
+    }
+
+    // --- AICAD-079: `--name` named-output export selection --------------
+
+    #[test]
+    fn name_selects_a_plain_top_level_binding_even_when_it_is_not_the_last_geometry_node() {
+        let output_path = std::env::temp_dir().join("aicad_079_named_plain_binding.step");
+        let _ = std::fs::remove_file(&output_path);
+        // `scrap` is constructed *after* `wanted`, so the pre-`AICAD-079`
+        // "last geometry node" default would export the wrong shape here.
+        let report = build_source(
+            "test.aicad",
+            "let wanted = box(10mm, 10mm, 10mm); let scrap = box(1mm, 1mm, 1mm);",
+            Some(&output_path),
+            Some("wanted"),
+        );
+        assert_eq!(report.status, BuildStatus::Ok, "{:?}", report.diagnostics);
+        assert_eq!(report.artifacts, vec![output_path.clone()]);
+        let contents = std::fs::read_to_string(&output_path).unwrap();
+        assert!(contents.contains("ISO-10303"));
+        let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn name_selects_one_named_field_of_a_part() {
+        let output_path = std::env::temp_dir().join("aicad_079_named_part_field.step");
+        let _ = std::fs::remove_file(&output_path);
+        let report = build_source(
+            "test.aicad",
+            "part Bracket { \
+                 let scrap: Geometry = box(1mm, 1mm, 1mm); \
+                 let body: Geometry = box(10mm, 10mm, 10mm); \
+             }",
+            Some(&output_path),
+            Some("Bracket.body"),
+        );
+        assert_eq!(report.status, BuildStatus::Ok, "{:?}", report.diagnostics);
+        assert_eq!(report.artifacts, vec![output_path.clone()]);
+        let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn name_with_no_field_resolves_a_part_s_sole_geometry_field_automatically() {
+        let output_path = std::env::temp_dir().join("aicad_079_named_part_sole_field.step");
+        let _ = std::fs::remove_file(&output_path);
+        let report = build_source(
+            "test.aicad",
+            "part Bracket { \
+                 let width: Length = 10mm; \
+                 let body: Geometry = box(width, width, width); \
+             }",
+            Some(&output_path),
+            Some("Bracket"),
+        );
+        assert_eq!(report.status, BuildStatus::Ok, "{:?}", report.diagnostics);
+        assert_eq!(report.artifacts, vec![output_path.clone()]);
+        let _ = std::fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn name_with_no_field_on_a_part_with_two_geometry_fields_is_ambiguous() {
+        let output_path = std::env::temp_dir().join("aicad_079_named_ambiguous.step");
+        let _ = std::fs::remove_file(&output_path);
+        let report = build_source(
+            "test.aicad",
+            "part Bracket { \
+                 let left: Geometry = box(1mm, 1mm, 1mm); \
+                 let right: Geometry = box(2mm, 2mm, 2mm); \
+             }",
+            Some(&output_path),
+            Some("Bracket"),
+        );
+        assert_eq!(report.status, BuildStatus::Failed);
+        assert!(report.artifacts.is_empty());
+        assert!(!output_path.exists());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "EXPORT-E002"
+                    && d.message.contains("left")
+                    && d.message.contains("right")),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn name_referring_to_an_unknown_binding_is_reported_and_fails_the_build() {
+        let output_path = std::env::temp_dir().join("aicad_079_named_unknown.step");
+        let _ = std::fs::remove_file(&output_path);
+        let report = build_source(
+            "test.aicad",
+            "let piece = box(10mm, 10mm, 10mm);",
+            Some(&output_path),
+            Some("nonexistent"),
+        );
+        assert_eq!(report.status, BuildStatus::Failed);
+        assert!(report.artifacts.is_empty());
+        assert!(!output_path.exists());
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "EXPORT-E002" && d.message.contains("nonexistent")),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn name_referring_to_an_unknown_field_on_a_part_is_reported() {
+        let output_path = std::env::temp_dir().join("aicad_079_named_unknown_field.step");
+        let _ = std::fs::remove_file(&output_path);
+        let report = build_source(
+            "test.aicad",
+            "part Bracket { let body: Geometry = box(10mm, 10mm, 10mm); }",
+            Some(&output_path),
+            Some("Bracket.nope"),
+        );
+        assert_eq!(report.status, BuildStatus::Failed);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "EXPORT-E002" && d.message.contains("nope")),
+            "{:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn name_referring_to_a_non_geometry_binding_is_reported() {
+        let output_path = std::env::temp_dir().join("aicad_079_named_non_geometry.step");
+        let _ = std::fs::remove_file(&output_path);
+        let report = build_source(
+            "test.aicad",
+            "let x: Length = 5mm;",
+            Some(&output_path),
+            Some("x"),
+        );
+        assert_eq!(report.status, BuildStatus::Failed);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.code.as_string() == "EXPORT-E002" && d.message.contains("Number")),
+            "{:?}",
+            report.diagnostics
+        );
     }
 }

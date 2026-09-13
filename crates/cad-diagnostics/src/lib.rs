@@ -3,10 +3,19 @@
 //! `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md` §10-13.
 //!
 //! Per RFC-0005 §7, `project/OWNER_DECISIONS.md` D10 (diagnostic code/
-//! schema stability policy) is still open: every code/schema field defined
-//! here is provisional (may be renumbered/changed pre-1.0) until D10 is
-//! ruled on. This crate implements the *shape* RFC-0005 froze, not a
-//! stability guarantee.
+//! schema stability policy) is **RESOLVED** (`project/
+//! DECISION_LOG.md#DL-18`, `AICAD-078`): a committed diagnostic code
+//! (`FAMILY-Exxx`/`Wxxx`/`Ixxx` already used by a merged commit) is
+//! durable and must never be silently repurposed for a different
+//! meaning. Pre-1.0, a code may still be deprecated/replaced, but never
+//! silently renumbered or reused for an unrelated condition. Adding a new
+//! code within an already-reserved family, or a wholly new family for a
+//! genuinely new diagnostic domain, remains ordinary task work and needs
+//! no owner ruling — only *repurposing* an existing committed code, or a
+//! compatibility-breaking change to this crate's own schema-validation
+//! shape, does. This crate implements the *shape* RFC-0005 froze, now
+//! under `DL-18`'s stability policy, not merely a provisional shape
+//! awaiting one.
 //!
 //! A `Diagnostic` is always the single vocabulary for surfacing a
 //! compiler/runtime problem — never a bare string — per RFC-0005 §3 and
@@ -20,8 +29,11 @@ pub mod schema;
 
 use json::Json;
 
-/// The Stage-0/RFC-0005 §2 diagnostic code family taxonomy. Provisional
-/// per D10 (see module docs).
+/// The Stage-0/RFC-0005 §2 diagnostic code family taxonomy. Append-only
+/// per `DL-18` (see module docs): a new family may be added for a
+/// genuinely new diagnostic domain, but an existing family already
+/// reserved here must never be removed or repurposed without an explicit
+/// owner review of the resulting schema-compatibility break.
 pub const DIAGNOSTIC_FAMILIES: &[&str] = &[
     "PARSE",
     "TYPE",

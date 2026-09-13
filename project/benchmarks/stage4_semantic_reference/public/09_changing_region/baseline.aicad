@@ -1,0 +1,28 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// Category: changing sketch regions (proxied by a pocket footprint change
+// — no source-level Sketch/Profile syntax exists yet, see case.md's own
+// limitation note). See ./case.md for the intended query target, expected
+// classification, and measured evidence. This file is frozen — do not
+// edit without re-deriving case.md's own measurements.
+
+param plate_x: Length = 40mm;
+param plate_y: Length = 40mm;
+param plate_z: Length = 10mm;
+param pocket_width: Length = 8mm;
+param pocket_length: Length = 8mm;
+param pocket_depth: Length = 3mm;
+
+part Plate {
+    let body: Geometry = pocket(
+        box(plate_x, plate_y, plate_z),
+        Frame3(
+            origin = Point3(x = 16mm, y = 16mm, z = plate_z - pocket_depth),
+            x_axis = Vector3(x = 1.0, y = 0.0, z = 0.0),
+            y_axis = Vector3(x = 0.0, y = 1.0, z = 0.0),
+            z_axis = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        pocket_width,
+        pocket_length,
+        pocket_depth,
+    );
+}

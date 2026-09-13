@@ -7,3 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+cad-ast = { path = "../cad-ast" }
+cad-geometry-api = { path = "../cad-geometry-api" }

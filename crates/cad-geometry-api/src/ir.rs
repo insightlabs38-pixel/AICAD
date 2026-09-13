@@ -89,7 +89,7 @@
 
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SourceSpan};
-use cad_kernel_api::{Axis3, Direction3, Point3, Transform};
+use cad_kernel_api::{Axis3, Direction3, Plane3, Point3, Transform};
 use cad_types::Dimension;
 use cad_units::OperandType;
 use std::fmt;
@@ -215,11 +215,36 @@ pub enum GeometryOp {
         normal: Direction3,
         radius: Quantity,
     },
+    /// A circular-arc edge passing through three points, in order `start
+    /// -> mid -> end` (`OcctContext::make_arc_edge`, `AICAD-075`). `mid`
+    /// must lie strictly between the other two along the intended arc —
+    /// this determines both which of the two possible arcs between
+    /// `start`/`end` is built and its traversal direction, with no
+    /// separate axis/sense parameter (mirrors `LineEdge`'s own "no
+    /// separate handedness flag" style, and fills the gap `CircleWire`'s
+    /// always-closed-full-circle contract cannot: a sketch `arc` entity
+    /// lowers to a *partial* circle, not a full one).
+    ArcEdge {
+        start: Point3,
+        mid: Point3,
+        end: Point3,
+    },
     /// Assembles a wire from an ordered list of edges
     /// (`OcctContext::make_wire_from_edges`). `edges` must be non-empty.
     WireFromEdges { edges: Vec<GeomId> },
     /// Builds a planar face bounded by a wire (`Shape::make_face`).
     MakeFace { wire: GeomId },
+    /// Selects one face of `target` by raw, epoch-bound
+    /// kernel-enumeration-order index (`Shape::get_face`), producing it
+    /// as its own new geometry value (`AICAD-076`) -- the only
+    /// source-visible way to obtain a profile for `Extrude`/`Revolve`
+    /// before source-level sketch/profile construction exists (`cad_hir::
+    /// sketch` has no grammar/lowering integration yet), mirroring
+    /// `Fillet`/`Chamfer`'s own already-established raw-index selection
+    /// precedent. Like every other `FaceIndex`/`EdgeIndex` use in this
+    /// module, this is raw and epoch-bound, never a durable semantic
+    /// reference (`AGENTS.md`: "Raw topology is ephemeral/unsafe").
+    GetFace { target: GeomId, face: FaceIndex },
     /// Extrudes a profile along a direction by a `Length` distance
     /// (`Shape::extrude`).
     Extrude {
@@ -277,6 +302,15 @@ pub enum GeometryOp {
         target: GeomId,
         transform: Transform,
     },
+    /// Mirrors `target` across a plane (`Shape::mirror`, `AICAD-077`). A
+    /// mirror is an *improper* isometry (determinant -1) and therefore
+    /// deliberately its own variant rather than a special case of
+    /// [`GeometryOp::Transform`], whose `transform: Transform` field can
+    /// only ever represent a proper rigid motion
+    /// (`cad_kernel_api::geometry`'s own "Rigidity (no reflection)"
+    /// invariant) -- see that module's doc comment for the full
+    /// rationale.
+    Mirror { target: GeomId, plane: Plane3 },
 }
 
 /// A property/validation query against an already-constructed geometry
@@ -558,12 +592,16 @@ impl GeometryGraph {
             GeometryOp::CircleWire { radius, .. } => {
                 Self::check_dimension(radius, Dimension::Length, "CircleWire.radius", span)?;
             }
+            GeometryOp::ArcEdge { .. } => {}
             GeometryOp::WireFromEdges { edges } => {
                 Self::check_non_empty(edges, "WireFromEdges.edges", span)?;
                 self.check_geometry_operands(edges, span)?;
             }
             GeometryOp::MakeFace { wire } => {
                 self.check_geometry_operand(*wire, span)?;
+            }
+            GeometryOp::GetFace { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
             }
             GeometryOp::Extrude {
                 profile, distance, ..
@@ -618,6 +656,9 @@ impl GeometryGraph {
                 Self::check_dimension(distance, Dimension::Length, "Offset.distance", span)?;
             }
             GeometryOp::Transform { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
+            }
+            GeometryOp::Mirror { target, .. } => {
                 self.check_geometry_operand(*target, span)?;
             }
         }
@@ -807,6 +848,53 @@ mod tests {
     }
 
     #[test]
+    fn get_face_accepts_a_valid_target_and_assigns_the_next_sequential_id() {
+        let mut graph = GeometryGraph::new();
+        let target = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert_eq!(face.index(), 1);
+    }
+
+    #[test]
+    fn get_face_rejects_an_invalid_target_operand() {
+        let mut graph = GeometryGraph::new();
+        let bogus = GeomId(9);
+        let err = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target: bogus,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            GeometryIrError::InvalidOperand {
+                referenced: bogus,
+                span: span()
+            }
+        );
+    }
+
+    #[test]
     fn query_result_cannot_be_used_as_a_geometry_operand() {
         let mut graph = GeometryGraph::new();
         let solid = graph
@@ -956,6 +1044,22 @@ mod tests {
     }
 
     #[test]
+    fn arc_edge_op_pushes_with_no_dimension_checks() {
+        let mut graph = GeometryGraph::new();
+        let id = graph
+            .push_op(
+                GeometryOp::ArcEdge {
+                    start: Point3::new(1.0, 0.0, 0.0),
+                    mid: Point3::new(0.0, 1.0, 0.0),
+                    end: Point3::new(-1.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(id).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
     fn revolve_requires_an_angle_not_a_length() {
         let mut graph = GeometryGraph::new();
         let wire = graph
@@ -1058,6 +1162,54 @@ mod tests {
         assert!(!graph.nodes()[5].kind.produces_geometry()); // IsValid query
         assert!(!graph.nodes()[6].kind.produces_geometry()); // Volume query
         assert!(!graph.nodes()[7].kind.produces_geometry()); // ExportStep query
+    }
+
+    #[test]
+    fn mirror_accepts_a_valid_target_and_assigns_the_next_sequential_id() {
+        let mut graph = GeometryGraph::new();
+        let target = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let mirrored = graph
+            .push_op(
+                GeometryOp::Mirror {
+                    target,
+                    plane: cad_kernel_api::Plane3::new(Point3::ORIGIN, Direction3::X),
+                },
+                span(),
+            )
+            .unwrap();
+        assert_eq!(mirrored.index(), 1);
+        assert!(graph.get(mirrored).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn mirror_rejects_an_invalid_target_operand() {
+        let mut graph = GeometryGraph::new();
+        let bogus = GeomId(4);
+        let err = graph
+            .push_op(
+                GeometryOp::Mirror {
+                    target: bogus,
+                    plane: cad_kernel_api::Plane3::new(Point3::ORIGIN, Direction3::X),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            err,
+            GeometryIrError::InvalidOperand {
+                referenced: bogus,
+                span: span()
+            }
+        );
     }
 
     #[test]

@@ -211,6 +211,68 @@ fn diagnostic_code_construction_rejects_unknown_family_and_bad_shape() {
     assert!(DiagnosticCode::parse("REF102").is_err());
 }
 
+// --- AICAD-078: real Stage-3 diagnostics, not just hand-built examples --
+
+#[test]
+fn a_real_geometry_ir_error_diagnostic_conforms_to_the_schema() {
+    // Proves the conformance claim against an actual `cad_geometry_api`
+    // diagnostic, not a hand-built `GEOM-E###` stand-in — per AGENTS.md's
+    // evidence rule, normalizing diagnostics means demonstrating real
+    // producers stay schema-conformant, not only asserting it.
+    let schema = load_schema();
+    let err = cad_geometry_api::GeometryIrError::EmptyOperandList {
+        context: "WireFromEdges.edges",
+        span: cad_ast::Span::new(0, 1),
+    };
+    let diagnostic = err.to_diagnostic("test.aicad", "x");
+    let errors = schema.validate(&diagnostic.to_json());
+    assert_eq!(errors, Vec::<String>::new(), "errors: {errors:?}");
+}
+
+#[test]
+fn the_renumbered_feature_graph_codes_do_not_collide_with_dispatch_error_codes() {
+    // `AICAD-078`'s own normalization fix: `cad_feature_graph::
+    // FeatureGraphError` and `cad_geometry_runtime::dispatch::
+    // DispatchError` had both independently claimed `GEOM-E005`/
+    // `GEOM-E006` for unrelated conditions. Both are plain `&'static str`
+    // codes (no shared registry enforces uniqueness across crates), so
+    // this test is the uniqueness check itself — it must keep failing
+    // loudly if a future change reintroduces a collision between any two
+    // of this workspace's own `GEOM`-family producers.
+    let geometry_ir_codes = ["GEOM-E001", "GEOM-E002", "GEOM-E003", "GEOM-E004"];
+    let dispatch_codes = ["GEOM-E005", "GEOM-E006"];
+    let feature_graph_codes = ["GEOM-E007", "GEOM-E008"];
+    let sketch_ir_codes = [
+        "GEOM-E010",
+        "GEOM-E011",
+        "GEOM-E012",
+        "GEOM-E013",
+        "GEOM-E014",
+        "GEOM-E015",
+    ];
+    let sketch_lowering_codes = [
+        "GEOM-E020",
+        "GEOM-E021",
+        "GEOM-E022",
+        "GEOM-E023",
+        "GEOM-E024",
+    ];
+    let mut all: Vec<&str> = Vec::new();
+    all.extend(geometry_ir_codes);
+    all.extend(dispatch_codes);
+    all.extend(feature_graph_codes);
+    all.extend(sketch_ir_codes);
+    all.extend(sketch_lowering_codes);
+    let mut deduped = all.clone();
+    deduped.sort_unstable();
+    deduped.dedup();
+    assert_eq!(
+        all.len(),
+        deduped.len(),
+        "duplicate GEOM-family code found across crates: {all:?}"
+    );
+}
+
 #[test]
 fn severity_code_mismatch_is_rejected_before_a_bad_diagnostic_can_be_built() {
     let code = DiagnosticCode::parse("GEOM-E100").unwrap();

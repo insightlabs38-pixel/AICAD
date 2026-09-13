@@ -80,3 +80,27 @@ representation, §16 recursion/runtime budgets);
 `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md` §10 (`BUDGET` diagnostic family);
 `docs/plan/22_REPOSITORY_WORK_PACKAGES.md` WP-04;
 `project/OWNER_DECISIONS.md#D16`/`#D17`.
+
+## Stage 3: `AICAD-065` — first-class `param` declarations
+
+`src/params.rs`: `ParamModel`/`ParamId`/`ParamDecl`/`ParamOverrides` — gives
+top-level `param` declarations explicit identity (`ParamId`, wrapping the
+existing `BindingId`, not a parallel allocation), records derived-expression
+dependency edges between params (not implicit source order), and computes a
+deterministic topological evaluation order (`project/DECISION_LOG.md#DL-12`
+Level-1 determinism), rejecting a cyclic dependency as a structured
+`ParamModelError` rather than picking an arbitrary order. `Interpreter::
+run_top_level_parametric` (`src/interp.rs`) is the edit/rebuild entry point:
+given a `ParamOverrides` map, it recomputes every dependent param
+deterministically from the override rather than its stale default, with
+override-type validation against the already-checked `CheckedType` when a
+`cad_hir::typeck::TypeCheckResult` is supplied. Scope boundary: only
+top-level params (matching `run_top_level`'s own existing scope); this task
+establishes the parameter layer only, not the feature-DAG cache/dirty-
+propagation graph (`AICAD-066`-`AICAD-068`, Batch S3-01/S3-02) that will sit
+on top of it. 18 new tests (11 in `src/params.rs`, 7 in `src/interp.rs`),
+101 tests total in this crate.
+
+Plan references (Stage 3): `docs/plan/04_HIGH_LEVEL_MODELING_API.md`;
+`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md`; `project/TASKS.yaml`
+`AICAD-065`.

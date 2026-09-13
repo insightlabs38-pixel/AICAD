@@ -159,6 +159,27 @@ aicad_occt_status_t aicad_occt_transform_shape(aicad_occt_context_t* context,
                                                 const double matrix[12],
                                                 aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-077: mirror across a plane. A mirror is an IMPROPER isometry
+ * (determinant -1) and therefore cannot be expressed as the rigid
+ * `matrix` `aicad_occt_transform_shape` accepts and re-validates as
+ * proper-rotation-only (`project/OWNER_DECISIONS.md`/`cad-kernel-api`'s
+ * own "Rigidity (no reflection)" invariant) -- this is its own entry
+ * point, taking a plane (origin + unit normal) directly rather than a
+ * 12-element matrix, so no caller can construct a reflection the other
+ * function would (correctly) reject.
+ *
+ * `origin`/`normal` are each a 3-element point/unit-vector; `normal` is
+ * re-normalized defensively (the OCCT `gp_Ax2` constructor the
+ * implementation uses already rejects a zero-length direction on its
+ * own). Always produces a NEW shape handle, never mutates the input in
+ * place (DL-2's functional/value-oriented semantics), matching
+ * `aicad_occt_transform_shape`'s own contract. */
+aicad_occt_status_t aicad_occt_mirror_shape(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             const double origin[3],
+                                             const double normal[3],
+                                             aicad_shape_handle_t* out_handle);
+
 /* --- AICAD-022: minimal curve/edge/wire construction. A raw
  * `Geom_Curve` is not exposed as its own handle kind yet (no Stage-1 task
  * needs curve evaluation independent of an edge) -- curves are
@@ -180,6 +201,23 @@ aicad_occt_status_t aicad_occt_make_circle_wire(aicad_occt_context_t* context,
                                                  const double normal[3],
                                                  double radius,
                                                  aicad_shape_handle_t* out_handle);
+
+/* Constructs a circular-arc edge passing through three points, in the
+ * order `p_start` -> `p_mid` -> `p_end` (AICAD-075: sketch `arc` entity
+ * lowering needs an edge for a partial circle, which
+ * `aicad_occt_make_circle_wire`'s always-closed-full-circle contract
+ * cannot express). `p_mid` must lie strictly between the other two along
+ * the intended arc -- it disambiguates both which of the two possible
+ * circular arcs between `p_start`/`p_end` is built and which direction it
+ * is traversed, with no separate axis/sense parameter needed (mirrors
+ * `aicad_occt_make_line_edge`'s own "no separate handedness flag" style).
+ * Rejects coincident or collinear points as AICAD_OCCT_ERR_INVALID_ARGUMENT
+ * (OCCT's own GC_MakeArcOfCircle construction failure). */
+aicad_occt_status_t aicad_occt_make_arc_edge(aicad_occt_context_t* context,
+                                              const double p_start[3],
+                                              const double p_mid[3],
+                                              const double p_end[3],
+                                              aicad_shape_handle_t* out_handle);
 
 /* Joins an ordered list of edges into one wire. `edges`/`edge_count` is a
  * caller-owned array (no STL container crosses this boundary); edges must

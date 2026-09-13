@@ -1,0 +1,41 @@
+// Stage-3 ordinary-part example (AICAD-079): a thin-walled enclosure
+// (open-top box housing) with a single cable-access hole in one side
+// wall — the "motor/gearbox enclosure" style first vertical demonstration
+// this category's own `README.md` calls out — built entirely from the
+// Stage-3 Safe CAD builtin catalogue (`shell`/`hole`), exposing its final
+// solid as the `part`'s own named `body` output (`AICAD-071`/`AICAD-079`).
+//
+// `shell`'s raw `removed_faces` index (`[5]`) is selected on the *plain,
+// unmodified* `box` — face `5` (`z = box_z`, the top face) in `BRepPrimAPI_
+// MakeBox`'s own fixed enumeration order, the identical mapping `AICAD-078`'s
+// own `shell_call_builds_a_single_shell_node_with_the_given_removed_faces`
+// test and `crates/cad-hir/src/builtins.rs`'s `Shell` doc comment both
+// already rely on. `hole` never consumes a raw face/edge index at all (it
+// places its cutting cylinder by an absolute `Axis3`, then boolean-cuts
+// it), so it remains valid regardless of `shell`'s own new topology.
+
+param box_x: Length = 60mm;
+param box_y: Length = 40mm;
+param box_z: Length = 30mm;
+param wall_thickness: Length = 2mm;
+param cable_hole_diameter: Length = 8mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Enclosure {
+    // Hollow the box, leaving the top face (index `5`) open.
+    let shelled: Geometry = shell(box(box_x, box_y, box_z), [5], wall_thickness);
+
+    // A cable-access hole through the front wall (`y = 0`), centered on
+    // the wall's own height and width, sized to pass fully through the
+    // wall thickness with a clean overshoot on both ends.
+    let body: Geometry = hole(
+        shelled,
+        Axis3(
+            origin = Point3(x = box_x / 2, y = 0mm - HOLE_OVERSHOOT, z = box_z / 2),
+            direction = Vector3(x = 0.0, y = 1.0, z = 0.0),
+        ),
+        cable_hole_diameter,
+        wall_thickness + HOLE_OVERSHOOT * 2,
+    );
+}

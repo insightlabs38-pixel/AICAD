@@ -50,6 +50,7 @@
 //! limitation, not a correctness gap, since every computation only ever
 //! needs the canonical form.
 
+use cad_hir::ids::BindingId;
 use cad_units::OperandType;
 
 /// One runtime numeric value: a canonical-unit magnitude plus the
@@ -141,6 +142,47 @@ pub enum Value {
     /// job, run against the finished graph after execution completes, not
     /// this crate's.
     Geometry(cad_geometry_api::GeomId),
+    /// A struct-instance value (`AICAD-070`) — completes `AICAD-053`'s
+    /// already-approved general struct declarations with an actual
+    /// runtime representation (previously documented above as a genuine,
+    /// deliberate gap: "no Stage-2 batch task title yet owns giving struct
+    /// construction a runtime value"). `ty` is the struct's own declaring
+    /// `cad_hir::ids::BindingId` (`BindingKind::Struct`) — not a
+    /// per-instantiation identity: a generic struct's own type-parameter
+    /// instantiation is erased at runtime exactly like this enum's own
+    /// `List` element type already is (see this module's doc comment), so
+    /// `Vector3<Length>` and `Vector3<Mass>` share one identical runtime
+    /// shape. `fields` is the struct's own *declared* field order
+    /// (`cad_hir::hir::HirItem::Struct::fields`), not construction order —
+    /// mirrors `VariantPayload::Record`'s own "field order is declaration
+    /// order... a field's value is always looked up by name" convention
+    /// exactly, for the identical reason (nothing destructures a struct
+    /// positionally, so this has no observable effect).
+    Struct {
+        ty: BindingId,
+        fields: Vec<(String, Value)>,
+    },
+    /// One executed `part { ... }` body's own named outputs (`AICAD-071`)
+    /// — its top-level `let`/`const`/`param`-with-default items, evaluated
+    /// once in source order into one shared scope, exactly like
+    /// `Interpreter::run_top_level`'s own top-level pass but confined to
+    /// one part's own item list. `binding` is the part's own declaring
+    /// `BindingId` (`BindingKind::Part`).
+    ///
+    /// Deliberately **not** a [`Value::Struct`]: a `part` is not a
+    /// `struct` declaration — there is no `cad_hir::typeck::struct_fields`
+    /// entry for a part's own binding and no `CheckedType::Part` at all,
+    /// so referencing a part's own named output via `.` source syntax
+    /// (e.g. `Bracket.body`) is not yet type-checked. See
+    /// `Interpreter::eval_part_body`'s own doc comment for the exact,
+    /// deliberately narrow scope this represents. `fields` uses the
+    /// identical `(name, Value)` shape as `Value::Struct` purely so
+    /// `HirExpr::Field`'s own runtime lookup can treat both uniformly —
+    /// not because the two are otherwise interchangeable.
+    Part {
+        binding: BindingId,
+        fields: Vec<(String, Value)>,
+    },
 }
 
 /// [`Value::Range`]'s payload — see that variant's own doc comment.
@@ -182,6 +224,37 @@ impl Value {
             Value::List(_) => "List",
             Value::Range(_) => "Range",
             Value::Geometry(_) => "Geometry",
+            Value::Struct { .. } => "struct instance",
+            Value::Part { .. } => "part instance",
+        }
+    }
+
+    /// This value's intrinsic [`OperandType`], for the two runtime kinds
+    /// that carry one directly (`Number`'s own `NumberValue::ty`, and
+    /// `Bool`/`Str`, whose scalar `PrimitiveType` is unambiguous with no
+    /// dimensional/affine bookkeeping needed) — `None` for every other
+    /// kind (`EnumVariant`/`Unit`/`List`/`Range`/`Geometry`), which either
+    /// has no `OperandType`-shaped counterpart at all or would need a
+    /// larger `CheckedType` comparison this crate does not attempt here.
+    /// Added for `AICAD-065`'s parametric-model override validation
+    /// (`crate::params::value_matches_checked_type`) — comparing a
+    /// caller-supplied override `Value` against a param's own
+    /// `cad_hir::typeck::CheckedType::Value` without re-deriving type
+    /// resolution independently in this crate (this module's own doc
+    /// comment already documents why this crate never re-derives type-
+    /// checker context).
+    pub fn operand_type(&self) -> Option<OperandType> {
+        match self {
+            Value::Number(n) => Some(n.ty),
+            Value::Bool(_) => Some(OperandType::Scalar(cad_types::PrimitiveType::Bool)),
+            Value::Str(_) => Some(OperandType::Scalar(cad_types::PrimitiveType::String)),
+            Value::EnumVariant { .. }
+            | Value::Unit
+            | Value::List(_)
+            | Value::Range(_)
+            | Value::Geometry(_)
+            | Value::Struct { .. }
+            | Value::Part { .. } => None,
         }
     }
 }

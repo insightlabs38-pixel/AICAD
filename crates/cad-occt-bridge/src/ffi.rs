@@ -70,6 +70,13 @@ unsafe extern "C" {
         matrix: *const f64, // [f64; 12], row-major 3x4
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_mirror_shape(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        origin: *const f64, // [f64; 3]
+        normal: *const f64, // [f64; 3]
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_make_line_edge(
         context: *mut aicad_occt_context_t,
         p0: *const f64, // [f64; 3]
@@ -81,6 +88,13 @@ unsafe extern "C" {
         center: *const f64, // [f64; 3]
         normal: *const f64, // [f64; 3]
         radius: f64,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_arc_edge(
+        context: *mut aicad_occt_context_t,
+        p_start: *const f64, // [f64; 3]
+        p_mid: *const f64,   // [f64; 3]
+        p_end: *const f64,   // [f64; 3]
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
     pub fn aicad_occt_make_wire_from_edges(

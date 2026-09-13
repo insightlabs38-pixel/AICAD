@@ -55,12 +55,14 @@
 //! expose every existing `GeometryOp` merely because the dispatcher
 //! already implements it." This module's [`catalogue`] therefore covers
 //! exactly `box`/`cylinder`/`transform`/`union`/`cut`/`intersect`/
-//! `fillet`/`chamfer` — not a 1:1 mirror of `cad_geometry_api::ir::
-//! GeometryOp`'s full 18-variant set. See `docs/spec/safe-cad-api.md` for
-//! the full human-readable specification (including the two deliberate
-//! Stage-2 narrowings this module encodes: `transform` is translate-only,
-//! and `fillet`/`chamfer` select edges by a plain `List<Int>` of raw
-//! indices rather than any new "edge reference" type).
+//! `fillet`/`chamfer` (Stage 2) plus `plate` (Stage 3, `AICAD-071`) — not a
+//! 1:1 mirror of `cad_geometry_api::ir::GeometryOp`'s full 18-variant set.
+//! See `docs/API/safe-cad-api.md` for the full human-readable
+//! specification (including the deliberate narrowings this module encodes:
+//! `transform` is translate-only, `fillet`/`chamfer` select edges by a
+//! plain `List<Int>` of raw indices rather than any new "edge reference"
+//! type, and `plate` is corner-at-origin with no `corner_radius`/`frame`
+//! parameter yet — see [`BuiltinFnId::Plate`]'s own doc comment).
 
 use crate::types::HirTypeRef;
 use cad_ast::Span;
@@ -102,13 +104,217 @@ pub enum BuiltinFnId {
     /// `chamfer(target: Geometry, edges: List<Int>, distance: Length) ->
     /// Geometry`. See [`BuiltinFnId::Fillet`]'s own doc comment.
     Chamfer,
+    /// `plate(width: Length, depth: Length, thickness: Length) ->
+    /// Geometry` (`AICAD-071`, Stage 3). A rectangular plate — dispatches
+    /// to the identical `GeometryOp::Box` construction `box` itself uses
+    /// (`dx = width, dy = depth, dz = thickness`), since a flat rectangular
+    /// plate has no geometry `box` does not already cover; `plate` exists
+    /// as its own catalogue entry purely so Safe CAD source has the
+    /// domain-meaningful name `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s
+    /// `plate` feature specifies, not because a new `GeometryOp` variant
+    /// is needed. Deliberately narrower than that plan section's own
+    /// `plate` signature (`size: Vector2<Length>`, `center: Point3`,
+    /// `corner_radius: Length`, `frame: Frame3`, `centered: Bool`): no
+    /// rounded-corner construction op exists in `cad_geometry_api::ir`
+    /// (`corner_radius` would need low-level wire/face construction,
+    /// explicitly out of Stage-2/3 scope so far — `cad_hir::builtins`'s own
+    /// module doc comment, "Stage-2 catalogue scope"), and no builtin
+    /// consumes the new `AICAD-070` `Frame3`/`Point3` geometry types yet
+    /// (Stage-3's own axis/frame/rotation foundation is `AICAD-075A`'s
+    /// task, not this one's — matches `Transform`'s own precedent
+    /// "deliberately translate-only" narrowing for the identical reason:
+    /// escalating rather than guessing an ambiguous signature). A plate is
+    /// always corner-at-origin, matching `box`'s own existing convention;
+    /// `center`/`centered`/`frame` placement is left to a future
+    /// `transform` call, exactly as any other Safe CAD solid.
+    Plate,
+    /// `extrude(target: Geometry, face: Int, direction: Vector3<Float>,
+    /// distance: Length) -> Geometry` (`AICAD-076`, Stage 3). Extrudes
+    /// one face of an already-built `target` solid outward by `distance`
+    /// along `direction`, returning the new standalone prism (not merged
+    /// with `target` -- compose with `union` for a boss). `face` is a
+    /// raw kernel-enumeration-order index, mirroring `Fillet`/`Chamfer`'s
+    /// own established `List<Int>` raw-index-selection precedent.
+    /// Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `extrude(profile: Profile|
+    /// Sketch|FaceRef, ...)` signature: no source-level `Sketch`/
+    /// `Profile` construction exists yet (`cad_hir::sketch` has no
+    /// grammar/lowering integration — see that module's own doc
+    /// comment), so "an existing solid's own face" is the only
+    /// source-visible profile source today. Uses `AICAD-075A`'s
+    /// `cad_runtime::spatial::direction3_from_value` for `direction`.
+    Extrude,
+    /// `revolve(target: Geometry, face: Int, axis: Axis3, angle: Angle)
+    /// -> Geometry` (`AICAD-076`, re-typed by `AICAD-076A`). Revolves one
+    /// face of an already-built `target` solid about `axis` by `angle`,
+    /// returning the new standalone solid of revolution. Same
+    /// face-selection/profile-source narrowing as [`BuiltinFnId::
+    /// Extrude`]'s own doc comment. `axis` is a real `Axis3` value,
+    /// converted via `AICAD-075A`'s `cad_runtime::spatial::
+    /// axis3_from_value` — the standard type environment note below
+    /// explains why this is now safe to reference directly.
+    Revolve,
+    /// `hole(target: Geometry, axis: Axis3, diameter: Length, depth:
+    /// Length) -> Geometry` (`AICAD-076`, re-typed by `AICAD-076A`). Cuts
+    /// a cylindrical hole of `diameter`/`depth` along `axis` out of
+    /// `target` — dispatches to `GeometryOp::Cylinder`, `GeometryOp::
+    /// Transform` (placed via `Frame3::from_z`/`Transform::from_frames`,
+    /// `AICAD-075A`), and `GeometryOp::Cut`, no new `GeometryOp` variant
+    /// needed (mirrors [`BuiltinFnId::Plate`]'s own "domain-meaningful
+    /// name over existing ops" precedent). `axis` is a real `Axis3`
+    /// value, converted via `cad_runtime::spatial::axis3_from_value`.
+    /// Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `hole` signature: `depth` is
+    /// a plain `Length` picked by the caller (no `ThroughAll` -- querying
+    /// `target`'s own extent along `axis` to compute one automatically is
+    /// a separate, not-yet-built capability), and no counterbore/
+    /// countersink/thread metadata yet.
+    Hole,
+    /// `pocket(target: Geometry, frame: Frame3, width: Length, length:
+    /// Length, depth: Length) -> Geometry` (`AICAD-076`, re-typed by
+    /// `AICAD-076A`). Cuts a `width` x `length` x `depth` rectangular
+    /// pocket out of `target`, corner-at-`frame`'s-origin extending along
+    /// `frame`'s own `x`/`y`/`z` axes (matching `box`'s own
+    /// corner-at-origin convention, relocated by `frame` via
+    /// `Transform::from_frames`) -- dispatches to `GeometryOp::Box` +
+    /// `GeometryOp::Transform` + `GeometryOp::Cut`, no new `GeometryOp`
+    /// variant needed. `frame` is a real `Frame3` value, converted via
+    /// `cad_runtime::spatial::frame3_from_value`. Deliberately narrower
+    /// than `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own
+    /// `pocket(profile: Profile|Sketch, ...)` signature: narrowed from an
+    /// arbitrary profile to a rectangle, mirroring `plate`'s own
+    /// already-accepted box-only narrowing of the general `Profile`
+    /// concept.
+    Pocket,
+    /// `mirror(target: Geometry, plane: Plane) -> Geometry` (`AICAD-077`).
+    /// Mirrors `target` across `plane` — a true reflection (determinant
+    /// -1), dispatching to the new `GeometryOp::Mirror`/`Shape::mirror`
+    /// kernel capability (`project/OWNER_DECISIONS.md#D20`'s own "Next
+    /// dependency" note: mirror cannot be expressed as a `Transform`,
+    /// which is proper-rigid-only). `plane` is a real `Plane` value,
+    /// converted via `cad_runtime::spatial::plane3_from_value` — safe to
+    /// reference directly per the type-closed standard environment
+    /// `AICAD-076A` established. Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `mirror(item: Shape|Feature,
+    /// plane: Plane|FaceRef, merge: Bool)` signature: no `FaceRef` plane
+    /// source (no source-level face-reference type exists yet, same gap
+    /// `Extrude`/`Revolve`'s own `face: Int` raw-index narrowing
+    /// documents) and no `merge` option (the caller composes `union`
+    /// itself if a merged result is wanted, exactly like `extrude`'s own
+    /// "returns the new standalone prism, compose with `union` for a
+    /// boss" precedent).
+    Mirror,
+    /// `linear_pattern(target: Geometry, direction: Vector3<Float>,
+    /// count: Int, spacing: Length) -> Geometry` (`AICAD-077`). Returns
+    /// the union of `count` copies of `target`, the first left in place
+    /// and each subsequent one translated along `direction` (normalized)
+    /// by an additional `spacing`, i.e. positioned at `0, spacing,
+    /// 2*spacing, ..., (count-1)*spacing`. No new `GeometryOp` variant —
+    /// built entirely from the already-existing `GeometryOp::Transform`/
+    /// `GeometryOp::Union`, mirroring `Hole`/`Pocket`'s own "domain-
+    /// meaningful name over existing ops" precedent, just looped `count`
+    /// times. Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `linear_pattern` signature:
+    /// `item` is a built `Geometry` value (no `Feature|Shape|Fn` source
+    /// polymorphism — no `Feature`/`FeatureGroup` concept exists yet, per
+    /// this catalogue's own established "a builtin returns `Geometry`,
+    /// not a provenance-bearing feature handle" precedent) and no
+    /// `centered` option (the caller's own choice of `direction`'s sign
+    /// already controls which way the pattern extends from `target`'s
+    /// unmoved first copy).
+    LinearPattern,
+    /// `radial_pattern(target: Geometry, axis: Axis3, count: Int, angle:
+    /// Angle) -> Geometry` (`AICAD-077`). Returns the union of `count`
+    /// copies of `target`, the first left in place and each subsequent
+    /// one rotated about `axis` by an additional `angle / count`, i.e.
+    /// positioned at angular offsets `0, angle/count, 2*angle/count, ...,
+    /// (count-1)*angle/count` — the standard "full circle divided evenly"
+    /// convention for a closed pattern (`angle = 360deg` places `count`
+    /// evenly spaced copies with no duplicate at the seam). `axis` is a
+    /// real `Axis3` value, the same axis representation `revolve`/`hole`
+    /// already share (`AICAD-075A`'s own integration requirement). No new
+    /// `GeometryOp` variant — built from `GeometryOp::Transform`/
+    /// `GeometryOp::Union`, exactly like [`BuiltinFnId::LinearPattern`].
+    /// Deliberately narrower than `docs/plan/
+    /// 04_HIGH_LEVEL_MODELING_API.md`'s own `radial_pattern` signature: no
+    /// `include_endpoint` option (this builtin's own fixed "divide `angle`
+    /// into `count` equal steps, never repeating the `angle`-degree
+    /// position" convention already matches that option's own documented
+    /// `false` default), matching [`BuiltinFnId::LinearPattern`]'s own
+    /// narrowing rationale otherwise.
+    RadialPattern,
+    /// `shell(target: Geometry, removed_faces: List<Int>, thickness:
+    /// Length) -> Geometry` (`AICAD-078`). Hollows `target` to a uniform
+    /// `thickness`, opening the given `removed_faces`. `removed_faces` is
+    /// a plain `List<Int>` of raw, kernel-enumeration-order face indices
+    /// — the same raw-index-selection convention `fillet`/`chamfer`
+    /// already established for `edges` (`Fillet`/`Chamfer`'s own doc
+    /// comments), applied here to faces instead, matching `cad_geometry_api::
+    /// ir::GeometryOp::Shell`'s own `removed_faces: Vec<FaceIndex>` shape
+    /// directly. Unlike `Fillet`/`Chamfer`'s `edges`, an empty
+    /// `removed_faces` list is legitimate (a fully closed shell) — see
+    /// `GeometryOp::Shell`'s own doc comment; this builtin does not reject
+    /// it. No new `GeometryOp` variant or kernel capability was needed:
+    /// `GeometryOp::Shell`/`Shape::shell`/`aicad_occt_shell` have existed
+    /// since `AICAD-026`/`AICAD-059`/`AICAD-060` — this is purely the
+    /// missing Safe CAD catalogue entry over an already-complete
+    /// capability, the one dress-up feature `cad_hir::builtins`'s own
+    /// "Stage-2 catalogue scope" note left out alongside `fillet`/
+    /// `chamfer`. `thickness` is always hollowed *inward* (cavity removes
+    /// material) — `cad_runtime::interp::Interpreter::dispatch_builtin`'s
+    /// own `Shell` arm negates the evaluated magnitude before building the
+    /// `GeometryOp::Shell` node, since `Shape::shell`'s own already-
+    /// established convention is "negative thickness hollows inward,
+    /// positive builds material outward" (`crates/cad-occt-bridge`'s own
+    /// `shell_hollowed_box_matches_analytic_volume` test). This matches
+    /// `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool =
+    /// true` default with no separate parameter needed for it.
+    Shell,
 }
+
+// --- The standard type environment (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`) ---
+//
+// `AICAD-075A` built `cad_hir::geometry_types::{Axis3, Frame3, Plane}` and
+// `cad_runtime::spatial::{axis3_from_value, frame3_from_value,
+// plane3_from_value}` specifically so a builtin like `revolve`/`hole`/
+// `pocket` could take a real `Axis3`/`Frame3` *value* — the design
+// `revolve`/`hole`/`pocket` use above. `AICAD-076` first attempted this and
+// found a genuine, repository-wide architecture gap: `crate::lower::
+// Lowerer::seed_builtins` seeds *every* `BuiltinFnId` into *every* compiled
+// program's global scope unconditionally, and `cad_hir::typeck::Checker::
+// collect_signatures` eagerly resolves every seeded function's own
+// parameter types up front — including a function's own type that is never
+// actually called. Before `AICAD-076A`, a `HirTypeRef::Named` reference to
+// a `cad_hir::geometry_types` struct that was not itself in scope (true for
+// almost every existing program, since `with_geometry_types` composition
+// was optional) failed eagerly with `UNKNOWN_TYPE_NAME` for *that other*
+// program — confirmed empirically: `AICAD-076`'s own first draft broke 149
+// previously-passing `cad-hir` tests unrelated to Stage-3 modeling.
+//
+// `project/OWNER_DECISIONS.md#D20`/`project/DECISION_LOG.md#DL-21` resolved
+// this: the always-seeded builtin environment must be type-closed, so
+// `crate::lower::Lowerer::seed_standard_types` (called by `crate::lower::
+// lower_program` unconditionally, alongside `seed_builtins`) now seeds
+// `cad_hir::geometry_types::GEOMETRY_TYPES_SOURCE`'s struct declarations
+// into every compiled program's global scope too — `Axis3`/`Frame3`/
+// `Point3`/`Plane` now always resolve, with no caller composition required.
+// `AICAD-076`'s original scalar-decomposed `revolve`/`hole`/`pocket`
+// signatures were an approved *temporary* compatibility workaround, not the
+// long-term pattern; `AICAD-076A` migrated them back to the real `Axis3`/
+// `Frame3`-typed signatures above, which is what should be used from here
+// on for any new struct-typed builtin (`AICAD-077`'s own planned
+// `mirror(target, plane: Plane)` included) — `extrude`'s `direction:
+// Vector3<Float>` was never affected by any of this (a `HirTypeRef::Generic`
+// reference to a user-defined generic struct resolves to `None` silently
+// when unresolved, not eagerly, per `Checker::resolve_generic_type_
+// application`'s own `?`-early-return — the asymmetry that made the
+// original gap possible in the first place).
 
 impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 8] = [
+    pub const ALL: [BuiltinFnId; 17] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -117,6 +323,15 @@ impl BuiltinFnId {
         BuiltinFnId::Intersect,
         BuiltinFnId::Fillet,
         BuiltinFnId::Chamfer,
+        BuiltinFnId::Plate,
+        BuiltinFnId::Extrude,
+        BuiltinFnId::Revolve,
+        BuiltinFnId::Hole,
+        BuiltinFnId::Pocket,
+        BuiltinFnId::Mirror,
+        BuiltinFnId::LinearPattern,
+        BuiltinFnId::RadialPattern,
+        BuiltinFnId::Shell,
     ];
 }
 
@@ -130,6 +345,21 @@ fn named(name: &str) -> HirTypeRef {
 fn list_of(elem: &str) -> HirTypeRef {
     HirTypeRef::Generic {
         name: "List".to_string(),
+        args: vec![named(elem)],
+        span: Span::new(0, 0),
+    }
+}
+
+/// `Vector3<elem>` (`AICAD-076`) — `cad_hir::geometry_types`'s own
+/// generic `Vector3<T>` struct, referenced here exactly as `list_of`
+/// already references `List<T>`. Only resolvable when the compiling
+/// program has `cad_hir::geometry_types::with_geometry_types` applied
+/// (see that module's own doc comment) — [`BuiltinFnId::Extrude`]/
+/// [`BuiltinFnId::Revolve`]/[`BuiltinFnId::Hole`]/[`BuiltinFnId::Pocket`]
+/// are the first catalogue entries with this requirement.
+fn vector3_of(elem: &str) -> HirTypeRef {
+    HirTypeRef::Generic {
+        name: "Vector3".to_string(),
         args: vec![named(elem)],
         span: Span::new(0, 0),
     }
@@ -221,6 +451,99 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             ],
             return_ty: named("Geometry"),
         },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Plate,
+            name: "plate",
+            params: vec![
+                ("width", named("Length")),
+                ("depth", named("Length")),
+                ("thickness", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Extrude,
+            name: "extrude",
+            params: vec![
+                ("target", named("Geometry")),
+                ("face", named("Int")),
+                ("direction", vector3_of("Float")),
+                ("distance", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Revolve,
+            name: "revolve",
+            params: vec![
+                ("target", named("Geometry")),
+                ("face", named("Int")),
+                ("axis", named("Axis3")),
+                ("angle", named("Angle")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Hole,
+            name: "hole",
+            params: vec![
+                ("target", named("Geometry")),
+                ("axis", named("Axis3")),
+                ("diameter", named("Length")),
+                ("depth", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Pocket,
+            name: "pocket",
+            params: vec![
+                ("target", named("Geometry")),
+                ("frame", named("Frame3")),
+                ("width", named("Length")),
+                ("length", named("Length")),
+                ("depth", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Mirror,
+            name: "mirror",
+            params: vec![("target", named("Geometry")), ("plane", named("Plane"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::LinearPattern,
+            name: "linear_pattern",
+            params: vec![
+                ("target", named("Geometry")),
+                ("direction", vector3_of("Float")),
+                ("count", named("Int")),
+                ("spacing", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::RadialPattern,
+            name: "radial_pattern",
+            params: vec![
+                ("target", named("Geometry")),
+                ("axis", named("Axis3")),
+                ("count", named("Int")),
+                ("angle", named("Angle")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Shell,
+            name: "shell",
+            params: vec![
+                ("target", named("Geometry")),
+                ("removed_faces", list_of("Int")),
+                ("thickness", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
     ]
 }
 
@@ -249,5 +572,49 @@ mod tests {
         let mut deduped = names.clone();
         deduped.dedup();
         assert_eq!(names, deduped, "duplicate builtin function name");
+    }
+
+    /// `project/DECISION_LOG.md#DL-21`'s own required invariant: the
+    /// always-seeded standard type environment must make every
+    /// `BuiltinFnId` signature resolvable with zero caller composition.
+    /// Proven directly here — a targeted, catalogue-wide check — rather
+    /// than left to be discovered by an unrelated test suite exploding,
+    /// which is exactly what happened during `AICAD-076`'s own
+    /// development (a draft `Axis3`/`Frame3` parameter broke 149
+    /// Stage-3-unrelated `cad-hir` tests before this invariant existed as
+    /// its own test).
+    #[test]
+    fn the_entire_builtin_catalogue_type_checks_against_an_otherwise_empty_program() {
+        let (program, parse_diagnostics) = cad_parser::parse_program("", "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let lowered = crate::lower::lower_program(&program, "test.aicad", "");
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "empty program + standard builtin catalogue failed to lower cleanly: {:?}",
+            lowered.diagnostics
+        );
+        let checked =
+            crate::typeck::check_program(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert!(
+            checked.diagnostics.is_empty(),
+            "empty program + standard builtin catalogue failed to type-check cleanly \
+             -- a BuiltinFnId signature references a nominal type the always-seeded \
+             standard environment does not provide: {:?}",
+            checked.diagnostics
+        );
+        // Every catalogue entry actually seeded a real `Fn` binding by its
+        // own declared name -- ruling out a vacuous pass where a
+        // signature silently resolved every parameter/return type to
+        // `None` and therefore produced no diagnostic by accident.
+        for spec in catalogue() {
+            assert!(
+                lowered
+                    .bindings
+                    .iter()
+                    .any(|b| b.name == spec.name && b.kind == crate::ids::BindingKind::Fn),
+                "builtin '{}' did not seed an Fn binding",
+                spec.name
+            );
+        }
     }
 }

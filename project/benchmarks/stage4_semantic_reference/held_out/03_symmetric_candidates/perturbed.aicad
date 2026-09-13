@@ -1,0 +1,28 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// HELD-OUT CASE — see held_out/HELD_OUT_README.md before reading further.
+// Category: symmetric candidates. See ./case.md for the intended query
+// target, expected classification, and measured evidence.
+
+param plate_x: Length = 60mm;
+param plate_y: Length = 30mm;
+param plate_z: Length = 8mm;
+param hole_diameter: Length = 5mm;
+param left_hole_x: Length = 15mm;
+param right_hole_x: Length = 45mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Plate {
+    let with_left: Geometry = hole(
+        box(plate_x, plate_y, plate_z),
+        Axis3(origin = Point3(x = left_hole_x, y = plate_y / 2, z = 0mm - HOLE_OVERSHOOT), direction = Vector3(x = 0.0, y = 0.0, z = 1.0)),
+        hole_diameter,
+        plate_z + HOLE_OVERSHOOT * 2,
+    );
+    let body: Geometry = hole(
+        with_left,
+        Axis3(origin = Point3(x = right_hole_x, y = plate_y / 2, z = 0mm - HOLE_OVERSHOOT), direction = Vector3(x = 0.0, y = 0.0, z = 1.0)),
+        hole_diameter,
+        plate_z + HOLE_OVERSHOOT * 2,
+    );
+}

@@ -15,7 +15,7 @@
 mod ffi;
 
 use cad_kernel_api::{
-    Axis3, Direction3, KernelError, KernelId, KernelResult, KernelShape, Point3, Transform,
+    Axis3, Direction3, KernelError, KernelId, KernelResult, KernelShape, Plane3, Point3, Transform,
 };
 use std::os::raw::c_int;
 
@@ -230,6 +230,43 @@ impl OcctContext {
         })
     }
 
+    /// Constructs a circular-arc edge passing through three points, in
+    /// order `start -> mid -> end` (AICAD-075). `mid` must lie strictly
+    /// between the other two along the intended arc -- see
+    /// `aicad_occt_make_arc_edge`'s own doc comment for why this
+    /// determines both which of the two possible arcs is built and its
+    /// traversal direction, with no separate axis/sense parameter.
+    pub fn make_arc_edge(
+        &self,
+        start: Point3,
+        mid: Point3,
+        end: Point3,
+    ) -> KernelResult<Shape<'_>> {
+        let start = [start.x, start.y, start.z];
+        let mid = [mid.x, mid.y, mid.z];
+        let end = [end.x, end.y, end.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_line_edge` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_arc_edge(
+                self.raw,
+                start.as_ptr(),
+                mid.as_ptr(),
+                end.as_ptr(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
     /// Joins an ordered list of edges (each owned by this context) into
     /// one wire (AICAD-022).
     pub fn make_wire_from_edges<'ctx>(
@@ -406,6 +443,44 @@ impl<'ctx> Shape<'ctx> {
                 self.context.raw,
                 self.raw_handle(),
                 matrix.as_ptr(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Mirrors this shape across `plane`, producing a new [`Shape`] in the
+    /// same context (`AICAD-077`). A mirror is an *improper* isometry
+    /// (determinant -1), so this is its own native entry point
+    /// (`aicad_occt_mirror_shape`) rather than going through
+    /// [`Shape::transform`]'s `matrix`, which `aicad_occt_transform_shape`
+    /// correctly rejects for not being a proper rigid displacement (see
+    /// `cad_kernel_api::geometry`'s own "Rigidity (no reflection)" module
+    /// doc comment). Never mutates `self` -- functional/value-oriented
+    /// semantics, `project/DECISION_LOG.md#DL-2`, matching `transform`'s
+    /// own precedent exactly.
+    pub fn mirror(&self, plane: Plane3) -> KernelResult<Shape<'ctx>> {
+        let origin = [plane.origin.x, plane.origin.y, plane.origin.z];
+        let n = plane.normal.as_vector3();
+        let normal = [n.x, n.y, n.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `origin`/`normal` are valid, live `[f64; 3]` arrays for
+        // the duration of this call; other arguments as in
+        // `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_mirror_shape(
+                self.context.raw,
+                self.raw_handle(),
+                origin.as_ptr(),
+                normal.as_ptr(),
                 &mut handle,
             )
         };
@@ -1339,6 +1414,67 @@ mod tests {
         );
     }
 
+    // --- AICAD-077: mirror ---
+
+    #[test]
+    fn mirror_across_a_world_plane_flips_the_bounding_box_and_produces_a_new_handle() {
+        let context = OcctContext::new().unwrap();
+        // A box with one corner at the origin, extending into +x/+y/+z.
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let plane = Plane3::new(Point3::ORIGIN, Direction3::X);
+        let mirrored = box_shape.mirror(plane).unwrap();
+        assert_ne!(box_shape.handle(), mirrored.handle());
+        // Volume is preserved by a reflection.
+        assert!((mirrored.volume().unwrap() - 24.0).abs() < 1e-9);
+        let bbox = mirrored.bounding_box().unwrap();
+        // Reflected across x=0: the box's own [0, 2] x-extent becomes
+        // [-2, 0].
+        assert!((bbox.min.x - -2.0).abs() < 1e-6);
+        assert!((bbox.max.x - 0.0).abs() < 1e-6);
+        // y/z extents are unaffected (the mirror plane's normal is +X).
+        assert!((bbox.min.y - 0.0).abs() < 1e-6);
+        assert!((bbox.max.y - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mirror_across_an_offset_plane_reflects_about_that_plane_not_the_origin() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 1.0, 1.0).unwrap();
+        // Mirror plane at x = 5, normal +X.
+        let plane = Plane3::new(Point3::new(5.0, 0.0, 0.0), Direction3::X);
+        let mirrored = box_shape.mirror(plane).unwrap();
+        let bbox = mirrored.bounding_box().unwrap();
+        // [0, 2] reflected about x=5 becomes [8, 10].
+        assert!((bbox.min.x - 8.0).abs() < 1e-6);
+        assert!((bbox.max.x - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mirror_does_not_mutate_the_source_shape() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let original_bbox = box_shape.bounding_box().unwrap();
+        let _mirrored = box_shape.mirror(Plane3::new(Point3::ORIGIN, Direction3::X));
+        let bbox_after = box_shape.bounding_box().unwrap();
+        assert_eq!(
+            original_bbox, bbox_after,
+            "mirror must not mutate the source shape"
+        );
+    }
+
+    #[test]
+    fn mirroring_twice_across_the_same_plane_returns_to_the_original_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 1.0).unwrap();
+        let plane = Plane3::new(Point3::new(5.0, 0.0, 0.0), Direction3::X);
+        let once = box_shape.mirror(plane).unwrap();
+        let twice = once.mirror(plane).unwrap();
+        let original_bbox = box_shape.bounding_box().unwrap();
+        let twice_bbox = twice.bounding_box().unwrap();
+        assert!((original_bbox.min.x - twice_bbox.min.x).abs() < 1e-6);
+        assert!((original_bbox.max.x - twice_bbox.max.x).abs() < 1e-6);
+    }
+
     // --- AICAD-022: curves/edges/wires ---
 
     #[test]
@@ -1361,6 +1497,77 @@ mod tests {
             context.make_line_edge(p, p).unwrap_err(),
             KernelError::InvalidArgument
         );
+    }
+
+    #[test]
+    fn make_arc_edge_is_valid_with_the_expected_endpoints_and_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        // A quarter circle of radius 2 in the XY plane, centered at the
+        // origin, from angle 0 to angle pi/2 (start=(2,0,0), mid at pi/4,
+        // end=(0,2,0)).
+        let start = Point3::new(2.0, 0.0, 0.0);
+        let mid = Point3::new(
+            2.0 * std::f64::consts::FRAC_1_SQRT_2,
+            2.0 * std::f64::consts::FRAC_1_SQRT_2,
+            0.0,
+        );
+        let end = Point3::new(0.0, 2.0, 0.0);
+        let edge = context.make_arc_edge(start, mid, end).unwrap();
+        assert!(edge.is_valid().unwrap());
+        let bbox = edge.bounding_box().unwrap();
+        // The arc bulges out to x=2 (at start) and y=2 (at end); its
+        // bounding box must match the quarter-circle's own bounds, within
+        // `bounding_box`'s own tessellation-based tolerance (matching
+        // `make_circle_wire_is_valid_with_the_expected_bounding_box`'s own
+        // `1e-6` tolerance below, not this task's own numeric policy).
+        assert!((bbox.max.x - 2.0).abs() < 1e-6);
+        assert!((bbox.max.y - 2.0).abs() < 1e-6);
+        assert!(bbox.min.x.abs() < 1e-6);
+        assert!(bbox.min.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn make_arc_edge_rejects_coincident_points() {
+        let context = OcctContext::new().unwrap();
+        let p = Point3::new(1.0, 0.0, 0.0);
+        let other = Point3::new(0.0, 1.0, 0.0);
+        assert_eq!(
+            context.make_arc_edge(p, p, other).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_arc_edge_rejects_collinear_points() {
+        let context = OcctContext::new().unwrap();
+        let p0 = Point3::new(0.0, 0.0, 0.0);
+        let p1 = Point3::new(1.0, 0.0, 0.0);
+        let p2 = Point3::new(2.0, 0.0, 0.0);
+        assert_eq!(
+            context.make_arc_edge(p0, p1, p2).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_arc_edge_can_be_joined_with_line_edges_into_a_closed_wire() {
+        // A "D" shape: a straight diameter plus a semicircular arc,
+        // proving an arc edge composes with `make_wire_from_edges` and
+        // `make_face` exactly like a line edge does.
+        let context = OcctContext::new().unwrap();
+        let p_top = Point3::new(0.0, 1.0, 0.0);
+        let p_bottom = Point3::new(0.0, -1.0, 0.0);
+        let p_right = Point3::new(1.0, 0.0, 0.0);
+        let diameter = context.make_line_edge(p_bottom, p_top).unwrap();
+        let arc = context.make_arc_edge(p_top, p_right, p_bottom).unwrap();
+        let wire = context
+            .make_wire_from_edges(&[&diameter, &arc])
+            .expect("a diameter edge plus a semicircular arc edge must close");
+        assert!(wire.is_valid().unwrap());
+        let face = wire.make_face().unwrap();
+        assert!(face.is_valid().unwrap());
+        let expected_area = std::f64::consts::PI * 1.0 * 1.0 / 2.0;
+        assert!((face.area().unwrap() - expected_area).abs() < expected_area * 1e-6);
     }
 
     #[test]

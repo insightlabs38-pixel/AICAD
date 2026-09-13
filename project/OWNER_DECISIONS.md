@@ -26,15 +26,15 @@ rationale live in `project/DECISION_LOG.md`.
 |---|---|
 | D1 Canonical surface syntax | RESOLVED — DL-1 |
 | D2 Mutation semantics | RESOLVED — DL-2 |
-| D3 Sketch entity/object model | open |
+| D3 Sketch entity/object model | RESOLVED — DL-19 |
 | D4 Type/units semantics | RESOLVED — DL-3 |
 | D5 Determinism-equivalence contract | RESOLVED (v1 policy) — DL-12 |
 | D6 Kernel abstraction boundary | RESOLVED — DL-5 |
 | D7 Reference resolution/fallback policy | PARTIALLY RESOLVED — DL-8 |
 | D8 OCAF vs. kernel-independent graph | PARTIALLY RESOLVED (directional) — DL-9 |
 | D9 Intrinsic-vs-package boundary | RESOLVED — DL-7 |
-| D10 Diagnostic stability policy | open |
-| D11 Constraint IR/solver independence | open |
+| D10 Diagnostic stability policy | RESOLVED — DL-18 |
+| D11 Constraint IR/solver independence | RESOLVED — DL-20 |
 | D12 Trusted native plugin boundary | open |
 | D13 OCCT/standards licensing | PARTIALLY RESOLVED (development policy) — DL-6 |
 | D14 File extension/branding | RESOLVED — DL-4 |
@@ -42,7 +42,8 @@ rationale live in `project/DECISION_LOG.md`.
 | D16 Collection/iterator construction syntax | RESOLVED (Stage-2 minimum) — DL-13 |
 | D17 Result<T,E>/data-carrying enum variants | RESOLVED (general generics + enums) — DL-14 |
 | D18 Geometry-operation invocation mechanism from `.aicad` source | RESOLVED (runtime-backed standard functions) — DL-15 |
-| D19 D5 v1 comparison-profile numeric tolerance constants | open (measurements/recommendation produced) |
+| D19 D5 v1 comparison-profile numeric tolerance constants | RESOLVED — DL-17 + AICAD-064A |
+| D20 Struct-typed parameters in the always-seeded `RuntimeBuiltin` catalogue | RESOLVED — DL-21 |
 
 ---
 
@@ -94,6 +95,15 @@ desugaring/SSA lowering rule is not specified.
 
 ## D3. Sketch entity/object model
 
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-19`.** An explicit,
+kernel-independent semantic `Sketch` object owns its plane/frame, explicit
+entity nodes, explicit constraint nodes, deterministic local semantic entity
+identities, and source/provenance links; no hidden global mutable
+registration; block syntax may exist as sugar but must lower to this same
+explicit model; Stage-3 sketch entity identity is not OCCT topology IDs and
+does not claim to solve Stage-4 persistent topological naming. Original
+question/context kept below for record.
+
 **Question:** Are sketch entities (`line`, `circle`, `arc`, ...) explicit
 named objects registered onto a `Sketch` value, or sugar over a declarative
 block? How does an entity created by a free function actually attach to a
@@ -104,8 +114,9 @@ specific `Sketch`'s plane and constraint solver?
 §4.3. No example in the bundle (checked 02, 04, 18) shows the binding
 mechanism — see `project/reports/ORIENTATION_PASS.md` §6 (contradiction 4).
 
-**Status:** Open; plan favors explicit objects internally with block syntax
-as sugar, but the mechanism is undefined.
+**Prior framing (superseded — see resolution above):** Plan favored explicit
+objects internally with block syntax as sugar, but the mechanism was
+undefined.
 
 **Blocking impact:** Stage 3 sketch IR/constraint tasks (AICAD-072, AICAD-073,
 AICAD-074, AICAD-075).
@@ -295,6 +306,14 @@ until the standard library work in Stage 3+ begins in earnest.
 
 ## D10. Diagnostic code/schema stability policy
 
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-18`.** Committed
+diagnostic codes are durable and never silently repurposed; pre-1.0 codes
+may be deprecated/replaced but not silently renumbered/reused; the
+machine-readable schema is versioned; a compatibility-breaking schema
+change requires explicit review. Adding a new code in an existing family,
+or a wholly new family, is ordinary task work. Original question/context
+kept below for record.
+
 **Question:** What is the exact stability/deprecation policy for diagnostic
 codes (the `PARSE-E###`/`GEOM-E###`/etc. families) once published — can
 codes be renumbered pre-1.0, and what is the process for adding new
@@ -303,15 +322,27 @@ families?
 **Plan references:** `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md` §10-12;
 `AICAD_AGENT_OPERATING_MODEL.md` §7 item 10.
 
-**Status:** A taxonomy and JSON schema exist; a stability policy does not.
+**Prior framing (superseded — see resolution above):** A taxonomy and JSON
+schema existed; a stability policy did not.
 
 **Blocking impact:** AICAD-038 (`cad-diagnostics` crate + JSON-schema
-conformance tests) is the first task that materializes this schema — should
-be settled at or before that task.
+conformance tests) is the first task that materialized this schema;
+AICAD-078 (Stage 3, normalized diagnostics) requires this ruling in force
+first.
 
 ---
 
 ## D11. Constraint IR semantics and solver-independence rules
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-20`.** The AICAD
+constraint IR (typed variables, constraint kinds/parameters, semantic IDs,
+provenance, solve-status vocabulary, structured diagnostics) is
+authoritative; a solver backend owns numerical algorithms only and may
+never redefine dimensional semantics, constraint-kind meaning, success/
+failure classification, or silently let an arbitrary branch become
+language semantics; a provably minimal overconstraint conflict set is not
+required in the Stage-3 baseline. Original question/context kept below for
+record.
 
 **Question:** Exact constraint IR contract (`docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md`
 §4) and the precise boundary of what a pluggable solver backend may vs. may
@@ -322,8 +353,11 @@ selection, conflict-set minimality guarantees).
 `docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md` §4, §6;
 `AICAD_AGENT_OPERATING_MODEL.md` §7 item 11.
 
-**Status:** Open; needed before sketch/assembly solving expands
-(Stage 3 AICAD-073/074, Stage 6).
+**Prior framing (superseded — see resolution above):** Open; needed before
+sketch/assembly solving expands (Stage 3 AICAD-073/074, Stage 6).
+
+**Blocking impact:** AICAD-073 (Batch S3-05) implements this boundary
+directly.
 
 ---
 
@@ -773,8 +807,19 @@ completes, per the fixed Batch S2-11 order.
 
 ## D19. D5 v1 comparison-profile numeric tolerance constants
 
-**Status: open — measurements/recommendation produced, owner ruling
-requested.** `DECISION_LOG.md#DL-12` froze the *shape* of the D5
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-17`.** `DL-17`
+accepted three directly-evidenced constants (`linear_abs = 0.0001 mm`,
+`center_of_mass_abs = linear_abs`, `volume_rel = 0.001`) as v1 defaults,
+and authorized `AICAD-064A`'s bounded multi-scale calibration corpus to
+derive the remaining four (`linear_rel`, `area_abs`, `area_rel`,
+`volume_abs`) without a further owner ruling unless that evidence proved
+ambiguous. `project/reports/AICAD-064A.md` derived all four from clear,
+unambiguous evidence (`linear_rel = 0.0`, `area_abs = 1e-6`, `area_rel =
+1e-3`, `volume_abs = 1e-6`) — no escalation was needed; the complete v1
+profile is implemented in `crates/cad-validation::profile::
+ComparisonProfile::v1`. Original question/context kept below for record.
+
+`DECISION_LOG.md#DL-12` froze the *shape* of the D5
 comparison profile (`linear`/`area`/`volume`/`center-of-mass`, each scaled
 by characteristic linear scale `S`) but explicitly left the concrete v1
 numeric constants unfixed, assigning Stage 2 to "derive and document them
@@ -852,6 +897,129 @@ determinism benchmarks mature." Recommend the owner rule on this before
 `crates/cad-validation` is first implemented (a Stage-3-or-later task),
 so that task starts from owner-approved constants rather than picking its
 own.
+
+---
+
+## D20. Struct-typed parameters in the always-seeded `RuntimeBuiltin` catalogue
+
+**Status: RESOLVED — see `project/DECISION_LOG.md#DL-21`.** A
+`BuiltinFnId` signature may reference approved AICAD standard nominal
+types, including `Point3`/`Axis3`/`Frame3`/`Plane`; the always-seeded
+builtin environment must be type-closed (the compiler seeds every
+nominal type a builtin signature needs alongside the builtins
+themselves, with no optional caller composition required); the existing
+eager signature-collection model is preserved (no lazy per-call
+resolution); this remains a closed first-party standard environment
+only (no plugin-injected/runtime-registered types, no OCCT types in
+source/HIR signatures); the catalogue and its required type declarations
+must be independently type-validatable (a dedicated zero-diagnostics
+test against an otherwise-empty program); `with_geometry_types` may
+remain as an idempotent compatibility helper. Implemented by
+`AICAD-076A` (Batch S3-06, inserted before `AICAD-077`). Original
+question/context kept below for record.
+
+**Question:** Can a `cad_hir::builtins::BuiltinFnId` catalogue entry's
+signature reference a `cad_hir::geometry_types`-declared struct type
+(`Point3`, `Axis3`, `Frame3`, `Plane`) as a `Named` parameter/return type,
+the way `AICAD-075A` intended (`revolve(axis: Axis3, ...)`,
+`hole(axis: Axis3, ...)`, `pocket(frame: Frame3, ...)`) — and if not
+directly, should the compiler's builtin-seeding mechanism change so that
+it can?
+
+**What `AICAD-076` found:** `crate::lower::Lowerer::seed_builtins` seeds
+*every* `BuiltinFnId` into *every* compiled program's global scope
+unconditionally (there is no way to seed a subset), and `cad_hir::
+typeck::Checker::collect_signatures` eagerly resolves every seeded
+function's own parameter/return types up front — for every function,
+including one the program never actually calls. A `HirTypeRef::Named`
+reference to a `cad_hir::geometry_types` struct that is not itself in
+scope (i.e. any program that has not separately composed `cad_hir::
+geometry_types::with_geometry_types`, which is the overwhelming majority
+of existing programs/tests, since that composition has always been
+caller-optional — see that module's own doc comment) fails eagerly with
+an `UNKNOWN_TYPE_NAME` diagnostic for *that program*, even when the
+program never references the offending builtin at all. This was found by
+direct experiment, not inferred: adding `axis: Axis3`/`frame: Frame3`
+parameters to `revolve`/`hole`/`pocket` broke **149** previously-passing
+`cad-hir` tests that have nothing to do with Stage-3 modeling, confirmed
+by the exact diagnostic count matching the exact number of `Named`
+geometry-type references added. By contrast, a `HirTypeRef::Generic`
+reference to a user-defined generic struct (`Vector3<Float>`) does *not*
+have this problem — an unresolvable generic base returns `None` silently,
+with no diagnostic (`Checker::resolve_generic_type_application`'s own
+`?`-early-return) — which is why `BuiltinFnId::Extrude`'s `direction:
+Vector3<Float>` parameter is safe while a hypothetical `axis: Axis3`
+parameter is not.
+
+**What `AICAD-076` shipped instead, without resolving this:** `revolve`/
+`hole`/`pocket` decompose what would ideally be one `Axis3`/`Frame3`
+value into flat `Length` scalars (an axis/frame origin) plus a
+`Vector3<Float>` (a direction) — the same scalar-decomposition narrowing
+`BuiltinFnId::Transform` already established at Stage 2 for an analogous
+reason (no safe way to reference the richer type yet). This preserves
+correct typed-unit semantics (`Length` for position, never a bare float)
+and violates no semantic distinction (`Vector3<Length>` was considered
+and rejected as a `Point3` substitute specifically because `AICAD-075A`'s
+own required semantic distinctions forbid collapsing position into
+displacement merely because both would type-check). It is a safe,
+complete, fully-tested workaround for `AICAD-076`'s own four builtins —
+see `project/reports/AICAD-076.md` — not a resolution of the general
+question, and it does not scale past a small, fixed number of flattened
+scalar parameters: `AICAD-077`'s own planned `mirror(target, plane:
+Plane)` hits the identical wall (a mirror plane has no natural
+"decompose to N scalars" narrowing without collapsing `Plane` into
+`Point3`+`Vector3` fields spelled out separately, at minimum).
+
+**Live options, none decided here:**
+1. **Always bundle `cad_hir::geometry_types`'s struct declarations with
+   builtin seeding** (e.g. `seed_builtins`'s caller unconditionally
+   composes `with_geometry_types`, or an equivalent mechanism), making
+   every `cad_hir::geometry_types` type name resolvable in every compiled
+   program regardless of whether the caller separately opts in. Broadest
+   fix, changes `lower_program`'s own observable behavior for literally
+   every caller (verified this does not disturb any *existing* item-index
+   assertion, since builtin items are appended after user items and
+   geometry-type items could be appended after that — but it is still a
+   public-semantics change to what is implicitly in scope for every
+   `.aicad` program, and duplicates `with_geometry_types`'s existing
+   caller-composition role).
+2. **Keep the caller-composition convention, and permanently restrict any
+   builtin's own signature to primitive/dimensional/`List<T>`/generic-only
+   types** (never a `cad_hir::geometry_types` struct), accepting the
+   scalar-decomposition narrowing `AICAD-076` already applied as the
+   long-term pattern, not just a stopgap. Zero architecture change, but
+   permanently blocks a true `Axis3`/`Frame3`/`Plane`-typed Safe CAD
+   builtin parameter, and produces increasingly awkward flattened
+   signatures as richer geometry types (assembly frames, GD&T datums, ...)
+   arrive in later stages.
+3. **Make builtin (and/or all function) signature resolution lazy —
+   resolved per call site rather than eagerly for every seeded
+   declaration.** Would fix this specific problem without bundling extra
+   scope into every program, but is a materially larger change to
+   `cad_hir::typeck`'s own established eager-resolution architecture,
+   affecting error-surfacing behavior for *every* function (user-defined
+   or builtin), not just newly-added ones — a bigger and riskier change
+   than either option above, and its own new "when exactly does a type
+   error surface" semantics would need its own careful specification.
+
+**Plan references:** `project/reports/AICAD-075A.md` (established
+`cad_hir::geometry_types`/`cad_runtime::spatial` expecting a future
+builtin to consume them directly as struct-typed parameters);
+`project/reports/AICAD-076.md` (this finding, in full, plus the shipped
+workaround); `crates/cad-hir/src/builtins.rs`'s own "Why no `Axis3`/
+`Frame3`-typed parameter yet" note (mirrors this entry, colocated with
+the affected code); `AGENTS.md` escalation triggers "public syntax/
+semantics must change beyond an approved RFC" and "an unresolved
+architecture alternative must be selected".
+
+**Blocking impact:** Not blocking `AICAD-076` itself (a safe workaround
+shipped). Relevant to `AICAD-077` (`mirror`'s own `Plane` parameter hits
+the identical wall) and any later task wanting a struct-typed Safe CAD
+builtin parameter — read this entry before guessing at a per-task
+workaround; if `AICAD-077`'s own workaround would meaningfully differ
+from `AICAD-076`'s pattern above, that is itself a sign this general
+question should be resolved rather than accumulating ad hoc per-builtin
+narrowings.
 
 ---
 

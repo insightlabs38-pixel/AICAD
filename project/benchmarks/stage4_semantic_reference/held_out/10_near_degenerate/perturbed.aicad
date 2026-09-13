@@ -1,0 +1,13 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// HELD-OUT CASE — see held_out/HELD_OUT_README.md before reading further.
+// Category: near-degenerate but valid geometry. See ./case.md for the
+// intended query target, expected classification, and measured evidence.
+
+param box_x: Length = 30mm;
+param box_y: Length = 20mm;
+param box_z: Length = 10mm;
+param fillet_radius: Length = 9.99mm;
+
+part Block {
+    let body: Geometry = fillet(box(box_x, box_y, box_z), [1], fillet_radius);
+}

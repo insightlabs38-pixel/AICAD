@@ -34,7 +34,7 @@ use std::fmt;
 
 mod geometry;
 
-pub use geometry::{Axis3, Direction3, Frame3, Point3, Transform, Vector3};
+pub use geometry::{Axis3, Direction3, Frame3, Plane3, Point3, Transform, Vector3};
 
 /// Backend-independent identity for one kernel-resident entity, scoped to
 /// a single kernel context and shape-table generation.

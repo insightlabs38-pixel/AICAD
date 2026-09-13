@@ -30,6 +30,7 @@
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
+#include <GC_MakeArcOfCircle.hxx>
 #include <GProp_GProps.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
@@ -535,6 +536,58 @@ aicad_occt_status_t aicad_occt_transform_shape(aicad_occt_context_t* context,
   }
 }
 
+aicad_occt_status_t aicad_occt_mirror_shape(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t handle,
+                                             const double origin[3],
+                                             const double normal[3],
+                                             aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  status = CheckHandleContext(context, handle);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (origin == nullptr || normal == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!IsFinite3(origin)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir normal_dir;
+  if (!TryToDir(normal, &normal_dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = context->shapes.Lookup(handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    // `gp_Ax2`'s main direction is the plane's normal; `SetMirror(ax2)`
+    // builds the reflection across the plane through `ax2`'s own
+    // location perpendicular to that main direction -- exactly the
+    // mirror-plane semantics `cad_kernel_api::Plane3` (origin + unit
+    // normal) already establishes above this bridge, deliberately NOT
+    // routed through `aicad_occt_transform_shape` (this produces a
+    // determinant -1 matrix, which that function correctly rejects).
+    gp_Ax2 mirror_plane(ToPnt(origin), normal_dir);
+    gp_Trsf trsf;
+    trsf.SetMirror(mirror_plane);
+    BRepBuilderAPI_Transform transform(*shape, trsf, /*Copy=*/Standard_True);
+    if (!transform.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, transform.Shape());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
 aicad_occt_status_t aicad_occt_make_line_edge(aicad_occt_context_t* context,
                                                const double p0[3],
                                                const double p1[3],
@@ -598,6 +651,42 @@ aicad_occt_status_t aicad_occt_make_circle_wire(aicad_occt_context_t* context,
       return AICAD_OCCT_ERR_OPERATION_FAILED;
     }
     *out_handle = context->shapes.Insert(context->id, make_wire.Wire());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_arc_edge(aicad_occt_context_t* context,
+                                              const double p_start[3],
+                                              const double p_mid[3],
+                                              const double p_end[3],
+                                              aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (p_start == nullptr || p_mid == nullptr || p_end == nullptr || out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  if (!IsFinite3(p_start) || !IsFinite3(p_mid) || !IsFinite3(p_end)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    GC_MakeArcOfCircle maker(ToPnt(p_start), ToPnt(p_mid), ToPnt(p_end));
+    if (!maker.IsDone()) {
+      // Coincident or collinear points -- OCCT's own gce_ConfusedPoints /
+      // gce_IntersectionError construction failure, a caller-input
+      // problem, not an adapter defect.
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    BRepBuilderAPI_MakeEdge make_edge(maker.Value());
+    if (!make_edge.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_edge.Edge());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

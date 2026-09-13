@@ -18,10 +18,22 @@
 //! coded `RUNTIME-E123`/`RUNTIME-E124` — their own introducing tasks
 //! (`AICAD-056`, `AICAD-057`) explicitly documented this as a placeholder
 //! pending this task's own full resource-budget scope, not a stability
-//! commitment; per `project/OWNER_DECISIONS.md` D10 every diagnostic code
-//! in this codebase is still provisional pre-1.0 in any case. See
+//! commitment; that renumbering happened *before* `project/
+//! DECISION_LOG.md#DL-18` (`AICAD-078`) put `project/OWNER_DECISIONS.md`
+//! D10's stability policy in force — every code assigned from `AICAD-078`
+//! onward is durable once committed (see that module's own doc comment).
+//! See
 //! [`RuntimeError::category`] for the corresponding `"resource-budget"`
 //! vs. `"execution"` diagnostic category split.
+//!
+//! `AICAD-065` adds [`RuntimeError::CyclicParamDependency`]/[`RuntimeError::
+//! ParamOverrideTypeMismatch`] (`RUNTIME-E124`/`RUNTIME-E125`) for
+//! `crate::params`' first-class parametric model — both are `RUNTIME`
+//! family, matching every other structural-well-formedness variant here
+//! (e.g. `NonExhaustiveMatch`), not a new diagnostic family (`project/
+//! OWNER_DECISIONS.md#D10`/`project/DECISION_LOG.md`'s diagnostic-
+//! stability policy governs adding new *families*; reusing the existing
+//! `RUNTIME` family with two new codes is not that).
 //!
 //! Every variant here is reachable only in one of two ways: (1) a
 //! genuinely out-of-scope HIR shape for this task (`Unsupported` — `if`/
@@ -143,13 +155,14 @@ pub enum RuntimeError {
         rhs: &'static str,
         span: Span,
     },
-    /// `callee(args)` resolved to a binding that is not `BindingKind::Fn`
-    /// (a struct/enum/plain variable/etc. called as a function) — struct-
-    /// literal construction via call syntax type-checks (`AICAD-053`) but
-    /// has no runtime representation yet (see `crate::value`'s module doc
-    /// comment); any other non-`Fn` callee kind was never callable to
-    /// begin with (`cad_hir::typeck::check_call`'s own documented "any
-    /// other callee kind" pass-through).
+    /// `callee(args)` resolved to a binding that is not `BindingKind::Fn`/
+    /// `BindingKind::EnumVariant`/`BindingKind::Struct` (a plain variable/
+    /// `part`/etc. called as a function) — struct-literal construction via
+    /// call syntax (`AICAD-053`) now has a real runtime representation
+    /// (`AICAD-070`, [`crate::value::Value::Struct`]); any other non-
+    /// callable binding kind was never callable to begin with (`cad_hir::
+    /// typeck::check_call`'s own documented "any other callee kind"
+    /// pass-through).
     NotCallable {
         name: String,
         span: Span,
@@ -205,17 +218,21 @@ pub enum RuntimeError {
     NonExhaustiveMatch {
         span: Span,
     },
-    /// A HIR node this crate does not execute yet — struct field access
-    /// and construction have no runtime value representation yet (see
-    /// `crate::value`'s module doc comment); method calls have no
-    /// method/interface-implementation declaration syntax anywhere in the
-    /// language. Reported as a structured diagnostic, never a panic, so a
-    /// program that happens to exercise one of these before its owning
-    /// task lands fails cleanly. (`for`-loop iteration over a `List`/
-    /// `Range` is implemented — `AICAD-056`, `project/OWNER_DECISIONS.md
-    /// #D16` — and no longer reaches this variant; see
-    /// [`RuntimeError::NotIterable`]/[`RuntimeError::RangeNotIterable`]
-    /// for the two ways a `for` loop can still fail cleanly.)
+    /// A HIR node this crate does not execute yet. As of `AICAD-070`,
+    /// struct field access/construction *are* implemented
+    /// (`Value::Struct`) — this variant now covers exactly: field access
+    /// on a receiver that resolved to some other, non-struct/non-`Part`
+    /// value kind (defensive; `cad_hir::typeck::check_field_access`
+    /// already rejects this at compile time for a type-checked program),
+    /// and method calls, which have no method/interface-implementation
+    /// declaration syntax anywhere in the language. Reported as a
+    /// structured diagnostic, never a panic, so a program that happens to
+    /// exercise one of these before its owning task lands fails cleanly.
+    /// (`for`-loop iteration over a `List`/`Range` is implemented —
+    /// `AICAD-056`, `project/OWNER_DECISIONS.md#D16` — and no longer
+    /// reaches this variant; see [`RuntimeError::NotIterable`]/
+    /// [`RuntimeError::RangeNotIterable`] for the two ways a `for` loop can
+    /// still fail cleanly.)
     Unsupported {
         construct: &'static str,
         span: Span,
@@ -320,13 +337,97 @@ pub enum RuntimeError {
         name: &'static str,
         span: Span,
     },
+    /// `AICAD-065`'s parametric model (`crate::params::ParamModel::build`)
+    /// found a cycle among top-level `param` derived-expression
+    /// dependencies (e.g. `param a: Length = b; param b: Length = a;`).
+    /// Reported as a structured diagnostic rather than picking an
+    /// arbitrary evaluation order — `AGENTS.md`'s "ambiguity is an error,
+    /// never an arbitrary selection" applies exactly as much to a cyclic
+    /// dependency graph as to an ambiguous semantic reference. `names` is
+    /// every param name found unreachable during the topological sort (the
+    /// cycle plus anything only reachable through it), in declaration
+    /// order, for a reproducible diagnostic.
+    CyclicParamDependency {
+        names: Vec<String>,
+        span: Span,
+    },
+    /// `AICAD-065`'s parametric-model rebuild
+    /// (`Interpreter::run_top_level_parametric`) received an override
+    /// value for a `param` whose runtime `OperandType` does not match that
+    /// param's own `cad_hir::typeck::CheckedType`. Rejected rather than
+    /// silently coerced or accepted — overrides are typed edits to a typed
+    /// parametric model, not untyped values (`AGENTS.md`: "Units are typed
+    /// engineering quantities, not untyped floats").
+    ParamOverrideTypeMismatch {
+        name: String,
+        expected: String,
+        found: &'static str,
+        span: Span,
+    },
+    /// A struct-literal construction call (`callee(args)` resolving to a
+    /// `BindingKind::Struct` binding, `AICAD-070`) received an argument
+    /// shape (arity, or a named argument naming a field that does not
+    /// exist) its own already-checked signature should have ruled out.
+    /// Mirrors [`RuntimeError::BuiltinArgumentShape`]'s own "internal
+    /// error" framing exactly: `cad_hir::typeck::Checker::
+    /// check_struct_construction` already verifies field count/names/types
+    /// for a type-checked program, so this should be unreachable in
+    /// practice — defended here per this module's own "trusts, but
+    /// verifies" precedent, never a panic.
+    StructConstructionArgumentShape {
+        name: String,
+        span: Span,
+    },
+    /// `receiver.field` (`AICAD-070`) evaluated `receiver` to a
+    /// [`crate::value::Value::Struct`]/[`crate::value::Value::Part`] with
+    /// no field named `field`. `cad_hir::typeck::Checker::
+    /// check_field_access` already rejects an unknown struct field at
+    /// compile time (`TYPE-E431`), so this is unreachable for a
+    /// type-checked program constructed through ordinary struct
+    /// declarations; defended here anyway per this module's own doc
+    /// comment (and reachable in practice for a `Value::Part`, which has
+    /// no compile-time field check at all yet — see `Value::Part`'s own
+    /// doc comment).
+    UnknownField {
+        field: String,
+        span: Span,
+    },
+    /// A `RuntimeBuiltin` Safe CAD standard function's `Axis3`/`Frame3`/
+    /// `Plane` argument (`AICAD-075A`'s `crate::spatial` conversion
+    /// boundary) evaluated to a genuinely invalid spatial *value* — a
+    /// degenerate (zero/near-zero/non-finite) direction, or an explicit
+    /// `Frame3` axis triple that is not orthonormal and right-handed.
+    /// Unlike [`RuntimeError::BuiltinArgumentShape`] (a *shape* defect a
+    /// type-checked program cannot produce), this depends on the actual
+    /// evaluated numeric components, so type-checking cannot rule it out
+    /// — `AGENTS.md`'s "reject invalid/degenerate spatial values
+    /// explicitly" surfaces as this diagnostic, distinct from the generic
+    /// shape-mismatch one.
+    InvalidSpatialArgument {
+        name: &'static str,
+        span: Span,
+        reason: crate::spatial::SpatialValueError,
+    },
+    /// `linear_pattern`/`radial_pattern` (`AICAD-077`) received a `count`
+    /// argument less than 1. `cad_hir::typeck` verifies `count` is `Int`-
+    /// shaped but not its runtime value (an `Int` parameter's own sign/
+    /// range is never a compile-time-checkable property, the same reason
+    /// [`RuntimeError::InvalidSpatialArgument`] exists for a spatial
+    /// value's numeric components) — a genuine run-time failure, reported
+    /// explicitly rather than silently returning `target` unmoved (`count
+    /// == 0`) or panicking on an empty/negative-length loop.
+    InvalidPatternCount {
+        name: &'static str,
+        count: i64,
+        span: Span,
+    },
 }
 
 impl RuntimeError {
     /// A stable `RUNTIME-E###` code, or (for `DimensionalArithmetic`) the
     /// wrapped `cad_units` error's own `UNIT-Exxx` code verbatim — see this
-    /// enum's own doc comment. Provisional per D10, matching every other
-    /// diagnostic code in this codebase.
+    /// enum's own doc comment. Durable once committed, per `project/
+    /// DECISION_LOG.md#DL-18`'s now-resolved D10 policy.
     pub fn code(&self) -> String {
         match self {
             RuntimeError::DimensionalArithmetic { err, .. } => err.code().to_string(),
@@ -356,6 +457,12 @@ impl RuntimeError {
             RuntimeError::RecursionLimitExceeded { .. } => "BUDGET-E002".to_string(),
             RuntimeError::GeometryConstruction { err } => err.code().to_string(),
             RuntimeError::BuiltinArgumentShape { .. } => "RUNTIME-E123".to_string(),
+            RuntimeError::CyclicParamDependency { .. } => "RUNTIME-E124".to_string(),
+            RuntimeError::ParamOverrideTypeMismatch { .. } => "RUNTIME-E125".to_string(),
+            RuntimeError::StructConstructionArgumentShape { .. } => "RUNTIME-E126".to_string(),
+            RuntimeError::UnknownField { .. } => "RUNTIME-E127".to_string(),
+            RuntimeError::InvalidSpatialArgument { .. } => "RUNTIME-E128".to_string(),
+            RuntimeError::InvalidPatternCount { .. } => "RUNTIME-E129".to_string(),
         }
     }
 
@@ -401,7 +508,13 @@ impl RuntimeError {
             | RuntimeError::NotIterable { span, .. }
             | RuntimeError::RangeNotIterable { span }
             | RuntimeError::IterationBudgetExceeded { span }
-            | RuntimeError::RecursionLimitExceeded { span } => *span,
+            | RuntimeError::RecursionLimitExceeded { span }
+            | RuntimeError::CyclicParamDependency { span, .. }
+            | RuntimeError::ParamOverrideTypeMismatch { span, .. }
+            | RuntimeError::StructConstructionArgumentShape { span, .. }
+            | RuntimeError::UnknownField { span, .. }
+            | RuntimeError::InvalidSpatialArgument { span, .. }
+            | RuntimeError::InvalidPatternCount { span, .. } => *span,
         }
     }
 
@@ -434,6 +547,14 @@ impl RuntimeError {
             RuntimeError::RecursionLimitExceeded { .. } => "RECURSION_LIMIT_EXCEEDED",
             RuntimeError::GeometryConstruction { err } => err.title(),
             RuntimeError::BuiltinArgumentShape { .. } => "BUILTIN_ARGUMENT_SHAPE_MISMATCH",
+            RuntimeError::CyclicParamDependency { .. } => "CYCLIC_PARAM_DEPENDENCY",
+            RuntimeError::ParamOverrideTypeMismatch { .. } => "PARAM_OVERRIDE_TYPE_MISMATCH",
+            RuntimeError::StructConstructionArgumentShape { .. } => {
+                "STRUCT_CONSTRUCTION_ARGUMENT_SHAPE_MISMATCH"
+            }
+            RuntimeError::UnknownField { .. } => "UNKNOWN_FIELD",
+            RuntimeError::InvalidSpatialArgument { .. } => "INVALID_SPATIAL_ARGUMENT",
+            RuntimeError::InvalidPatternCount { .. } => "INVALID_PATTERN_COUNT",
         }
     }
 
@@ -518,6 +639,31 @@ impl RuntimeError {
                 "internal error: '{name}' received an argument shape its own already-checked \
                  signature should have ruled out"
             ),
+            RuntimeError::CyclicParamDependency { names, .. } => format!(
+                "cyclic dependency among derived 'param' declarations: {}",
+                names.join(" -> ")
+            ),
+            RuntimeError::ParamOverrideTypeMismatch {
+                name,
+                expected,
+                found,
+                ..
+            } => format!(
+                "override for param '{name}' has the wrong type: expected {expected}, found {found}"
+            ),
+            RuntimeError::StructConstructionArgumentShape { name, .. } => format!(
+                "internal error: construction of '{name}' received an argument shape its own \
+                 already-checked signature should have ruled out"
+            ),
+            RuntimeError::UnknownField { field, .. } => {
+                format!("value has no field named '{field}'")
+            }
+            RuntimeError::InvalidSpatialArgument { name, reason, .. } => {
+                format!("'{name}' received an invalid spatial value: {reason}")
+            }
+            RuntimeError::InvalidPatternCount { name, count, .. } => {
+                format!("'{name}' requires a 'count' of at least 1, found {count}")
+            }
         }
     }
 

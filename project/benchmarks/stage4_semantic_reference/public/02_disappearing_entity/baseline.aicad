@@ -1,0 +1,28 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// Category: disappearing/newly-created entities. See ./case.md for the
+// intended query target, expected classification, and measured evidence.
+// This file is frozen — do not edit without re-deriving case.md's own
+// measurements.
+
+param box_x: Length = 40mm;
+param box_y: Length = 20mm;
+param box_z: Length = 10mm;
+param chamfer_distance: Length = 1.5mm;
+param hole_diameter: Length = 4mm;
+param hole_center_x: Length = 30mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Corner {
+    let chamfered: Geometry = chamfer(box(box_x, box_y, box_z), [1], chamfer_distance);
+
+    let body: Geometry = hole(
+        chamfered,
+        Axis3(
+            origin = Point3(x = hole_center_x, y = box_y / 2, z = 0mm - HOLE_OVERSHOOT),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        hole_diameter,
+        box_z + HOLE_OVERSHOOT * 2,
+    );
+}

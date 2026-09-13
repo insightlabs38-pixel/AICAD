@@ -140,6 +140,27 @@ pub struct LowerResult {
 /// redeclaration behaves (module doc comment "Duplicate-declaration
 /// detection") — no special protection, per the same non-special-casing
 /// precedent `crate::prelude` already established.
+///
+/// # Standard type environment (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`)
+///
+/// The builtin catalogue's own signatures may reference `crate::
+/// geometry_types` struct types (`Point3`/`Vector3<T>`/`Axis3`/`Frame3`/
+/// `Plane`) — `revolve`/`hole`/`pocket` do, as of `AICAD-076A`. `DL-21`
+/// requires the always-seeded builtin environment to be *type-closed*: any
+/// nominal type a seeded builtin's signature needs must itself be seeded
+/// unconditionally, the same way the builtins themselves are, with no
+/// optional caller composition required (`AICAD-076` discovered the
+/// alternative the hard way — `crate::typeck::Checker::collect_signatures`
+/// resolves every seeded function's signature eagerly, whether or not the
+/// program calls it, so an unseeded `Named` type reference broke every
+/// *other* compiled program's own type-checking, not just the one that
+/// would have used it). [`Lowerer::seed_standard_types`] does this: it
+/// seeds every `crate::geometry_types::GEOMETRY_TYPES_SOURCE` struct
+/// declaration whose name `program.items` does not *already* declare —
+/// the same idempotence [`crate::geometry_types::with_geometry_types`]'s
+/// own doc comment now requires of it as a still-optional, backward-
+/// compatible composition helper: calling both never produces two
+/// distinct `BindingId`s nominally named the same standard type.
 pub fn lower_program(program: &Program, file: &str, source: &str) -> LowerResult {
     let mut lowerer = Lowerer {
         file,
@@ -148,8 +169,10 @@ pub fn lower_program(program: &Program, file: &str, source: &str) -> LowerResult
         bindings: Vec::new(),
         diagnostics: Vec::new(),
     };
+    let standard_type_items = lowerer.seed_standard_types(&program.items);
     let builtin_items = lowerer.seed_builtins();
     let mut items = lowerer.lower_items(&program.items);
+    items.extend(standard_type_items);
     items.extend(builtin_items);
     LowerResult {
         program: HirProgram { items },
@@ -283,6 +306,42 @@ impl<'a> Lowerer<'a> {
                 }
             })
             .collect()
+    }
+
+    /// Seeds `crate::geometry_types::GEOMETRY_TYPES_SOURCE`'s struct
+    /// declarations (`Point2`/`Point3`/`Vector2<T>`/`Vector3<T>`/`Axis3`/
+    /// `Frame3`/`Plane`), skipping any name `user_items` already declares
+    /// itself — see [`lower_program`]'s own doc comment "Standard type
+    /// environment" for why this exists and why it must skip
+    /// already-declared names (idempotence with [`crate::geometry_types::
+    /// with_geometry_types`], `project/DECISION_LOG.md#DL-21`). Only
+    /// struct names are checked/skipped by name: the geometry-types source
+    /// declares nothing else, so no other item kind can collide with it.
+    fn seed_standard_types(&mut self, user_items: &[Item]) -> Vec<HirItem> {
+        let already_declared: std::collections::HashSet<&str> = user_items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Struct { name, .. } => Some(name.node.as_str()),
+                _ => None,
+            })
+            .collect();
+        let (standard_program, parse_diagnostics) = cad_parser::parse_program(
+            crate::geometry_types::GEOMETRY_TYPES_SOURCE,
+            "<geometry-types>",
+        );
+        assert!(
+            parse_diagnostics.is_empty(),
+            "AICAD geometry-types source failed to parse: {parse_diagnostics:?}"
+        );
+        let missing_items: Vec<Item> = standard_program
+            .items
+            .into_iter()
+            .filter(|item| match item {
+                Item::Struct { name, .. } => !already_declared.contains(name.node.as_str()),
+                _ => true,
+            })
+            .collect();
+        self.lower_items(&missing_items)
     }
 
     /// Mints a fresh `BindingId` (`BindingKind::TypeParam`) for each

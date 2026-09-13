@@ -7,3 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+
+[dev-dependencies]
+cad-kernel-api = { path = "../cad-kernel-api" }
+cad-occt-bridge = { path = "../cad-occt-bridge" }

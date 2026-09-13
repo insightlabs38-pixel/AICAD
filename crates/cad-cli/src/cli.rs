@@ -12,6 +12,16 @@ pub struct ParsedArgs {
     pub path: PathBuf,
     pub json: bool,
     pub output: Option<PathBuf>,
+    /// `--name <binding>[.<field>]` (`AICAD-079`): selects a specific
+    /// top-level named output (a plain top-level binding, or one named
+    /// field of a top-level `part`'s own exposed outputs, `AICAD-071`)
+    /// as the `--output` export target, instead of `build_source`'s own
+    /// pre-`AICAD-079` default of "the last geometry-producing node
+    /// created anywhere in the program's shared `GeometryGraph`". See
+    /// `crate::build::resolve_named_output`'s own doc comment for exactly
+    /// what this does and does not resolve (an `explicit`-durability-level
+    /// binding-name lookup only — never a query/topology search).
+    pub name: Option<String>,
 }
 
 /// Every way parsing `cad build`'s own argument list can fail.
@@ -55,6 +65,7 @@ pub fn parse_args(args: &[String]) -> Result<ParsedArgs, ArgsError> {
     let mut path: Option<PathBuf> = None;
     let mut json = false;
     let mut output: Option<PathBuf> = None;
+    let mut name: Option<String> = None;
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -62,6 +73,10 @@ pub fn parse_args(args: &[String]) -> Result<ParsedArgs, ArgsError> {
             "--output" => {
                 let value = iter.next().ok_or(ArgsError::MissingValueFor("--output"))?;
                 output = Some(PathBuf::from(value));
+            }
+            "--name" => {
+                let value = iter.next().ok_or(ArgsError::MissingValueFor("--name"))?;
+                name = Some(value.clone());
             }
             other if other.starts_with("--") => {
                 return Err(ArgsError::UnknownFlag(other.to_string()));
@@ -79,6 +94,7 @@ pub fn parse_args(args: &[String]) -> Result<ParsedArgs, ArgsError> {
         path: path.ok_or(ArgsError::MissingPath)?,
         json,
         output,
+        name,
     })
 }
 
@@ -93,6 +109,7 @@ mod tests {
         assert_eq!(parsed.path, PathBuf::from("part.aicad"));
         assert!(!parsed.json);
         assert_eq!(parsed.output, None);
+        assert_eq!(parsed.name, None);
     }
 
     #[test]
@@ -108,6 +125,27 @@ mod tests {
         assert_eq!(parsed.path, PathBuf::from("part.aicad"));
         assert!(parsed.json);
         assert_eq!(parsed.output, Some(PathBuf::from("out.step")));
+    }
+
+    #[test]
+    fn parses_a_name_flag() {
+        let args: Vec<String> = vec![
+            "build".into(),
+            "part.aicad".into(),
+            "--name".into(),
+            "Bracket.body".into(),
+        ];
+        let parsed = parse_args(&args).unwrap();
+        assert_eq!(parsed.name, Some("Bracket.body".to_string()));
+    }
+
+    #[test]
+    fn name_without_a_value_is_an_error() {
+        let args: Vec<String> = vec!["build".into(), "part.aicad".into(), "--name".into()];
+        assert_eq!(
+            parse_args(&args).unwrap_err(),
+            ArgsError::MissingValueFor("--name")
+        );
     }
 
     #[test]
