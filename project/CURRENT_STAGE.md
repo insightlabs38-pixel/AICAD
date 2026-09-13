@@ -1,99 +1,67 @@
 # Current AICAD Stage
 
-stage: 3
-name: Parametric feature graph, safe modeling API, sketches/constraints, high-level features
-status: active
+stage: transition
+from_stage: 3
+to_stage: 4
+name: Stage 3 -> Stage 4 transition and initialization preparation
+status: complete-pending-owner-review-and-merge
+stage4_readiness: ready-not-implemented
+next_task_after_transition_merge: AICAD-080
 
 ## Stage 0 — closed
 
-Passed. Owner approval recorded in `project/DECISION_LOG.md#DL-10`, based
-on `project/reports/AICAD-013.md` (implementation-team contradiction
-review), `project/gates/stage-0-gate.md` (AICAD-014 gate packet), and
-`project/reports/reviews/STAGE0-INDEPENDENT-REVIEW.md` (independent
-adversarial review, commit `aad7267`, PASS after three in-scope patches).
-See `project/CURRENT_STAGE.md` git history for the Stage-0 text this
-section replaces.
+Passed. Owner approval is recorded in `project/DECISION_LOG.md#DL-10`; historical evidence is preserved under the stage-specific report/gate archives.
 
 ## Stage 1 — closed
 
-Passed. Owner approval recorded in `project/DECISION_LOG.md#DL-11`, based
-on `project/gates/stage-1-gate.md` (AICAD-037 gate packet, recommends
-PASS), `project/reports/reviews/STAGE1-INDEPENDENT-REVIEW.md` (independent
-adversarial review, commit `cad4422`, PASS WITH CONDITIONS), and the
-follow-up patch commit `e05d791` (closed the review's own coverage gaps
-and fixed a genuine context-lifetime use-after-free in
-`aicad_occt_context_destroy`/`CheckContext`). See git history for the
-Stage-1 text this section replaces.
+Passed. Owner approval is recorded in `project/DECISION_LOG.md#DL-11`; historical evidence is preserved under the stage-specific report/gate archives.
 
 ## Stage 2 — closed
 
-Passed. Owner approval recorded in `project/DECISION_LOG.md#DL-16`, based
-on `project/gates/stage-2-gate.md` (`AICAD-064` gate packet, recommends
-PASS WITH CONDITIONS) and `project/reports/AICAD-064.md`. The gate's one
-condition — `project/OWNER_DECISIONS.md#D19` (D5 v1 comparison-profile
-numeric tolerance constants) — was explicitly non-blocking for Stage-2
-exit; `DECISION_LOG.md#DL-17` partially rules on D19 (three of seven
-constants accepted now; the remaining four are carried into Stage 3 as
-`AICAD-064A`, Batch S3-00, for evidence-based completion). See git history
-for the Stage-2 text this section replaces.
+Passed. Owner approval is recorded in `project/DECISION_LOG.md#DL-16`; historical evidence is preserved under the stage-specific report/gate archives.
 
-## Goal
-Build the Stage-3 parametric-CAD slice on top of the Stage-2 compiler/
-runtime/Geometry-IR stack: calibrate the D5 v1 comparison profile;
-first-class parameters and derived expressions; an explicit feature DAG
-with deterministic node identity/cache keys/dirty propagation and
-source-to-feature provenance; safe language-facing modeling types and a
-`Part` concept built on the existing D18 runtime-backed-function
-mechanism; an explicit kernel-independent `Sketch`/constraint IR (`D3`/
-`D11`) lowering solved closed profiles to exact faces; a single coherent
-axis/frame/rotation representation serving transform/revolve/mirror/
-circular-pattern; high-level features (extrude/revolve/hole/pocket/
-mirror/pattern/fillet/chamfer/shell) with normalized diagnostics (`D10`);
-and named semantic outputs that seed, but do not implement, Stage-4
-persistent semantic references — per `docs/plan/04`, `docs/plan/06`,
-`docs/plan/08`, and `DECISION_LOG.md#DL-16` through `#DL-20`.
+## Stage 3 — complete, owner-approved, and merged
 
-## Exit gate
-The Stage-3 owner gate packet (`AICAD-079B`, `project/gates/
-stage-3-gate.md`) proves both the parametric-build slice (`.aicad` source
--> typed parameters/derived expressions -> feature DAG -> initial exact
-build -> parameter edit -> dirty propagation/incremental rebuild ->
-correct affected geometry -> valid exact B-rep/applicable STEP
-verification) and the sketch/high-level modeling slice (Sketch ->
-constraints -> solved closed profile -> exact face -> extrude/revolve/
-hole/pocket -> mirror/pattern -> finishing operations -> named semantic
-outputs), per the fixed Stage-3 batch checkpoints
-(`STAGE3-A_PARAMETRIC_GRAPH.md`, `STAGE3-B_SKETCH_CONSTRAINTS.md`,
-`STAGE3-C_MODELING.md`) and the Stage-4 semantic-reference benchmark
-having been frozen (`AICAD-079A`) before any Stage-4 resolver work begins.
+**Stage 3 has passed.** Owner approval is recorded in `project/DECISION_LOG.md#DL-22`. The accepted Stage-3 implementation was merged to `main` at `15fc5a37e4382de717e426ccc5317a491be264cd`; its lineage includes final incremental-build remediation commit `99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`.
 
-## Allowed work (this stage's authorized window)
-Batches S3-00 through S3-10 in the fixed order given in the active
-scheduled-task brief and `project/TASKS.yaml`: `AICAD-064A`, `AICAD-065`
-(S3-00); `AICAD-066`, `AICAD-067` (S3-01); `AICAD-068`, `AICAD-069`
-(S3-02); `AICAD-070`, `AICAD-071` (S3-03); `AICAD-072` (S3-04);
-`AICAD-073`, `AICAD-074`, `AICAD-075` (S3-05); `AICAD-075A`, `AICAD-076`,
-`AICAD-076A` (S3-06, `AICAD-076A` inserted by owner ruling
-`project/DECISION_LOG.md#DL-21` to make the `RuntimeBuiltin` catalogue's
-standard type environment closed before `AICAD-077` needs a `Plane`-typed
-parameter); `AICAD-077`, `AICAD-078` (S3-07); `AICAD-079` (S3-08);
-`AICAD-079A` (S3-09); `AICAD-079B` (S3-10). `AICAD-080` and all Stage-4
-implementation are forbidden until a later, separate, explicit owner
-approval after the Stage-3 final gate.
+The final gate is `project/gates/stage-3-gate.md`. Stage 3 established the accepted parametric single-part CAD foundation, including typed parameters, `ParamModel`, `FeatureGraph` incremental state/provenance, the remediated `ParametricBuildSession`, current Safe CAD RuntimeBuiltins/spatial values, parts/named outputs, sketch/constraint substrate, modeling operations, exact geometry/STEP integration, and the frozen Stage-4 reference corpus.
 
-## Not allowed yet
-- AICAD-080 and any Stage-4 scope (persistent semantic-reference
-  resolution, VertexRef/EdgeRef/.../SolidRef, query AST/IR, ambiguity
-  resolution) — `AICAD-079A` freezes the Stage-4 benchmark/scaffolding
-  only, it must not implement Stage-4 resolution itself;
-- assemblies/configurations, package/plugin systems, a full verification
-  framework, LSP/IDE, general AI-agent tooling — all later-stage scope;
-- silently resolving owner decisions (see `project/OWNER_DECISIONS.md`);
-- reordering, combining, or skipping ahead of the fixed S3-00..S3-10 batch
-  sequence.
+## Stage 3 -> Stage 4 transition — complete pending owner review/merge
 
-## Owner approval required to advance
-Yes — Stage 3 may not advance to Stage 4 without an owner-recorded
-decision in `project/DECISION_LOG.md`, following the same pattern as
-`DL-10`/`DL-11`/`DL-16`. `AICAD-079B` (Stage-3 owner gate packet) may only
-recommend pass/do-not-pass; it may not approve the stage itself.
+The canonical transition branch is `claude/aicad-stage4-transition`. Major transition work is complete:
+
+- historical reconciliation/archive preservation;
+- current user/developer documentation and root landing-page modernization;
+- source/internal-sketch and Stage-3-ID-vs-persistent-reference boundary cleanup;
+- canonical specification/RFC cleanup and D5 tolerance taxonomy clarification;
+- D20 stale-status correction plus owner recording of D21-D30 as DL-23..DL-32;
+- AICAD-079C Stage-4 CI/CD expansion and readiness plumbing: layered PR/integration CI, D5-aware determinism tests, resolver-independent 079A corpus grading infrastructure, permanent silent-misselection regression policy, bounded parser fuzzing, ASan/UBSan scheduling, bounded property invariants, explicit Linux support tier, performance/security/release foundations, failure artifacts, and branch-protection recommendations;
+- Stage-4 queue correction: AICAD-079C is the final transition task and AICAD-080 depends on it; AICAD-092/096 metadata is aligned with D7 and the already-frozen 079A corpus.
+
+The detailed readiness record is `project/planning/transitions/stage3-to-stage4/STAGE4_READINESS.md`; task evidence is `project/reports/AICAD-079C.md`.
+
+## Stage 4 — READY, not yet implemented
+
+`AICAD-080` remains `status: todo`. The repository is prepared for Stage 4 but this transition does **not** record Stage-4 owner approval or start implementation.
+
+The hard gate remains fail-closed:
+
+- `Resolved(exactly one intended entity)` — good;
+- `Ambiguous(candidates + evidence)` — good;
+- `Broken(reason/evidence)` — acceptable/expected where necessary;
+- silent wrong selection — catastrophic and must become a permanent minimized regression.
+
+Never use arbitrary first-candidate selection, raw topology enumeration order, hidden kernel pointer identity, or silent fingerprint recovery as authoritative identity. Fingerprints may be diagnostic evidence, ranking input, or benchmark information only unless a later explicit owner ruling changes D7.
+
+No persistent `VertexRef`/`EdgeRef`/`WireRef`/`FaceRef`/`ShellRef`/`SolidRef`, query/resolution pipeline, lineage/resolver production behavior, Stage-5 raw geometry/query materialization, interfaces, assemblies, configurations, external-asset system, or AICAD-101+ implementation is introduced by AICAD-079C.
+
+## Owner flow after reviewing this transition
+
+1. Owner reviews `claude/aicad-stage4-transition` and its AICAD-079C evidence.
+2. If accepted, owner merges that transition branch to `main`.
+3. Create `claude/aicad-stage4-dev` from the **exact merged `main` HEAD**.
+4. All sequential Stage-4 agents synchronize to the newest `origin/claude/aicad-stage4-dev`; do not independently recreate Stage-4 work from some other `main` state.
+5. Owner authorizes Stage-4 implementation and the first implementation task is AICAD-080.
+6. Do not begin AICAD-101+ / Stage 5 until the Stage-4 hard gate is later passed by the owner.
+
+The Stage-4 development branch is intentionally **not** created by this transition pass so its ancestry remains unambiguous after merge.

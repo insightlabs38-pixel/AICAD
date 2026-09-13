@@ -36,6 +36,7 @@ dependencies = [
  "cad-runtime",
  "cad-types",
  "cad-units",
+ "cad-validation",
 ]
 
 [[package]]

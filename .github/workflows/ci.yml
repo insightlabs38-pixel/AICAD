@@ -1,89 +1,117 @@
 name: CI
 
-# Baseline Stage-0 CI (AICAD-004): fmt, clippy, build/test, and a native
-# build smoke check. The native-build-smoke job builds and runs
-# native/occt_bridge's CMake project against a system-installed OCCT
-# (Stage 1, AICAD-015 onward); if native/occt_bridge ever has no
-# CMakeLists.txt again it reports "nothing to build yet" rather than
-# failing.
-
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - claude/aicad-stage4-transition
+      - claude/aicad-stage4-dev
   pull_request:
   workflow_dispatch:
 
-# Cancel superseded runs on the same ref to avoid wasted CI time.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
 jobs:
   fmt:
-    name: cargo fmt --check
+    name: fmt and repository metadata
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # rust-toolchain.toml pins the exact channel; rustup on the runner
-      # auto-installs it on first cargo/rustup invocation.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Show toolchain
         run: rustup show
       - name: cargo fmt --all -- --check
         run: cargo fmt --all -- --check
+      - name: Validate CI helper syntax
+        run: python -m py_compile scripts/ci/*.py
+      - name: Audit Stage-4 task transition metadata
+        run: python scripts/ci/stage4_task_audit.py --check
+      - name: AICAD-079C transition diff whitespace check
+        if: github.ref_name == 'claude/aicad-stage4-transition'
+        run: git diff --check 9e2db88cbbfe9097364fcbfc3ab8115b07b63efd HEAD
 
   clippy:
-    name: cargo clippy -D warnings
+    name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Show toolchain
-        run: rustup show
-      # cad-occt-bridge/build.rs (AICAD-018) runs CMake against
-      # native/occt_bridge for any cargo invocation touching this
-      # workspace, clippy included; see .github/actions/install-occt-dev
-      # for the package list rationale.
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-clippy-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-clippy-
+            ${{ runner.os }}-
       - name: cargo clippy --workspace --all-targets --all-features -- -D warnings
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-  build-and-test:
-    name: cargo build/test --workspace
+  workspace:
+    name: workspace build and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Show toolchain
-        run: rustup show
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install-occt-dev
-      - name: cargo build --workspace
-        run: cargo build --workspace --all-targets
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-workspace-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-workspace-
+            ${{ runner.os }}-
+      - name: cargo build --workspace --all-targets
+        run: cargo build --workspace --all-targets --locked
       - name: cargo test --workspace
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
-  native-build-smoke:
-    name: native bridge build smoke
+  native:
+    name: native OCCT bridge
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/install-occt-dev
-      - name: cmake --version
-        run: cmake --version
-      - name: Native bridge smoke build
-        # Report status explicitly rather than silently passing or
-        # failing if native/occt_bridge ever loses its CMakeLists.txt
-        # again, instead of assuming it is always present.
-        run: |
-          set -eu
-          found=$(find native -mindepth 1 -iname 'CMakeLists.txt' 2>/dev/null | head -n1 || true)
-          if [ -z "$found" ]; then
-            echo "No native/**/CMakeLists.txt present (unexpected as of Stage 1, AICAD-015). Smoke check is a no-op."
-            exit 0
-          fi
-          dir=$(dirname "$found")
-          echo "Found $found — configuring and building $dir"
-          cmake -S "$dir" -B "$dir/build"
-          cmake --build "$dir/build"
-      - name: Native bridge probe test (ctest)
-        run: |
-          set -eu
-          cd native/occt_bridge/build
-          ctest --output-on-failure
+      - name: Configure native bridge
+        run: cmake -S native/occt_bridge -B native/occt_bridge/build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+      - name: Build native bridge
+        run: cmake --build native/occt_bridge/build --parallel 2
+      - name: Run native bridge tests
+        run: ctest --test-dir native/occt_bridge/build --output-on-failure
+
+  smoke:
+    name: compiler/runtime/exact-geometry smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-smoke-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-smoke-
+            ${{ runner.os }}-
+      - name: Stage-2 source-to-kernel smoke
+        run: cargo test -p cad-cli --test stage2_end_to_end --locked -- --test-threads=1
+      - name: Stage-3 incremental-build smoke
+        run: cargo test -p cad-cli --test stage3_parametric_incremental_rebuild --locked -- --test-threads=1
+      - name: Frozen Stage-4 corpus buildability smoke
+        run: cargo test -p cad-cli --test stage4_reference_benchmark_fixtures --locked -- --test-threads=1

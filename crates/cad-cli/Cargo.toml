@@ -20,3 +20,4 @@ cad-runtime = { path = "../cad-runtime" }
 [dev-dependencies]
 cad-types = { path = "../cad-types" }
 cad-units = { path = "../cad-units" }
+cad-validation = { path = "../cad-validation" }

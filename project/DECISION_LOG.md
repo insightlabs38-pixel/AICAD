@@ -1218,3 +1218,491 @@ them; do not add entries here unilaterally.
   parameter yet" note (superseded by this ruling, to be removed/updated
   by `AICAD-076A`).
 - Supersedes: none (first ruling on D20).
+
+---
+
+## DL-22: Stage 3 passed — owner approval after final incremental-build remediation
+
+- Date: 2026-09-13
+- Resolves: Stage-3 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: **Stage 3 has passed.** The owner explicitly approves the
+  completed Stage-3 implementation and confirms that it has been merged to
+  `main`. The accepted main-line merge is
+  `15fc5a37e4382de717e426ccc5317a491be264cd`; its Stage-3 lineage includes
+  final remediation commit `99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`.
+  This decision closes the stale pre-approval state left in governance
+  files after the merge. It authorizes the bounded Stage-3 -> Stage-4
+  transition/reconciliation work only; it does **not** start Stage 4,
+  authorize `AICAD-080`, or claim that semantic-reference implementation
+  exists.
+- Rationale: `project/gates/stage-3-gate.md` recommends PASS after the
+  final remediation connected `ParamModel` and `FeatureGraph` through the
+  real `cad_cli::parametric_build::ParametricBuildSession` production path,
+  corrected the parameter-evaluation ordering defect discovered during that
+  integration, and re-verified the complete Stage-3 gate. The owner has now
+  explicitly accepted that completed gate/remediation state and directed
+  that the already-made approval be recorded durably in repository
+  governance.
+- Alternatives considered: retaining the stale "awaiting owner approval"
+  state after the owner had already approved and merged Stage 3 (rejected —
+  it makes current governance contradict the accepted repository state);
+  treating Stage-3 approval as automatic authorization to begin Stage 4
+  (rejected — the owner explicitly limits this transition pass to
+  documentation/governance preparation and forbids beginning AICAD-080).
+- Affected RFCs/tasks: Closes Stage 3 (`AICAD-064A` through `AICAD-079B`
+  plus the final gate remediation). Permits Stage-3 -> Stage-4 transition
+  preparation on `claude/aicad-stage4-transition`. `AICAD-080` remains
+  `status: todo` in `project/TASKS.yaml`; Stage-4 implementation requires
+  its own later initialization/authorization after transition review.
+- Supersedes: only the stale pre-approval Stage-3 status in
+  `project/CURRENT_STAGE.md` and `project/SESSION_HANDOFF.md`; it does not
+  reopen, alter, or resolve any `OWNER_DECISIONS.md` item.
+
+---
+
+## DL-23: D21 — scaling the closed first-party RuntimeBuiltin catalogue
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D21`.
+- Context: D18/DL-15 established RuntimeBuiltin as ordinary typed function
+  calls backed by a closed runtime-owned implementation catalogue, and
+  D20/DL-21 made that always-seeded environment type-closed with eager
+  signature checking. The frozen post-100 audit's OD-S5-02 correctly
+  identified that a much larger Stage-5 advanced-geometry surface could
+  make a hand-authored enum/signature/dispatch catalogue repetitive, but
+  scaling pressure must not weaken the closed trust boundary.
+- Decision: RuntimeBuiltin remains a **closed first-party standard
+  environment**. AICAD may scale it through a declarative/single-source
+  catalogue from which appropriate artifacts can be derived, including
+  `BuiltinFnId` definitions, signatures, required standard-type
+  dependencies, effect/category metadata, runtime-dispatch metadata,
+  validation metadata, and documentation/test metadata. The exact
+  code-generation or declarative implementation is not mandated by this
+  ruling. Catalogue growth must never require or imply an open runtime
+  registration mechanism. It does not authorize arbitrary native
+  callbacks, plugin-injected builtin functions or types, arbitrary host
+  registration, OCCT/kernel types in public or HIR signatures, or compiler
+  geometry intrinsics. D18 and D20 remain authoritative: RuntimeBuiltins
+  retain ordinary typed function-call semantics, closed runtime-owned
+  implementations, a type-closed standard environment, and eager signature
+  checking. Stable builtin identity must be deterministic and deliberately
+  managed; it may not depend accidentally on enum/source ordering. A future
+  plugin/package system is a separate boundary.
+- Rationale: Stage 5 may expose a materially broader first-party geometry
+  function surface. Eliminating repetitive catalogue boilerplate is a
+  maintenance concern, not a reason to introduce compiler intrinsics or an
+  arbitrary native extension ABI. A declarative/generated *closed*
+  catalogue can scale the existing architecture without changing its trust
+  or typing semantics.
+- Consequences: Future catalogue tooling must preserve deterministic stable
+  builtin identity and the D18/D20 validation/typing boundary. Any proposal
+  for third-party/native registration remains governed separately by
+  D12/D15 and later plugin/package decisions.
+- Explicitly deferred: Exact catalogue schema, code-generation strategy,
+  generated-vs-handwritten artifact split, and migration plan. Stage 5 may
+  choose these details after measuring actual maintenance/scaling needs.
+- Affected RFCs/tasks/stages: Stage 5+; D18/DL-15; D20/DL-21; future Safe
+  CAD catalogue work. This decision records architecture only and does not
+  authorize a Stage-5 implementation task.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S5-02; does not supersede D18 or D20.
+
+---
+
+## DL-24: D22 — safe semantic geometry and controlled raw/unsafe geometry tiers
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D22`.
+- Context: RFC-0002 and D6 already separate the kernel-neutral AICAD model
+  from native OCCT objects and treat raw topology as ephemeral. Stage-4
+  persistent semantic references and future Stage-5 low-level geometry need
+  a stronger explicit statement that safe values, raw handles, durable
+  references, and kernel-native objects are distinct concepts.
+- Decision: AICAD preserves distinct geometry layers, at minimum: safe
+  semantic geometry values; raw/unsafe geometry handles; persistent
+  semantic topology references; and kernel-native objects. These concepts
+  are not interchangeable. A raw/unsafe geometry value is AICAD-owned,
+  opaque at the source/HIR boundary, kernel-neutral in public semantics,
+  scoped to an appropriate build/context/epoch lifetime, and explicitly
+  invalid once its owning context/epoch is invalid. It is not an OCCT
+  pointer, durable semantic topology identity, or Stage-4 semantic
+  reference. The future raw tier may expose advanced geometry construction,
+  topology inspection, controlled topology editing, reconstruction,
+  debugging, and specialized algorithms. Promotion from raw geometry into
+  normal safe semantic geometry requires an **explicit validation/adoption
+  operation** that produces a new safe value and retains appropriate
+  validation/provenance evidence. D2 functional/value semantics remain
+  authoritative: internal mutation of kernel-native implementation objects
+  does not create hidden source-language mutation.
+- Rationale: Advanced users eventually need low-level power without leaking
+  kernel identity into the language or turning ephemeral handles into
+  durable references by accident. Explicit layers and adoption preserve
+  safety, provenance, backend independence, and Stage-4 identity semantics.
+- Consequences: Stage-4 reference work must not treat raw handles as
+  persistent references. Future raw APIs must fail when their epoch/context
+  is invalid and must cross back into the safe tier only through explicit
+  validated adoption.
+- Explicitly deferred: Exact source syntax; whether the spelling uses
+  `unsafe`, `raw`, namespaces, explicit capability blocks, or another
+  mechanism; exact raw-handle representation; exact epoch encoding. These
+  may be specified closer to Stage 5 using Stage-4 evidence.
+- Affected RFCs/tasks/stages: Stage 4 reference interactions; Stage 5 raw
+  geometry; Stage 8 reconstruction/debugging; future kernel work; D2/D6.
+  No raw geometry implementation is authorized by this entry.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S5-03 while retaining its implementation/syntax questions as deferred.
+
+---
+
+## DL-25: D23 — kernel-backed queries during ordinary source evaluation
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D23`.
+- Context: D18 deliberately left source-visible kernel-query execution as a
+  separate architecture question because a query result may be required
+  before source control flow can continue. Frozen post-100 audit item
+  OD-S5-04 identified demand realization as the preferred direction.
+- Decision: AICAD source may invoke kernel-backed queries whose results are
+  required during ordinary program evaluation. Future query families may
+  include distance, projection, intersection, geometry classification,
+  curvature/evaluation, topology inspection, and geometric properties.
+  They remain **ordinary typed runtime-backed function calls**, not compiler
+  intrinsics. When evaluation requires a kernel-query result, the runtime
+  may synchronously materialize the minimum required upstream geometry,
+  execute the query through the kernel-neutral adapter, return a normal
+  typed AICAD result, and continue source evaluation. Query outputs are
+  ordinary AICAD values; no OCCT/native object becomes a source value.
+  Query execution must participate correctly in dependency tracking,
+  determinism, provenance where applicable, resource accounting,
+  diagnostics, and cache invalidation where relevant.
+- Rationale: Ordinary engineering algorithms need query results to drive
+  control flow and later computation. Demand materialization preserves
+  normal typed calls and the kernel-neutral boundary instead of creating a
+  compiler intrinsic or exposing native objects, while still permitting
+  evaluation to obtain the data it actually needs.
+- Consequences: Future evaluation/runtime architecture must account for
+  query dependencies and effects rather than treating kernel queries as an
+  untracked side channel. Query results remain subject to normal AICAD
+  determinism/resource/diagnostic rules.
+- Explicitly deferred: Exact query-effect metadata representation; exact
+  eager/lazy scheduling mechanics; exact cache representation; concrete
+  Stage-5 query API surface.
+- Affected RFCs/tasks/stages: Stage 5+; D18/DL-15; feature/incremental
+  execution; future query APIs. No query-materialization implementation is
+  authorized by this entry.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S5-04; implementation scheduling/cache/API details remain deferred.
+
+---
+
+## DL-26: D24 — distinct numerical tolerance domains
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D24`.
+- Context: D5/D19 define a specific geometry-equivalence comparison profile,
+  while existing representation validity and sketch-solver thresholds
+  already serve different purposes. Stage 5-7 introduce additional
+  construction, approximation, solver, and verification needs. Frozen
+  post-100 audit item OD-S5-05 identified the risk of collapsing those
+  independent policies into one global epsilon.
+- Decision: AICAD **must not** use one global epsilon as the semantic
+  definition of all numerical tolerance. The architecture recognizes at
+  least six distinct domains: (1) representation/validity tolerance for
+  internal mathematical/kernel representation validity; (2)
+  modeling/construction tolerance for intersection, trimming, sewing,
+  healing, booleans, and related construction behavior; (3) approximation
+  tolerance for fitting/interpolation/approximation error bounds; (4)
+  solver tolerance for numerical convergence/satisfaction; (5)
+  verification tolerance for explicit engineering acceptance/assertion
+  semantics; and (6) D5 equivalence/comparison tolerance for determining
+  whether completed AICAD results satisfy the D5 deterministic-equivalence
+  contract. These policies may interact but are not aliases. No domain may
+  silently inherit another domain's values merely because both operate on
+  floating-point quantities. Each user-observable tolerance policy must
+  eventually define ownership, dimensional semantics, defaults where
+  defined, permitted overrides, diagnostics/evidence where materially
+  relevant, and versioning/compatibility treatment where required. Existing
+  D5/D19 values remain exactly what those decisions define. Tolerances may
+  never be silently widened merely to make a failed operation or test pass.
+- Rationale: The different tolerance domains answer different semantic and
+  numerical questions. Reusing one value by convenience makes behavior
+  non-auditable and can either weaken engineering acceptance or make
+  geometry unnecessarily brittle.
+- Consequences: Future Stage-5/6/7 APIs must name and own their numerical
+  policy rather than borrowing D5 or a private validity epsilon by default.
+  Cross-domain conversion/reuse requires an explicit approved policy.
+- Explicitly deferred: Numerical defaults for future Stage-5/6/7 domains,
+  detailed override mechanics, and any centralized policy engine. This
+  decision-recording pass must not invent those values.
+- Affected RFCs/tasks/stages: Stage 5; Stage 6; Stage 7; Stage 8+; D5/DL-12;
+  D19/DL-17+AICAD-064A.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S5-05; does not alter existing D5/D19 constants.
+
+---
+
+## DL-27: D25 — preserve feature identity, dependencies and provenance through ordinary language abstraction
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D25`.
+- Context: Stage 3 established `FeatureGraph`, source provenance,
+  parameter-dependency tracking, and selective incremental rebuild for a
+  bounded set of supported modeling structure. A programmable engineering
+  language cannot permanently make those semantics disappear whenever a
+  user wraps geometry work in an ordinary function, helper, branch, loop,
+  part abstraction, or library. Frozen post-100 audit item OD-S5-06
+  identified this as a prerequisite for Stage-5 programmability.
+- Decision: AICAD programmability must **not** make engineering structure
+  invisible. Geometry-producing/effectful operations executed through
+  supported ordinary language abstractions must remain observable to the
+  semantic feature, dependency, and provenance system. This applies
+  conceptually to geometry produced at module/top level, inside user
+  functions, inside reusable part/helper abstractions, through supported
+  control flow, and through library abstractions. Using an abstraction must
+  not inherently erase feature identity, dependency information, parameter
+  dependencies, dirty propagation, incremental rebuild behavior, source
+  provenance, semantic-reference support, or source-to-geometry inspection
+  capability. This decision freezes the **required behavior**, not one
+  graph encoding.
+- Rationale: Functions and libraries are fundamental language abstraction
+  mechanisms; making them an observability boundary would force users to
+  choose between programmability and engineering traceability, and would
+  undermine incremental rebuild, references, IDE inspection, and later AI
+  reasoning.
+- Consequences: Stage-4 reference work and later programmable geometry must
+  preserve enough execution/source context to support stable engineering
+  identity and provenance through abstractions. Stage-4 evidence may refine
+  how the invariant is represented, but may not silently weaken it.
+- Explicitly deferred: One-call-equals-one-feature-node policy; node
+  granularity; exact call-instance identity encoding; provenance
+  serialization; exact feature-node schema.
+- Affected RFCs/tasks/stages: Stage 4; Stage 5; Stage 9 IDE/source
+  navigation; Stage 10 AI tooling; semantic diff/provenance. This entry
+  authorizes no generalized feature-tracing implementation by itself.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S5-06.
+
+---
+
+## DL-28: D26 — distinct semantic identity domains for assemblies
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D26`.
+- Context: Future assemblies need reproducible identity across pose changes,
+  nesting, configurations, imported assets, topology references, BOM views,
+  packaging, and tooling. Frozen post-100 audit item OD-S6-01 identified
+  that reusing geometry/runtime IDs would conflate independent concepts.
+- Decision: AICAD must distinguish assembly identity concepts rather than
+  collapsing them into geometry or solver identifiers. At minimum it
+  preserves conceptual distinctions among component-definition identity,
+  logical component-instance identity, nested instance path/occurrence
+  identity, configuration/variant identity, external-asset identity,
+  semantic feature/topology references inside an instance, and
+  BOM/purchasing-classification identity. These serve different purposes
+  and must not substitute for one another. Topology identity does not
+  define component identity; OCCT/native object identity does not define
+  component identity; solver-variable identity does not define component
+  identity; filesystem path does not define imported-asset identity. A
+  logical instance remains the same logical instance across pose changes.
+  Where configuration changes preserve a logical slot/occurrence, logical
+  identity must remain traceable across those configurations. Nested
+  occurrence identity must be deterministic.
+- Rationale: Stable, separate identity domains are required for references,
+  configurations, BOMs, verification, packaging, diff/review, and IDE/AI
+  tooling. Geometry or solver handles cannot provide those semantics
+  because they change for reasons unrelated to logical product identity.
+- Consequences: Stage-6 assembly schemas must make these distinctions
+  explicit, and later Stage-7/8/9 systems must consume rather than reinvent
+  them.
+- Explicitly deferred: Exact ID encoding, hashing, and serialization.
+- Affected RFCs/tasks/stages: Stage 6; Stage 7 verification; Stage 8
+  packaging; Stage 9 tooling; semantic diff/provenance. No assembly IR is
+  implemented by this decision.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S6-01.
+
+---
+
+## DL-29: D27 — general statically checked interfaces/protocols for reusable engineering abstractions
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D27`.
+- Context: D17 deliberately deferred interface/trait bounds while
+  establishing general generics. Stage-6 reusable mechanical interfaces
+  need conformance and bounded generics, but implementing them as
+  assembly-specific compiler magic would fragment the language. Frozen
+  post-100 audit item OD-S6-02 identified the language-architecture choice.
+- Decision: Stage-6 mechanical interfaces must not be assembly-specific
+  compiler magic. AICAD will support a restrained **general nominal
+  interface/protocol concept** usable by engineering libraries and other
+  domains. The semantic capability must permit declaring an
+  interface/protocol contract; explicit conformance/implementation by
+  nominal types; static conformance checking; and constraining generic
+  functions/types by interface conformance. Exact surface syntax remains
+  subject to the normal language RFC process. This mechanism does **not**
+  imply storage/state inheritance, class inheritance, arbitrary runtime
+  monkey-patching, mandatory dynamic dispatch, trait objects,
+  higher-kinded types, specialization, associated-type machinery, complex
+  variance rules, or negative bounds. Those features remain unapproved
+  unless separately justified. The first implementation should be the
+  smallest general mechanism that supports real Stage-6 reusable mechanical
+  interfaces without creating assembly-only language exceptions.
+- Rationale: A general statically checked mechanism composes with D17
+  generics and can support multiple engineering domains, while a bespoke
+  assembly construct would duplicate language semantics and make libraries
+  less reusable.
+- Consequences: Future interface work must go through the language RFC/spec
+  process and remain nominal/explicit in the initial baseline. D17's generic
+  model remains the foundation rather than being replaced.
+- Explicitly deferred: Exact surface syntax and lowering representation;
+  advanced trait/type-system features explicitly excluded above remain
+  unapproved.
+- Affected RFCs/tasks/stages: Stage 6; future first-party libraries;
+  D17/DL-14; canonical language grammar/types once implementation is
+  separately authorized.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S6-02.
+
+---
+
+## DL-30: D28 — solver-neutral assembly relations and deterministic observable pose
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D28`.
+- Context: D11 establishes that AICAD-owned constraint semantics sit above
+  numerical solver adapters. Stage-6 assembly mates/joints need the same
+  separation plus explicit deterministic treatment of underconstraint,
+  gauge freedom, and multiple solutions. Frozen post-100 audit item
+  OD-S6-03 identified this gap.
+- Decision: Assembly mates and joints are AICAD-owned typed semantic
+  relations. A numerical assembly solver is an implementation adapter and
+  does **not** define the public meaning of mates, joints, satisfaction,
+  remaining degrees of freedom, conflict, redundancy, component identity,
+  or observable assembly pose. The semantic layer must expose structured
+  outcomes including, where relevant, solved, underconstrained,
+  overconstrained, redundant relation(s), remaining DOF, and conflict
+  evidence. An underconstrained assembly must not silently acquire a
+  backend-dependent arbitrary pose as semantic truth. AICAD must provide
+  deterministic grounding/gauge handling: use an explicitly grounded/root
+  frame when the design supplies one; otherwise choose a deterministic
+  canonical representative/root according to a specified AICAD policy.
+  Solver initialization state, iteration order, or random seed may not
+  define observable semantics. Multiple mathematically valid solutions
+  must produce either a deterministic AICAD-selected branch under an
+  explicitly specified policy or structured ambiguity/multiple-solution
+  evidence, rather than an arbitrary backend choice. This extends D11; it
+  does not replace it.
+- Rationale: Solver portability and reproducible assemblies require AICAD
+  semantics to own relation meaning, DOF/status vocabulary, and observable
+  pose. Otherwise backend numerical details become accidental language
+  semantics and change with solver/version/order.
+- Consequences: The Stage-6 solver interface must report sufficient
+  structured evidence for the AICAD layer to enforce deterministic public
+  semantics. Underconstraint and multiple solutions remain explicit states
+  unless an approved AICAD selection rule applies.
+- Explicitly deferred: Exact deterministic canonicalization/grounding
+  algorithm, detailed relation inventory, numerical solver choice, and
+  implementation mechanics. The canonicalization policy may be finalized
+  before the Stage-6 solver is implemented.
+- Affected RFCs/tasks/stages: Stage 6; Stage 7 assembly verification;
+  D11/DL-20.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S6-03.
+
+---
+
+## DL-31: D29 — configuration, suppression and replacement semantics
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D29`.
+- Context: Stage-6 configurations must support suppression and replacement
+  without making cross-configuration identity, BOM comparison, provenance,
+  or verification incoherent. Frozen post-100 audit item OD-S6-04
+  identified immutable overlays as the preferred architecture.
+- Decision: An AICAD configuration is an **immutable semantic overlay** over
+  a base product/assembly model. Evaluating a configuration produces a
+  derived semantic model and does not destructively mutate the authoritative
+  base. Suppressing a component/feature removes it from active
+  participation for the selected configuration while preserving logical
+  identity and provenance; suppression is not semantic deletion.
+  Replacement/variant selection operates through a stable logical
+  slot/occurrence where applicable. Replacement must preserve configuration
+  provenance and enough identity to support cross-configuration comparison,
+  BOM comparison, verification matrices, semantic diff, source/IDE
+  inspection, AI reasoning, and traceability. Compatibility rules for
+  replacements must be explicit rather than relying on accidental geometry
+  equivalence.
+- Rationale: Immutable overlays preserve authoritative design intent and
+  make differences between configurations explainable and reproducible.
+  Destructive resolution or new identities for every variant would erase
+  the continuity needed by references, BOMs, verification, and review.
+- Consequences: Stage-6 configuration resolution must preserve logical
+  slots/identity/provenance even when members are inactive or replaced;
+  later artifacts and tools can compare derived configurations against a
+  common base.
+- Explicitly deferred: Exact surface syntax, overlay storage format, and
+  detailed replacement-compatibility rules.
+- Affected RFCs/tasks/stages: Stage 6; Stage 7; Stage 8 artifacts; Stage 9
+  tooling; semantic diff. No configuration implementation is authorized by
+  this entry.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S6-04.
+
+---
+
+## DL-32: D30 — stable identity for imported/external engineering assets
+
+- Date: 2026-09-13
+- Resolves: `OWNER_DECISIONS.md#D30`.
+- Context: Stage-6 imported/vendor components arrive before the broader
+  Stage-8 native artifact/package format, but reproducibility and
+  provenance cannot safely use filesystem paths, transient URLs, importer
+  indices, or native kernel identity as the asset's semantic identity.
+  Frozen post-100 audit item OD-S6-05 identified the need for a minimal
+  content-addressed record before packaging.
+- Decision: An imported/external asset's semantic identity must not be
+  defined solely by filesystem path, temporary download URL,
+  importer-generated numeric index, or kernel-object identity. AICAD will
+  maintain immutable content identity plus normalized provenance metadata.
+  The minimum conceptual record must be capable of carrying content
+  identity/hash; source/declaration location or URI where applicable;
+  source/import format; importer identity/version; import-option identity;
+  relevant metadata; and resulting AICAD provenance. A logical project may
+  refer to an asset by a stable project-level reference, but location/path
+  is not itself the asset's semantic identity. Re-importing the same bytes
+  under the same semantically relevant import configuration should be
+  recognizable as the same content/import identity under the future
+  specified hashing/canonicalization policy. Stage-8 packaging must build
+  on this identity model rather than replacing it.
+- Rationale: Content identity plus normalized import provenance is the
+  minimum stable basis for reproducibility, collaboration, diff, packaging,
+  and supply-chain reasoning. Path/native identities are environment- or
+  execution-specific and cannot serve that role.
+- Consequences: Stage-6 imported-component design must reserve a stable
+  asset/provenance identity seam that Stage 8 can serialize and extend.
+- Explicitly deferred: Exact hash algorithm; exact serialized schema;
+  remote-fetch/security policy; package-embedding policy; full artifact
+  manifest format.
+- Affected RFCs/tasks/stages: Stage 6 imported components; Stage 8
+  `.aicadpkg`; provenance; reproducibility; collaboration/diff. No import
+  or packaging implementation is authorized by this entry.
+- Supersedes: the open architecture status of frozen post-100 audit item
+  OD-S6-05.
+
+---
+
+## General constraint on D21-D30 during Stage 4
+
+D21-D30 are owner-approved semantic baselines. Stage-4 semantic-reference
+work may produce evidence for a better internal representation or a
+narrower/broader implementation mechanism only where a decision explicitly
+leaves that detail deferred. Such refinement requires explicit review.
+Stage 4 must not silently collapse identity domains, expose kernel/native
+identity, remove the safe/raw distinction, erase feature provenance through
+abstraction, make solver output authoritative semantics, make
+configurations destructive, merge tolerance domains, or turn RuntimeBuiltin
+into an open registration ABI. If Stage-4 evidence genuinely conflicts with
+an approved invariant, implementation must stop at that conflict, document
+the evidence, and propose an amended owner decision rather than silently
+working around the ruling.

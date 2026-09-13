@@ -1,6 +1,5 @@
-# docs/language
+# Moved: current language documentation
 
-Authored, evolving language documentation (distinct from `docs/plan/`,
-which is the immutable verbatim-imported plan bundle from AICAD-001 and
-must not be edited in place — see `project/reports/AICAD-001.md`).
-Mirrors/expands `specs/language/semantics.md` for human readers.
+Current user-facing language documentation now lives at `docs/user/language/`. Compiler/type/runtime implementation details live under `docs/developer/`.
+
+The pre-transition placeholder README is preserved under `project/planning/transitions/stage3-to-stage4/legacy-docs/`.

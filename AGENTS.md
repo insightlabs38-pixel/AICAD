@@ -3,7 +3,7 @@
 You are the primary implementation agent for AICAD.
 
 ## Mission
-Implement the active roadmap stage without broadening scope. The AICAD plan bundle in `docs/plan/` is the design source of truth. Source + lockfile + immutable external assets are canonical; generated B-rep, meshes, and analysis outputs are caches/artifacts.
+Implement the active roadmap stage without broadening scope. For current architecture/semantics, use this authority order: explicit owner decisions and `project/DECISION_LOG.md` > accepted `specs/`/RFC semantics > implemented behavior where the specification intentionally defines it > current stage-gate evidence > frozen planning examples. The plan bundle in `docs/plan/` is retained foundation/design history, not current normative truth by itself. Source + lockfile + immutable external assets are canonical; generated B-rep, meshes, and analysis outputs are caches/artifacts.
 
 ## Non-negotiables
 - Exact B-rep is canonical compiled geometry; meshes are not design truth.
@@ -18,7 +18,7 @@ Implement the active roadmap stage without broadening scope. The AICAD plan bund
 
 ## Work loop
 1. Read `project/CURRENT_STAGE.md` and the assigned task from `project/TASKS.yaml`.
-2. Read only the plan documents referenced by that task plus directly relevant source.
+2. Read the owner decisions/accepted specs/RFCs referenced by the task, then only the directly relevant frozen plan documents and source needed for implementation/evidence.
 3. Confirm task dependencies are satisfied.
 4. If an escalation condition is triggered, stop before changing architecture and write the question to `project/OWNER_DECISIONS.md`.
 5. Implement the smallest change that satisfies the task.
@@ -27,6 +27,11 @@ Implement the active roadmap stage without broadening scope. The AICAD plan bund
 8. Write `project/reports/<task-id>.md` containing objective, files changed, decisions, exact commands/results, artifacts, limitations, and follow-up bugs.
 9. Make one coherent task commit.
 10. Start the next unblocked task only after the current task passes.
+
+## Context hygiene
+Routine implementation startup is intentionally curated. Do **not** recursively read all of `project/reports/archive/`, `project/gates/archive/`, `project/planning/roadmap/post100/`, old implementation diaries, or completed-stage evidence. Retrieve historical material only when the assigned task, a regression, a gate reconstruction, or an architecture question requires it.
+
+Current user documentation is under `docs/user/`; current contributor/developer documentation is under `docs/developer/`. Internal development history, transition records, audits, and roadmap drafts are under `project/`. The frozen foundation plan remains at its legacy `docs/plan/` path because historical task/source references depend on it; its location does not make it normal user documentation or automatically current normative authority.
 
 ## Stop and escalate to the owner if work would
 - change public language syntax or semantics beyond an approved RFC;

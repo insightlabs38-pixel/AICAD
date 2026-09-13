@@ -1,0 +1,87 @@
+name: Integration and determinism
+
+on:
+  push:
+    branches:
+      - main
+      - claude/aicad-stage4-transition
+      - claude/aicad-stage4-dev
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  exact-geometry:
+    name: exact geometry and STEP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-integration-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-integration-
+            ${{ runner.os }}-
+      - name: Prepare evidence directory
+        run: mkdir -p artifacts
+      - name: Stage-2 exact end-to-end proof
+        run: cargo test -p cad-cli --test stage2_end_to_end --locked -- --test-threads=1 2>&1 | tee artifacts/stage2-end-to-end.log
+      - name: Stage-3 ordinary parts
+        run: cargo test -p cad-cli --test stage3_ordinary_parts --locked -- --test-threads=1 2>&1 | tee artifacts/stage3-ordinary-parts.log
+      - name: Stage-3 incremental rebuild
+        run: cargo test -p cad-cli --test stage3_parametric_incremental_rebuild --locked -- --test-threads=1 2>&1 | tee artifacts/stage3-incremental.log
+      - name: D5/D19 validation profile
+        run: cargo test -p cad-validation --locked 2>&1 | tee artifacts/cad-validation.log
+      - name: Frozen Stage-4 corpus exact-geometry validation
+        run: cargo test -p cad-cli --test stage4_reference_benchmark_fixtures --locked -- --test-threads=1 2>&1 | tee artifacts/stage4-corpus.log
+      - name: Build representative STEP artifact
+        run: |
+          cargo run -p cad-cli --locked -- build examples/brackets/stage3_l_bracket.aicad \
+            --output artifacts/stage3_l_bracket.step \
+            --name LBracket.body --json 2>&1 | tee artifacts/stage3-l-bracket-build.json
+      - name: Upload failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-failure-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+
+  determinism:
+    name: deterministic AICAD-owned state
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-determinism-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-determinism-
+            ${{ runner.os }}-
+      - name: Determinism foundation tests
+        run: cargo test -p cad-cli --test stage4_determinism_foundation --locked -- --test-threads=1
+      - name: Feature/dependency determinism tests
+        run: cargo test -p cad-feature-graph --locked
+      - name: Incremental-state determinism proof
+        run: cargo test -p cad-cli --test stage3_parametric_incremental_rebuild --locked -- --test-threads=1

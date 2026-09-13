@@ -1,193 +1,95 @@
 # RFC-0003: Semantic References
 
-- Status: Draft (Stage 0)
-- Stage-0 build item covered (`docs/plan/15_IMPLEMENTATION_ROADMAP.md`
-  Stage 0): "feature/reference semantics".
-- Owner rulings incorporated: DL-8 (reference-resolution fail-closed
-  policy, partial), DL-9 (kernel-independent semantic graph, directional).
-  See `project/DECISION_LOG.md`.
-- Depends on: RFC-0002 (kernel handles are epoch-local and own no durable
-  identity; this RFC defines what does).
+- Status: **Accepted Stage-0 design contract** (`project/DECISION_LOG.md#DL-10`).
+- Implementation status: **Stage 4 has not started** on `claude/aicad-stage4-transition`; AICAD-080 remains todo.
+- Owner rulings incorporated: DL-8 (D7 fail-closed reference resolution, partial) and DL-9 (D8 kernel-independent semantic graph, directional).
+- Depends on: RFC-0002's kernel-neutral/epoch-local topology boundary.
 
-## 1. Summary
+## 1. Purpose
 
-This is the single most consequential RFC in the plan. `docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md`
-Risk A names persistent topological naming as "the largest foundational
-CAD risk," and `docs/plan/15_IMPLEMENTATION_ROADMAP.md` makes Stage 4 — the
-stage whose sole purpose is proving this RFC's contract holds — a **hard
-release gate**. Nothing here may be weakened without triggering the
-AGENTS.md escalation trigger "semantic-reference ambiguity would require
-arbitrary fallback."
+Persistent topological naming is a foundational CAD risk. AICAD therefore defines semantic topology references above the geometry kernel rather than treating kernel enumeration order, pointer identity, or operation-local lineage as durable source identity.
 
-## 2. Reference classes (frozen, from `06` §2)
+This RFC is a Stage-4 **target contract**, not a claim that `FaceRef`/`EdgeRef`/other persistent reference types already exist in the current Stage-3 implementation.
 
-- **Stable semantic references** (`VertexRef`, `EdgeRef`, `WireRef`,
-  `FaceRef`, `ShellRef`, `SolidRef`, `AxisRef`, `FeatureRef`,
-  `ComponentRef`) do not mean "store a kernel pointer forever." They mean
-  "store a reproducible semantic recipe plus lineage context for resolving
-  the intended entity after regeneration."
-- **Raw handles** (`Vertex*`, `Edge*`, `Face*`, ...) represent current
-  topology in the current geometry epoch only (RFC-0002 §4). They are
-  never a substitute for a stable reference.
+## 2. Stage-3 mechanisms are not Stage-4 references
 
-## 3. Reference construction strategies (frozen, from `06` §3)
+Stage 3 already contains useful semantic identity/provenance mechanisms:
 
-A stable reference derives from one or more of: (1) feature lineage, (2)
-explicit export, (3) semantic query, (4) structural role, (5) ancestry,
-(6) geometric fingerprint (as an **explicit, source-authored**
-discriminator — see §6's distinction from *automatic* fingerprint
-fallback), (7) user confirmation when ambiguity cannot otherwise be
-solved.
+- source/binding/parameter identities;
+- feature identities and feature/source provenance;
+- named part/model outputs;
+- GeometryGraph/GeomId execution identity;
+- sketch/entity/constraint identities inside the Stage-3 semantic subsystem;
+- operation-local kernel lineage where available;
+- raw/index-based face/edge selection in limited modeling APIs.
 
-## 4. Explicit semantic exports and query model (frozen, from `06` §4-6)
+These concepts serve different layers. None is automatically a persistent topology reference. In particular:
 
-Features export named semantic outputs via `expose { ... }` blocks
-resolved by query criteria (`06` §4). Queries are **criteria objects**, not
-materialized lists, so they can be re-evaluated after regeneration (`06`
-§5). The geometry/topology/spatial predicate families and
-ranking/disambiguation operators in `06` §6 (`planar`, `generated_by(...)`,
-`adjacent_to(...)`, `largest(area)`, `unique()`, `expect_count(n)`, etc.)
-are adopted as the baseline predicate vocabulary; RFC-0004 governs the
-unit-bearing comparison syntax (`~= within`) these predicates use.
+- `Part.body` selects a named source/model output, not a face or edge;
+- `FaceIndex(3)` is an enumeration selector in one realized topology, not `FaceRef` identity;
+- a Stage-3 sketch entity ID belongs to sketch IR, not arbitrary regenerated solid topology;
+- operation-local lineage is evidence used by a resolver, not durable identity by itself.
 
-## 5. Feature DAG and topology lineage (frozen, from `06` §8-10)
+## 3. Stage-4 semantic-reference contract
 
-- Every topology-changing operation reports lineage
-  (`old entity -> unchanged/new/modified/split/merged/deleted -> new
-  entities`), stored **at the feature node**, not only inside backend-native
-  structures (this is the layer that consumes the per-operation lineage
-  evidence RFC-0002 §3 requires the kernel adapter to expose).
-- The feature DAG need not be linear; each node records id, source span,
-  kind, parameters, input feature/semantic refs, input external assets,
-  geometry/semantic outputs, lineage data, validation result, cache key,
-  and provenance (`06` §9).
-- Incremental invalidation on parameter change: find dependents, mark
-  dirty, preserve unaffected cache, rebuild the dirty subgraph, **replay
-  semantic-reference resolution**, compare old/new lineage, rerun only
-  affected requirements/tests (`06` §10). This is the same contract
-  RFC-0002 §5 already binds `cad-feature-graph` to; RFC-0003 adds that
-  reference replay specifically is part of it.
+Stage 4 is responsible for durable, kernel-independent references to semantic topology classes such as vertex/edge/wire/face/shell/solid. Reference identity is owned by the AICAD semantic layer above the kernel.
 
-## 6. Resolution policy: fail-closed (DL-8 / D7, resolved for Stage 4)
+A reference resolves against a model/build context through deterministic evidence/recipes rather than raw kernel pointer identity. The exact serialized recipe/schema is Stage-4 task scope, but it must preserve the following D7 contract.
 
-Reference resolution has exactly three possible outcomes — never a fourth:
+### Fail-closed outcomes — D7/DL-8
+
+Resolution may produce only:
+
+- `Resolved` — exactly one valid entity satisfies the reference contract;
+- `Ambiguous` — multiple candidates remain, with evidence/candidate information;
+- `Broken` — no valid entity can satisfy the reference, with a reason/evidence.
+
+A resolver must never silently choose an arbitrary candidate. Ambiguity is an observable semantic failure state, not permission to pick whichever face/edge happens to appear first.
+
+## 4. Fingerprints and fallback
+
+Geometry fingerprints may be useful evidence for diagnostics, candidate ranking shown to a user/tool, and benchmarking/experiments. They are **not** an automatic fallback in the first Stage-4 implementation.
+
+Whether automatic fingerprint-based recovery may ever be enabled remains an explicit open D7 sub-question. A later owner decision must be supported by benchmark evidence showing an acceptably negligible silent-wrong-resolution rate. This cleanup does not change that policy.
+
+An explicit authored geometric query/selector may participate in a future reference recipe when approved. That is not the same thing as silently invoking fingerprint recovery after another identity mechanism fails.
+
+## 5. Kernel-independent semantic graph — D8/DL-9
+
+AICAD owns a kernel-independent semantic graph that is authoritative for source/model identity, features, dependencies, and durable references. Public/serialized reference semantics must not depend on OCAF or any other OCCT-specific identity mechanism.
+
+OCAF may still be useful internally for OCCT-side labeling/persistence/lineage experiments. The exact extent of internal OCAF use is intentionally still open and prototype-driven; it must not leak into the public reference contract.
+
+## 6. Kernel handles and raw indices
+
+Kernel shapes/edges/faces and future raw topology handles are epoch/context local. A raw handle may eventually be represented as an opaque AICAD-owned value, but:
 
 ```text
-Resolved(entity)              — exactly one entity matched
-Ambiguous(candidates, evidence) — more than one entity matched
-Broken(reason)                — zero entities matched, or resolution
-                                 could not be attempted (e.g. stale lineage)
+raw topology handle != OCCT pointer != persistent semantic reference
 ```
 
-**The resolver must never select an arbitrary "best" candidate to force a
-`Resolved` outcome.** This is the direct implementation of
-`docs/plan/00_PRINCIPLES_AND_SCOPE.md` §3 rule 8 and
-`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §7 ("ambiguity must be
-explicit").
+Likewise, current raw integer indices are temporary selectors and should be treated as fragile after topology-changing edits.
 
-### 6.1 Geometry-fingerprint fallback is disabled as an *automatic* recovery path
+## 7. Source syntax/status boundary
 
-A critical distinction, because `06` §3 item 6 and `06` §11's
-`query_geometric` durability tier both mention geometric-fingerprint-style
-criteria and could otherwise be read as endorsing automatic use:
+Older Stage-0 examples and foundation-plan material show illustrative reference/query/export syntax. Those examples are design targets, not current `.aicad` grammar unless promoted into `specs/language/grammar.ebnf` by an authorized Stage-4 task.
 
-- **Explicit, source-authored geometric queries remain fully supported and
-  unrestricted.** If an author writes
-  `query body.faces { cylindrical; radius ~= 11mm within 0.01mm; }`, that
-  is an ordinary query (durability tier `query_geometric`, §7 below) and
-  resolves through the same three-outcome contract as any other query. The
-  program asked for exactly this discriminator; using it is not "silent."
-- **What is disabled** is the *resolver* itself automatically retrying an
-  otherwise-`Ambiguous` or `Broken` resolution by inventing a
-  geometry-fingerprint comparison the source program never asked for, in
-  order to still produce a `Resolved` outcome. That automatic-recovery
-  behavior — the specific mechanism task AICAD-092 names
-  ("geometry-fingerprint fallback") — does not exist in the first Stage-4
-  implementation.
-- Fingerprinting may still be used, in the first implementation, for:
-  **diagnostics** (showing candidates a user could disambiguate with),
-  **ranking** candidates presented to a human/agent for manual
-  confirmation (strategy 7, §3), and **experiments/benchmarking**
-  (`benchmarks/topology-naming/`) — never to silently change a resolution
-  outcome on its own.
-- **Automatic fingerprint-based recovery can only be enabled later by a
-  separate, future owner-approved policy**, supported by benchmark
-  evidence (from `benchmarks/topology-naming/`, AICAD-096-099) showing an
-  acceptably negligible silent-wrong-resolution rate. This RFC does not
-  pre-approve that future policy or its threshold; both remain open.
+The current Stage-3 language does not expose persistent `VertexRef` / `EdgeRef` / `WireRef` / `FaceRef` / `ShellRef` / `SolidRef` construction or resolution APIs. It also does not gain them simply because workspace crates/benchmarks for Stage 4 already exist.
 
-## 7. Reference durability levels (frozen, from `06` §11-12)
+## 8. Diagnostics/tooling target
 
-| Level | Meaning |
-|---|---|
-| `explicit` | Feature exported the entity by semantic name. |
-| `lineage` | Resolved through tracked creation/modification history. |
-| `query_strong` | Unique result from robust semantic/topological criteria. |
-| `query_geometric` | Uses author-written geometry-fingerprint/spatial criteria (§6.1 — explicit use, not automatic fallback). |
-| `raw` | Current topology only; not persistent. |
+Stage-4 tooling should expose reference status/evidence in structured machine-readable form and support explicit checks for unresolved/ambiguous/broken references. Historical references to commands such as `cad refs check` are planned Stage-4 tooling concepts; the current CLI implements only `cad build` and must not document those commands as available today.
 
-`cad refs check` (`06` §12) reports the distribution of these levels across
-a project plus ambiguous/broken counts, and is required Stage-4 tooling
-(AICAD-095).
+## 9. Mutation/regeneration durability
 
-## 8. Kernel-independent semantic graph is authoritative (DL-9 / D8, directional)
+A durable semantic reference exists to survive or explicitly fail across model regeneration/topology changes. It must not quietly retarget because a kernel's enumeration order changed. Regeneration may preserve the reference (`Resolved`) or make it observably ambiguous/broken; silent arbitrary retargeting is forbidden.
 
-- **AICAD owns a kernel-independent semantic graph** that is authoritative
-  for language-level identity, features, dependencies, and durable
-  references (`cad-references`). This is not an OCAF wrapper.
-- **OCAF may be prototyped and used internally** as an OCCT-side
-  persistence, labeling, or lineage aid, entirely inside
-  `cad-occt-bridge`/`native/occt_bridge` — never surfaced through
-  `cad-kernel-api` (RFC-0002 §3).
-- **AICAD's public semantics and any serialized semantic identity must
-  never depend on OCAF.** A future non-OCCT kernel backend must be able to
-  implement `cad-kernel-api`'s lineage-evidence contract (RFC-0002 §3)
-  without OCAF existing at all.
-- **Whether OCAF is used internally, and for which subset of
-  responsibilities, remains prototype-driven** and is explicitly not
-  decided by this RFC. Prototyping work belongs under
-  `project/experiments/` (see its `README.md`) and must produce evidence
-  before `cad-occt-bridge`/`cad-references` commit to a specific internal
-  persistence mechanism.
+## 10. Historical rationale and rejected alternatives
 
-## 9. Alternatives considered
+Stage-0 chose semantic references because direct kernel handles/indices cannot support robust parametric editing, reproducible automation, semantic diff/merge, or trustworthy AI-generated edits. The plan considered lineage, authored queries, naming/provenance, and geometric evidence as candidate ingredients rather than one universal magic identifier.
 
-- **A fourth resolution outcome** (e.g. "best-effort resolved with a
-  confidence score") — rejected (DL-8); this is exactly the arbitrary-
-  selection behavior invariant 8 forbids, merely relabeled.
-- **Enabling automatic geometry-fingerprint fallback from the start** —
-  rejected (DL-8); this is the specific "silent wrong resolution" failure
-  class the Stage-4 hard gate exists to eliminate
-  (`docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md` §5).
-- **Building semantic identity directly on OCAF** — rejected (DL-9); would
-  violate the kernel-independence contract (RFC-0002 §3) and couple
-  durable references to one backend's persistence framework.
-- **Banning OCAF outright even as an internal implementation detail** —
-  rejected (DL-9); forecloses a legitimate prototyping question (does OCAF
-  help implement lineage evidence inside the OCCT bridge?) without
-  evidence either way.
+The later D7 ruling rejects best-effort automatic candidate selection for the first implementation, and D8 rejects making OCAF/public kernel identity authoritative. Those rulings narrow the original design risk without discarding the rationale.
 
-## 10. Open questions (intentionally not resolved here)
+## 11. Still-open questions
 
-- Exact resolution precedence when multiple construction strategies (§3)
-  could apply to the same entity — this RFC fixes the *outcome contract*
-  (§6) but not a full precedence ordering across all seven strategies;
-  that ordering is Stage-4 implementation work (AICAD-088) informed by the
-  fixture corpus (AICAD-096), not a Stage-0 freeze.
-- The extent of internal OCAF usage (§8) — explicitly prototype-driven,
-  not decided here.
-- Future automatic fingerprint-recovery policy and its acceptable
-  silent-wrong-resolution threshold (§6.1) — explicitly deferred to a
-  future, separate owner decision.
-
-## 11. Impact
-
-- `crates/cad-references`, `crates/cad-query`: implement §2-8 in Stage 4
-  (AICAD-080..095).
-- `crates/cad-feature-graph`: implements the lineage-storage and
-  invalidation-replay contract in §5 (Stage 3, then extended Stage 4).
-- `benchmarks/topology-naming/`: implements the fixture/perturbation/
-  metrics work (AICAD-096-099) that is the actual evidence this RFC's
-  fail-closed contract holds.
-- `crates/cad-occt-bridge`: any internal OCAF prototyping (§8) stays
-  behind this crate's boundary and is tracked via `project/experiments/`.
+Still open: whether/when benchmark evidence can justify automatic fingerprint recovery; the exact internal use of OCAF; the exact Stage-4 reference-recipe/schema/API spelling; and any later reference mechanisms needed by Stage-5+ programmable geometry. Those questions must be resolved in their authorized stage rather than through this cleanup pass.

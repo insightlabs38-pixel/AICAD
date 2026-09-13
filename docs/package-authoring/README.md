@@ -1,6 +1,5 @@
-# docs/package-authoring
+# Package authoring is planned, not a current Stage-3 user feature
 
-Authored guide for third-party package authors: manifest fields, capability
-declarations, AI skill/schema requirements, publishing checklist.
+The pre-transition package-authoring placeholder described a future package/plugin surface that is not part of the implemented Stage-3 product. Its original contents are preserved under `project/planning/transitions/stage3-to-stage4/legacy-docs/package-authoring-README.md`.
 
-Plan references: `docs/plan/12_PACKAGES_PLUGINS_EXTENSIONS.md`.
+Future package/plugin design remains planning work; do not treat this legacy path as current user documentation.

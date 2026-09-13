@@ -1,0 +1,52 @@
+name: Dependency and supply-chain checks
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**/Cargo.toml'
+      - 'scripts/ci/workspace_policy.py'
+      - '.github/workflows/security.yml'
+  push:
+    branches:
+      - main
+      - claude/aicad-stage4-transition
+      - claude/aicad-stage4-dev
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**/Cargo.toml'
+      - 'scripts/ci/workspace_policy.py'
+      - '.github/workflows/security.yml'
+  schedule:
+    - cron: '11 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: lockfile and workspace policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Locked Cargo metadata
+        run: cargo metadata --locked --no-deps --format-version 1 > /tmp/aicad-metadata.json
+      - name: Workspace dependency/license policy
+        run: python scripts/ci/workspace_policy.py /tmp/aicad-metadata.json
+
+  audit:
+    name: Rust advisory audit (scheduled/manual)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit Cargo.lock
+        run: cargo audit --locked

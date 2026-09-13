@@ -1,16 +1,7 @@
 # Stage gate evidence packets
 
-Each roadmap stage's exit-gate evidence packet lives here as
-`stage-<n>-gate.md`, produced by that stage's final "prepare owner gate
-packet" task (e.g. AICAD-014 for Stage 0, AICAD-037 for Stage 1, AICAD-064
-for Stage 2, AICAD-100 for Stage 4).
+`project/gates/` contains current/transition-relevant gate surfaces. Completed Stage-0..3 gate evidence is preserved under `project/gates/archive/`; compatibility pointers remain at former completed-gate paths so historical links do not become dead.
 
-Per `AGENTS.md` ("Stage gates") and `AICAD_AGENT_OPERATING_MODEL.md` §8, a
-gate packet must contain: exact git commit/revision, test/benchmark commands
-and results, known failures and limitations, representative artifacts,
-regression counts, performance baselines where relevant, unresolved
-decisions, and a pass/do-not-pass recommendation.
+The Stage-0→4 traceability matrix remains active at `stage-0-4-traceability-matrix.md`. During this Stage-3→4 reconciliation, `stage-3-gate.md` remains directly available because it is the immediate prior-stage gate; an exact historical snapshot is also preserved at `archive/stage3/stage-3-gate.md`.
 
-The implementation agent may prepare this evidence and recommend pass/do-not-pass.
-It may **not** approve a roadmap stage — stage progression is an owner
-decision recorded in `project/DECISION_LOG.md`.
+A stage gate packet is evidence and a recommendation. Per `AGENTS.md`, stage progression is an owner decision; an implementation/transition agent cannot approve a stage.

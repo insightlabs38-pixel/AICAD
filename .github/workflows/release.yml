@@ -1,0 +1,56 @@
+name: Release foundation
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-artifact:
+    name: Linux reproducible-build foundation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install-occt-dev
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'native/occt_bridge/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-release-
+            ${{ runner.os }}-
+      - name: Resolve artifact version
+        id: version
+        shell: bash
+        run: |
+          set -eu
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="${GITHUB_REF#refs/tags/}"
+          else
+            version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Build release binary
+        run: cargo build -p cad-cli --release --locked
+      - name: Package artifact and checksum
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -eu
+          mkdir -p dist
+          archive="aicad-${VERSION}-linux-x86_64.tar.gz"
+          tar -czf "dist/$archive" -C target/release cad-cli
+          (cd dist && sha256sum "$archive" > "$archive.sha256")
+      - name: Upload build artifact only
+        uses: actions/upload-artifact@v7
+        with:
+          name: aicad-${{ steps.version.outputs.value }}-linux-x86_64
+          path: dist/
+          retention-days: 30
