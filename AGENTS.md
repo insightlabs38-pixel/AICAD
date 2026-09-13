@@ -28,6 +28,11 @@ Implement the active roadmap stage without broadening scope. The AICAD plan bund
 9. Make one coherent task commit.
 10. Start the next unblocked task only after the current task passes.
 
+## Context hygiene
+Routine implementation startup is intentionally curated. Do **not** recursively read all of `project/reports/archive/`, `project/gates/archive/`, `project/planning/roadmap/post100/`, old implementation diaries, or completed-stage evidence. Retrieve historical material only when the assigned task, a regression, a gate reconstruction, or an architecture question requires it.
+
+Current user documentation is under `docs/user/`; current contributor/developer documentation is under `docs/developer/`. Internal development history, transition records, audits, and roadmap drafts are under `project/`. The frozen foundation plan remains at its legacy `docs/plan/` path because historical task/source references depend on it; its location does not make it normal user documentation.
+
 ## Stop and escalate to the owner if work would
 - change public language syntax or semantics beyond an approved RFC;
 - change typed-units semantics;
