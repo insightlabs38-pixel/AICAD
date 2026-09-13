@@ -46,9 +46,10 @@ The current implementation should be read with these invariants in mind:
 5. Geometry follows the established source → HIR/runtime → Geometry IR → geometry dispatcher → kernel-neutral API → OCCT path.
 6. `ParamModel` and `FeatureGraph` solve different problems but are connected by the parametric build orchestration.
 7. Incremental rebuilding is dependency-aware and reuses unaffected realized geometry inside one build session.
-8. Sketch and constraint semantics are AICAD-owned above the numerical solver.
-9. Stage-3 named outputs are explicit source names, not persistent Stage-4 topology references.
-10. Diagnostics, determinism, validation, and ambiguity handling follow accepted project policy rather than ad-hoc backend behavior.
-11. Historical task reports are implementation evidence and archaeology, not the developer manual.
+8. Stage-3 sketch/entity/constraint/profile semantics are AICAD-owned above the numerical solver, but this implemented substrate is **not** integrated as a public `.aicad` `sketch { ... }` authoring surface.
+9. Stage-3 feature identity/provenance, named source outputs, operation-local lineage, and raw face/edge selectors are **not** the persistent semantic topology-reference capability planned for Stage 4.
+10. Raw topology indices remain topology/epoch-local selectors; they must not be treated as `VertexRef` / `EdgeRef` / `WireRef` / `FaceRef` / `ShellRef` / `SolidRef` identity.
+11. Diagnostics, determinism, validation, and ambiguity handling follow accepted project policy rather than ad-hoc backend behavior.
+12. Historical task reports are implementation evidence and archaeology, not the developer manual.
 
 Future architecture proposals live under `project/planning/`; they should not be read as current APIs unless separately accepted and implemented.

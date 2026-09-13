@@ -33,9 +33,9 @@ The compiler parses and type-checks the source, the runtime evaluates it into ba
 
 Three boundaries prevent common misunderstandings:
 
-1. **Named outputs are source names, not persistent topology references.** `--name Plate.body` selects an explicitly declared `Geometry` result. It does not identify a face or edge durably across topology changes; that is planned Stage-4 work.
-2. **The sketch/constraint subsystem exists, but source sketch authoring does not yet.** Stage 3 implements sketch entities, AICAD-owned constraint semantics, a concrete solver, and solved-profile-to-face lowering. There is no supported `.aicad` `sketch { ... }` syntax yet.
-3. **Raw face/edge indices are still raw topology selectors.** Current `fillet`, `chamfer`, `shell`, `extrude`, and `revolve` APIs use integer face/edge indices where selection is needed. Those indices are not semantic identity.
+1. **Named outputs are source names, not persistent topology references.** `--name Plate.body` selects an explicitly declared `Geometry` result. It does not identify a face or edge durably across topology changes; durable semantic topology resolution is Stage-4 work.
+2. **The sketch/constraint/profile subsystem is implemented internal substrate, not a source-language feature.** Stage 3 implements sketch entities, AICAD-owned constraint semantics, a concrete solver, solved-profile validation, and solved-profile-to-face lowering. There is no supported `.aicad` `sketch { ... }` authoring construct yet.
+3. **Raw face/edge indices are current topology selectors, not stable identity.** Current `fillet`, `chamfer`, `shell`, `extrude`, and `revolve` APIs use integer face/edge indices where selection is needed. Those indices are topology-local and can change meaning after topology-changing edits; Stage-3 feature identity/provenance does not turn them into persistent references.
 
 Assemblies, verification-language constructs, advanced freeform/NURBS authoring, packages/plugins, and AI tooling are not part of the current user surface.
 

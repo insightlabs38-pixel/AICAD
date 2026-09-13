@@ -30,11 +30,11 @@ The post-Stage-3 repository implements:
 - `part` bodies with named outputs and CLI selection through `--name <binding>[.<field>]`;
 - a feature DAG with source provenance, structural cache keys, parameter dependencies, dirty propagation, and deterministic affected-feature calculation;
 - a production in-process parametric rebuild session that connects `ParamModel` → `FeatureGraph` → dirty propagation → selective Geometry-IR redispatch and reuse;
-- a solver-independent sketch/entity/constraint model, a concrete relaxation solver, and solved closed-profile lowering to exact kernel faces;
+- an **internal** solver-independent sketch/entity/constraint model, a concrete relaxation solver, and solved closed-profile lowering to exact kernel faces; this is implemented modeling substrate, not public `.aicad` sketch syntax;
 - exact B-rep validation/property queries in the geometry stack and STEP export/re-import verification paths;
 - `cad build` with human-readable or JSON diagnostics.
 
-Two boundaries matter when evaluating that list. First, Stage-3 named outputs are explicit source names, **not** the persistent topology references planned for Stage 4. Second, the sketch/constraint subsystem is implemented and geometry-backed, but `.aicad` does **not** yet expose a `sketch { ... }` authoring syntax; current source-level part examples use the Safe CAD builtin surface.
+Two boundaries matter when evaluating that list. First, Stage-3 named outputs, feature identity/provenance, and raw face/edge selectors are **not** the persistent `VertexRef` / `EdgeRef` / `WireRef` / `FaceRef` / `ShellRef` / `SolidRef` topology-reference capability planned for Stage 4. Second, the sketch/constraint/profile subsystem is implemented and geometry-backed, but `.aicad` does **not** yet expose a supported `sketch { ... }` authoring construct; current source-level part examples use the Safe CAD builtin surface.
 
 ## Small example
 

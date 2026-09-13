@@ -16,15 +16,15 @@ Pure spatial values such as `Point3`, `Axis3`, `Plane3`, and rigid `Transform` c
 
 ## Operations and queries
 
-The IR covers the operation surface needed by the implemented geometry runtime: primitives; lower-level edge/wire/face construction used by sketch/profile lowering; extrude/revolve/sweep/loft; booleans; finishing operations; transforms/mirror; STEP import/export support; and geometry property/validation queries.
+The IR covers the operation surface needed by the implemented geometry runtime: primitives; lower-level edge/wire/face construction used by internal sketch/profile lowering; extrude/revolve/sweep/loft; booleans; finishing operations; transforms/mirror; STEP import/export support; and geometry property/validation queries.
 
-The public Safe CAD catalogue is intentionally narrower. An internal `GeometryOp` does not become source syntax merely because the dispatcher can execute it.
+The public Safe CAD catalogue is intentionally narrower. An internal `GeometryOp` does not become source syntax merely because the dispatcher can execute it. Internal profile construction/lowering likewise does not imply that a public `.aicad` `sketch { ... }` authoring construct exists.
 
 ## Raw topology selectors
 
 `EdgeIndex` and `FaceIndex` are integer selectors into a target's current realized topology. Current fillet/chamfer/shell and face-selection paths use them because Stage 3 does not yet have persistent semantic topology references.
 
-These selectors are **epoch/topology local**. They must never be serialized or promoted as durable AICAD semantic identity. Stage-4 reference recipes/resolution will live above Geometry IR/kernel topology rather than redefining these integers as identity.
+These selectors are **epoch/topology local**. They must never be serialized or promoted as durable AICAD semantic identity. Stage-3 feature identity/provenance, named outputs, and operation-local lineage do not change that limitation. Stage-4 work is responsible for durable, fail-closed semantic topology-reference resolution above Geometry IR/kernel topology; these integers remain selectors rather than being redefined as identity.
 
 ## Dispatch
 

@@ -2,7 +2,7 @@
 
 Status: **COMPLETE FOR OWNER REVIEW** on `claude/aicad-stage4-transition`.
 
-This is an information-architecture, documentation, and historical-evidence reconciliation pass only. It does **not** initialize Stage 4 and does not implement AICAD-080.
+This is an information-architecture, documentation, governance-record, and historical-evidence reconciliation only. It does **not** initialize Stage-4 implementation and does not implement AICAD-080.
 
 ## 1. Frozen source and branch provenance
 
@@ -99,15 +99,24 @@ Current user documentation is under `docs/user/`:
 
 - `README.md`
 - `getting-started/README.md`
+- `getting-started/installation.md`
+- `getting-started/first-part.md`
 - `language/README.md`
+- `language/types-and-units.md`
+- `language/functions-and-control-flow.md`
+- `language/parameters.md`
 - `modeling/README.md`
+- `modeling/primitives-and-booleans.md`
+- `modeling/features.md`
+- `modeling/transforms-and-patterns.md`
+- `modeling/sketches-and-constraints.md`
 - `cli/README.md`
 - `examples/README.md`
 - `troubleshooting/README.md`
 
 These documents describe the implemented Stage-3 surface only. Stage-4 semantic references are explicitly described as future work, not as available functionality.
 
-The current modeling page is grounded in the final Stage-3 runtime catalogue (17 runtime-backed modeling functions), and the CLI page is grounded in `crates/cad-cli/src/main.rs`/`Cargo.toml` (`cad build <path.aicad> [--json] [--output <path>] [--name <binding>[.<field>]]`).
+The current modeling pages are grounded in the final Stage-3 runtime catalogue (17 runtime-backed modeling functions), and the CLI page is grounded in `crates/cad-cli/src/main.rs`/`Cargo.toml` (`cad build <path.aicad> [--json] [--output <path>] [--name <binding>[.<field>]]`).
 
 ### Developer documentation
 
@@ -115,11 +124,20 @@ Current developer/contributor documentation is under `docs/developer/`:
 
 - `README.md`
 - `architecture/README.md`
+- `architecture/system-overview.md`
+- `architecture/repository-layout.md`
 - `compiler-runtime/README.md`
+- `compiler-runtime/frontend.md`
+- `compiler-runtime/hir-and-typechecking.md`
+- `compiler-runtime/runtime.md`
 - `geometry/README.md`
+- `geometry/geometry-ir.md`
 - `geometry/safe-cad-api.md`
 - `kernel/README.md`
+- `kernel/occt-boundary.md`
 - `parametrics/README.md`
+- `parametrics/parameters-and-feature-dag.md`
+- `parametrics/incremental-rebuild.md`
 - `constraints/README.md`
 - `testing/README.md`
 - `contributing/README.md`
@@ -172,11 +190,18 @@ This strategy avoids changing normative/historical content merely to maintain na
 
 ## 8. Conflicts and stale state found
 
-### Governance-state mismatch
+### Governance-state mismatch — resolved during the documentation second pass
 
-The owner-provided transition directive states that Stage 3 is completed, owner-approved, and merged to `main`. The code lineage confirms the Stage-3 merge and includes the final remediation parent. `project/TASKS.yaml` also marks AICAD-079B `done` and leaves AICAD-080+ `todo`.
+At transition startup, the owner-provided transition directive stated that Stage 3 was completed, owner-approved, and merged to `main`. The code lineage confirmed the Stage-3 merge and included the final remediation parent. `project/TASKS.yaml` also marked AICAD-079B `done` and left AICAD-080+ `todo`.
 
-However, at transition startup, `project/CURRENT_STAGE.md` and the recorded `project/DECISION_LOG.md` still represented the pre-approval Stage-3 gate/decision state. This pass does **not** fabricate a missing decision-log entry and does not initialize Stage 4. The next owner-reviewed transition step should reconcile that governance record before AICAD-080 begins.
+At that point, `project/CURRENT_STAGE.md`, `project/SESSION_HANDOFF.md`, and the recorded decision log still represented the pre-approval Stage-3 state. The documentation second pass reconciled that already-issued approval without inventing a new architecture decision:
+
+- DL-22 records the owner-issued Stage-3 approval;
+- the DL-22 commit preserved DL-1 through DL-21 and appended the approval record;
+- `project/CURRENT_STAGE.md` now records the active Stage-3 → Stage-4 transition rather than claiming Stage 3 still awaits approval;
+- `project/SESSION_HANDOFF.md` points to the transition branch while keeping AICAD-080 explicitly todo.
+
+This record correction does **not** initialize Stage-4 implementation and does not authorize AICAD-080. The former governance mismatch is therefore removed from the deferred-work queue.
 
 ### Canonical language-spec completeness
 
@@ -188,7 +213,7 @@ The post-100 audit notes missing claimed language-spec artifacts (semantics/type
 
 ## 9. Commit structure
 
-Transition commits before this final report:
+First reconciliation pass:
 
 1. `f5dfa39ab197b819f907150bd88d40b09411ccac` — transition scaffold;
 2. `e88cfeca663e1ab04c54c22fd9c10ab7efd7f11b` — frozen post-100 planning import;
@@ -196,7 +221,18 @@ Transition commits before this final report:
 4. `62c0eb8ade117ceb8fd3982f6ab2253deb97ea68` — archive Stage-2/3 development evidence;
 5. `b40713ab4e9a515b43e44a99d2db89bfa46b0dd0` — archive completed Stage-0..3 gate evidence;
 6. `acd02671816ff9fe6a5b4c67d6739d07be7e8242` — establish user/developer documentation split;
-7. `570c91ed77df8112dc5da91f6d5577b10dfa9c3b` — clarify routine agent context hygiene.
+7. `570c91ed77df8112dc5da91f6d5577b10dfa9c3b` — clarify routine agent context hygiene;
+8. `380c25f4bf095f63e17a9872d912037d1d7ff355` — finalize first-pass reconciliation report.
+
+Documentation/governance second pass:
+
+9. `810ab245fde3c4df948df233371b2d5b152d0de7` — replace the root README with the current post-Stage-3 landing page;
+10. `4c615633f107919c37d2d948ed3bfe4e85b47f99` — populate the current Stage-3 user guide;
+11. `5dd74c9a627794012f523872e1e1f0468e45f93f` — populate the current developer architecture manual;
+12. `59781eaf275c4b0b792954a1fc37892700d903b8` — record the already-issued Stage-3 approval as DL-22 while preserving prior decision history;
+13. `0f03f06754c34396aaf53cbe4a26082620992ad6` — align current transition state and handoff after Stage-3 approval.
+
+The final documentation-correctness/bookkeeping remediation is intentionally one coherent commit after `0f03f067...`.
 
 All commits use repository identity `insightlabs38-pixel <insightlabs38@gmail.com>` as shown by GitHub commit metadata. No AI/session attribution metadata was added.
 
@@ -204,21 +240,38 @@ All commits use repository identity `insightlabs38-pixel <insightlabs38@gmail.co
 
 ### Structural / scope validation
 
-A remote compare of exact Stage-3 base `15fc5a37e4382de717e426ccc5317a491be264cd` to the transition branch verified:
+The first-pass remote compare of exact Stage-3 base `15fc5a37e4382de717e426ccc5317a491be264cd` to the then-current transition branch verified that the archival/reorganization work was strictly ahead of the correct merge base and did not change production/spec/CI/task/governance files.
 
-- transition branch is strictly ahead of that base and not based on a different merge base;
+The later documentation/governance pass intentionally changed only current documentation plus the three governance records described in Section 8. The final documentation-correctness remediation changes only current documentation and transition-record files. Across these documentation follow-ups:
+
 - no `crates/` production file changed;
 - no `native/` file changed;
 - no `specs/` or `rfcs/` file changed;
 - no `.github`/CI workflow file changed;
-- no `project/TASKS.yaml`, `OWNER_DECISIONS.md`, `DECISION_LOG.md`, `CURRENT_STAGE.md`, or `SESSION_HANDOFF.md` content changed;
-- changes are restricted to documentation/navigation, `AGENTS.md` context hygiene, transition/planning artifacts, and preservation/archive pointers/copies.
+- no `project/TASKS.yaml` or `project/OWNER_DECISIONS.md` content changed;
+- no AICAD-080 implementation or semantic-reference resolver/code was introduced;
+- no post-100 draft was promoted or made normative.
 
-Spot checks confirmed archived documents retain their original blob identities and the post-100 audit README retains source blob `0ba78ef48897a3345d387fc4f2e43de9223ba975` with its AICAD-074 audit basis/non-normative status intact.
+Spot checks from the first pass confirmed archived documents retain their original blob identities and the post-100 audit README retains source blob `0ba78ef48897a3345d387fc4f2e43de9223ba975` with its AICAD-074 audit basis/non-normative status intact.
+
+### Documentation correctness audit
+
+The current `README.md`, `docs/user/`, and `docs/developer/` population was audited specifically for `sketch`, constraints/profiles, `FaceRef`/`EdgeRef`/`VertexRef`, semantic/topology/persistent references, named outputs, face/edge indices, and selection wording.
+
+The authoritative distinction now documented is:
+
+- Stage 3 **does implement internally** sketch IR/entity identity, solver-independent constraint semantics, numerical solving, solved-profile validation, exact solved-profile-to-face lowering, and profile-driven modeling infrastructure;
+- the current `.aicad` parser/compiler/runtime does **not** expose a supported direct `sketch { ... }` (or equivalent) source-authoring construct;
+- current source-level `extrude`/`revolve` operate on existing `Geometry` plus raw face indices rather than authored `Sketch`/`Profile` source values;
+- Stage 3 has feature identity/provenance, named source/model outputs, operation-local lineage where applicable, and raw/index-based topology selectors;
+- those mechanisms are **not** durable `VertexRef` / `EdgeRef` / `WireRef` / `FaceRef` / `ShellRef` / `SolidRef` identity across topology-changing regeneration;
+- durable, fail-closed semantic topology-reference resolution remains Stage-4 work.
+
+The audit found no executable user-guide example that relies on unsupported sketch source syntax. Current occurrences of `sketch { ... }` are explicit warnings that the syntax is not supported. The guide's recommended examples were checked against the branch files `examples/brackets/stage3_l_bracket.aicad`, `examples/plates/stage3_bearing_mount.aicad`, and `examples/brackets/stage2_mounting_plate.aicad`; those examples use the implemented Safe CAD source surface and explicitly caveat raw topology indices where used.
 
 ### Stage-4 implementation guard
 
-No AICAD-080 implementation, semantic-reference resolver/code, production geometry/kernel behavior, language semantics, or CI expansion was introduced. The Stage-4 benchmark corpus that already existed on `main` was not modified.
+No AICAD-080 implementation, semantic-reference resolver/code, production geometry/kernel behavior, language implementation, normative semantics, or CI expansion was introduced. The Stage-4 benchmark corpus that already existed on `main` was not modified.
 
 ### Documentation tooling
 
@@ -226,22 +279,25 @@ No active MkDocs configuration was found. The existing `docs/site/` tree is plac
 
 ### Rust / local Git commands
 
-`cargo fmt --all -- --check`, `cargo test --workspace`, local `git status --short`, and local `git diff --check` could not be executed in this environment because the sandbox cannot resolve/reach GitHub to clone/materialize the repository. The connected GitHub repository interface was used for all reads/writes and remote diff validation.
+The sandbox cannot resolve/reach `github.com`, so it cannot clone/materialize the repository into a complete local checkout. The connected GitHub repository interface was therefore used for authoritative reads/writes and remote diff validation.
 
-No Rust/build-facing path changed in this pass. The final Stage-3 remediation already recorded a clean full workspace suite on the implementation lineage, but this report does **not** claim that historical run as a fresh transition-branch Cargo execution. No GitHub Actions workflow run is associated with the transition branch commit available through the connected repository interface.
+No Rust/build-facing path changed in this documentation correctness remediation, so no behavioral test change is required. The final Stage-3 remediation already recorded a clean full workspace suite on the implementation lineage, but this report does **not** claim that historical run as a fresh transition-branch test execution.
+
+Where a checkout-dependent validation cannot be executed truthfully in this environment, it is reported as unavailable rather than inferred from historical results.
 
 ## 11. Intentionally deferred work
 
-See `DEFERRED_TRANSITION_ITEMS.md`. Most importantly, this pass did not:
+See `DEFERRED_TRANSITION_ITEMS.md`. Most importantly, this reconciliation does not:
 
 - rewrite normative specs/RFC semantics;
 - resolve post-100 audit owner decisions;
 - expand Stage-4 CI/CD;
-- initialize active Stage-4 governance state;
+- initialize Stage-4 implementation work;
 - implement AICAD-080+;
 - assign AICAD-101+ IDs;
 - make any post-100 draft normative;
-- implement Stage-5+ functionality.
+- implement Stage-5+ functionality;
+- physically relocate the deeply referenced frozen `docs/plan/` tree.
 
 ## 12. Final transition state
 
@@ -256,6 +312,6 @@ The repository now has the intended conceptual separation:
 - `project/planning/transitions/stage3-to-stage4/` — this reconciliation record;
 - `docs/plan/` — explicitly classified legacy-location frozen foundation planning pending any later path-only migration.
 
-Nothing important was intentionally destroyed because it became old. Historical evidence was copied using its original Git blobs into archival destinations; compatibility pointers preserve old high-volume paths. The active documentation surface is now audience-oriented and the agent startup surface explicitly excludes recursive historical reading.
+Nothing important was intentionally destroyed because it became old. Historical evidence was copied using its original Git blobs into archival destinations; compatibility pointers preserve old high-volume paths. The active documentation surface is now audience-oriented, current feature boundaries are explicit, and the agent startup surface excludes recursive historical reading.
 
 The branch is ready for owner review. **Do not merge automatically. Do not begin CI/CD expansion. Do not begin AICAD-080.**

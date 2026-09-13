@@ -2,9 +2,9 @@
 
 Status: **transition/reconciliation only — no Stage-4 implementation**.
 
-This directory records the first transition pass after Stage 3 was completed, owner-approved externally to this repository snapshot, and merged to `main`. The pass reconciles development-history organization, the frozen post-100 roadmap audit, and current documentation before any AICAD-080 semantic-reference implementation begins.
+This directory records the documentation/history/governance reconciliation performed after Stage 3 was completed, owner-approved, and merged to `main`. The reconciliation preserves development history, imports the frozen post-100 roadmap audit as non-normative planning, establishes current user/developer documentation, aligns the already-issued Stage-3 approval record, and documents current feature boundaries before any AICAD-080 semantic-reference implementation begins.
 
-## Approved source state used by this pass
+## Approved source state used by this reconciliation
 
 - repository: `insightlabs38-pixel/AICAD`
 - source branch: `main`
@@ -18,6 +18,8 @@ The transition branch was created from that exact `main` commit. It is not a Sta
 
 - `planning/aicad-post100-audit` — imported as a frozen, non-normative planning snapshot under `project/planning/roadmap/post100/` with its original audit basis retained.
 - `claude/aicad-docs-dev` — requested for inspection, but no such branch was present in the connected repository at reconciliation time. This absence is recorded rather than replaced with invented provenance.
-- current `main` documentation — classified/reorganized into user, developer, or internal-development surfaces where practical.
+- owner-approved Stage-3 `main` plus the transition branch's current documentation/governance records — used to populate current user/developer docs and reconcile the already-issued Stage-3 approval without starting Stage-4 implementation.
 
-See `RECONCILIATION_REPORT.md` for exact operations and `DEFERRED_TRANSITION_ITEMS.md` for intentionally unperformed work.
+The current documentation explicitly distinguishes implemented internal sketch/constraint/profile infrastructure from `.aicad` source features, and Stage-3 identities/named outputs/raw topology selectors from the persistent semantic topology references reserved for Stage 4.
+
+See `RECONCILIATION_REPORT.md` for exact operations and validation, and `DEFERRED_TRANSITION_ITEMS.md` for intentionally unperformed work.

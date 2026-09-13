@@ -30,9 +30,27 @@ Stage-3 remediation connects both through `cad_cli::parametric_build::Parametric
 
 ## Sketch and constraint semantics
 
-`cad-hir::sketch` defines a kernel-independent sketch entity model and local entity identity. `cad-constraints` owns the constraint IR, semantic constraint identity, dimensional validation, status/evidence vocabulary, and solver interface. A numerical solver implements that interface; it does not get to redefine what `coincident`, `horizontal`, `radius`, or another AICAD constraint means.
+Stage 3 contains a real lower-level sketch/profile pipeline, but it is not currently the public `.aicad` authoring path. The two relevant paths are:
 
-Solved profile lowering to exact geometry occurs through the geometry runtime. Source-level sketch construction syntax is not yet integrated, so this subsystem should not be confused with a completed public sketch authoring language.
+```text
+current source-facing path
+.aicad source
+  → supported RuntimeBuiltin / Safe CAD calls
+  → Geometry IR
+  → exact downstream geometry
+
+implemented internal sketch substrate
+sketch/entity IR
+  → solver-independent constraint IR
+  → numerical solver
+  → solved + validated profile
+  → exact face
+  → downstream feature geometry
+```
+
+`cad-hir::sketch` defines the kernel-independent sketch entity model and local entity identity. `cad-constraints` owns the constraint IR, semantic constraint identity, dimensional validation, status/evidence vocabulary, and solver interface. A numerical solver implements that interface; it does not get to redefine what `coincident`, `horizontal`, `radius`, or another AICAD constraint means.
+
+Solved profile lowering to exact geometry occurs through the geometry runtime. **There is no supported source-level `sketch { ... }` declaration/construction syntax in the current `.aicad` compiler/runtime.** The existence of sketch IR therefore must not be presented as evidence that direct sketch authoring is already a user-facing language feature.
 
 ## Kernel boundary
 
@@ -40,8 +58,10 @@ Solved profile lowering to exact geometry occurs through the geometry runtime. S
 
 No OCCT class may cross upward into HIR/Geometry IR/public APIs. Kernel topology handles are epoch/context-local. Current raw face/edge indices used by some Geometry IR operations are explicitly not durable semantic identity.
 
+Stage-3 feature identity, source provenance, named outputs, and operation-local lineage likewise do not provide persistent topology identity. Durable, fail-closed semantic topology-reference resolution across topology-changing regeneration remains Stage-4 work.
+
 ## Determinism and validation
 
 AICAD distinguishes deterministic AICAD-owned state from geometric equivalence. Language/compiler structures and canonical AICAD-owned serialization are required to be deterministic for identical inputs. Exact B-rep bytes are not treated as a cross-platform or cross-kernel-version identity guarantee; geometry is checked by validity plus versioned semantic/numerical equivalence criteria where applicable.
 
-Likewise, ambiguity is fail-closed. Stage 4 will implement persistent semantic-reference resolution, but even before that work starts the architecture forbids silently choosing an arbitrary ambiguous reference.
+Likewise, ambiguity is fail-closed. Stage 4 is responsible for persistent semantic-reference resolution; the current architecture does not treat raw topology enumeration or Stage-3 named outputs as a substitute for that capability.
