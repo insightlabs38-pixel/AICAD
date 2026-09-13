@@ -1,6 +1,6 @@
 # Type system
 
-Status: current canonical Stage-3 type-system boundary. This document records approved semantics; it does not promote future planning types into the current source language.
+Status: current canonical Stage-3 type-system boundary. This document records approved/current semantics and implementation facts; it does not promote future planning types into the current source language.
 
 ## Primitive and dimensional values
 
@@ -34,7 +34,7 @@ D16 authorizes the Stage-2 minimum:
 
 `Geometry` is an opaque AICAD source value identifying geometry construction in the backend-neutral execution model. It is not an OCCT shape, topology pointer, or persistent topology reference.
 
-The current standard nominal geometry/spatial source environment contains `Vector2<T>`, `Vector3<T>`, `Point2`, `Point3`, `Axis3`, `Frame3`, and `Plane`. These types are always available with the current RuntimeBuiltin environment under D20/DL-21; AICAD-076's temporary scalar-flattening workaround is not the canonical long-term pattern.
+The current standard nominal geometry/spatial source environment contains `Vector2<T>`, `Vector3<T>`, `Point2`, `Point3`, `Axis3`, `Frame3`, and `Plane`. The current Stage-3 implementation always seeds these types so current RuntimeBuiltin signatures can resolve them.
 
 The accepted AICAD-075A spatial semantics remain kernel-neutral:
 
@@ -53,9 +53,13 @@ Stage-3 sketch/entity IDs, constraint IDs, parameter/binding IDs, feature IDs, p
 
 The current source language exposes no direct `sketch { ... }` construct and no persistent semantic topology-reference types. Stage-4 durable reference resolution remains future implementation governed by D7's fail-closed policy.
 
-## RuntimeBuiltin type closure
+## RuntimeBuiltin type closure — D20 authority conflict
 
-D20 is resolved by DL-21. The closed trusted RuntimeBuiltin environment may use approved standard nominal types in builtin signatures, and every type required by an always-seeded builtin signature must itself be available in the always-seeded standard type environment. This is a closed first-party compiler/runtime mechanism: it does not authorize arbitrary plugin/native type registration, host callbacks, OCCT classes, or dynamic extension of `BuiltinFnId` from AICAD source.
+The live repository governance currently records D20 as **RESOLVED — DL-21**, and the Stage-3 implementation follows that record: the always-seeded RuntimeBuiltin environment may use approved standard nominal types and seeds the types needed by its current signatures. DL-21 also records AICAD-076's scalar flattening as a temporary workaround rather than the intended permanent pattern.
+
+However, the owner-provided Stage-3 -> Stage-4 normative-cleanup directive explicitly states that D20 is currently open and must not be silently resolved. Those two authoritative inputs conflict. This cleanup therefore **does not change `OWNER_DECISIONS.md`, alter/supersede DL-21, reopen D20, or elevate the current implementation into a new permanent architecture decision**. It records only the behavior that exists today and treats D20's governance status as an explicit owner-reconciliation blocker before final Stage-4 initialization. See `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`.
+
+Regardless of that status conflict, neither side authorizes arbitrary plugin/native type registration, host callbacks, OCCT classes in public/HIR types, or an unreviewed dynamic extension ABI.
 
 ## Tolerance terminology
 

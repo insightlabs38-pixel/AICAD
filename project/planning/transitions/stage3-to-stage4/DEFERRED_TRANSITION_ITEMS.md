@@ -1,27 +1,31 @@
 # Deferred Stage 3 → Stage 4 transition items
 
-This file centralizes work intentionally **not** performed by the Stage-3 → Stage-4 documentation/history reconciliation. Items completed by the documentation passes are removed from this queue rather than left as stale deferred work.
+This file centralizes work intentionally **not** performed by the Stage-3 → Stage-4 transition passes. Completed items are removed rather than left as stale deferred work.
 
-## Normative/specification work deferred
+## Normative/specification work still deferred
 
-The post-100 audit identified substantive specification deltas, but this reconciliation does not accept or implement them. Deferred items include:
+The canonical language-specification set and accepted-RFC reconciliation are now complete. Remaining normative architecture questions are future-stage work, not cleanup debt:
 
-- restoring/confirming the complete canonical language semantics/types/diagnostics specification set;
-- Stage-5 raw/unsafe geometry semantics;
-- source-visible kernel query execution;
-- D18 runtime-catalogue scaling;
-- advanced tolerance taxonomy/policy;
-- feature/provenance semantics through general programmable geometry;
+- Stage-5 raw/unsafe geometry source/effect mechanism;
+- source-visible kernel-query evaluation architecture;
+- D18 runtime-catalogue scaling beyond the current closed mechanism;
+- modeling/construction/approximation/verification tolerance defaults and broader tolerance-policy architecture;
+- feature/provenance semantics through general programmable geometry/control flow;
 - assembly identity/solver/configuration semantics;
-- verification language/evidence semantics;
-- stale normative wording whose correction requires semantic review rather than path/index maintenance.
+- verification/test/requirement language and evidence semantics;
+- D7 automatic fingerprint-recovery policy;
+- D8 exact internal OCAF usage;
+- D12/D15 trusted/plugin/native extension boundaries;
+- D13 final public/commercial distribution licensing policy.
 
-Resolved owner decisions remain resolved; stale historical `OPEN` wording is not authority to reopen them.
+### D20 transition blocker
+
+The live repository records D20 as `RESOLVED — DL-21`, while the owner-provided normative-cleanup directive states D20 is currently open. The cleanup pass records this as an explicit authority conflict and does not rewrite either source. Owner reconciliation is required before final Stage-4 initialization. See `NORMATIVE_SPEC_CLEANUP.md`.
 
 ## Stage-4 work deferred
 
-- Stage-4 CI/CD expansion;
-- final Stage-4 implementation branch/state initialization after owner review of this reconciliation;
+- Stage-4 CI/CD expansion/preparation;
+- final Stage-4 implementation branch/state initialization after owner review;
 - AICAD-080 and all later Stage-4 implementation tasks;
 - semantic-reference/resolver implementation;
 - Stage-4 production-code changes.
@@ -35,8 +39,19 @@ Resolved owner decisions remain resolved; stale historical `OPEN` wording is not
 
 ## Documentation/path maintenance deferred
 
-- physical relocation of the frozen foundation plan currently at `docs/plan/`. It remains in its historical location because it is deeply referenced by Stage-0..3 task reports, task metadata, RFC-era material, crate comments, and gate evidence. The current indexes classify it as internal development/foundation planning and exclude it from normal user/developer navigation;
-- any substantive rewrite of RFC/spec content encountered while organizing paths;
-- documentation-branch reconciliation beyond current `main`: the requested `claude/aicad-docs-dev` branch was not present in the connected repository during this pass.
+- physical relocation of the frozen foundation plan currently at `docs/plan/`; it remains at the historical path because Stage-0..3 reports, task metadata, source comments, and gates reference it extensively;
+- documentation-branch reconciliation beyond current `main`: the requested `claude/aicad-docs-dev` branch was not present during the earlier reconciliation pass.
 
-The former Stage-3 approval/governance mismatch is **not deferred anymore**: the already-issued owner approval is recorded as DL-22, `CURRENT_STAGE.md` now reflects the Stage-3 → Stage-4 transition, and `SESSION_HANDOFF.md` preserves AICAD-080 as todo. This note is retained only to make the pruning explicit; no additional governance action is requested by this file.
+## Completed and no longer deferred
+
+The following are **not** deferred anymore:
+
+- Stage-3 owner-approval/governance reconciliation (DL-22 / current transition state);
+- current user/developer documentation population;
+- the source-vs-internal sketch/profile boundary cleanup;
+- the Stage-3 identity-vs-Stage-4 persistent-reference wording cleanup;
+- restoration of `specs/language/{grammar,semantics,types,diagnostics}`;
+- current-vs-future grammar/type/RFC reconciliation;
+- D5/D10/D11 stale-open cleanup;
+- frozen-plan authority clarification;
+- preservation of the original Stage-0 RFC bodies under `rfcs/history/stage0/`.

@@ -12,9 +12,8 @@ from `main` or rebased in a way that discards the transition history.
 
 **Stage 3 is complete, owner-approved, and merged.** The approval is now
 recorded in `project/DECISION_LOG.md#DL-22`, following the same governance
-pattern as the earlier stage approvals. `project/CURRENT_STAGE.md` has been
-updated from the stale pre-approval Stage-3 state to the active Stage-3 ->
-Stage-4 transition state.
+pattern as the earlier stage approvals. `project/CURRENT_STAGE.md` records
+the active Stage-3 -> Stage-4 transition state.
 
 **Stage 4 implementation has not started.** `AICAD-080` remains
 `status: todo`. The current transition work does not authorize semantic-
@@ -37,7 +36,7 @@ in-process selective geometry reuse/recompute proof. The final Stage-3 gate
 records PASS after remediation.
 
 The last Stage-3 verification recorded by that remediation remains
-historical evidence, not a fresh test run for this documentation branch:
+historical evidence, not a fresh test run for this transition branch:
 
 - `cargo fmt --all -- --check` — clean;
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` —
@@ -73,60 +72,101 @@ exact commands/results.
 - populated the Stage-3 user guide with installation, first-part, language,
   parameters, current Safe CAD modeling, CLI, examples, and troubleshooting;
 - documented the critical user boundary that the sketch/constraint engine
-  exists but source-level `sketch { ... }` authoring is not yet integrated;
+  exists but direct source sketch authoring is not yet integrated;
 - populated current developer architecture docs for frontend/HIR/runtime,
   Geometry IR, the OCCT boundary, parametrics/incremental rebuild,
   constraints, testing, and contributing;
 - documented the remediated incremental path accurately as an in-process
   session capability, not a persistent cross-process cache;
 - recorded the already-issued Stage-3 approval as DL-22 without reopening
-  or changing any owner architecture decision.
+  or changing any owner architecture decision;
+- clarified Stage-3 names/IDs/raw topology selectors versus Stage-4
+  persistent-reference identity.
 
-## Documentation sources and precedence
+### Third normative specification pass
 
-When current documentation needs verification, prefer:
+- restored the full canonical `specs/language/{grammar,semantics,types,diagnostics}` set;
+- narrowed canonical grammar/spec wording to current approved source capability;
+- reconciled accepted RFCs with current decisions and Stage-3 implementation boundaries;
+- preserved exact pre-cleanup Stage-0 RFC bodies under `rfcs/history/stage0/`;
+- reconciled stale D5/D10/D11 wording;
+- separated D5 geometry-equivalence tolerance from solver, construction,
+  approximation, verification, and private-validity thresholds;
+- clarified RuntimeBuiltin, spatial-type, sketch/constraint, raw-topology,
+  and persistent-reference boundaries;
+- clarified that `docs/plan/` is frozen foundation planning rather than
+  automatic current normative authority.
 
-1. current code;
-2. accepted owner decisions;
-3. accepted RFC/spec semantics;
+See `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`.
+
+## Documentation/specification sources and precedence
+
+When current architecture or semantics need verification, prefer:
+
+1. explicit owner decisions and `project/DECISION_LOG.md`;
+2. accepted RFC/spec semantics;
+3. current code where those specs intentionally define current behavior;
 4. final gate evidence;
 5. relevant archived task reports;
-6. old planning prose.
+6. frozen planning prose/examples.
 
 Completed reports/gates are evidence and should be retrieved when relevant;
 they are not routine startup context or the current developer manual.
 
+If two owner-level inputs conflict, record the conflict rather than choosing
+silently through implementation or documentation cleanup.
+
+## Explicit D20 authority conflict
+
+The live repository records D20 as `RESOLVED — DL-21`, and current Stage-3
+code implements that model. The owner-provided directive for the normative
+cleanup states that D20 is open. The pass deliberately does **not** rewrite
+`project/OWNER_DECISIONS.md`, supersede DL-21, reopen D20, or create a new
+architecture decision.
+
+Before final Stage-4 initialization, explicitly reconcile whether DL-21
+remains authoritative or D20 is to be reopened/superseded.
+
 ## Known current boundaries
 
-- `.aicad` source has no supported `sketch { ... }` authoring syntax even
+- `.aicad` source has no supported direct sketch-authoring construct even
   though the sketch/constraint subsystem is implemented below the source
-  layer.
-- Stage-3 raw face/edge integer selectors are not persistent references.
+  layer;
+- Stage-3 raw face/edge integer selectors are not persistent references;
 - `FeatureGraph` does not yet provide general interprocedural flattening of
-  arbitrary geometry-producing source functions/branches.
+  arbitrary geometry-producing source functions/branches;
 - `ParametricBuildSession` reuses geometry only within the live in-process
-  session/kernel context; no persistent disk/remote cache is implied.
+  session/kernel context; no persistent disk/remote cache is implied;
 - the implemented CLI is `cad build <path.aicad> [--json] [--output <path>]
-  [--name <binding>[.<field>]]`; broader planned commands are not current.
+  [--name <binding>[.<field>]]`; broader planned commands are not current;
+- future Stage-5+ syntax/APIs remain roadmap material until separately
+  approved and promoted.
 
 ## Remaining transition work
 
-After owner review of the documentation pass, the major transition work
-still intentionally deferred is:
+After the normative cleanup pass, the major transition work intentionally
+remaining is:
 
-1. normative specification/decision cleanup identified by the post-100
-   audit;
-2. expanded Stage-4 CI/CD preparation;
+1. owner reconciliation of the D20 authority-status conflict;
+2. expanded Stage-4 CI/CD preparation under separate instruction;
 3. final Stage-4 initialization and explicit implementation authorization.
 
-Do not begin those merely because they are listed here; use the next owner-
-provided transition instructions.
+Normative specification cleanup is complete. Do not begin AICAD-080 merely
+because that pass is complete.
 
 ## Next action
 
-**Owner review of this documentation/governance pass.** Do not start
-AICAD-080, do not expand CI/CD, and do not begin the normative-spec pass in
-this session.
+**Owner review of the normative cleanup and the explicit D20 status
+conflict.** Do not start AICAD-080 or expand CI/CD until separately
+instructed.
+
+## Validation note
+
+The execution environment cannot resolve `github.com` from local Git, so
+checkout-dependent `git diff --check`, Cargo formatting, and Cargo test
+commands cannot be reported as fresh validation for this pass. Remote
+GitHub compare/scope validation is used instead. No production Rust/build
+path is changed by the normative cleanup.
 
 ## Git policy
 

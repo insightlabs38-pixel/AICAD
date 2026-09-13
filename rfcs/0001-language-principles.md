@@ -1,7 +1,7 @@
 # RFC-0001: Language Principles
 
 - Status: **Accepted Stage-0 baseline** (`project/DECISION_LOG.md#DL-10`).
-- Owner rulings incorporated/clarifying this RFC: DL-1 (surface syntax), DL-2 (value/mutation semantics), DL-4 (branding/file names), DL-7 (intrinsic RFC gate), DL-12/DL-17+AICAD-064A (determinism/equivalence profile), DL-13 (collections/iteration minimum), DL-14 (generic ADTs/functions), DL-15 (RuntimeBuiltin mechanism), DL-19 (sketch semantic object model), DL-21 (type-closed always-seeded RuntimeBuiltin environment).
+- Owner rulings incorporated/clarifying this RFC: DL-1 (surface syntax), DL-2 (value/mutation semantics), DL-4 (branding/file names), DL-7 (intrinsic RFC gate), DL-12/DL-17+AICAD-064A (determinism/equivalence profile), DL-13 (collections/iteration minimum), DL-14 (generic ADTs/functions), DL-15 (RuntimeBuiltin mechanism), DL-19 (sketch semantic object model). The live repository also records DL-21 for D20; the current transition directive conflicts with that status and this RFC does not silently reconcile the conflict (see §6 and the transition cleanup record).
 - Canonical current source grammar: `specs/language/grammar.ebnf`.
 
 ## 1. Summary
@@ -40,7 +40,7 @@ The current grammar supports the declaration/control-flow/generic constructs imp
 
 AICAD's semantic core is functional and value-oriented. Modeling operations consume values and produce new values. Method/builder notation, where accepted, is sugar over ordinary functional calls; it never creates a second in-place semantic mutation model.
 
-For example, the intended semantic distinction is:
+For example:
 
 ```aicad
 let cut_result: Geometry = cut(base, cutter);
@@ -50,7 +50,7 @@ body = cut(body, cutter);
 
 The assignment explicitly rebinds `body` to a new value. A bare expression such as `body.cut(cutter);` discards its result and does not mutate `body` in place. Internal OCCT algorithms may mutate kernel-owned implementation objects, but that is below the public/HIR semantic boundary.
 
-## 6. Compiler intrinsics and RuntimeBuiltins — D9/D18
+## 6. Compiler intrinsics, RuntimeBuiltins, and the D20 status conflict
 
 A genuinely new compiler intrinsic requires an RFC demonstrating that it cannot reasonably be implemented as ordinary AICAD source, a standard package, or an existing kernel/service operation exposed through existing language mechanisms. The RFC must define semantics, types, lowering, determinism/resource behavior, and why an ordinary-library solution is inadequate (DL-7).
 
@@ -58,7 +58,7 @@ Runtime-backed standard functions are **not** compiler intrinsics under that rul
 
 The current Safe CAD catalogue is documented at `docs/developer/geometry/safe-cad-api.md`. Internal Geometry IR/kernel operations are not automatically source functions.
 
-DL-21 resolves the former D20 question: the always-seeded builtin environment may reference approved standard nominal types such as `Axis3`/`Frame3`/`Plane`, provided every referenced type is also always available in the standard type environment. This remains a closed first-party environment; it does not authorize arbitrary dynamic type/native registration. AICAD-076's scalar flattening was a temporary workaround, not a permanent architectural rule.
+The live repository records D20 as `RESOLVED — DL-21`, and current Stage-3 code implements an always-seeded nominal-type environment that keeps current RuntimeBuiltin signatures type-closed; DL-21 also records AICAD-076's scalar flattening as temporary. The current owner-provided transition directive explicitly says D20 is open. This is a genuine authority-status conflict, so this RFC **does not create a new ruling, reopen D20, supersede DL-21, or turn current implementation into a fresh permanent decision**. The conflict is a transition blocker to be reconciled by the owner before final Stage-4 initialization. Regardless of status, neither side authorizes arbitrary native/plugin registration or OCCT types in public/HIR signatures.
 
 ## 7. Current grammar vs. historical/future examples
 
@@ -89,4 +89,4 @@ Later D16/D17/D18 decisions followed the same principle: add the minimum general
 
 ## 11. Still-open boundaries
 
-This RFC does not decide future interface/bounded-generic syntax, closures/generators, package/plugin architecture, source-visible kernel query evaluation, raw/unsafe Stage-5 syntax, or later verification declarations. Those require their own approved work/decisions before entering the canonical grammar.
+This RFC does not decide future interface/bounded-generic syntax, closures/generators, package/plugin architecture, source-visible kernel query evaluation, raw/unsafe Stage-5 syntax, or later verification declarations. D20's **governance status itself** also requires explicit owner reconciliation because the current directive conflicts with the live DL-21/OWNER_DECISIONS record; this cleanup does not resolve that conflict.

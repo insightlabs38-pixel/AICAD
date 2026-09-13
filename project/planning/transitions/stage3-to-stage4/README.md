@@ -1,25 +1,21 @@
 # Stage 3 → Stage 4 transition reconciliation
 
-Status: **transition/reconciliation only — no Stage-4 implementation**.
+Status: **active transition; documentation/governance/normative cleanup complete for review; Stage 4 not started**.
 
-This directory records the documentation/history/governance reconciliation performed after Stage 3 was completed, owner-approved, and merged to `main`. The reconciliation preserves development history, imports the frozen post-100 roadmap audit as non-normative planning, establishes current user/developer documentation, aligns the already-issued Stage-3 approval record, and documents current feature boundaries before any AICAD-080 semantic-reference implementation begins.
+This directory records the post-Stage-3 transition work on `claude/aicad-stage4-transition`, a strict descendant of approved Stage-3 `main` merge `15fc5a37e4382de717e426ccc5317a491be264cd`.
 
-## Approved source state used by this reconciliation
+Earlier passes preserved Stage-0..3 history, imported the frozen post-100 audit as non-normative planning, established current user/developer documentation, recorded Stage-3 approval as DL-22, and clarified the source/internal sketch boundary plus the Stage-3 identity/Stage-4 persistent-reference boundary.
 
-- repository: `insightlabs38-pixel/AICAD`
-- source branch: `main`
-- exact source commit: `15fc5a37e4382de717e426ccc5317a491be264cd`
-- Stage-3 final remediation parent included by that merge: `99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`
-- transition branch: `claude/aicad-stage4-transition`
+The normative pass restores `specs/language/{grammar,semantics,types,diagnostics}`, aligns accepted RFC wording with current decisions and implementation boundaries, preserves exact pre-cleanup RFC bodies under `rfcs/history/stage0/`, separates tolerance categories, and marks `docs/plan/` as frozen foundation planning rather than automatic current authority.
 
-The transition branch was created from that exact `main` commit. It is not a Stage-4 implementation branch and must not be merged automatically.
+See `NORMATIVE_SPEC_CLEANUP.md` for the detailed audit and `DEFERRED_TRANSITION_ITEMS.md` for remaining work.
 
-## Source artifacts reconciled
+## D20 authority conflict
 
-- `planning/aicad-post100-audit` — imported as a frozen, non-normative planning snapshot under `project/planning/roadmap/post100/` with its original audit basis retained.
-- `claude/aicad-docs-dev` — requested for inspection, but no such branch was present in the connected repository at reconciliation time. This absence is recorded rather than replaced with invented provenance.
-- owner-approved Stage-3 `main` plus the transition branch's current documentation/governance records — used to populate current user/developer docs and reconcile the already-issued Stage-3 approval without starting Stage-4 implementation.
+The live repository records D20 as `RESOLVED — DL-21` and current Stage-3 code follows that model. The directive for the normative-cleanup pass says D20 is open. This transition does not rewrite either source; explicit reconciliation is required before final Stage-4 initialization.
 
-The current documentation explicitly distinguishes implemented internal sketch/constraint/profile infrastructure from `.aicad` source features, and Stage-3 identities/named outputs/raw topology selectors from the persistent semantic topology references reserved for Stage 4.
+## Stage 4 remains unstarted
 
-See `RECONCILIATION_REPORT.md` for exact operations and validation, and `DEFERRED_TRANSITION_ITEMS.md` for intentionally unperformed work.
+`AICAD-080` remains todo. No Stage-4 persistent-reference implementation, production behavior, or CI expansion is introduced by the normative pass.
+
+Do not merge this transition branch automatically or begin AICAD-080 solely because the cleanup pass is complete.

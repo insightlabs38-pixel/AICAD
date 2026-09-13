@@ -56,51 +56,66 @@ integration; and the frozen Stage-4 reference benchmark.
 The repository is in an explicit **Stage-3 -> Stage-4 transition**, not in
 Stage-4 implementation.
 
-Current transition work separates and improves current documentation,
-preserves completed development evidence, reconciles governance and future
-planning, and prepares later specification/CI initialization work without
-changing production semantics.
-
 The transition branch is:
 
 `claude/aicad-stage4-transition`
 
-The first reconciliation pass imported the frozen post-100 audit into
-`project/planning/roadmap/post100/`, archived Stage-0..3 evidence while
-retaining compatibility pointers, and established the `docs/user/` /
-`docs/developer/` / `project/` information architecture. The second pass
-populates the current user/developer documentation and records the already-
-made Stage-3 owner approval.
+Completed transition preparation now includes:
+
+- import/preservation of the frozen post-100 audit as non-normative planning;
+- archive preservation of Stage-0..3 evidence with compatibility pointers;
+- the `docs/user/` / `docs/developer/` / `project/` information architecture;
+- current user/developer documentation;
+- the already-issued Stage-3 approval record (DL-22);
+- source/internal sketch-profile boundary cleanup;
+- Stage-3 identity versus Stage-4 persistent-reference wording cleanup;
+- restoration of the canonical `specs/language/{grammar,semantics,types,diagnostics}` set;
+- accepted-RFC/current-decision reconciliation while preserving exact pre-cleanup RFC snapshots under `rfcs/history/stage0/`;
+- D5 determinism/equivalence and tolerance-category clarification;
+- frozen-foundation-plan authority clarification.
+
+The normative cleanup is recorded at
+`project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`.
 
 ## Stage 4 — not started
 
 `AICAD-080` remains `status: todo` in `project/TASKS.yaml`.
 
 No Stage-4 semantic-reference implementation is authorized by the current
-documentation transition pass. In particular, the repository must not yet
-implement or claim as current:
+transition work. In particular, the repository must not yet implement or
+claim as current:
 
 - persistent `VertexRef` / `EdgeRef` / `WireRef` / `FaceRef` / `ShellRef` /
   `SolidRef` semantics;
 - the Stage-4 query/resolution pipeline;
-- automatic topology-reference recovery;
 - Stage-4 lineage/resolver production behavior.
 
 Stage-3 named outputs (`--name <binding>[.<field>]`) remain exact source-
 name selection, not persistent topology identity.
 
-## Remaining transition work after the documentation pass
+## Explicit transition blocker — D20 status conflict
+
+The live repository records D20 as `RESOLVED — DL-21`, and current Stage-3
+code follows that model. The owner-provided normative-cleanup directive
+states that D20 is open. The cleanup pass does not alter
+`project/OWNER_DECISIONS.md`, supersede DL-21, reopen D20, or invent a new
+architecture decision.
+
+Before final Stage-4 initialization, the owner must explicitly reconcile
+whether DL-21 remains authoritative or D20 is to be reopened/superseded.
+
+## Remaining transition work
 
 Subject to separate owner-reviewed transition instructions, the remaining
 major preparation areas are:
 
-1. normative specification/decision cleanup already identified by the
-   post-100 audit, without silently resolving open architecture choices;
+1. owner reconciliation of the D20 authority-status conflict;
 2. expanded Stage-4 CI/CD preparation;
 3. final Stage-4 initialization/authorization.
 
-Those are not authorized merely by appearing here. The current pass stops
-after documentation/governance reconciliation and owner review.
+Normative specification cleanup is complete and is no longer a deferred
+transition item. The remaining items are not authorized merely by appearing
+here.
 
 ## Owner approval required to begin Stage-4 implementation
 
