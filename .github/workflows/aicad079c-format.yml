@@ -1,0 +1,33 @@
+name: AICAD-079C formatter one-shot
+
+on:
+  push:
+    branches:
+      - claude/aicad-stage4-transition
+    paths:
+      - '.github/workflows/aicad079c-format.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Apply repository rustfmt
+        run: cargo fmt --all
+      - name: Commit formatter output when changed
+        shell: bash
+        run: |
+          set -eu
+          if git diff --quiet; then
+            echo 'No formatting changes required'
+            exit 0
+          fi
+          git diff --check
+          git config user.name 'insightlabs38-pixel'
+          git config user.email 'insightlabs38@gmail.com'
+          git add --all
+          git commit -m 'style: apply AICAD-079C rustfmt'
+          git push origin HEAD:claude/aicad-stage4-transition
