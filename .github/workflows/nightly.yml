@@ -44,6 +44,14 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir native/occt_bridge/build-${{ matrix.sanitizer }} --output-on-failure
 
+  property-invariants:
+    name: bounded semantic property invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run deterministic spatial invariant sweep
+        run: cargo test -p cad-kernel-api --test stage4_property_foundation --locked
+
   parser-fuzz:
     name: bounded parser fuzzing
     runs-on: ubuntu-latest

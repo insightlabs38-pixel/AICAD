@@ -1,225 +1,76 @@
 # Session Handoff
 
-## Canonical working branch
+## Canonical state
 
-`origin/claude/aicad-stage4-transition`
+**Stage 3 is complete, owner-approved, and merged.** Approval is `project/DECISION_LOG.md#DL-22`; accepted Stage-3 `main` merge is `15fc5a37e4382de717e426ccc5317a491be264cd`, including final incremental-build remediation lineage `99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`.
 
-This branch is a strict descendant of the owner-approved Stage-3 `main`
-merge `15fc5a37e4382de717e426ccc5317a491be264cd`; it must not be restarted
-from `main` or rebased in a way that discards the transition history.
+**The Stage-3 -> Stage-4 transition is complete pending owner review/merge.** The transition branch remains `origin/claude/aicad-stage4-transition`. **Stage 4 is READY but not implemented.** `AICAD-080` is still `todo` and depends on completed AICAD-079C.
 
-## Current status
+Do not restart/rebase the transition from `main`, do not merge it automatically, and do not begin Stage-4 implementation from this branch.
 
-**Stage 3 is complete, owner-approved, and merged.** The approval is now
-recorded in `project/DECISION_LOG.md#DL-22`, following the same governance
-pattern as the earlier stage approvals. `project/CURRENT_STAGE.md` records
-the active Stage-3 -> Stage-4 transition state.
+## Transition history preserved
 
-**Stage 4 implementation has not started.** `AICAD-080` remains
-`status: todo`. The current transition work does not authorize semantic-
-reference implementation, Stage-5/6 implementation, CI expansion, or
-AICAD-101+ tasks.
+The transition branch contains five bounded passes:
 
-## Accepted Stage-3 implementation
+1. **Reconciliation/archive:** preserved Stage-0..3 evidence, imported the frozen post-100 audit as non-normative planning, established current documentation/project information architecture, and recorded the transition.
+2. **Current documentation:** modernized the root README and populated current user/developer docs while distinguishing internal sketch/constraint capability from source exposure and Stage-3 local IDs/selectors from future persistent references.
+3. **Normative cleanup:** restored canonical language specs, reconciled accepted RFC/current-decision wording, preserved exact historical RFC snapshots, separated D5 equivalence from other tolerance domains, and corrected stale D20 wording while retaining DL-21.
+4. **Owner decisions:** recorded D21-D30 as resolved DL-23..DL-32 semantic baselines without promoting Stage-5/6 implementation or rewriting the frozen post-100 audit.
+5. **AICAD-079C readiness:** expanded layered CI/CD, added exact-geometry and D5-aware determinism coverage, established the resolver-independent 079A semantic-reference grader plus permanent silent-wrong regression records, added bounded fuzz/sanitizer/property/performance/security/release/platform foundations, documented branch-protection recommendations, and corrected Stage-4 queue metadata.
 
-The Stage-3 `main` merge is:
+See `project/planning/transitions/stage3-to-stage4/` and `project/reports/AICAD-079C.md`.
 
-`15fc5a37e4382de717e426ccc5317a491be264cd`
+## Stage-4 hard-gate invariants
 
-Its lineage includes final remediation commit:
+D7 remains authoritative. Stage-4 resolver outcomes are fail-closed: `Resolved(exactly one)`, `Ambiguous(candidates + evidence)`, or `Broken(reason/evidence)`. Never choose an arbitrary first candidate, treat raw topology order/index as durable identity, use hidden kernel pointer identity, or silently promote fingerprint similarity into authoritative recovery. Fingerprints are evidence/ranking/benchmark inputs only unless a later explicit owner decision supported by Stage-4 evidence changes that policy.
 
-`99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`
+Every discovered silent wrong selection is catastrophic and must become a minimized permanent regression under `tests/semantic_refs/regressions/` with enough model/perturbation/intended-target/actual-outcome/evidence data to reproduce it.
 
-That remediation connected `ParamModel` and `FeatureGraph` through the real
-`cad_cli::parametric_build::ParametricBuildSession` production path, fixed
-the discovered parameter-evaluation ordering defect, and added the
-in-process selective geometry reuse/recompute proof. The final Stage-3 gate
-records PASS after remediation.
+## Current CI/readiness layers
 
-The last Stage-3 verification recorded by that remediation remains
-historical evidence, not a fresh test run for this transition branch:
+- `.github/workflows/ci.yml` — bounded required formatting/lint/workspace/native/smoke feedback plus Stage-4 task-metadata audit;
+- `.github/workflows/integration.yml` — exact geometry/STEP integration and deterministic AICAD-owned state;
+- `.github/workflows/semantic-refs.yml` — frozen-corpus/harness contract and exact fixture buildability;
+- `.github/workflows/nightly.yml` — ASan/UBSan, bounded parser fuzzing, spatial invariant properties, determinism repetition;
+- `.github/workflows/platforms.yml` — current Tier-1 Linux full validation; Windows/macOS are not claimed supported without evidence;
+- `.github/workflows/performance.yml` — controlled implemented-capability measurements with future resolver extension points;
+- `.github/workflows/security.yml` — required lock/workspace policy on dependency changes plus scheduled/manual Rust advisory audit;
+- `.github/workflows/release.yml` — build/package/checksum artifact foundation only; no publishing/signing/release creation.
 
-- `cargo fmt --all -- --check` — clean;
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings` —
-  zero warnings;
-- `cargo test --workspace` — 1047 passed, 0 failed;
-- Stage-3 parametric incremental rebuild integration — 4/4;
-- Stage-3 ordinary-part integration — 7/7;
-- frozen Stage-4 benchmark fixture integration — 20/20.
+Branch-protection recommendations are documented at `docs/developer/testing/ci-and-branch-protection.md`; repository protection is an owner setting and is not claimed configured.
 
-See the archived original at
-`project/reports/archive/stage3/AICAD-079B-INCREMENTAL-REMEDIATION.md` for
-exact commands/results.
+## Stage-4 task queue
 
-## Transition work completed so far
+AICAD-079C is the final transition/infrastructure task. AICAD-080..100 retain their IDs and sequential shape. Corrections made by 079C are intentionally narrow:
 
-### First reconciliation pass
+- AICAD-080 depends on AICAD-079C and references the frozen corpus/harness;
+- AICAD-092 is fingerprint evidence/ranking/benchmark work only, not automatic recovery, matching D7/DL-8;
+- AICAD-096 extends/consumes the frozen AICAD-079A corpus rather than recreating its baseline;
+- AICAD-100 remains the Stage-4 owner hard gate.
 
-- created/preserved `claude/aicad-stage4-transition` from the exact Stage-3
-  `main` merge;
-- imported the post-100 architecture/roadmap audit as a frozen, non-
-  normative snapshot under `project/planning/roadmap/post100/`;
-- preserved Stage-0..3 task reports and gate/checkpoint evidence under
-  stage-specific archive directories while retaining compatibility pointers;
-- established separate `docs/user/`, `docs/developer/`, and `project/`
-  information surfaces;
-- preserved the frozen `docs/plan/` bundle in place because moving it would
-  create broad historical-reference churn;
-- created the Stage-3 -> Stage-4 transition record.
+## Still not implemented
 
-### Second documentation pass
+No AICAD-079C change implements persistent topology-reference types, recipe/query resolution, persistent matching, ambiguity selection, topology-lineage algorithms, authoritative fingerprint fallback, Stage-4 source API, Stage-5 raw geometry, runtime query materialization, generalized feature tracing, interfaces, assemblies, configurations, external-asset infrastructure, or AICAD-101+ tasks.
 
-- rewrote the repository root README as a post-Stage-3 project landing page;
-- populated the Stage-3 user guide with installation, first-part, language,
-  parameters, current Safe CAD modeling, CLI, examples, and troubleshooting;
-- documented the critical user boundary that the sketch/constraint engine
-  exists but direct source sketch authoring is not yet integrated;
-- populated current developer architecture docs for frontend/HIR/runtime,
-  Geometry IR, the OCCT boundary, parametrics/incremental rebuild,
-  constraints, testing, and contributing;
-- documented the remediated incremental path accurately as an in-process
-  session capability, not a persistent cross-process cache;
-- recorded the already-issued Stage-3 approval as DL-22 without reopening
-  or changing any owner architecture decision;
-- clarified Stage-3 names/IDs/raw topology selectors versus Stage-4
-  persistent-reference identity.
+D21-D30 remain future semantic constraints, not Stage-5/6 implementation authorization. Their deliberately deferred details remain in `project/planning/transitions/stage3-to-stage4/DEFERRED_TRANSITION_ITEMS.md`.
 
-### Third normative specification pass
+## Owner handoff after transition review
 
-- restored the full canonical `specs/language/{grammar,semantics,types,diagnostics}` set;
-- narrowed canonical grammar/spec wording to current approved source capability;
-- reconciled accepted RFCs with current decisions and Stage-3 implementation boundaries;
-- preserved exact pre-cleanup Stage-0 RFC bodies under `rfcs/history/stage0/`;
-- reconciled stale D5/D10/D11 wording;
-- separated D5 geometry-equivalence tolerance from solver, construction,
-  approximation, verification, and private-validity thresholds;
-- clarified RuntimeBuiltin, spatial-type, sketch/constraint, raw-topology,
-  and persistent-reference boundaries;
-- clarified that `docs/plan/` is frozen foundation planning rather than
-  automatic current normative authority;
-- corrected the later stale transition-brief treatment of D20: DL-21 remains
-  authoritative, D20 is resolved, and AICAD-076A implements the ruling.
+After accepting this transition:
 
-### Fourth owner-decision recording pass
+1. merge `claude/aicad-stage4-transition` to `main`;
+2. create `claude/aicad-stage4-dev` from the **exact merged `main` HEAD**;
+3. all sequential Stage-4 agents use the newest `origin/claude/aicad-stage4-dev` as canonical working state;
+4. do not independently recreate Stage-4 work from `main` or another branch;
+5. authorize and begin AICAD-080 only then;
+6. do not begin AICAD-101+ / Stage 5 until Stage 4 later passes its owner hard gate.
 
-- recorded D21-D30 as **RESOLVED** owner decisions;
-- assigned D21-D30 to Decision Log entries DL-23 through DL-32 because
-  DL-22 is already the Stage-3 approval record;
-- resolved the semantic-baseline questions represented by frozen post-100
-  audit recommendations OD-S5-02..OD-S5-06 and OD-S6-01..OD-S6-05 without
-  rewriting the frozen audit itself;
-- retained every implementation/representation detail the owner explicitly
-  deferred for future Stage-4/5/6 evidence;
-- added only targeted current spec/RFC cross-references for the new rulings;
-- recorded the anti-drift rule: Stage-4 evidence may refine explicitly
-  deferred details through review but may not silently weaken D21-D30.
+The Stage-4 dev branch should not exist before the transition merge unless the owner deliberately changes this policy.
 
-See `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`
-and `DEFERRED_TRANSITION_ITEMS.md`.
+## Validation and evidence
 
-## Documentation/specification sources and precedence
-
-When current architecture or semantics need verification, prefer:
-
-1. explicit owner decisions and `project/DECISION_LOG.md`;
-2. accepted RFC/spec semantics;
-3. current code where those specs intentionally define current behavior;
-4. final gate evidence;
-5. relevant archived task reports;
-6. frozen planning prose/examples.
-
-Completed reports/gates are evidence and should be retrieved when relevant;
-they are not routine startup context or the current developer manual.
-
-If two owner-level inputs genuinely conflict, record the conflict rather
-than choosing silently through implementation or documentation cleanup.
-
-## D20 status — resolved by DL-21
-
-D20 is **resolved**, not open. `project/OWNER_DECISIONS.md` points to
-`project/DECISION_LOG.md#DL-21`, and AICAD-076A implements that ruling. The
-normative-cleanup brief's later statement that D20 was open was stale
-transition wording and has been corrected; it did not reopen or supersede
-DL-21.
-
-The authoritative D20 contract is captured in `specs/language/types.md` and
-the accepted RFCs: approved standard nominal types may appear in the
-always-seeded RuntimeBuiltin catalogue; that environment is type-closed and
-eagerly signature-checked; its catalogue/type declarations are independently
-type-validatable; `with_geometry_types` remains an idempotent compatibility
-helper; and this does not open arbitrary plugin/runtime type injection, host
-callbacks, or OCCT types in public/HIR signatures. AICAD-076's scalar
-signature decomposition was temporary compatibility work, not the intended
-long-term Safe CAD API architecture.
-
-## D21-D30 status — resolved by DL-23 through DL-32
-
-The new owner rulings establish future semantic baselines for closed
-RuntimeBuiltin scaling (D21), safe/raw geometry tiers (D22), kernel-backed
-source queries (D23), distinct tolerance domains (D24), feature/provenance
-preservation through abstraction (D25), assembly identity domains (D26), a
-general nominal interface/protocol mechanism (D27), solver-neutral assembly
-relations and deterministic observable pose (D28), immutable configuration
-overlays (D29), and external-asset content identity/provenance (D30).
-
-These are decisions, not implementation authorization. Their explicitly
-deferred representation/syntax/default/scheduling/solver/schema details
-remain in `DEFERRED_TRANSITION_ITEMS.md`. Stage-4 evidence may refine those
-details only through explicit review; it must not silently weaken the
-approved semantic invariants.
-
-## Remaining genuinely open owner decisions relevant to later stages
-
-- D7 automatic fingerprint-recovery policy;
-- D8 exact internal OCAF usage;
-- D12 trusted native extension/plugin security boundary;
-- D13 final public/commercial distribution licensing policy;
-- D15 default sandboxed plugin runtime choice;
-- later Stage-7+ decisions not covered by D21-D30.
-
-## Known current boundaries
-
-- `.aicad` source has no supported direct sketch-authoring construct even
-  though the sketch/constraint subsystem is implemented below the source
-  layer;
-- Stage-3 raw face/edge integer selectors are not persistent references;
-- `FeatureGraph` does not yet provide general interprocedural flattening of
-  arbitrary geometry-producing source functions/branches; D25 defines the
-  future required observability invariant without implementing it here;
-- `ParametricBuildSession` reuses geometry only within the live in-process
-  session/kernel context; no persistent disk/remote cache is implied;
-- the implemented CLI is `cad build <path.aicad> [--json] [--output <path>]
-  [--name <binding>[.<field>]]`; broader planned commands are not current;
-- future Stage-5/6 syntax/APIs remain unimplemented even where D21-D30 now
-  provide an approved semantic baseline.
-
-## Remaining transition work
-
-The major transition work intentionally remaining is:
-
-1. expanded Stage-4 CI/CD preparation under separate instruction;
-2. final Stage-4 initialization and explicit implementation authorization.
-
-Normative specification cleanup and D21-D30 owner-decision recording are
-complete. Do not begin AICAD-080 or any Stage-5/6 implementation merely
-because those decisions are now recorded.
-
-## Next action
-
-**Owner review of the completed governance/normative transition state.** Do
-not start AICAD-080 or expand CI/CD until separately instructed.
-
-## Validation note
-
-The execution environment cannot resolve `github.com` from local Git, so
-checkout-dependent startup, `git diff --check`, Cargo formatting/tests, and
-repository-local documentation validation cannot be reported as fresh local
-runs. Remote GitHub compare/scope plus patch/whitespace validation is used
-instead. This owner-decision pass changes no production Rust/build path.
+Fresh AICAD-079C validation belongs in `project/reports/AICAD-079C.md`. Historical Stage-3 evidence remains historical and is not substituted for fresh transition CI results. The local execution environment used for the transition cannot access a repository checkout because local Git cannot resolve `github.com`; consequently checkout-dependent local Cargo/git commands are not claimed. Live GitHub Actions on the transition branch are used for executable validation, supplemented by connector compare/patch review.
 
 ## Git policy
 
-Required commit author/committer identity is
-`insightlabs38-pixel <insightlabs38@gmail.com>`. Keep repository hooks
-active; never use `--no-verify`, never force-push transition history, and do
-not add AI/session attribution metadata.
+Required commit author/committer identity is `insightlabs38-pixel <insightlabs38@gmail.com>`. Keep hooks active; never use `--no-verify`, never force-push transition history, and do not add AI/session attribution metadata.
