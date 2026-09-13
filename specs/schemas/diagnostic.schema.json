@@ -2,7 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://aicad.dev/schemas/diagnostic.schema.json",
   "title": "AICAD Diagnostic",
-  "description": "Canonical shape of every diagnostic AICAD surfaces to a human or agent, frozen by RFC-0005 (docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md §11). Field/code stability policy is NOT covered by this schema — see project/OWNER_DECISIONS.md D10 (open). Note: this schema's own 'pattern' keyword on 'code' is documentation only; crates/cad-diagnostics's validator (crate::schema) does not evaluate 'pattern' — crates/cad-diagnostics's DiagnosticCode::parse is the authoritative check.",
+  "description": "Canonical shape of every diagnostic AICAD surfaces to a human or agent, frozen by RFC-0005 (docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md §11). Field/code stability policy is governed by project/OWNER_DECISIONS.md D10, RESOLVED by project/DECISION_LOG.md#DL-18 (AICAD-078): a committed code/field shape is durable; a compatibility-breaking change to this schema (removing a field, changing a field's meaning/type, removing a family) requires explicit owner review, recorded in DECISION_LOG.md, not a routine task commit. Note: this schema's own 'pattern' keyword on 'code' is documentation only; crates/cad-diagnostics's validator (crate::schema) does not evaluate 'pattern' — crates/cad-diagnostics's DiagnosticCode::parse is the authoritative check.",
+  "$comment": "Schema version 1 (DL-18). Bump this comment's version number and record the change in project/DECISION_LOG.md on any future compatibility-breaking revision of this file.",
   "type": "object",
   "required": ["code", "severity", "category", "title", "message", "candidates", "suggestions"],
   "properties": {

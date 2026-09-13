@@ -218,10 +218,23 @@ impl FeatureGraphError {
     /// runtime::error::RuntimeError`'s own `AICAD-065` precedent
     /// (`CyclicParamDependency`, `RUNTIME` family) deliberately did not
     /// mint a new family for a new-but-structurally-similar error either.
+    ///
+    /// `GEOM-E007`/`GEOM-E008` (`AICAD-078`'s own "normalized diagnostics"
+    /// work, `project/DECISION_LOG.md#DL-18`): originally `GEOM-E005`/
+    /// `GEOM-E006`, which collided with `cad_geometry_runtime::dispatch::
+    /// DispatchError::Kernel`/`GraphInvariantViolated` — two unrelated
+    /// conditions in two different crates silently sharing the same two
+    /// codes, found during this task's own cross-crate code audit. Since
+    /// neither collision had yet been included in a Stage exit gate at
+    /// the time of this fix, `DL-18`'s own "durable once committed"
+    /// policy did not yet protect either assignment, so correcting the
+    /// genuinely-younger one (`cad-feature-graph`, `AICAD-068`/`069`,
+    /// postdates `cad-geometry-runtime`'s `AICAD-060`) to the next free
+    /// `GEOM` codes is ordinary bug-fixing, not a `DL-18` violation.
     pub fn code(&self) -> &'static str {
         match self {
-            FeatureGraphError::UnresolvedGeometryInput { .. } => "GEOM-E005",
-            FeatureGraphError::MalformedBuiltinCall { .. } => "GEOM-E006",
+            FeatureGraphError::UnresolvedGeometryInput { .. } => "GEOM-E007",
+            FeatureGraphError::MalformedBuiltinCall { .. } => "GEOM-E008",
         }
     }
 
@@ -824,7 +837,7 @@ mod tests {
             }
             other => panic!("expected UnresolvedGeometryInput, got {other:?}"),
         }
-        assert_eq!(err.code(), "GEOM-E005");
+        assert_eq!(err.code(), "GEOM-E007");
         let diagnostic = err.to_diagnostic("test.aicad", "x");
         assert_eq!(diagnostic.category, "feature-graph");
     }

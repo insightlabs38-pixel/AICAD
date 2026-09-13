@@ -243,6 +243,33 @@ pub enum BuiltinFnId {
     /// `false` default), matching [`BuiltinFnId::LinearPattern`]'s own
     /// narrowing rationale otherwise.
     RadialPattern,
+    /// `shell(target: Geometry, removed_faces: List<Int>, thickness:
+    /// Length) -> Geometry` (`AICAD-078`). Hollows `target` to a uniform
+    /// `thickness`, opening the given `removed_faces`. `removed_faces` is
+    /// a plain `List<Int>` of raw, kernel-enumeration-order face indices
+    /// — the same raw-index-selection convention `fillet`/`chamfer`
+    /// already established for `edges` (`Fillet`/`Chamfer`'s own doc
+    /// comments), applied here to faces instead, matching `cad_geometry_api::
+    /// ir::GeometryOp::Shell`'s own `removed_faces: Vec<FaceIndex>` shape
+    /// directly. Unlike `Fillet`/`Chamfer`'s `edges`, an empty
+    /// `removed_faces` list is legitimate (a fully closed shell) — see
+    /// `GeometryOp::Shell`'s own doc comment; this builtin does not reject
+    /// it. No new `GeometryOp` variant or kernel capability was needed:
+    /// `GeometryOp::Shell`/`Shape::shell`/`aicad_occt_shell` have existed
+    /// since `AICAD-026`/`AICAD-059`/`AICAD-060` — this is purely the
+    /// missing Safe CAD catalogue entry over an already-complete
+    /// capability, the one dress-up feature `cad_hir::builtins`'s own
+    /// "Stage-2 catalogue scope" note left out alongside `fillet`/
+    /// `chamfer`. `thickness` is always hollowed *inward* (cavity removes
+    /// material) — `cad_runtime::interp::Interpreter::dispatch_builtin`'s
+    /// own `Shell` arm negates the evaluated magnitude before building the
+    /// `GeometryOp::Shell` node, since `Shape::shell`'s own already-
+    /// established convention is "negative thickness hollows inward,
+    /// positive builds material outward" (`crates/cad-occt-bridge`'s own
+    /// `shell_hollowed_box_matches_analytic_volume` test). This matches
+    /// `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool =
+    /// true` default with no separate parameter needed for it.
+    Shell,
 }
 
 // --- The standard type environment (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`) ---
@@ -287,7 +314,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 16] = [
+    pub const ALL: [BuiltinFnId; 17] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -304,6 +331,7 @@ impl BuiltinFnId {
         BuiltinFnId::Mirror,
         BuiltinFnId::LinearPattern,
         BuiltinFnId::RadialPattern,
+        BuiltinFnId::Shell,
     ];
 }
 
@@ -503,6 +531,16 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("axis", named("Axis3")),
                 ("count", named("Int")),
                 ("angle", named("Angle")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Shell,
+            name: "shell",
+            params: vec![
+                ("target", named("Geometry")),
+                ("removed_faces", list_of("Int")),
+                ("thickness", named("Length")),
             ],
             return_ty: named("Geometry"),
         },

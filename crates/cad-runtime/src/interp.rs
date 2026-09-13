@@ -1186,6 +1186,21 @@ impl<'a> Interpreter<'a> {
                 _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
             }
         };
+        // A raw face index list (`AICAD-078`, `shell`'s own
+        // `removed_faces`) — the plural analogue of `face_index` above,
+        // mirroring `edge_indices`'s own existing `List<Int>` shape.
+        let face_indices = |value: &Value| -> EvalResult<Vec<FaceIndex>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(FaceIndex(n.magnitude as usize)),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
         // `AICAD-075A`'s `crate::spatial` conversion boundary, wrapped
         // here so a genuinely invalid (not merely wrongly-shaped) spatial
         // argument surfaces as its own dedicated
@@ -1451,6 +1466,29 @@ impl<'a> Interpreter<'a> {
                     })?;
                 }
                 accumulated
+            }
+            // `shell(target, removed_faces, thickness)` (`AICAD-078`): a
+            // single `GeometryOp::Shell` node, mirroring `Fillet`/
+            // `Chamfer`'s own single-node shape exactly (no new
+            // `GeometryOp` variant or kernel capability needed — see
+            // `BuiltinFnId::Shell`'s own doc comment). `Shape::shell`'s
+            // own established sign convention (`crates/cad-occt-bridge`'s
+            // own `shell_hollowed_box_matches_analytic_volume` test) is
+            // "negative thickness hollows inward, positive builds
+            // material outward" — negated here so the Safe CAD source
+            // parameter stays an ordinary positive `Length` meaning
+            // "wall thickness, hollowed inward", matching `docs/plan/
+            // 04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool = true`
+            // default with no separate parameter needed for it.
+            BuiltinFnId::Shell => {
+                let target = geometry(arg(0)?)?;
+                let removed_faces = face_indices(arg(1)?)?;
+                let thickness = quantity(arg(2)?)?;
+                push_op(GeometryOp::Shell {
+                    target,
+                    removed_faces,
+                    thickness: Quantity::new(-thickness.magnitude, thickness.ty),
+                })?
             }
         };
         Ok(Value::Geometry(node))
@@ -2362,6 +2400,7 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::Mirror => "mirror",
         BuiltinFnId::LinearPattern => "linear_pattern",
         BuiltinFnId::RadialPattern => "radial_pattern",
+        BuiltinFnId::Shell => "shell",
     }
 }
 
@@ -4777,6 +4816,62 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E129");
+    }
+
+    // --- AICAD-078: shell -------------------------------------------
+
+    #[test]
+    fn shell_call_builds_a_single_shell_node_with_the_given_removed_faces() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return shell(box(10mm, 10mm, 10mm), [0, 2], 1mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        let Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+        let graph = interp.geometry_graph();
+        assert_eq!(graph.nodes().len(), 2);
+        match geometry_node(graph, id) {
+            cad_geometry_api::GeometryOp::Shell {
+                target,
+                removed_faces,
+                thickness,
+            } => {
+                assert!(matches!(
+                    geometry_node(graph, *target),
+                    cad_geometry_api::GeometryOp::Box { .. }
+                ));
+                assert_eq!(
+                    removed_faces,
+                    &[
+                        cad_geometry_api::FaceIndex(0),
+                        cad_geometry_api::FaceIndex(2)
+                    ]
+                );
+                // Negated from the source's own positive `1mm` — see
+                // `BuiltinFnId::Shell`'s own doc comment: the Safe CAD
+                // source parameter is always a positive "inward wall
+                // thickness," but `Shape::shell`'s own established sign
+                // convention requires a negative magnitude for that.
+                assert!((thickness.magnitude - -0.001).abs() < 1e-12);
+            }
+            other => panic!("expected GeometryOp::Shell, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shell_call_permits_an_empty_removed_face_list() {
+        let lowered = compiled(
+            "fn f() -> Geometry { \
+                 return shell(box(10mm, 10mm, 10mm), [], 1mm); \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        assert!(matches!(result, Value::Geometry(_)));
     }
 
     #[test]

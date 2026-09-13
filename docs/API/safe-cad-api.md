@@ -340,6 +340,30 @@ the pattern extends); `radial_pattern` has no `include_endpoint` option
 option's own documented default). See `project/reports/AICAD-077.md` for
 the complete rationale and the kernel-backed tests proving each one.
 
+### `shell(target, removed_faces, thickness) -> Geometry` (`AICAD-078`)
+
+Hollows `target` to a uniform `thickness`, opening the given
+`removed_faces` (a plain `List<Int>` of raw, kernel-enumeration-order face
+indices — the same convention `fillet`/`chamfer` already established for
+`edges`). An empty `removed_faces` list is legitimate (a fully closed
+shell), unlike `fillet`/`chamfer`'s own non-empty `edges` requirement.
+`thickness` is always hollowed *inward* (the cavity removes material,
+never adds it) — `Shape::shell`'s own kernel-level convention is
+"negative thickness hollows inward, positive builds material outward,"
+so the runtime dispatcher negates the evaluated magnitude before building
+the `GeometryOp::Shell` node, keeping the Safe CAD source parameter an
+ordinary positive `Length`. This matches `docs/plan/
+04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool = true` default with
+no separate parameter needed for it.
+
+No new `GeometryOp` variant or kernel capability was needed:
+`GeometryOp::Shell`/`Shape::shell`/`aicad_occt_shell` have existed since
+`AICAD-026`/`AICAD-059`/`AICAD-060` — this is purely the missing Safe CAD
+catalogue entry over an already-complete capability, the one dress-up
+feature this catalogue's own "Stage-2 catalogue scope" module note left
+out alongside `fillet`/`chamfer`. See `project/reports/AICAD-078.md` for
+the kernel-backed test proving it end to end.
+
 ### Part concept (`AICAD-071`)
 
 A `part { ... }` body's own top-level `let`/`const`/`param`-with-default

@@ -1214,6 +1214,82 @@ mod tests {
         }
     }
 
+    /// The `shell` Safe CAD builtin (`AICAD-078`) end to end from real
+    /// `.aicad` source through a real kernel: hollowing a box to a
+    /// uniform thickness with one face removed, verified against the
+    /// closed-form remaining-material volume (outer box minus the inner
+    /// cavity) rather than a render-only check. `GeometryOp::Shell`/
+    /// `Shape::shell`/`aicad_occt_shell` all predate this task
+    /// (`AICAD-026`/`AICAD-059`/`AICAD-060`) — this is the first proof
+    /// that the Safe CAD *builtin* wired to them this task adds actually
+    /// dispatches through the same already-proven kernel path.
+    #[test]
+    fn shell_builtin_end_to_end_hollows_a_box_with_one_face_removed() {
+        const DX: f64 = 0.02;
+        const DY: f64 = 0.02;
+        const DZ: f64 = 0.02;
+        const THICKNESS: f64 = 0.002;
+
+        let source = format!(
+            "fn f() -> Geometry {{ return shell(box({}mm, {}mm, {}mm), [0], {}mm); }}",
+            DX * 1000.0,
+            DY * 1000.0,
+            DZ * 1000.0,
+            THICKNESS * 1000.0,
+        );
+        let (program, parse_diagnostics) = cad_parser::parse_program(&source, "test.aicad");
+        assert!(parse_diagnostics.is_empty(), "{parse_diagnostics:?}");
+        let lowered = cad_hir::lower::lower_program(&program, "test.aicad", &source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked = cad_hir::typeck::check_program(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            &source,
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+
+        let mut interp = cad_runtime::interp::Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            &source,
+        );
+        let result = interp
+            .call_by_name("f", vec![])
+            .expect("execution should succeed");
+        let cad_runtime::value::Value::Geometry(id) = result else {
+            panic!("expected Value::Geometry, got {result:?}");
+        };
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results =
+            dispatch_graph(interp.geometry_graph(), &ctx).expect("dispatch should succeed");
+        match &results[id.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!(
+                    shape.is_valid().unwrap(),
+                    "shelled box must be a valid B-rep"
+                );
+                let volume = shape.volume().unwrap();
+                // One face removed, so the cavity extends to that open
+                // face: the remaining material is the outer box minus an
+                // inner box inset by THICKNESS on the five *other* faces
+                // and flush with the removed face on the sixth.
+                let outer = DX * DY * DZ;
+                let inner = (DX - 2.0 * THICKNESS) * (DY - 2.0 * THICKNESS) * (DZ - THICKNESS);
+                let expected = outer - inner;
+                assert!(
+                    (volume - expected).abs() < expected * 0.05,
+                    "volume {volume} far from expected {expected} (exact removed face is kernel-\
+                     enumeration-order-dependent, so this tolerance covers either removed-face \
+                     orientation)"
+                );
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
     /// `GetFace` (`AICAD-076`) selects a real, valid, non-degenerate face
     /// out of an already-built box -- proving the new op actually
     /// resolves to a real kernel face `Extrude`/`Revolve` can consume as

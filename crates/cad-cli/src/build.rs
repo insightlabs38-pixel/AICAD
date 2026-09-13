@@ -279,8 +279,11 @@ pub fn run_build(path: &Path, output: Option<&Path>) -> BuildReport {
                 // program-level diagnostics (`PARSE-E001`..); this is a
                 // CLI/environment-level failure (no source text exists to
                 // parse at all), kept in the same family only because no
-                // more specific family fits and D10 (diagnostic-code
-                // stability policy) is still open regardless.
+                // more specific family fits, chosen well clear of that
+                // range specifically to avoid colliding with a future
+                // `cad-lexer`/`cad-parser` code — `project/
+                // DECISION_LOG.md#DL-18` now makes any such collision a
+                // real stability violation, not merely a style concern.
                 900,
                 "parse",
                 "SOURCE_FILE_UNREADABLE",

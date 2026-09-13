@@ -62,6 +62,10 @@ dependencies = [
 [[package]]
 name = "cad-diagnostics"
 version = "0.0.0"
+dependencies = [
+ "cad-ast",
+ "cad-geometry-api",
+]
 
 [[package]]
 name = "cad-feature-graph"

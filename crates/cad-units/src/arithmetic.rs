@@ -241,8 +241,9 @@ impl DimensionalArithmeticError {
     /// 0005 §2's `UNIT` family (`crate::arithmetic` intentionally does
     /// not depend on `cad-diagnostics` — see module doc comment — so this
     /// is a bare string a later `Diagnostic`-aware caller attaches
-    /// itself, e.g. via `DiagnosticCode::parse(err.code())`). Provisional
-    /// per D10 (`project/OWNER_DECISIONS.md`), exactly like every other
+    /// itself, e.g. via `DiagnosticCode::parse(err.code())`). Durable once
+    /// committed, per `project/DECISION_LOG.md#DL-18`'s now-resolved D10
+    /// policy (`project/OWNER_DECISIONS.md`), exactly like every other
     /// code `cad-diagnostics` itself defines.
     pub fn code(&self) -> &'static str {
         match self {

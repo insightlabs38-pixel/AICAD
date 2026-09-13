@@ -2368,7 +2368,7 @@ tasks:
 - id: AICAD-078
   stage: 3
   title: Implement high-level fillet/chamfer/shell wrappers and normalized diagnostics
-  status: todo
+  status: done
   depends_on:
   - AICAD-077
   plan_references:

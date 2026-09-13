@@ -18,8 +18,11 @@
 //! coded `RUNTIME-E123`/`RUNTIME-E124` — their own introducing tasks
 //! (`AICAD-056`, `AICAD-057`) explicitly documented this as a placeholder
 //! pending this task's own full resource-budget scope, not a stability
-//! commitment; per `project/OWNER_DECISIONS.md` D10 every diagnostic code
-//! in this codebase is still provisional pre-1.0 in any case. See
+//! commitment; that renumbering happened *before* `project/
+//! DECISION_LOG.md#DL-18` (`AICAD-078`) put `project/OWNER_DECISIONS.md`
+//! D10's stability policy in force — every code assigned from `AICAD-078`
+//! onward is durable once committed (see that module's own doc comment).
+//! See
 //! [`RuntimeError::category`] for the corresponding `"resource-budget"`
 //! vs. `"execution"` diagnostic category split.
 //!
@@ -423,8 +426,8 @@ pub enum RuntimeError {
 impl RuntimeError {
     /// A stable `RUNTIME-E###` code, or (for `DimensionalArithmetic`) the
     /// wrapped `cad_units` error's own `UNIT-Exxx` code verbatim — see this
-    /// enum's own doc comment. Provisional per D10, matching every other
-    /// diagnostic code in this codebase.
+    /// enum's own doc comment. Durable once committed, per `project/
+    /// DECISION_LOG.md#DL-18`'s now-resolved D10 policy.
     pub fn code(&self) -> String {
         match self {
             RuntimeError::DimensionalArithmetic { err, .. } => err.code().to_string(),
