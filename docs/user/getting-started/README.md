@@ -1,25 +1,21 @@
 # Getting started
 
-AICAD is currently built from this Rust workspace. The implemented command-line entry point is the `cad` binary from `crates/cad-cli`.
+AICAD currently runs from the repository as a Rust workspace with a native OCCT bridge. The fastest path from clone to a generated STEP file is:
 
-## Build the workspace
+1. [Install the required toolchain and OCCT development libraries](installation.md).
+2. Build and test the workspace.
+3. [Create and build a small `.aicad` part](first-part.md).
 
-```bash
-cargo build --workspace
+The current CLI surface is intentionally small:
+
+```text
+cad build <path.aicad> [--json] [--output <path>] [--name <binding>[.<field>]]
 ```
 
-## Build an AICAD model
+When working from the repository without installing a separate executable, invoke it through Cargo:
 
-The current CLI accepts one build command:
-
-```bash
-cargo run -p cad-cli -- build path/to/model.aicad
+```sh
+cargo run -p cad-cli -- build model.aicad --output model.step
 ```
 
-Useful options are documented under `../cli/`.
-
-A successful build parses, lowers/type-checks, evaluates the supported source/modeling surface, realizes geometry through the geometry runtime/kernel bridge, and reports the build result. Output/export behavior depends on the options and model output selected.
-
-## Current stage boundary
-
-Stage 3 provides parametric foundations and a standard modeling baseline. Semantic-reference selection/resolution is Stage 4 and is **not** available merely because Stage-4 planning/benchmarks exist in the repository.
+Use [the CLI reference](../cli/) for output selection and diagnostics.

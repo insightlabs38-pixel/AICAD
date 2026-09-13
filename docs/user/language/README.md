@@ -1,19 +1,13 @@
-# AICAD language — current Stage-3 surface
+# Language guide
 
-AICAD is a statically checked, unit-aware source language used to define engineering/modeling computations and geometry.
+AICAD source uses explicit braces and semicolons with a typed, value-oriented execution model. Geometry is not a separate macro language: modeling functions participate in the same name binding, type checking, function calls, and control flow as ordinary source functions.
 
-Implemented foundations include ordinary bindings/declarations, functions and calls, structs/enums and typed values, control-flow/expression machinery, explicit engineering units/dimensions, `param` declarations for model inputs, and the Stage-3 spatial data types used by modeling operations.
+The pages in this section focus on language features exercised by current compiler/runtime tests and Stage-2/3 examples:
 
-## Units and spatial values
+- [Types and physical units](types-and-units.md)
+- [Functions and control flow](functions-and-control-flow.md)
+- [Parameters and derived expressions](parameters.md)
 
-Engineering quantities are dimensionally checked rather than treated as untyped floats. Stage-3 geometry support includes source-visible spatial structures such as `Point2`, `Point3`, `Vector2<T>`, `Vector3<T>`, `Axis3`, `Frame3`, and `Plane` in the standard type environment, with validated conversion into the kernel-neutral spatial layer where modeling operations require it.
+AICAD also implements general language machinery for user-defined structs, data-carrying enums, generic types/functions, lists/ranges, pattern matching, `Result<T,E>`, and `Optional<T>`. Those features share the same compiler/runtime pipeline; this guide concentrates on the subset most directly useful for current CAD authoring rather than reproducing the complete language specification.
 
-## Parameters
-
-Top-level `param` declarations participate in dependency analysis and deterministic evaluation. Parameter dependencies feed the feature/incremental rebuild infrastructure rather than being treated as arbitrary mutable global state.
-
-## What this page does not claim
-
-The frozen foundation plan contains syntax/examples for later stages. Those examples are not automatically implemented language features. In particular, Stage-4 semantic references and post-100 assembly/verification/package capabilities remain future work until their implementations/specifications are completed.
-
-For grammar/specification material, see `specs/language/`. For compiler implementation architecture, see `../../developer/compiler-runtime/`.
+For exact grammar/specification status, consult `specs/language/` and accepted RFCs. Do not treat examples in the frozen `docs/plan/` bundle as proof that a syntax form is implemented.
