@@ -1,204 +1,100 @@
-# RFC-0004: Units/Type System
+# RFC-0004: Units and Type System
 
-- Status: Draft (Stage 0)
-- Stage-0 build item covered (`docs/plan/15_IMPLEMENTATION_ROADMAP.md`
-  Stage 0): "type/units model".
-- Owner ruling incorporated: DL-3 (type/units semantics specifics). See
-  `project/DECISION_LOG.md`.
-- Depends on: RFC-0001 (surface syntax for literals/types).
+- Status: **Accepted Stage-0 baseline** (`project/DECISION_LOG.md#DL-10`).
+- Owner rulings incorporated/clarifying this RFC: DL-3 (D4 type/unit semantics), DL-12 and DL-17+AICAD-064A (D5/D19 equivalence profile), DL-13 (D16 collection/iteration minimum), DL-14 (D17 general generics/data-carrying enums/Result/Optional), DL-20 (D11 solver-independent constraint semantics), DL-21 (D20 always-seeded nominal RuntimeBuiltin types), plus the accepted AICAD-075A spatial model.
+- Canonical current detail: `specs/language/types.md`.
 
 ## 1. Summary
 
-This RFC freezes AICAD's type system baseline from
-`docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` and resolves the
-previously open dimension-canonicalization, implicit-conversion, and
-tolerance-arithmetic questions (`project/OWNER_DECISIONS.md` D4) via DL-3.
-This directly implements non-negotiable invariant 5
-(`docs/plan/00_PRINCIPLES_AND_SCOPE.md` §3: "Units are in the type system,
-not plain untyped floats").
+AICAD treats engineering quantities and semantic data types as first-class language types. Dimensional analysis, affine quantities, generic algebraic data types, and kernel-neutral spatial values belong above the geometry kernel and must not degrade into untyped numeric conventions or backend-native identity.
 
-## 2. Primitive types (frozen, from `03` §2)
+The original Stage-0 type-system baseline remains accepted, but later Stage-2/3 decisions narrowed which planned capabilities are current. This RFC therefore distinguishes current approved language semantics from future collection/interface/metaprogramming examples in the foundation plan.
 
-`Bool`, `Int`, `UInt`, `Float`, `String`, `Bytes`, with `Decimal` and `Char`
-as optional additions. `Float` is for numerical algorithms; dimensional
-quantities are never bare `Float` values (§3).
+## 2. Primitive and engineering quantity baseline
 
-## 3. Dimensional quantity types (frozen, from `03` §3)
+AICAD's semantic type layer includes ordinary primitives (`Bool`, integer/float/string/bytes/character families) plus dimensioned engineering quantities. Named dimensions include length/area/volume/angle/time/mass/temperature/force/torque/pressure/stress/energy/power/density/velocity/acceleration/angular velocity/frequency/current/voltage/resistance.
 
-Minimum first-class dimensions: `Length`, `Area`, `Volume`, `Angle`,
-`Time`, `Mass`, `Temperature`, `Force`, `Torque`, `Pressure`, `Stress`,
-`Energy`, `Power`, `Density`, `Velocity`, `Acceleration`,
-`AngularVelocity`, `Frequency`, `Current`, `Voltage`, `Resistance`.
-Derived dimensional algebra is checked (`let area: Area = width * height;`
-type-checks; `let width: Length = 5kg;` is a type error).
+Quantities are not bare floats with a display suffix. Dimensional arithmetic is checked structurally. Same-vector named dimensions are not silently chosen by arbitrary tie-breaking; an explicit expected/annotated type resolves genuine semantic ambiguity.
 
-## 4. Unit literals (frozen, from `03` §4)
+## 3. Units and conversions — D4/DL-3
 
-Initial unit set: length (`nm um mm cm m km in ft`), angle (`deg rad`),
-mass (`mg g kg lbm`), force (`N kN lbf`), pressure/stress
-(`Pa kPa MPa GPa psi ksi`), temperature (`K degC degF`, affine — see §7).
-The standard library may expand this set without a grammar change.
+Unit conversion is allowed only within compatible dimensions. The unit registry, not the grammar, decides whether a numeric suffix names a known unit.
 
-## 5. Canonicalization and implicit conversion (DL-3, resolved)
+Affine quantities distinguish absolute and delta values. Temperature is the current affine dimension. Offset conversions apply only to absolute quantities; delta conversion uses scale only. Arithmetic preserves the semantic distinction—for example, absolute minus absolute yields a delta.
 
-- **Dimensions have a unique canonical internal representation independent
-  of user-selected display units.** A quantity's runtime/comparison
-  identity is its canonical value plus dimension, never its
-  source-literal unit.
-- **Quantities of the same dimension may be implicitly converted** for
-  arithmetic and comparison (`5mm + 2cm` type-checks and evaluates
-  correctly without an explicit conversion call).
-- **Different physical dimensions never implicitly convert.** `Length +
-  Time` is a type error under every circumstance; there is no numeric
-  "escape hatch."
-- **Derived dimensions are canonicalized structurally**, by dimension
-  exponents (e.g. `Velocity = Length^1 * Time^-1`), not by how a unit is
-  spelled in source. Two derived quantities with the same exponent vector
-  are the same dimension regardless of which unit literals produced them.
-- A quantity's conceptual shape remains as described in `03` §5:
-  canonical value, unit dimension, preferred display unit, optional
-  precision/uncertainty metadata. Display unit is presentation-only and
-  never affects type-checking or comparison.
-- **Patch (independent Stage-0 review):** `03` §5's quantity shape, as
-  written, has no field distinguishing an absolute quantity from a delta
-  quantity, yet §7 below requires the type checker to reject
-  `absolute + absolute` for affine dimensions. To keep this RFC internally
-  consistent, affine-dimensioned quantities (§7) carry one additional
-  discriminant beyond the general shape above — `affine_kind: absolute |
-  delta` — and it is this discriminant, never the source unit spelling,
-  that the type checker uses to admit or reject an operation. This patch
-  only makes explicit a mechanism §7's invariant already requires; it does
-  not select the discriminant's concrete surface syntax or type-name
-  spelling (e.g. whether a delta is its own named type or a tagged
-  `Temperature` value) — that concrete encoding remains Stage-2 work, as
-  §7 already states.
+`Tolerance<T>`-style uncertainty semantics must remain conservative/typed where implemented; this RFC does not authorize statistical/RSS combination as the default merely because it is useful in another API.
 
-## 6. Tolerances (DL-3, resolved)
+## 4. Generic algebraic data types — D17/DL-14
 
-- `Tolerance<T>`, `AsymmetricTolerance<T>`, `Range<T>`, `Distribution<T>`,
-  and `Fit` remain first-class structured types, not string annotations
-  (`03` §6).
-- **`Tolerance<T>` is initially defined by conservative interval
-  semantics.** Tolerance arithmetic propagates interval bounds (e.g. `(a
-  +/- da) + (b +/- db)` yields a result whose bound is `da + db`, the
-  worst-case sum, not a statistically reduced figure).
-- **Statistical/RSS tolerance-stack semantics require an explicit, later,
-  separate API** (`docs/plan/13_ENGINEERING_MODULES.md` §28's `RSS`/
-  `Monte Carlo` methods) and are **never assumed by default**. A design
-  that wants RSS composition must ask for it explicitly; conservative
-  interval bounds are what plain `Tolerance<T>` arithmetic always
-  produces.
+Current source semantics support ordinary generic structs, enums, and functions using bare type parameters. Enums support unit, tuple-payload, and record-payload variants. Pattern matching supports corresponding destructuring and nominal-enum exhaustiveness diagnostics.
 
-## 7. Affine units (DL-3, resolved)
+`Result<T,E>` and `Optional<T>` are ordinary generic prelude enum types built from that same language machinery. They are not hard-coded compiler semantic types. Result propagation is explicit through ordinary control flow (typically `match`); no `?`-style propagation syntax is current.
 
-- Affine units — initially Celsius and Fahrenheit — **distinguish absolute
-  quantities from delta quantities** and do not use ordinary scale-only
-  conversion rules. The absolute-vs-delta distinction is carried by the
-  `affine_kind` discriminant added to the quantity shape in §5 above; it is
-  not inferred from unit spelling or context.
-- Concretely: converting an absolute temperature (`20degC` -> Kelvin)
-  requires the affine offset (`+273.15`); converting a temperature
-  *difference* (`a delta of 5degC` -> Kelvin) does not apply that offset
-  (a 5°C difference is a 5K difference, not a 278.15K one). The type
-  system must make it a type error to add two *absolute* affine
-  quantities together (`20degC + 20degC` is meaningless), while adding an
-  absolute quantity and a delta quantity of the same unit family is
-  well-defined.
-- **Patch (independent Stage-0 review):** the RFC as originally drafted
-  forbade `absolute + absolute` but never stated what `absolute - absolute`
-  produces, leaving no defined way to construct a delta value at all.
-  Subtracting two *absolute* quantities of the same affine unit family
-  produces a *delta* quantity (`affine_kind: delta`, §5); subtracting a
-  delta from an absolute produces an absolute; subtracting two deltas
-  produces a delta. This is the minimal rule consistent with the
-  already-approved absolute/delta distinction and does not introduce a new
-  architecture decision.
-- This is intentionally more conservative than "unit conversion is always
-  linear rescaling," because affine-temperature bugs are a well-known,
-  easy-to-introduce class of engineering error
-  (`docs/plan/19_RESEARCH_NOTES_AND_SOURCES.md` §10 flags "formal
-  dimensional type implementation and affine temperature handling" as a
-  pre-implementation research item this ruling now answers at the policy
-  level, leaving only the concrete type-system encoding to Stage 2).
+Current generics intentionally do **not** include interface/trait bounds, higher-kinded types, variance, specialization, generic associated types, dependent types, variadic generics, or lifetime parameters. Interface/bounded-generic semantics remain future Stage-6 language architecture.
 
-## 8. Geometry, semantic, and structural types (frozen, from `03` §7-12)
+## 5. Collections and iteration — D16/DL-13
 
-Adopted as-is: safe geometry types (`Point2/3`, `Vector2/3`, `Frame2/3`,
-`Curve2/3`, `Surface`, `Wire`, `Face`, `Shell`, `Solid`, `Part`, and the
-`*Ref` family per RFC-0003); raw/ephemeral types (`Vertex*` ... `KernelShape*`,
-per RFC-0002 §4); built-in semantic engineering interfaces (`Hole`,
-`Thread`, `Fastener`, `Bearing`, `Gear`, `Requirement`, etc. — most as
-standard-library types, not compiler intrinsics, per RFC-0001 §6);
-generic collections (`Array<T,N>`, `List<T>`, `Set<T>`, `Map<K,V>`,
-`Optional<T>`, `Result<T,E>`, `Range<T>`, `Iterator<T>`, `Generator<T>`);
-structs/enums with destructuring; interfaces/traits (mechanical
-compatibility, e.g. `interface MotorMount`); ordinary generics (no
-template-metaprogramming in v1).
+The current minimum is deliberately bounded:
 
-## 9. Ownership, control flow, and safety (frozen, from `03` §13-20)
+- immutable `List<T>` values constructed with list literals;
+- `Range<Int>` and `Range<UInt>` from `start..end` / `start..=end`, ascending by one;
+- an internal/runtime `Iterator<T>` abstraction sufficient to implement `for`, not a public general compiler-intrinsic protocol.
 
-Adopted as-is: geometry objects behave as immutable/shared value handles
-(consistent with RFC-0001 §5's functional core); `Optional<T>` instead of
-implicit null; full standard control flow (`if/for/while/loop/match/break/
-continue/return/yield`); recursion allowed under runtime budgets
-(RFC-0002 execution budgets, detailed further in a future runtime RFC);
-closures and lazy query composition; generators for large pattern
-sequences; `pure fn` functions guaranteed free of nondeterministic
-capabilities; two unsafe forms, `unsafe geometry { }` (RFC-0002 §4) and
-`unsafe native { }` (package-only, ordinary user code should rarely need
-it).
+`Set<T>`, `Map<K,V>`, comprehensions, arbitrary source-defined iterators, async/parallel iteration, and implicit dimensional-range stepping are not current language semantics. Their appearance in future planning examples is illustrative until separately approved.
 
-## 10. Numerical precision policy (frozen, from `03` §21)
+## 6. Control flow and recursion
 
-Dimensional quantities use deterministic IEEE floating point (or another
-explicitly chosen scalar representation); a user-configurable modeling
-tolerance exists at the project/kernel boundary; exact integers/rationals
-may be used for symbolic parameter calculations; geometry comparisons use
-explicit tolerance operators (`~=`, `near`, `within`), never bare equality
-of floating coordinates. This RFC does not itself set the default project
-tolerance value — that is implementation/config work, not a language
-freeze.
+Current language control flow includes `if`, `match`, `for`, `while`, `loop`, `break`, `continue`, and `return`; `if` and `match` may produce values in expression position where their branches/arms satisfy type requirements.
 
-## 11. Parameter and rationale metadata (frozen, from `03` §22-23)
+Recursion is supported, but the current evaluator's concrete call-depth ceiling is an implementation safety/resource limit rather than a permanent language-level number. Future runtimes may change the evaluator architecture without changing the language's recursion semantics.
 
-`@param(label=..., min=..., max=..., step=..., choices=..., group=...,
-advanced=..., readonly=..., unit_display=..., sensitivity=...)` and
-`@rationale("...")` attributes are adopted as-is, feeding UI/inspector
-tooling (Stage 9) and provenance/review tooling (Stage 13) respectively.
+Closures/lambdas, generators/yield, comprehensions, and async/parallel iteration are not current Stage-3 language capabilities.
 
-## 12. Alternatives considered
+## 7. Geometry and spatial nominal types
 
-- **Explicit conversion required even within one dimension** (e.g.
-  `mm(2cm)`) — rejected (DL-3); excessive ceremony for ordinary unit
-  mixing that provides no additional type safety over structural
-  same-dimension checking.
-- **Defaulting `Tolerance<T>` arithmetic to RSS/statistical composition**
-  — rejected (DL-3); would silently understate worst-case stacks for any
-  design that did not deliberately opt into statistical treatment,
-  conflicting with the "do not silently weaken validation" non-negotiable.
-- **Treating affine units with ordinary scale-only conversion** (ignoring
-  the absolute-vs-delta distinction) — rejected (DL-3); a well-documented
-  source of real engineering bugs.
-- **Canonicalizing derived dimensions by unit spelling rather than
-  structurally** — rejected (DL-3); would make semantically identical
-  dimensions (e.g. two different derivations of `Velocity`) fail to unify,
-  breaking dimensional algebra checking.
+`Geometry` is an opaque AICAD value referring to backend-neutral geometry construction, not an OCCT object or persistent topology handle.
 
-## 13. Open questions (intentionally not resolved here)
+The current always-available source spatial environment contains `Vector2<T>`, `Vector3<T>`, `Point2`, `Point3`, `Axis3`, `Frame3`, and `Plane`. AICAD-075A establishes the shared kernel-neutral semantics below these source values:
 
-- The default project-wide geometric modeling tolerance value (§10) is
-  implementation/config, not part of this type-system freeze.
-- `project/OWNER_DECISIONS.md` D11 (constraint IR/solver-independence
-  rules) touches tolerance *usage* inside the constraint solver, not
-  tolerance *arithmetic* itself (§6) — remains open, tracked separately.
+- position (`Point3`) and displacement/vector (`Vector3`) are distinct semantic concepts;
+- directions are validated normalized vectors and reject degenerate/non-finite input;
+- `Axis3` is an origin + direction;
+- `Frame3` is orthonormal and right-handed;
+- a plane is origin + normal and is not identical to a full in-plane frame;
+- proper rigid `Transform` semantics use translation + right-hand-rule rotation and exclude reflection/scale.
 
-## 14. Impact
+Internal kernel-neutral concepts such as validated `Direction3`, `Plane3`, or `Transform` do not automatically imply a separate direct source constructor/type spelling. Internal semantic capability and source-language exposure are different layers.
 
-- `crates/cad-types`, `crates/cad-units`: implement §2-7 starting Stage 2
-  (AICAD-046-049).
-- `crates/cad-hir`/type checker: enforce §5's same-dimension-only implicit
-  conversion and structural canonicalization (AICAD-052).
-- `crates/cad-requirements`: consumes §6's conservative interval
-  `Tolerance<T>` semantics for geometry assertions (RFC yet to define
-  requirements/tests in detail — Stage 7 scope, out of this RFC).
-- `specs/language/types.md`: to be populated from this RFC starting Stage 2.
+## 8. RuntimeBuiltin type closure — D20/DL-21
+
+D20 is **resolved**, not open. The closed always-seeded RuntimeBuiltin catalogue may use approved standard nominal types in signatures, and all types needed by those signatures must be present in the always-seeded standard type environment. Eager signature collection/type checking remains authoritative.
+
+This is a closed first-party environment. It does not authorize arbitrary plugin/native type registration, host callbacks, OCCT types, or a dynamic extension ABI. AICAD-076's scalar-flattening workaround was temporary; semantic spatial structs remain the approved direction.
+
+## 9. Persistent references and raw topology are not current type claims
+
+Stage-3 named outputs, `GeomId`s, feature IDs, sketch/entity IDs, and raw face/edge integer indices are not persistent Stage-4 topology-reference types. The current source language exposes no durable `VertexRef`/`EdgeRef`/`WireRef`/`FaceRef`/`ShellRef`/`SolidRef` resolution capability.
+
+Future low-level/raw topology may use opaque AICAD-owned epoch-local handles, but exact Stage-5 type/syntax remains unresolved. A raw handle is neither an OCCT pointer nor durable semantic identity.
+
+## 10. Tolerance taxonomy
+
+The original type-system material must not be read as one global tolerance parameter for unrelated numerical domains.
+
+- **D5 equivalence comparison** has a versioned calibrated v1 profile: `linear_abs = 1e-4 mm`, `linear_rel = 0`, `area_abs = 1e-6`, `area_rel = 1e-3`, `volume_abs = 1e-6`, `volume_rel = 1e-3`, `center_of_mass_abs = 1e-4 mm`, with DL-12 scale-aware comparison formulas.
+- **Solver convergence** is solver-specific numerical control; the Stage-3 sketch solver owns a separate profile.
+- **Modeling/construction tolerance**, **approximation tolerance**, **verification/assertion tolerance**, and **private representation-validity thresholds** are distinct categories. No new global default for those categories is created here.
+
+D5 constants must not be copied into another category merely to fill an unspecified default.
+
+## 11. Constraint semantics — D11/DL-20
+
+AICAD's constraint IR owns typed/dimensioned variables, semantic IDs, constraint-kind meaning/parameters, provenance, solve-status vocabulary, and structured evidence. Numerical solvers are adapters/backends: they choose algorithms and produce candidate numerical results/status but may not redefine dimensional semantics, constraint meaning, or silently promote an arbitrary solution branch into public semantics.
+
+Stage 3's sketch constraint subsystem implements this boundary internally. It does not imply source-level `sketch { ... }` syntax, and it does not decide Stage-6 assembly solver/relation policy or require one universal concrete constraint struct for all future domains.
+
+## 12. Historical rationale and remaining future work
+
+Stage-0 froze typed quantities because engineering software cannot safely treat units, affine temperatures, or tolerances as display metadata. Stage-2 later generalized the type system rather than hard-coding `Result`, and deliberately bounded collections/iteration rather than silently implementing the entire future standard library. Stage 3 reused one kernel-neutral spatial model rather than creating per-feature axis/frame conventions.
+
+Still future: interfaces/`implements`/generic bounds, `Set`/`Map`, comprehensions, closures/generators, general user iterators, raw topology types/syntax, persistent topology refs, assemblies/configurations, and verification-language types. Those capabilities remain in roadmap scope but are not current language semantics until separately approved and promoted.
