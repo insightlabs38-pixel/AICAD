@@ -1,24 +1,37 @@
 # Deferred Stage 3 → Stage 4 transition items
 
-This file centralizes work intentionally **not** performed by the Stage-3 → Stage-4 transition passes. Completed items are removed rather than left as stale deferred work.
+This file centralizes work intentionally **not** performed by the Stage-3 → Stage-4 transition passes. Completed owner decisions are removed from unresolved-decision lists while implementation details that those decisions deliberately leave open remain deferred.
 
-## Normative/specification work still deferred
+## Owner decisions now resolved; implementation details still deferred
 
-The canonical language-specification set and accepted-RFC reconciliation are now complete. Remaining normative architecture questions are future-stage work, not cleanup debt:
+D21-D30 are owner-approved semantic baselines recorded as DL-23 through DL-32. They resolve the corresponding frozen post-100 architecture recommendations, but they do **not** authorize Stage-5/6 implementation. The following details remain deliberately deferred:
 
-- Stage-5 raw/unsafe geometry source/effect mechanism;
-- source-visible kernel-query evaluation architecture;
-- D18 runtime-catalogue scaling beyond the current closed mechanism;
-- modeling/construction/approximation/verification tolerance defaults and broader tolerance-policy architecture;
-- feature/provenance semantics through general programmable geometry/control flow;
-- assembly identity/solver/configuration semantics;
-- verification/test/requirement language and evidence semantics;
+- **D21 / DL-23:** exact declarative RuntimeBuiltin catalogue schema, code-generation strategy, generated-vs-handwritten artifact split, and migration mechanics;
+- **D22 / DL-24:** exact raw/unsafe geometry source spelling, raw-handle representation, and epoch encoding;
+- **D23 / DL-25:** exact query effect metadata, eager/lazy scheduling mechanics, cache representation, and Stage-5 query API surface;
+- **D24 / DL-26:** numerical defaults for future modeling/construction/approximation/solver/verification tolerance domains and detailed override/policy machinery;
+- **D25 / DL-27:** feature-node granularity, one-call-vs-node policy, call-instance identity encoding, provenance serialization, and exact feature-node schema;
+- **D26 / DL-28:** exact assembly identity encoding and serialization;
+- **D27 / DL-29:** exact interface/protocol surface syntax and lowering representation; advanced excluded trait/type-system features remain unapproved;
+- **D28 / DL-30:** exact deterministic assembly grounding/canonicalization algorithm, relation inventory, numerical solver choice, and implementation mechanics;
+- **D29 / DL-31:** exact configuration syntax, overlay storage format, and detailed replacement-compatibility rules;
+- **D30 / DL-32:** exact external-asset hash algorithm, serialized schema, remote-fetch/security policy, package-embedding policy, and full artifact manifest format.
+
+Stage-4 evidence may inform these explicitly deferred details, but it may not silently weaken or reinterpret the approved semantic invariants. A genuine conflict requires documented evidence and an explicit owner-approved amendment.
+
+## Normative/specification work still genuinely open
+
+The canonical language-specification set and accepted-RFC reconciliation are complete. D21-D30 remove the former Stage-5/6 semantic-baseline questions from the unresolved-owner-decision list. Remaining owner-open/partial questions relevant to later stages include:
+
 - D7 automatic fingerprint-recovery policy;
 - D8 exact internal OCAF usage;
-- D12/D15 trusted/plugin/native extension boundaries;
-- D13 final public/commercial distribution licensing policy.
+- D12 trusted native extension/plugin security boundary;
+- D13 final public/commercial distribution licensing policy;
+- D15 default sandboxed plugin runtime choice;
+- Stage-7 verification/test/requirement language and evidence semantics not covered by D21-D30;
+- later Stage-8/9/10+ architecture decisions that have not yet received owner rulings.
 
-D20 is **not** deferred and is not a transition blocker. It was resolved by DL-21 and implemented by AICAD-076A. The earlier normative-cleanup brief's statement that D20 remained open was stale transition wording and has been corrected.
+D20 is **not** deferred and is not a transition blocker. It was resolved by DL-21 and implemented by AICAD-076A.
 
 ## Stage-4 work deferred
 
@@ -28,14 +41,18 @@ D20 is **not** deferred and is not a transition blocker. It was resolved by DL-2
 - semantic-reference/resolver implementation;
 - Stage-4 production-code changes.
 
+D21-D30 do not themselves begin any of the above work.
+
 ## Post-100 roadmap work deferred
 
-- resolving any owner decision proposed by the frozen post-100 audit;
-- promoting its Stage-5/6/7 drafts into `project/TASKS.yaml`;
-- assigning AICAD-101+ IDs;
-- finalizing future-stage task counts before Stage-4 evidence exists.
+Frozen post-100 recommendations OD-S5-02 through OD-S5-06 and OD-S6-01 through OD-S6-05 are no longer unresolved owner decisions: their semantic baselines are now resolved by D21-D30 / DL-23 through DL-32. The historical audit files are intentionally unchanged and remain snapshots of what was open at their audit revision.
 
-The frozen post-100 audit itself is not rewritten to retroactively incorporate DL-21; it remains a historical snapshot at its recorded audit revision. Current owner decisions and transition records establish the later resolved state.
+Still deferred:
+
+- resolving other owner decisions proposed by the frozen post-100 audit that are not covered by D21-D30;
+- promoting any Stage-5/6/7 draft into `project/TASKS.yaml`;
+- assigning AICAD-101+ IDs;
+- finalizing future-stage task counts before the required preceding-stage evidence exists.
 
 ## Documentation/path maintenance deferred
 
@@ -54,5 +71,6 @@ The following are **not** deferred anymore:
 - current-vs-future grammar/type/RFC reconciliation;
 - D5/D10/D11 stale-open cleanup;
 - D20 stale-open transition-brief correction, with DL-21 retained as authoritative;
+- D21-D30 semantic owner decisions, recorded as DL-23 through DL-32;
 - frozen-plan authority clarification;
 - preservation of the original Stage-0 RFC bodies under `rfcs/history/stage0/`.

@@ -1,7 +1,7 @@
 # RFC-0004: Units and Type System
 
 - Status: **Accepted Stage-0 baseline** (`project/DECISION_LOG.md#DL-10`).
-- Owner rulings incorporated/clarifying this RFC: DL-3 (D4 type/unit semantics), DL-12 and DL-17+AICAD-064A (D5/D19 equivalence profile), DL-13 (D16 collection/iteration minimum), DL-14 (D17 general generics/data-carrying enums/Result/Optional), DL-20 (D11 solver-independent constraint semantics), DL-21 (D20 always-seeded nominal RuntimeBuiltin types), plus the accepted AICAD-075A spatial model.
+- Owner rulings incorporated/clarifying this RFC: DL-3 (D4 type/unit semantics), DL-12 and DL-17+AICAD-064A (D5/D19 equivalence profile), DL-13 (D16 collection/iteration minimum), DL-14 (D17 general generics/data-carrying enums/Result/Optional), DL-20 (D11 solver-independent constraint semantics), DL-21 (D20 always-seeded nominal RuntimeBuiltin types), DL-24 (D22 safe/raw geometry tiers), DL-26 (D24 tolerance domains), DL-29 (D27 general nominal interfaces/protocols), and DL-30 (D28 solver-neutral assembly relations), plus the accepted AICAD-075A spatial model.
 - Canonical current detail: `specs/language/types.md`.
 
 ## 1. Summary
@@ -24,13 +24,13 @@ Affine quantities distinguish absolute and delta values. Temperature is the curr
 
 `Tolerance<T>`-style uncertainty semantics must remain conservative/typed where implemented; this RFC does not authorize statistical/RSS combination as the default merely because it is useful in another API.
 
-## 4. Generic algebraic data types — D17/DL-14
+## 4. Generic algebraic data types and future interfaces — D17/D27
 
 Current source semantics support ordinary generic structs, enums, and functions using bare type parameters. Enums support unit, tuple-payload, and record-payload variants. Pattern matching supports corresponding destructuring and nominal-enum exhaustiveness diagnostics.
 
 `Result<T,E>` and `Optional<T>` are ordinary generic prelude enum types built from that same language machinery. They are not hard-coded compiler semantic types. Result propagation is explicit through ordinary control flow (typically `match`); no `?`-style propagation syntax is current.
 
-Current generics intentionally do **not** include interface/trait bounds, higher-kinded types, variance, specialization, generic associated types, dependent types, variadic generics, or lifetime parameters. Interface/bounded-generic semantics remain future Stage-6 language architecture.
+Current Stage-3 generics do **not** yet include interface/protocol bounds. D27/DL-29 now approves the future Stage-6 semantic baseline: a restrained general nominal interface/protocol concept supporting contract declaration, explicit nominal conformance/implementation, static conformance checking, and interface-constrained generic functions/types. Exact syntax remains subject to the normal language RFC process and is not current grammar. D27 explicitly does not approve state/class inheritance, runtime monkey-patching, mandatory dynamic dispatch, trait objects, higher-kinded types, specialization, associated-type machinery, complex variance rules, or negative bounds.
 
 ## 5. Collections and iteration — D16/DL-13
 
@@ -73,32 +73,37 @@ The always-seeded builtin environment must be type-closed: all nominal types req
 
 `with_geometry_types` may remain as an idempotent compatibility/composition helper; callers do not need to invoke it to make automatically seeded builtin signatures type-correct. AICAD-076's scalar-decomposition signatures were temporary compatibility workarounds, not the intended long-term Safe CAD API architecture.
 
-This remains a closed first-party standard environment. It does not authorize arbitrary plugin/runtime type injection, host callbacks, OCCT types in public/HIR signatures, or a dynamic extension ABI.
+This remains a closed first-party standard environment. It does not authorize arbitrary plugin/runtime type injection, host callbacks, OCCT types in public/HIR signatures, or a dynamic extension ABI. D21/DL-23 permits future declarative/single-source scaling of this closed catalogue while preserving deterministic stable builtin identity; exact generation mechanics remain deferred.
 
-## 9. Persistent references and raw topology are not current type claims
+## 9. Persistent references and raw topology — D22/DL-24
 
 Stage-3 named outputs, `GeomId`s, feature IDs, sketch/entity IDs, and raw face/edge integer indices are not persistent Stage-4 topology-reference types. The current source language exposes no durable `VertexRef`/`EdgeRef`/`WireRef`/`FaceRef`/`ShellRef`/`SolidRef` resolution capability.
 
-Future low-level/raw topology may use opaque AICAD-owned epoch-local handles, but exact Stage-5 type/syntax remains unresolved. A raw handle is neither an OCCT pointer nor durable semantic identity.
+D22 freezes the future type/identity boundary: safe semantic geometry, raw/unsafe AICAD-owned handles, persistent semantic topology references, and kernel-native objects are distinct. A raw handle is kernel-neutral in public semantics, opaque at the source/HIR boundary, and context/epoch-scoped; it is neither an OCCT pointer nor durable semantic identity. Crossing from raw to safe requires explicit validation/adoption producing a new safe value with validation/provenance evidence. Exact Stage-5 type spelling, handle representation, and epoch encoding remain deferred.
 
-## 10. Tolerance taxonomy
+## 10. Tolerance taxonomy — D24/DL-26
 
-The original type-system material must not be read as one global tolerance parameter for unrelated numerical domains.
+The type system must not be read as defining one global tolerance parameter for unrelated numerical domains. D24 recognizes at least six distinct domains:
 
-- **D5 equivalence comparison** has a versioned calibrated v1 profile: `linear_abs = 1e-4 mm`, `linear_rel = 0`, `area_abs = 1e-6`, `area_rel = 1e-3`, `volume_abs = 1e-6`, `volume_rel = 1e-3`, `center_of_mass_abs = 1e-4 mm`, with DL-12 scale-aware comparison formulas.
-- **Solver convergence** is solver-specific numerical control; the Stage-3 sketch solver owns a separate profile.
-- **Modeling/construction tolerance**, **approximation tolerance**, **verification/assertion tolerance**, and **private representation-validity thresholds** are distinct categories. No new global default for those categories is created here.
+- **representation/validity tolerance** for internal mathematical/kernel representation validity;
+- **modeling/construction tolerance** for geometric construction behavior;
+- **approximation tolerance** for fitting/interpolation/approximation error bounds;
+- **solver tolerance** for numerical convergence/satisfaction;
+- **verification tolerance** for explicit engineering acceptance/assertion semantics;
+- **D5 equivalence/comparison tolerance**, whose calibrated v1 profile remains `linear_abs = 1e-4 mm`, `linear_rel = 0`, `area_abs = 1e-6`, `area_rel = 1e-3`, `volume_abs = 1e-6`, `volume_rel = 1e-3`, `center_of_mass_abs = 1e-4 mm`, with DL-12 scale-aware comparison formulas.
 
-D5 constants must not be copied into another category merely to fill an unspecified default.
+These policies may interact but are not aliases. No domain may silently inherit another domain's values, and no tolerance may be silently widened merely to make a failed operation/test pass. D24 does not invent numerical defaults for future Stage-5/6/7 domains; those remain separately specified work.
 
-## 11. Constraint semantics — D11/DL-20
+## 11. Constraint and future assembly-relation semantics — D11/D28
 
 AICAD's constraint IR owns typed/dimensioned variables, semantic IDs, constraint-kind meaning/parameters, provenance, solve-status vocabulary, and structured evidence. Numerical solvers are adapters/backends: they choose algorithms and produce candidate numerical results/status but may not redefine dimensional semantics, constraint meaning, or silently promote an arbitrary solution branch into public semantics.
 
-Stage 3's sketch constraint subsystem implements this boundary internally. It does not imply source-level `sketch { ... }` syntax, and it does not decide Stage-6 assembly solver/relation policy or require one universal concrete constraint struct for all future domains.
+D28/DL-30 extends this principle to future Stage-6 assembly mates/joints and observable pose. The AICAD semantic layer owns relation meaning, satisfaction/DOF/conflict/redundancy semantics, and deterministic observable pose. Underconstrained or multiple-solution assemblies may not silently inherit an arbitrary backend pose; deterministic grounding/gauge handling and any branch-selection policy belong to AICAD semantics above the solver. The exact canonicalization algorithm and Stage-6 solver implementation remain deferred.
+
+Stage 3's sketch constraint subsystem implements the D11 boundary internally. It does not imply source-level `sketch { ... }` syntax or implement the Stage-6 assembly model approved by D26-D30.
 
 ## 12. Historical rationale and remaining future work
 
 Stage-0 froze typed quantities because engineering software cannot safely treat units, affine temperatures, or tolerances as display metadata. Stage-2 later generalized the type system rather than hard-coding `Result`, and deliberately bounded collections/iteration rather than silently implementing the entire future standard library. Stage 3 reused one kernel-neutral spatial model rather than creating per-feature axis/frame conventions.
 
-Still future: interfaces/`implements`/generic bounds, `Set`/`Map`, comprehensions, closures/generators, general user iterators, raw topology types/syntax, persistent topology refs, assemblies/configurations, and verification-language types. Those capabilities remain in roadmap scope but are not current language semantics until separately approved and promoted.
+D27 now resolves the semantic direction for future interfaces/bounded generics, and D22/D24/D28 resolve the corresponding raw-geometry, tolerance-domain, and assembly-solver baselines, but their implementation and explicitly deferred syntax/representation/default details remain future work. Still future and not current Stage-3 syntax: interfaces/`implements`/generic bounds, `Set`/`Map`, comprehensions, closures/generators, general user iterators, raw topology types/syntax, persistent topology refs, assemblies/configurations, and verification-language types. Owner approval of their future semantic baseline does not itself authorize implementation.

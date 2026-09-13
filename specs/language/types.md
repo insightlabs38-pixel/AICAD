@@ -18,6 +18,8 @@ Affine dimensions distinguish **absolute** from **delta** quantities (D4/DL-3). 
 
 Current source semantics support structs, enums, and ordinary generic type parameters on structs, enums, and functions under D17. Enum variants may be unit variants, positional tuple variants, or named record variants. Generic parameters are compile-time type parameters; current syntax has no interface/trait bounds, defaults, variance, higher-kinded types, specialization, dependent types, or lifetime system.
 
+D27/DL-29 approves a future restrained general nominal interface/protocol mechanism supporting explicit conformance, static conformance checking, and interface-constrained generics for Stage 6+. Exact syntax remains subject to the language RFC process, and this approval does not add interface syntax to the current Stage-3 grammar. It does not approve class/state inheritance, runtime monkey-patching, mandatory dynamic dispatch, trait objects, higher-kinded types, specialization, associated-type machinery, complex variance, or negative bounds.
+
 `Result<T,E>` and `Optional<T>` are ordinary generic prelude enums built from the same language machinery available to user code. They do not receive hidden compiler-only type semantics.
 
 ## Collections and iteration
@@ -53,6 +55,8 @@ Stage-3 sketch/entity IDs, constraint IDs, parameter/binding IDs, feature IDs, p
 
 The current source language exposes no direct `sketch { ... }` construct and no persistent semantic topology-reference types. Stage-4 durable reference resolution remains future implementation governed by D7's fail-closed policy.
 
+D22/DL-24 establishes the future raw/safe identity boundary: a raw/unsafe geometry handle is an opaque AICAD-owned, kernel-neutral, epoch/context-scoped value, not an OCCT pointer and not a persistent semantic topology reference. Explicit validation/adoption must produce a new safe semantic geometry value when crossing from the raw tier. Exact Stage-5 source spelling, raw-handle representation, and epoch encoding remain deferred.
+
 ## RuntimeBuiltin type closure — D20/DL-21
 
 D20 is **resolved** by DL-21 and implemented by AICAD-076A. Approved AICAD standard nominal types such as `Point3`, `Axis3`, `Frame3`, and `Plane` may appear in always-seeded RuntimeBuiltin signatures.
@@ -63,15 +67,17 @@ The always-seeded builtin environment must be type-closed: every nominal type re
 
 This is a closed first-party standard environment. It does not authorize arbitrary plugin/runtime type injection, host callbacks, OCCT classes in public/HIR signatures, or dynamic extension of `BuiltinFnId` from AICAD source.
 
-## Tolerance terminology
+D21/DL-23 permits future scaling of this **closed** catalogue through a declarative/single-source description that may derive IDs, signatures, required standard-type dependencies, dispatch/effect/validation metadata, and documentation/test metadata. Stable builtin identity must be deterministic and deliberately managed rather than accidentally tied to enum/source ordering. Exact catalogue-generation mechanics are deferred to Stage 5 and do not create an open plugin/native registration mechanism.
 
-Do not treat every numerical threshold as one global epsilon.
+## Tolerance terminology — D24/DL-26
 
-- **D5 equivalence comparison profile** — versioned geometry-comparison policy. The current v1 defaults are: `linear_abs = 1e-4 mm`, `linear_rel = 0`, `area_abs = 1e-6`, `area_rel = 1e-3`, `volume_abs = 1e-6`, `volume_rel = 1e-3`, `center_of_mass_abs = 1e-4 mm`; effective linear/area/volume tolerances scale according to DL-12's `max(abs, rel*S^n)` rules.
-- **Solver convergence tolerance** — numerical convergence/control for a solver implementation; the Stage-3 sketch solver owns its own profile and it is not D5.
-- **Modeling/construction tolerance** — operation/kernel construction policy where required; no new general source default is defined by this specification cleanup.
-- **Approximation tolerance** — operation-specific approximation/discretization policy; future defaults remain unresolved where not already defined.
-- **Verification/assertion tolerance** — tolerance explicitly attached to an engineering assertion/test/evidence context; it does not inherit D5 automatically.
-- **Private representation-validity thresholds** — local implementation guards such as normalization/frame validity thresholds; they are not public modeling/equivalence defaults merely because they exist in code.
+AICAD does not define unrelated numerical policies through one global epsilon. D24 recognizes at least six distinct tolerance domains:
 
-A value approved for one category must not silently become the default for another category.
+- **Representation/validity tolerance** — internal validity thresholds for mathematical/kernel representations.
+- **Modeling/construction tolerance** — operation/kernel construction policy such as intersection, trimming, sewing, healing, booleans, and related construction behavior.
+- **Approximation tolerance** — operation-specific fitting/interpolation/discretization error policy.
+- **Solver tolerance** — numerical convergence/satisfaction control for a solver implementation; the Stage-3 sketch solver owns its own profile and it is not D5.
+- **Verification tolerance** — tolerance explicitly attached to an engineering acceptance/assertion/test/evidence context.
+- **D5 equivalence/comparison tolerance** — the versioned geometry-comparison contract. The current v1 defaults remain: `linear_abs = 1e-4 mm`, `linear_rel = 0`, `area_abs = 1e-6`, `area_rel = 1e-3`, `volume_abs = 1e-6`, `volume_rel = 1e-3`, `center_of_mass_abs = 1e-4 mm`; effective linear/area/volume tolerances scale according to DL-12's `max(abs, rel*S^n)` rules.
+
+These domains may interact but are not aliases. A value approved for one domain must not silently become another domain's default merely because both use floating-point quantities, and no tolerance may be silently widened merely to make a failed operation or test pass. Future Stage-5/6/7 defaults and override mechanics remain separately deferred; D24 does not invent them.

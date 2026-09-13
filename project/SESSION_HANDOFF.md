@@ -17,7 +17,8 @@ the active Stage-3 -> Stage-4 transition state.
 
 **Stage 4 implementation has not started.** `AICAD-080` remains
 `status: todo`. The current transition work does not authorize semantic-
-reference implementation, Stage-5 work, CI expansion, or AICAD-101+ tasks.
+reference implementation, Stage-5/6 implementation, CI expansion, or
+AICAD-101+ tasks.
 
 ## Accepted Stage-3 implementation
 
@@ -99,7 +100,22 @@ exact commands/results.
 - corrected the later stale transition-brief treatment of D20: DL-21 remains
   authoritative, D20 is resolved, and AICAD-076A implements the ruling.
 
-See `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`.
+### Fourth owner-decision recording pass
+
+- recorded D21-D30 as **RESOLVED** owner decisions;
+- assigned D21-D30 to Decision Log entries DL-23 through DL-32 because
+  DL-22 is already the Stage-3 approval record;
+- resolved the semantic-baseline questions represented by frozen post-100
+  audit recommendations OD-S5-02..OD-S5-06 and OD-S6-01..OD-S6-05 without
+  rewriting the frozen audit itself;
+- retained every implementation/representation detail the owner explicitly
+  deferred for future Stage-4/5/6 evidence;
+- added only targeted current spec/RFC cross-references for the new rulings;
+- recorded the anti-drift rule: Stage-4 evidence may refine explicitly
+  deferred details through review but may not silently weaken D21-D30.
+
+See `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`
+and `DEFERRED_TRANSITION_ITEMS.md`.
 
 ## Documentation/specification sources and precedence
 
@@ -136,6 +152,31 @@ callbacks, or OCCT types in public/HIR signatures. AICAD-076's scalar
 signature decomposition was temporary compatibility work, not the intended
 long-term Safe CAD API architecture.
 
+## D21-D30 status — resolved by DL-23 through DL-32
+
+The new owner rulings establish future semantic baselines for closed
+RuntimeBuiltin scaling (D21), safe/raw geometry tiers (D22), kernel-backed
+source queries (D23), distinct tolerance domains (D24), feature/provenance
+preservation through abstraction (D25), assembly identity domains (D26), a
+general nominal interface/protocol mechanism (D27), solver-neutral assembly
+relations and deterministic observable pose (D28), immutable configuration
+overlays (D29), and external-asset content identity/provenance (D30).
+
+These are decisions, not implementation authorization. Their explicitly
+deferred representation/syntax/default/scheduling/solver/schema details
+remain in `DEFERRED_TRANSITION_ITEMS.md`. Stage-4 evidence may refine those
+details only through explicit review; it must not silently weaken the
+approved semantic invariants.
+
+## Remaining genuinely open owner decisions relevant to later stages
+
+- D7 automatic fingerprint-recovery policy;
+- D8 exact internal OCAF usage;
+- D12 trusted native extension/plugin security boundary;
+- D13 final public/commercial distribution licensing policy;
+- D15 default sandboxed plugin runtime choice;
+- later Stage-7+ decisions not covered by D21-D30.
+
 ## Known current boundaries
 
 - `.aicad` source has no supported direct sketch-authoring construct even
@@ -143,38 +184,38 @@ long-term Safe CAD API architecture.
   layer;
 - Stage-3 raw face/edge integer selectors are not persistent references;
 - `FeatureGraph` does not yet provide general interprocedural flattening of
-  arbitrary geometry-producing source functions/branches;
+  arbitrary geometry-producing source functions/branches; D25 defines the
+  future required observability invariant without implementing it here;
 - `ParametricBuildSession` reuses geometry only within the live in-process
   session/kernel context; no persistent disk/remote cache is implied;
 - the implemented CLI is `cad build <path.aicad> [--json] [--output <path>]
   [--name <binding>[.<field>]]`; broader planned commands are not current;
-- future Stage-5+ syntax/APIs remain roadmap material until separately
-  approved and promoted.
+- future Stage-5/6 syntax/APIs remain unimplemented even where D21-D30 now
+  provide an approved semantic baseline.
 
 ## Remaining transition work
 
-After the normative cleanup pass, the major transition work intentionally
-remaining is:
+The major transition work intentionally remaining is:
 
 1. expanded Stage-4 CI/CD preparation under separate instruction;
 2. final Stage-4 initialization and explicit implementation authorization.
 
-Normative specification cleanup is complete. D20 is not a remaining
-transition blocker. Do not begin AICAD-080 merely because that pass is
-complete.
+Normative specification cleanup and D21-D30 owner-decision recording are
+complete. Do not begin AICAD-080 or any Stage-5/6 implementation merely
+because those decisions are now recorded.
 
 ## Next action
 
-**Owner review of the completed normative cleanup.** Do not start AICAD-080
-or expand CI/CD until separately instructed.
+**Owner review of the completed governance/normative transition state.** Do
+not start AICAD-080 or expand CI/CD until separately instructed.
 
 ## Validation note
 
-A local `git diff --check` run for the D20 correction could not be completed
-because the execution environment cannot resolve `github.com` and therefore
-cannot access a checkout/ref. Remote GitHub compare/scope and patch/whitespace
-review are used instead. No production Rust/build path is changed by this
-correction.
+The execution environment cannot resolve `github.com` from local Git, so
+checkout-dependent startup, `git diff --check`, Cargo formatting/tests, and
+repository-local documentation validation cannot be reported as fresh local
+runs. Remote GitHub compare/scope plus patch/whitespace validation is used
+instead. This owner-decision pass changes no production Rust/build path.
 
 ## Git policy
 

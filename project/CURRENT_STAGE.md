@@ -73,9 +73,10 @@ Completed transition preparation now includes:
 - accepted-RFC/current-decision reconciliation while preserving exact pre-cleanup RFC snapshots under `rfcs/history/stage0/`;
 - D5 determinism/equivalence and tolerance-category clarification;
 - frozen-foundation-plan authority clarification;
-- correction of stale transition-brief wording that incorrectly treated D20 as open; DL-21 remains authoritative and AICAD-076A implements it.
+- correction of stale transition-brief wording that incorrectly treated D20 as open; DL-21 remains authoritative and AICAD-076A implements it;
+- owner recording of D21-D30 as resolved future-stage semantic baselines in DL-23 through DL-32, with implementation details explicitly deferred.
 
-The normative cleanup is recorded at
+The normative/governance cleanup is recorded at
 `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`.
 
 ## Stage 4 — not started
@@ -94,12 +95,19 @@ claim as current:
 Stage-3 named outputs (`--name <binding>[.<field>]`) remain exact source-
 name selection, not persistent topology identity.
 
-## D20 — resolved, not a transition blocker
+## Owner decisions relevant to future stages
 
-D20 is resolved by `project/DECISION_LOG.md#DL-21`; AICAD-076A implements
-that ruling. The earlier normative-cleanup brief incorrectly described D20
-as open. That stale wording has been corrected and does not reopen or
-supersede DL-21.
+D20 remains resolved by `project/DECISION_LOG.md#DL-21`; AICAD-076A
+implements that ruling.
+
+D21-D30 are now resolved by DL-23 through DL-32. They establish semantic
+baselines for future RuntimeBuiltin scaling, safe/raw geometry, source-visible
+kernel queries, tolerance domains, feature/provenance preservation,
+assembly identity, interfaces/protocols, assembly relation/pose semantics,
+configurations, and external-asset identity. Recording these rulings does
+**not** authorize their Stage-5/6 implementations and does not begin Stage 4.
+Implementation/representation details explicitly deferred by those rulings
+remain listed in `DEFERRED_TRANSITION_ITEMS.md`.
 
 ## Remaining transition work
 
@@ -109,13 +117,13 @@ major preparation areas are:
 1. expanded Stage-4 CI/CD preparation;
 2. final Stage-4 initialization/authorization.
 
-Normative specification cleanup is complete and is no longer a deferred
-transition item. The remaining items are not authorized merely by appearing
+Normative specification cleanup and the D21-D30 owner-decision recording
+pass are complete. The remaining items are not authorized merely by appearing
 here.
 
 ## Owner approval required to begin Stage-4 implementation
 
-Yes. Stage-3 approval is complete, but that approval does not itself begin
-`AICAD-080`. Stage-4 implementation remains blocked until the transition is
-reviewed and a later initialization/authorization explicitly opens the
-Stage-4 implementation window.
+Yes. Stage-3 approval and the D21-D30 future-stage rulings do not themselves
+begin `AICAD-080`. Stage-4 implementation remains blocked until the
+transition is reviewed and a later initialization/authorization explicitly
+opens the Stage-4 implementation window.
