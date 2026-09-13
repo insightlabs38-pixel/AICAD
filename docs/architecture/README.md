@@ -1,7 +1,5 @@
-# docs/architecture
+# Moved: current architecture documentation
 
-Authored architecture documentation kept in sync with implemented behavior
-(never a substitute for `docs/plan/`, the frozen source-of-truth plan
-bundle, or for the RFCs in `specs/`).
+Current contributor architecture documentation now lives at `docs/developer/architecture/`.
 
-Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md`.
+The pre-transition placeholder README is preserved under `project/planning/transitions/stage3-to-stage4/legacy-docs/`.
