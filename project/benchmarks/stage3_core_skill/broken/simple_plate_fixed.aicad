@@ -1,0 +1,17 @@
+// AICAD-079 benchmark task 5 ("fix a compiler error"): one valid fix for
+// `simple_plate_broken.aicad`'s own dimensional-arithmetic error — not
+// the only correct fix (any dimensionally valid `margin` expression that
+// preserves `width`/`depth`/`thickness`/`body` passes), kept here as the
+// task's own reference answer.
+
+part SimplePlate {
+    param width: Length = 50mm;
+    param depth: Length = 30mm;
+    param thickness: Length = 5mm;
+
+    // FIXED: `width - thickness` is a `Length`, matching `margin`'s own
+    // declared type.
+    let margin: Length = width - thickness;
+
+    let body: Geometry = box(width, depth, thickness);
+}

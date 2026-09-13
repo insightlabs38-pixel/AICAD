@@ -8,12 +8,18 @@ fn main() {
         Ok(parsed) => parsed,
         Err(err) => {
             eprintln!("error: {err}");
-            eprintln!("usage: cad build <path.aicad> [--json] [--output <path>]");
+            eprintln!(
+                "usage: cad build <path.aicad> [--json] [--output <path>] [--name <binding>[.<field>]]"
+            );
             std::process::exit(2);
         }
     };
 
-    let report = cad_cli::run_build(&parsed.path, parsed.output.as_deref());
+    let report = cad_cli::run_build(
+        &parsed.path,
+        parsed.output.as_deref(),
+        parsed.name.as_deref(),
+    );
     if parsed.json {
         println!("{}", report.to_json().to_canonical_string());
     } else {

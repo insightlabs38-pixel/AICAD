@@ -1,0 +1,16 @@
+// AICAD-079 benchmark task 5 ("fix a compiler error"): deliberately
+// broken. Every other line is valid Safe CAD source using only
+// implemented Stage-3 builtins/types.
+
+part SimplePlate {
+    param width: Length = 50mm;
+    param depth: Length = 30mm;
+    param thickness: Length = 5mm;
+
+    // BUG: `thickness * thickness` is an area (`Length^2`), not a
+    // `Length` — adding it to `width` (a `Length`) is a dimensional
+    // mismatch, rejected at compile time.
+    let margin: Length = width + thickness * thickness;
+
+    let body: Geometry = box(width, depth, thickness);
+}

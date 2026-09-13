@@ -1,0 +1,101 @@
+// Stage-3 ordinary-part example (AICAD-079): a square bearing-mount
+// plate — a raised boss with a central bore, a bolt-circle of mounting
+// holes (`radial_pattern`), and a small corner keyway pocket (`pocket`) —
+// built entirely from the Stage-3 Safe CAD builtin catalogue, exposing
+// its final solid as the `part`'s own named `body` output (`AICAD-071`/
+// `AICAD-079`).
+//
+// The bolt-circle pattern is built the same way `examples/brackets/
+// stage2_mounting_plate.aicad`'s own row of holes is: a single cutting
+// tool is placed once, patterned (`radial_pattern`, not `hole` itself,
+// which always cuts immediately), then cut from the plate exactly once —
+// `radial_pattern(target, axis, count, angle)` returns the union of
+// `count` copies of `target` at `0, angle/count, 2*angle/count, ...`, so
+// `count = 6, angle = 360deg` gives an evenly spaced 6-hole bolt circle.
+//
+// `fillet`'s raw edge index (`[5]`) is selected on the *plain, unmodified*
+// `box` before any other operation, matching `stage2_mounting_plate.
+// aicad`'s own documented empirical-selection precedent; `hole`/`pocket`/
+// `radial_pattern` never consume a raw face/edge index at all (they place
+// a tool by absolute `Axis3`/`Frame3` coordinates, then boolean-cut/union
+// it), so they remain valid regardless of what already happened to the
+// target's own topology.
+
+param plate_size: Length = 60mm;
+param plate_thickness: Length = 8mm;
+param boss_radius: Length = 15mm;
+param boss_height: Length = 10mm;
+param bore_diameter: Length = 12mm;
+param bolt_circle_radius: Length = 22mm;
+param bolt_hole_diameter: Length = 4mm;
+param fillet_radius: Length = 2mm;
+param keyway_width: Length = 6mm;
+param keyway_length: Length = 4mm;
+param keyway_depth: Length = 3mm;
+
+const BOLT_COUNT: Int = 6;
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part BearingMount {
+    // Top edge at the plate's far corner (`x = plate_size`), rounded
+    // before any other feature touches the plate.
+    let base: Geometry = fillet(
+        box(plate_size, plate_size, plate_thickness),
+        [5],
+        fillet_radius,
+    );
+
+    // A small alignment keyway pocket in a corner well clear of the
+    // boss/bolt circle (a plain Frame3-placed cut — never index-fragile).
+    let keyed: Geometry = pocket(
+        base,
+        Frame3(
+            origin = Point3(x = 2mm, y = 2mm, z = plate_thickness - keyway_depth),
+            x_axis = Vector3(x = 1.0, y = 0.0, z = 0.0),
+            y_axis = Vector3(x = 0.0, y = 1.0, z = 0.0),
+            z_axis = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        keyway_width,
+        keyway_length,
+        keyway_depth,
+    );
+
+    let boss: Geometry = transform(
+        cylinder(boss_radius, boss_height),
+        plate_size / 2,
+        plate_size / 2,
+        plate_thickness,
+    );
+    let combined: Geometry = union(keyed, boss);
+
+    // The central bore, through both the boss and the plate.
+    let bored: Geometry = hole(
+        combined,
+        Axis3(
+            origin = Point3(x = plate_size / 2, y = plate_size / 2, z = 0mm - HOLE_OVERSHOOT),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        bore_diameter,
+        plate_thickness + boss_height + HOLE_OVERSHOOT * 2,
+    );
+
+    // One bolt-hole cutting tool, offset from the plate's own center by
+    // `bolt_circle_radius` along +X, patterned into a full 6-hole circle,
+    // then cut from the plate exactly once.
+    let bolt_tool: Geometry = transform(
+        cylinder(bolt_hole_diameter / 2, plate_thickness + HOLE_OVERSHOOT * 2),
+        plate_size / 2 + bolt_circle_radius,
+        plate_size / 2,
+        0mm - HOLE_OVERSHOOT,
+    );
+    let bolt_pattern: Geometry = radial_pattern(
+        bolt_tool,
+        Axis3(
+            origin = Point3(x = plate_size / 2, y = plate_size / 2, z = 0mm),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        BOLT_COUNT,
+        360deg,
+    );
+    let body: Geometry = cut(bored, bolt_pattern);
+}

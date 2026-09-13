@@ -11,8 +11,9 @@
 //! CLI surface (`cad new`/`test`/`inspect`/`docs`/`import`/`package`/
 //! `debug`/`diff`/...) spanning every later Stage. `AICAD-061`'s own task
 //! title is narrower: "Create cad-cli build command with human and JSON
-//! diagnostics." This crate therefore implements exactly `cad build
-//! <path> [--json] [--output <path>]` — none of the other command groups
+//! diagnostics." This crate therefore implements exactly `cad build <path>
+//! [--json] [--output <path>] [--name <binding>[.<field>]]` (`--name`
+//! added by `AICAD-079`, see below) — none of the other command groups
 //! §2-9 name, and only the subset of §13's build-output schema this
 //! stage's pipeline can actually populate (`status`/`diagnostics`/
 //! `artifacts`; `configuration`/`changed_features`/`reference_health`/
@@ -28,14 +29,23 @@
 //!
 //! ## Which geometry gets exported
 //!
-//! A `.aicad` program has no source-level "this is the part to build"
-//! designation yet (no such syntax exists in Stage 2). When `--output` is
-//! given, this crate exports the **last** `Geometry`-producing node
-//! appended to the interpreter's own accumulated `GeometryGraph` (i.e. the
-//! most recently constructed shape) — a documented, narrow default for
-//! this task's own scope, not a claim that it generalizes to a real
-//! multi-part project; a later task introducing an explicit "build
-//! target" designation should replace this rule rather than extend it.
+//! When `--output` is given without `--name`, this crate still exports
+//! the **last** `Geometry`-producing node appended to the interpreter's
+//! own accumulated `GeometryGraph` (i.e. the most recently constructed
+//! shape) — the original Stage-2 default, unchanged, for a program with
+//! no declared named outputs at all.
+//!
+//! `AICAD-079` (Stage 3, "named semantic outputs baseline") added
+//! `--name <binding>[.<field>]`: an explicit selection, by the exact
+//! declared name of a top-level `let`/`const`/`param` binding or one
+//! named field of a top-level `part`'s own executed outputs (`AICAD-071`),
+//! of exactly which `Geometry` value to export — the `explicit` durability
+//! level (`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §11), not a
+//! query or topology search. See `build::resolve_named_output`'s own doc
+//! comment. This is the "build target" designation this doc comment
+//! itself once called out as missing; the old positional default remains
+//! available (and is still what an unnamed `--output` uses) precisely so
+//! no already-passing Stage-2/Stage-3 caller changes behavior.
 //!
 //! No third-party (crates.io) dependency is introduced here, consistent
 //! with every other Stage-2 crate's own zero-external-dependency policy —

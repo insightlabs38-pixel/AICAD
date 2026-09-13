@@ -1,0 +1,83 @@
+// Stage-3 ordinary-part example (AICAD-079): an L-shaped mounting
+// bracket, built entirely from the Stage-3 Safe CAD builtin catalogue
+// (`box`/`union`/`fillet`/`hole`/`mirror`) with no raw kernel handle ever
+// touched from source (`docs/API/safe-cad-api.md`, `project/
+// DECISION_LOG.md#DL-15`).
+//
+// Demonstrates `AICAD-079`'s own "named semantic outputs baseline": a
+// `part`'s top-level `let`s are its exposed outputs (`AICAD-071`), so this
+// single part exposes both its defining parameters (`leg_x`, `leg_z`, ...)
+// and two independently named `Geometry` outputs — `body` (the bracket
+// itself) and `mirrored` (its opposite-hand twin) — by ordinary source-
+// level naming, not by any query/topology search. Build either one
+// explicitly with `cad build stage3_l_bracket.aicad --output body.step
+// --name LBracket.body` (or `LBracket.mirrored`); `--name LBracket` alone
+// would be ambiguous (two `Geometry` fields), exactly the case `--name`'s
+// own diagnostic exists to catch.
+//
+// Face/edge indices below are raw kernel-enumeration-order selections
+// into a *plain, not-yet-unioned* `box`, following `examples/brackets/
+// stage2_mounting_plate.aicad`'s own established precedent and caveat:
+// stable for any positive box dimensions (`BRepPrimAPI_MakeBox`'s own
+// enumeration order depends only on its construction algorithm), not a
+// claim of persistent semantic identity — that is Stage 4's job.
+
+param leg_x: Length = 60mm;
+param leg_z: Length = 50mm;
+param width: Length = 30mm;
+param thickness: Length = 6mm;
+param hole_diameter: Length = 5mm;
+param fillet_radius: Length = 2mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part LBracket {
+    // The flat base leg, its far (away from the upright wall) top edge
+    // rounded before any boolean operation touches it — edge `[5]` of a
+    // plain `box(leg_x, width, thickness)` is the `x = leg_x`, `z =
+    // thickness` edge (spanning the `width` direction), i.e. the top edge
+    // at the leg's *far* end, well clear of the wall's own `x` extent
+    // below.
+    let base: Geometry = fillet(box(leg_x, width, thickness), [5], fillet_radius);
+
+    // The upright wall leg, standing at the base's own near corner
+    // (`x` in `[0, thickness]`), tall enough to rise above the base.
+    let wall: Geometry = box(thickness, width, leg_z);
+
+    let combined: Geometry = union(base, wall);
+
+    // One through-hole in the base leg (vertical, +Z), placed well clear
+    // of the wall's own footprint.
+    let bored_base: Geometry = hole(
+        combined,
+        Axis3(
+            origin = Point3(x = leg_x - 15mm, y = width / 2, z = 0mm - HOLE_OVERSHOOT),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        hole_diameter,
+        thickness + HOLE_OVERSHOOT * 2,
+    );
+
+    // One through-hole in the wall leg (horizontal, +X), placed well
+    // above the base leg's own thickness so the two holes never interact.
+    let body: Geometry = hole(
+        bored_base,
+        Axis3(
+            origin = Point3(x = 0mm - HOLE_OVERSHOOT, y = width / 2, z = leg_z - 15mm),
+            direction = Vector3(x = 1.0, y = 0.0, z = 0.0),
+        ),
+        hole_diameter,
+        thickness + HOLE_OVERSHOOT * 2,
+    );
+
+    // The opposite-hand twin of `body`, mirrored across the `x = 0` plane
+    // — an ordinary second named `Geometry` output, not a variant that
+    // replaces `body`.
+    let mirrored: Geometry = mirror(
+        body,
+        Plane(
+            origin = Point3(x = 0mm, y = 0mm, z = 0mm),
+            normal = Vector3(x = 1.0, y = 0.0, z = 0.0),
+        ),
+    );
+}

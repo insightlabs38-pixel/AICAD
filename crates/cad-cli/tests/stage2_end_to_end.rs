@@ -104,8 +104,12 @@ fn stage2_bracket_fixture_builds_to_a_valid_exact_brep_and_step() {
     let output_path = std::env::temp_dir().join("aicad_063_stage2_bracket.step");
     let _ = std::fs::remove_file(&output_path);
 
-    let report =
-        cad_cli::build::build_source("stage2_mounting_plate.aicad", &source, Some(&output_path));
+    let report = cad_cli::build::build_source(
+        "stage2_mounting_plate.aicad",
+        &source,
+        Some(&output_path),
+        None,
+    );
     assert_eq!(
         report.status,
         cad_cli::BuildStatus::Ok,
@@ -232,6 +236,7 @@ fn stage2_bracket_fixture_is_deterministic_across_independent_runs() {
             "stage2_mounting_plate.aicad",
             &source,
             Some(&output_path),
+            None,
         );
         assert_eq!(
             report.status,
@@ -276,7 +281,7 @@ fn a_dimensionally_invalid_variant_of_the_fixture_is_rejected_before_execution()
     let output_path = std::env::temp_dir().join("aicad_063_broken_variant.step");
     let _ = std::fs::remove_file(&output_path);
 
-    let report = cad_cli::build::build_source("broken.aicad", &source, Some(&output_path));
+    let report = cad_cli::build::build_source("broken.aicad", &source, Some(&output_path), None);
 
     assert_eq!(report.status, cad_cli::BuildStatus::Failed);
     assert!(report.artifacts.is_empty());
