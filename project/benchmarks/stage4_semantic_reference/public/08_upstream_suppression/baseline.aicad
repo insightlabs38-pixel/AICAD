@@ -1,0 +1,23 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// Category: upstream suppression. See ./case.md for the intended query
+// target, expected classification, and measured evidence. This file is
+// frozen — do not edit without re-deriving case.md's own measurements.
+
+param box_x: Length = 40mm;
+param box_y: Length = 20mm;
+param box_z: Length = 10mm;
+param fillet_radius: Length = 3mm;
+param hole_diameter: Length = 5mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Bracket {
+    let rounded: Geometry = fillet(box(box_x, box_y, box_z), [1], fillet_radius);
+
+    let body: Geometry = hole(
+        rounded,
+        Axis3(origin = Point3(x = 20mm, y = box_y / 2, z = 0mm - HOLE_OVERSHOOT), direction = Vector3(x = 0.0, y = 0.0, z = 1.0)),
+        hole_diameter,
+        box_z + HOLE_OVERSHOOT * 2,
+    );
+}

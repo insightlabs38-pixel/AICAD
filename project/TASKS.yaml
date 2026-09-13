@@ -2422,7 +2422,7 @@ tasks:
 - id: AICAD-079A
   stage: 3
   title: Freeze the Stage-4 semantic-reference benchmark and held-out corpus; minimal docs/archive scaffolding
-  status: todo
+  status: done
   depends_on:
   - AICAD-079
   plan_references:

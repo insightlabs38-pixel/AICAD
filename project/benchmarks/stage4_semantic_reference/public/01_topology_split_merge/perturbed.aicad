@@ -1,0 +1,37 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// Category: topology splits/merges. See ./case.md for the intended query
+// target, expected classification, and measured evidence. This file is
+// frozen — do not edit without re-deriving case.md's own measurements.
+
+param plate_x: Length = 60mm;
+param plate_y: Length = 30mm;
+param plate_z: Length = 10mm;
+param hole_diameter: Length = 6mm;
+param hole_center_a: Length = 15mm;
+param hole_center_b: Length = 20mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Wall {
+    let base: Geometry = box(plate_x, plate_y, plate_z);
+
+    let bored_a: Geometry = hole(
+        base,
+        Axis3(
+            origin = Point3(x = hole_center_a, y = plate_y / 2, z = 0mm - HOLE_OVERSHOOT),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        hole_diameter,
+        plate_z + HOLE_OVERSHOOT * 2,
+    );
+
+    let body: Geometry = hole(
+        bored_a,
+        Axis3(
+            origin = Point3(x = hole_center_b, y = plate_y / 2, z = 0mm - HOLE_OVERSHOOT),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        hole_diameter,
+        plate_z + HOLE_OVERSHOOT * 2,
+    );
+}

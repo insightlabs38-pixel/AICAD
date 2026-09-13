@@ -1,0 +1,33 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// Category: pattern-count changes. See ./case.md for the intended query
+// target, expected classification, and measured evidence. This file is
+// frozen — do not edit without re-deriving case.md's own measurements.
+
+param plate_radius: Length = 25mm;
+param plate_thickness: Length = 8mm;
+param bolt_circle_radius: Length = 18mm;
+param bolt_hole_diameter: Length = 4mm;
+
+const BOLT_COUNT: Int = 5;
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Flange {
+    let plate: Geometry = cylinder(plate_radius, plate_thickness);
+
+    let bolt_tool: Geometry = transform(
+        cylinder(bolt_hole_diameter / 2, plate_thickness + HOLE_OVERSHOOT * 2),
+        bolt_circle_radius,
+        0mm,
+        0mm - HOLE_OVERSHOOT,
+    );
+    let bolt_pattern: Geometry = radial_pattern(
+        bolt_tool,
+        Axis3(
+            origin = Point3(x = 0mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        BOLT_COUNT,
+        360deg,
+    );
+    let body: Geometry = cut(plate, bolt_pattern);
+}

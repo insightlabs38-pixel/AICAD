@@ -1,0 +1,26 @@
+// AICAD-079A Stage-4 semantic-reference benchmark fixture (Batch S3-09).
+// Category: valid operation reordering. See ./case.md for the intended
+// query target, expected classification, and measured evidence. This file
+// is frozen — do not edit without re-deriving case.md's own measurements.
+
+param box_x: Length = 50mm;
+param box_y: Length = 30mm;
+param box_z: Length = 10mm;
+param hole_diameter: Length = 6mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Plate {
+    let hole_a_cut: Geometry = hole(
+        box(box_x, box_y, box_z),
+        Axis3(origin = Point3(x = 10mm, y = box_y / 2, z = 0mm - HOLE_OVERSHOOT), direction = Vector3(x = 0.0, y = 0.0, z = 1.0)),
+        hole_diameter,
+        box_z + HOLE_OVERSHOOT * 2,
+    );
+    let body: Geometry = hole(
+        hole_a_cut,
+        Axis3(origin = Point3(x = 40mm, y = box_y / 2, z = 0mm - HOLE_OVERSHOOT), direction = Vector3(x = 0.0, y = 0.0, z = 1.0)),
+        hole_diameter,
+        box_z + HOLE_OVERSHOOT * 2,
+    );
+}
