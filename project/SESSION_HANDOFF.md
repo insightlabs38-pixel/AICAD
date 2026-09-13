@@ -3,146 +3,139 @@
 ## Canonical branch and HEAD
 
 `origin/claude/aicad-stage3-dev`. Commits on this branch since Stage-2
-closed, in order (unchanged history through `cdd4ef2` omitted — see prior
+closed, in order (unchanged history through `419bd83` omitted — see prior
 handoff revisions in git history for that detail; this handoff lists only
 what changed this invocation and the current tip):
 
-- `16a2f38` — `AICAD-077`: native `aicad_occt_mirror_shape` kernel
-  capability, `cad_occt_bridge::Shape::mirror`, `GeometryOp::Mirror`, and
-  its dispatch; `mirror`/`linear_pattern`/`radial_pattern` added to the
-  Safe CAD `RuntimeBuiltin` catalogue. See `project/reports/AICAD-077.md`.
-- `cac6e87` (this invocation's own, second commit) — `AICAD-078`: `shell`
-  Safe CAD builtin over the already-existing `GeometryOp::Shell`/
-  `Shape::shell` capability; normalized diagnostics now that `project/
-  DECISION_LOG.md#DL-18` (D10) is in force — stale "D10 is still open"
-  doc comments fixed, the checked-in diagnostic JSON schema versioned,
-  and a genuine pre-existing `GEOM-E005`/`GEOM-E006` cross-crate code
-  collision (`cad-feature-graph` vs. `cad-geometry-runtime`) found and
-  fixed. See `project/reports/AICAD-078.md`.
+- `dee1f4b` — `AICAD-079`: `cad build` gains `--name <binding>[.<field>]`
+  (`crates/cad-cli/src/build.rs::resolve_named_output`, wired through
+  `cli.rs`/`main.rs`) to export a specific named `Geometry` output by its
+  exact declared name, rather than the Stage-2-only "last geometry node
+  in the graph" default (unchanged when `--name` is omitted — every
+  pre-existing caller/test/example is unaffected). Three new ordinary-
+  part examples (`examples/brackets/stage3_l_bracket.aicad`, `examples/
+  plates/stage3_bearing_mount.aicad`, `examples/enclosures/
+  stage3_enclosure.aicad`), each proven end to end
+  (`crates/cad-cli/tests/stage3_ordinary_parts.rs`) to build to a valid,
+  re-imported, `is_valid`/`validate`-passing exact B-rep. `skills/
+  cad-core.skill.md` (new — the Stage-0 core-skill draft never produced
+  then, `project/gates/stage-0-gate.md` gap G1, written now that an
+  actual Stage-3 catalogue/CLI exists to describe; every illustrative
+  snippet proven against the real pipeline,
+  `crates/cad-cli/tests/stage3_skill_doc_snippets.rs`) and `project/
+  benchmarks/stage3_core_skill/` (new — five benchmark task briefs +
+  reference solutions + verification commands; seed material only, no
+  model-invocation harness). See `project/reports/AICAD-079.md`.
+- `ee7baf5` (this invocation's own, second commit) — Batch S3-08
+  checkpoint: `project/gates/STAGE3-C_MODELING.md`, covering Batches
+  S3-06 (`AICAD-075A`/`076`/`076A`), S3-07 (`AICAD-077`/`078`), and S3-08
+  (`AICAD-079`) together (none of the three has a checkpoint of its own
+  per `project/CURRENT_STAGE.md`'s fixed batch list, which places this
+  checkpoint here instead). **PASS.**
 
 Both commits are pushed to `origin/claude/aicad-stage3-dev` (verified —
 see "Push verification" below).
 
 ## Active stage / current batch
 
-Stage 3, `status: active` (`project/CURRENT_STAGE.md`). **Batch S3-07 is
-now COMPLETE** (`AICAD-077`/`AICAD-078` both `status: done` in `project/
-TASKS.yaml`). Per the campaign brief ("each invocation works on exactly
-ONE fixed batch"), this invocation stops here rather than continuing into
-Batch S3-08.
+Stage 3, `status: active` (`project/CURRENT_STAGE.md`). **Batch S3-08 is
+now COMPLETE** (`AICAD-079` `status: done` in `project/TASKS.yaml`, and
+its own checkpoint `project/gates/STAGE3-C_MODELING.md` prepared and
+committed, per the active scheduled-task brief's fixed batch list placing
+that checkpoint immediately after `AICAD-079`). Per the campaign brief
+("each invocation works on exactly ONE fixed batch"), this invocation
+stops here rather than continuing into Batch S3-09.
 
 ## Last completed task
 
-`AICAD-078` ("Implement high-level fillet/chamfer/shell wrappers and
-normalized diagnostics"), second task of Batch S3-07. See `project/
-reports/AICAD-078.md` for full detail; summary:
-
-- New `BuiltinFnId::Shell` — `shell(target: Geometry, removed_faces:
-  List<Int>, thickness: Length) -> Geometry` — dispatching to the
-  already-existing `GeometryOp::Shell`/`Shape::shell`/`aicad_occt_shell`
-  (no new IR variant or kernel capability needed; this was purely the
-  missing catalogue entry `cad_hir::builtins`'s own "Stage-2 catalogue
-  scope" note left out alongside `fillet`/`chamfer`). `thickness` is
-  always hollowed inward — the runtime dispatcher negates the evaluated
-  magnitude before building the `GeometryOp::Shell` node, since
-  `Shape::shell`'s own kernel-level convention is "negative = inward,
-  positive = outward" and exposing that sign convention to Safe CAD
-  source directly would be surprising (`docs/plan/
-  04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool = true` default).
-- Diagnostics normalized now that `DL-18` (D10) is in force: fixed stale
-  "D10 is still open/provisional" doc comments across
-  `cad-diagnostics`/`cad-runtime`/`cad-units`/`cad-cli` and the checked-in
-  `specs/schemas/diagnostic.schema.json` (also added a `$comment`
-  schema-version annotation per `DL-18`'s "versioned schema"
-  requirement); found and fixed a genuine pre-existing `GEOM-E005`/
-  `GEOM-E006` collision between `cad_feature_graph::FeatureGraphError`
-  and `cad_geometry_runtime::dispatch::DispatchError` (renumbered the
-  younger assignment to `GEOM-E007`/`GEOM-E008`); added real-diagnostic
-  schema-conformance evidence (`cad-diagnostics/tests/
-  schema_conformance.rs` gained two tests: one validating an actual
-  `GeometryIrError::to_diagnostic()` output, one a standing uniqueness
-  check over every `GEOM`-family code in the workspace).
-
-Test counts (delta from `AICAD-077`'s own baseline, 991 workspace total):
-workspace `cargo test --workspace` now 996 passed, 0 failed. Per-crate:
-`cad-runtime` 133 -> 135 (+2), `cad-geometry-runtime` lib 23 -> 24 (+1),
-`cad-diagnostics` (lib + `schema_conformance.rs`) 30 -> 32 (+2),
-`cad-feature-graph` 34 -> 34 (+0, one existing assertion corrected for
-the code renumbering, not a new test). Every other crate's count is
-unchanged from `AICAD-077`'s own last-verified totals.
+`AICAD-079` ("Implement named semantic outputs baseline + ordinary-part
+examples + AI benchmark seed"), the only task of Batch S3-08, followed by
+that batch's own checkpoint. See `project/reports/AICAD-079.md` for full
+detail; summary already given above under "Canonical branch and HEAD."
 
 ## Partial task
 
-None. Both `AICAD-077` and `AICAD-078` completed cleanly in this
-invocation, finishing Batch S3-07 in full.
+None. `AICAD-079` completed cleanly in this invocation, and its own
+checkpoint (`STAGE3-C_MODELING.md`) was prepared in the same invocation,
+finishing Batch S3-08 in full.
 
 ## Next task
 
-Batch S3-08 (`AICAD-079`, "Implement named semantic outputs baseline +
-ordinary-part examples + AI benchmark seed"), depends on `AICAD-078`
-(satisfied). Read `project/TASKS.yaml`'s `AICAD-079` entry and `docs/
-plan/04_HIGH_LEVEL_MODELING_API.md`/`06_REFERENCES_QUERIES_FEATURE_DAG.md`
-first. Per `AGENTS.md`'s own explicit Stage-3 boundary: "`AICAD-079`
-named outputs are Stage-3 semantic/modeling outputs only. Do not claim
-they solve Stage-4 persistent topology identity." After `AICAD-079`
-completes, Batches S3-06/S3-07/S3-08 will all be done, and `project/
-gates/STAGE3-C_MODELING.md` should be prepared per `project/
-CURRENT_STAGE.md`'s own checkpoint schedule — but that checkpoint
-creation is not itself part of `AICAD-079`'s own task scope unless a
-future invocation's own batch-completion check determines otherwise; do
-not skip ahead into `AICAD-079A`/Batch S3-09 regardless.
+Batch S3-09 (`AICAD-079A`, "Freeze the Stage-4 semantic-reference
+benchmark and held-out corpus; minimal docs/archive scaffolding"),
+depends on `AICAD-079` (satisfied). Read `project/TASKS.yaml`'s
+`AICAD-079A` entry, `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md`,
+`docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md`, and `docs/plan/
+20_REVIEW_PASS_GAPS_AND_DECISIONS.md` first. Per `AGENTS.md`'s own
+explicit boundary, restated in that task's own `TASKS.yaml` acceptance
+list: this task freezes a benchmark/corpus and creates **only** the
+already-approved EMPTY/minimal docs/archive folder scaffolding (`docs/
+site/user/`, `docs/site/language/`, `docs/site/modeling/`, `docs/site/
+developer/`, `project/reports/archive/stage{0,1,2,3}/`) — it must
+implement **no** Stage-4 semantic-reference resolution logic itself, and
+no documentation work beyond that scaffolding (no MkDocs config,
+tutorials, README rewrite, or report migration). After `AICAD-079A`
+completes, the next batch is S3-10 (`AICAD-079B`, the Stage-3 owner gate
+packet, `project/gates/stage-3-gate.md`) — do not skip ahead into it or
+into `AICAD-080`/Stage 4 regardless of how close this campaign is to
+finishing Stage 3.
 
 ## Exact recent test status
 
 - `cargo fmt --all -- --check` → clean.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
   → zero warnings, full workspace (29 crates).
-- `cargo test --workspace` → 996 passed, 0 failed across every crate.
+- `cargo test --workspace` → 1016 passed, 0 failed across every crate.
 - `cargo test -p cad-cli --test stage2_end_to_end -- --test-threads=1` →
   3/3 (Stage-2 gate proof unaffected).
+- `cargo test -p cad-cli --test stage3_ordinary_parts -- --test-threads=1`
+  → 7/7 (three new examples + `LBracket` ambiguity case + two benchmark
+  task-5 fixtures).
+- `cargo test -p cad-cli --test stage3_skill_doc_snippets -- --test-threads=1`
+  → 4/4 (every `cad-core.skill.md` snippet proven).
+- `cargo test -p cad-geometry-runtime --test spatial_axis_frame_foundation`
+  → 4/4 (`AICAD-075A`'s own proof suite, re-confirmed unaffected).
 
 ## Regressions/failures
 
-None outstanding. `AICAD-078`'s own cross-crate diagnostic-code audit
-found one genuine *pre-existing* bug (the `GEOM-E005`/`GEOM-E006`
-collision between `cad-feature-graph` and `cad-geometry-runtime`,
-present since `AICAD-068`/`069`) — fixed in this invocation, documented
-in `project/reports/AICAD-078.md`, not a regression this invocation
-introduced.
+None outstanding. `AICAD-079`'s own skill-doc-snippet proof suite caught
+one genuine drafting error before it was committed (a dimensionally
+invalid illustrative snippet, `Length * Length` typed as `Length`) — fixed
+during this invocation, not a regression, documented in
+`project/reports/AICAD-079.md`.
 
 ## Unresolved owner decisions
 
 `D7`/`D8`/`D12`/`D15` remain open/partially-resolved, none blocking
-through at least S3-08 (unchanged from prior batches). `D10` is now
-**RESOLVED** (`DL-18`, recorded before this invocation began — this
-invocation's own `AICAD-078` task implements that ruling, it did not
-make it).
+through at least S3-09 (unchanged from prior batches). No new
+`OWNER_DECISIONS.md` item was opened or closed by this invocation.
 
 ## D5/D19 calibration status
 
 Unchanged — complete (`project/OWNER_DECISIONS.md#D19`,
 `DECISION_LOG.md#DL-17`, `project/reports/AICAD-064A.md`). Not touched by
-this invocation.
+this invocation. This invocation's own D5-Level-1 (determinism) spot
+check of the new S3-06/07/08 code (`project/gates/
+STAGE3-C_MODELING.md` §3.7) found no violation.
 
 ## Current checkpoint status
 
-`project/gates/STAGE3-B_SKETCH_CONSTRAINTS.md` (Batches S3-00-S3-05)
-remains the most recent *prepared* checkpoint (PASS). Batches S3-06 and
-S3-07 are now both complete; `project/gates/STAGE3-C_MODELING.md` is
-created only after Batch S3-08 (`AICAD-079`) also completes — this
-invocation finishing S3-07 does not by itself trigger it.
+`project/gates/STAGE3-C_MODELING.md` (Batches S3-06/S3-07/S3-08,
+**PASS**) is now the most recent prepared checkpoint, superseding
+`project/gates/STAGE3-B_SKETCH_CONSTRAINTS.md` (Batches S3-00-S3-05,
+still valid, not retracted) as the latest. The next checkpoint is the
+Stage-3 owner gate packet itself (`AICAD-079B`, Batch S3-10,
+`project/gates/stage-3-gate.md`), after Batch S3-09 (`AICAD-079A`)
+completes.
 
 ## Environment
 
-Rust 1.98.1 (edition 2024), container Linux environment. One new
-intra-workspace dev-dependency edge was added this invocation
-(`cad-diagnostics`'s `[dev-dependencies]` gained `cad-ast`/
-`cad-geometry-api`, for `AICAD-078`'s own real-diagnostic conformance
-test) — no new third-party dependency, and no crate's own `[dependencies]`
-(normal/library dependency) changed. `native/occt_bridge` gained one new
-C ABI entry point (`aicad_occt_mirror_shape`, `AICAD-077`) alongside the
-existing ones; the native build/link pipeline itself (CMake invocation,
-install layout) is unchanged.
+Rust 1.98.1 (edition 2024), container Linux environment. No new
+third-party (crates.io) dependency was added this invocation. No native
+build/link pipeline change. `project/benchmarks/` (previously an empty
+scaffolded directory) now holds its first real content
+(`stage3_core_skill/`); no other previously-empty scaffolded directory
+was touched.
 
 ## Git identity
 
@@ -161,8 +154,9 @@ claude/aicad-stage3-dev` runs as a fast-forward.
 
 ## Recommended next action
 
-Batch S3-07 is complete. The next invocation starts Batch S3-08
-(`AICAD-079`) — read this handoff's own "Next task" section first, and
-the fixed task's own `project/TASKS.yaml` entry and plan references
-before implementing. Do not re-open Batch S3-00 through S3-07's own
-already-complete tasks.
+Batch S3-08 is complete, checkpointed, and PASS. The next invocation
+starts Batch S3-09 (`AICAD-079A`) — read this handoff's own "Next task"
+section first, and the fixed task's own `project/TASKS.yaml` entry and
+plan references before implementing. Do not re-open Batch S3-00 through
+S3-08's own already-complete tasks, and do not begin `AICAD-079B`/Stage 4
+ahead of the fixed batch order.
