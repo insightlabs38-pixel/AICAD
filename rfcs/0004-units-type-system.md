@@ -1,7 +1,7 @@
 # RFC-0004: Units and Type System
 
 - Status: **Accepted Stage-0 baseline** (`project/DECISION_LOG.md#DL-10`).
-- Owner rulings incorporated/clarifying this RFC: DL-3 (D4 type/unit semantics), DL-12 and DL-17+AICAD-064A (D5/D19 equivalence profile), DL-13 (D16 collection/iteration minimum), DL-14 (D17 general generics/data-carrying enums/Result/Optional), DL-20 (D11 solver-independent constraint semantics), plus the accepted AICAD-075A spatial model. The live repository also records DL-21 for D20; the active transition directive conflicts with that status, so this RFC records the conflict rather than silently resolving it.
+- Owner rulings incorporated/clarifying this RFC: DL-3 (D4 type/unit semantics), DL-12 and DL-17+AICAD-064A (D5/D19 equivalence profile), DL-13 (D16 collection/iteration minimum), DL-14 (D17 general generics/data-carrying enums/Result/Optional), DL-20 (D11 solver-independent constraint semantics), DL-21 (D20 always-seeded nominal RuntimeBuiltin types), plus the accepted AICAD-075A spatial model.
 - Canonical current detail: `specs/language/types.md`.
 
 ## 1. Summary
@@ -54,7 +54,7 @@ Closures/lambdas, generators/yield, comprehensions, and async/parallel iteration
 
 `Geometry` is an opaque AICAD value referring to backend-neutral geometry construction, not an OCCT object or persistent topology handle.
 
-The current Stage-3 implementation always makes `Vector2<T>`, `Vector3<T>`, `Point2`, `Point3`, `Axis3`, `Frame3`, and `Plane` available in the standard type environment. AICAD-075A establishes the shared kernel-neutral semantics below these source values:
+The current always-available source spatial environment contains `Vector2<T>`, `Vector3<T>`, `Point2`, `Point3`, `Axis3`, `Frame3`, and `Plane`. AICAD-075A establishes the shared kernel-neutral semantics below these source values:
 
 - position (`Point3`) and displacement/vector (`Vector3`) are distinct semantic concepts;
 - directions are validated normalized vectors and reject degenerate/non-finite input;
@@ -65,13 +65,15 @@ The current Stage-3 implementation always makes `Vector2<T>`, `Vector3<T>`, `Poi
 
 Internal kernel-neutral concepts such as validated `Direction3`, `Plane3`, or `Transform` do not automatically imply a separate direct source constructor/type spelling. Internal semantic capability and source-language exposure are different layers.
 
-## 8. RuntimeBuiltin type closure — D20 authority conflict
+## 8. RuntimeBuiltin type closure — D20/DL-21
 
-The live repository records D20 as **RESOLVED — DL-21**, and the Stage-3 implementation follows that record: the always-seeded RuntimeBuiltin environment is type-closed for its current nominal signatures, eager signature collection remains authoritative, and AICAD-076's scalar-flattening workaround is recorded as temporary.
+D20 is **resolved**, not open. DL-21 is authoritative and AICAD-076A implements the ruling. The closed always-seeded RuntimeBuiltin catalogue may use approved AICAD standard nominal types such as `Point3`, `Axis3`, `Frame3`, and `Plane` in signatures.
 
-The owner-provided Stage-3 -> Stage-4 normative-cleanup directive, however, explicitly states that D20 is currently open and must not be silently resolved. Those two authoritative inputs conflict. This cleanup therefore does **not** change `OWNER_DECISIONS.md`, reopen D20, supersede DL-21, or convert the existing implementation into a fresh permanent architecture ruling. It records current behavior and treats D20's governance status as an explicit owner-reconciliation blocker before final Stage-4 initialization.
+The always-seeded builtin environment must be type-closed: all nominal types required by automatically seeded builtin signatures are automatically available to signature checking. Eager signature collection/type checking remains authoritative. The builtin catalogue together with its required standard type declarations must be independently type-validatable with zero diagnostics against an otherwise-empty program.
 
-Regardless of the status conflict, neither source authorizes arbitrary plugin/native type registration, host callbacks, OCCT types in public/HIR signatures, or an unreviewed dynamic extension ABI.
+`with_geometry_types` may remain as an idempotent compatibility/composition helper; callers do not need to invoke it to make automatically seeded builtin signatures type-correct. AICAD-076's scalar-decomposition signatures were temporary compatibility workarounds, not the intended long-term Safe CAD API architecture.
+
+This remains a closed first-party standard environment. It does not authorize arbitrary plugin/runtime type injection, host callbacks, OCCT types in public/HIR signatures, or a dynamic extension ABI.
 
 ## 9. Persistent references and raw topology are not current type claims
 
@@ -99,4 +101,4 @@ Stage 3's sketch constraint subsystem implements this boundary internally. It do
 
 Stage-0 froze typed quantities because engineering software cannot safely treat units, affine temperatures, or tolerances as display metadata. Stage-2 later generalized the type system rather than hard-coding `Result`, and deliberately bounded collections/iteration rather than silently implementing the entire future standard library. Stage 3 reused one kernel-neutral spatial model rather than creating per-feature axis/frame conventions.
 
-Still future: interfaces/`implements`/generic bounds, `Set`/`Map`, comprehensions, closures/generators, general user iterators, raw topology types/syntax, persistent topology refs, assemblies/configurations, and verification-language types. D20's governance status itself also requires explicit owner reconciliation because the current directive conflicts with the live DL-21 record.
+Still future: interfaces/`implements`/generic bounds, `Set`/`Map`, comprehensions, closures/generators, general user iterators, raw topology types/syntax, persistent topology refs, assemblies/configurations, and verification-language types. Those capabilities remain in roadmap scope but are not current language semantics until separately approved and promoted.

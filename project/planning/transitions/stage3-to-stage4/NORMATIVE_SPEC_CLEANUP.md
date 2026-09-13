@@ -1,8 +1,10 @@
 # Stage 3 → Stage 4 normative specification cleanup
 
-Status: **COMPLETE FOR OWNER REVIEW — no Stage-4 implementation**.
+Status: **COMPLETE FOR OWNER REVIEW — D20 stale-brief correction applied; no Stage-4 implementation**.
 
 This record covers the third transition pass on `claude/aicad-stage4-transition`: reconcile current normative language/RFC authority after the Stage-3 documentation pass, without starting AICAD-080, expanding CI/CD, modifying production behavior, or promoting the frozen post-100 roadmap into active tasks.
+
+A subsequent narrow correction fixes one error in the transition brief used during that pass: it incorrectly described D20 as open. Repository authority is unambiguous: `project/OWNER_DECISIONS.md` records D20 as **RESOLVED — DL-21**, `project/DECISION_LOG.md#DL-21` contains the owner ruling, and AICAD-076A implements it. The stale transition-brief wording does not reopen or supersede DL-21.
 
 ## Scope and authority
 
@@ -14,7 +16,7 @@ The pass used the following precedence when reconciling stale text:
 4. accepted gate/task evidence;
 5. frozen planning examples and the frozen post-100 audit.
 
-When two owner-authority inputs conflict, this pass records the conflict and stops rather than inventing a ruling.
+The D20 correction applies that precedence directly: DL-21 controls over the later stale transition-brief statement.
 
 ## Canonical language specification set restored
 
@@ -40,6 +42,20 @@ The canonical specs/RFCs now state explicitly that:
 - Stage-4 reference resolution remains fail-closed under D7: `Resolved`, `Ambiguous`, or `Broken`; automatic fingerprint recovery remains disabled for the first implementation unless a later owner decision changes that policy;
 - current CLI behavior is `cad build ...`; broader historical command examples are planning, not current implemented interface.
 
+## D20 RuntimeBuiltin type closure — resolved by DL-21
+
+D20 is resolved and is not a remaining transition blocker. DL-21 establishes the following normative state, implemented by AICAD-076A:
+
+- approved AICAD standard nominal types such as `Point3`, `Axis3`, `Frame3`, and `Plane` may appear in always-seeded RuntimeBuiltin signatures;
+- the always-seeded builtin environment must be type-closed: every nominal type required by an automatically seeded builtin signature is automatically available to signature checking;
+- eager signature collection/type checking remains authoritative;
+- the catalogue plus its required standard type declarations must be independently type-validatable;
+- `with_geometry_types` may remain as an idempotent compatibility/composition helper rather than a prerequisite for builtin type correctness;
+- the environment remains closed and first-party: arbitrary plugin/runtime type injection, host callbacks, and OCCT types in public/HIR signatures are not authorized;
+- AICAD-076's scalar-decomposition signatures were temporary compatibility workarounds, not the intended long-term Safe CAD API architecture.
+
+The earlier version of this transition record treated a stale transition-brief sentence as an authority conflict. That treatment is corrected here. No new D20 decision is being made, and `OWNER_DECISIONS.md`, DL-21, and production code require no change.
+
 ## Determinism and tolerance cleanup
 
 D5/D19 language is reconciled to the current layered contract:
@@ -62,7 +78,7 @@ The D5 v1 constants remain the calibrated values already accepted/implemented by
 
 ## RFC reconciliation and rationale preservation
 
-The Stage-0 RFC packet is now labeled as accepted by DL-10 rather than perpetually `Draft (Stage 0)`. Current RFC text removes stale claims that D5, D10, or D11 are still open and distinguishes accepted architectural intent from unsupported current syntax.
+The Stage-0 RFC packet is now labeled as accepted by DL-10 rather than perpetually `Draft (Stage 0)`. Current RFC text removes stale claims that D5, D10, D11, or D20 are still open and distinguishes accepted architectural intent from unsupported current syntax.
 
 Because the current RFCs required substantial condensation/reconciliation, the exact pre-cleanup Stage-0-era RFC blobs are preserved under `rfcs/history/stage0/`. Those files are design-history snapshots only; their stale open-status statements are not current authority.
 
@@ -72,17 +88,7 @@ Because the current RFCs required substantial condensation/reconciliation, the e
 
 The rest of `docs/plan/` is intentionally not rewritten wholesale. Its future-looking syntax and architectural sketches remain available for design archaeology and later roadmap work.
 
-## D20 authority conflict — OWNER REVIEW REQUIRED
-
-A genuine authority conflict was found and deliberately not resolved by this pass:
-
-- the live repository records `project/OWNER_DECISIONS.md#D20` as **RESOLVED — DL-21**;
-- DL-21 authorizes a type-closed always-seeded standard nominal-type environment for RuntimeBuiltin signatures, and current Stage-3 code implements that model;
-- the owner-provided directive for this normative-cleanup pass explicitly states that D20 is currently open and must not be silently resolved.
-
-This pass therefore does **not** alter `OWNER_DECISIONS.md`, append/supersede a decision-log entry, reopen D20, or treat the existing implementation as a new owner ruling. Current spec/RFC text records the behavior that exists and flags the governance-status mismatch.
-
-**Owner action required before final Stage-4 initialization:** explicitly confirm whether DL-21 remains the authoritative D20 resolution or whether D20 is to be reopened/superseded. No implementation change is requested or implied by this record.
+The frozen post-100 audit is likewise not rewritten to retroactively know about later decisions. Its findings remain an accurate snapshot of its audit revision where applicable. Current transition/index material and the live owner decision log establish that D20 was subsequently resolved by DL-21.
 
 ## Still intentionally unresolved / future
 
@@ -103,20 +109,19 @@ This pass does not decide or implement:
 
 ## Production/stage guard
 
-No `crates/`, `native/`, `.github/`, test, benchmark, task-queue, or Stage-4 production implementation file is changed by this pass. `project/TASKS.yaml` and `project/OWNER_DECISIONS.md` remain unchanged. AICAD-080 remains todo. Stage 4 has not started.
+No `crates/`, `native/`, `.github/`, test, benchmark, task-queue, or Stage-4 production implementation file is changed by this correction. `project/TASKS.yaml` and `project/OWNER_DECISIONS.md` remain unchanged. AICAD-080 remains todo. Stage 4 has not started.
 
 ## Validation limitations
 
-The GitHub connector was used for authoritative repository reads/writes and remote compare validation. The execution environment cannot resolve `github.com` from local Git, so checkout-dependent commands such as `git diff --check`, `cargo fmt --all -- --check`, and `cargo test --workspace` cannot be truthfully reported as fresh runs for this pass.
+A local `git diff --check` run was attempted for this correction, but the execution environment cannot resolve `github.com`, so a repository checkout/ref cannot be reached and the command cannot be truthfully reported as completed. The GitHub connector is used for authoritative remote compare/scope and patch/whitespace review instead.
 
-No production Rust/build file changes in this pass, so the historical Stage-3 1047-test result remains historical evidence only, not a fresh validation claim.
+No active documentation generator is configured for this documentation/specification surface, and this correction changes no production Rust/build path. Historical Stage-3 build/test results therefore remain historical evidence only, not fresh validation claims for this correction.
 
 ## Transition result
 
-Normative specification cleanup is complete for owner review. Remaining transition work is now primarily:
+Normative specification cleanup, including the D20 stale-brief correction, is complete for owner review. Remaining transition work is now:
 
-1. owner reconciliation of the D20 status conflict;
-2. separately authorized Stage-4 CI/CD preparation;
-3. final owner-reviewed Stage-4 initialization/authorization.
+1. separately authorized Stage-4 CI/CD preparation;
+2. final owner-reviewed Stage-4 initialization/authorization.
 
 Until those occur: do not start AICAD-080, do not claim persistent semantic topology references as implemented, and do not auto-merge this transition branch.

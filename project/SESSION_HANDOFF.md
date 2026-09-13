@@ -95,7 +95,9 @@ exact commands/results.
 - clarified RuntimeBuiltin, spatial-type, sketch/constraint, raw-topology,
   and persistent-reference boundaries;
 - clarified that `docs/plan/` is frozen foundation planning rather than
-  automatic current normative authority.
+  automatic current normative authority;
+- corrected the later stale transition-brief treatment of D20: DL-21 remains
+  authoritative, D20 is resolved, and AICAD-076A implements the ruling.
 
 See `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`.
 
@@ -113,19 +115,26 @@ When current architecture or semantics need verification, prefer:
 Completed reports/gates are evidence and should be retrieved when relevant;
 they are not routine startup context or the current developer manual.
 
-If two owner-level inputs conflict, record the conflict rather than choosing
-silently through implementation or documentation cleanup.
+If two owner-level inputs genuinely conflict, record the conflict rather
+than choosing silently through implementation or documentation cleanup.
 
-## Explicit D20 authority conflict
+## D20 status — resolved by DL-21
 
-The live repository records D20 as `RESOLVED — DL-21`, and current Stage-3
-code implements that model. The owner-provided directive for the normative
-cleanup states that D20 is open. The pass deliberately does **not** rewrite
-`project/OWNER_DECISIONS.md`, supersede DL-21, reopen D20, or create a new
-architecture decision.
+D20 is **resolved**, not open. `project/OWNER_DECISIONS.md` points to
+`project/DECISION_LOG.md#DL-21`, and AICAD-076A implements that ruling. The
+normative-cleanup brief's later statement that D20 was open was stale
+transition wording and has been corrected; it did not reopen or supersede
+DL-21.
 
-Before final Stage-4 initialization, explicitly reconcile whether DL-21
-remains authoritative or D20 is to be reopened/superseded.
+The authoritative D20 contract is captured in `specs/language/types.md` and
+the accepted RFCs: approved standard nominal types may appear in the
+always-seeded RuntimeBuiltin catalogue; that environment is type-closed and
+eagerly signature-checked; its catalogue/type declarations are independently
+type-validatable; `with_geometry_types` remains an idempotent compatibility
+helper; and this does not open arbitrary plugin/runtime type injection, host
+callbacks, or OCCT types in public/HIR signatures. AICAD-076's scalar
+signature decomposition was temporary compatibility work, not the intended
+long-term Safe CAD API architecture.
 
 ## Known current boundaries
 
@@ -147,26 +156,25 @@ remains authoritative or D20 is to be reopened/superseded.
 After the normative cleanup pass, the major transition work intentionally
 remaining is:
 
-1. owner reconciliation of the D20 authority-status conflict;
-2. expanded Stage-4 CI/CD preparation under separate instruction;
-3. final Stage-4 initialization and explicit implementation authorization.
+1. expanded Stage-4 CI/CD preparation under separate instruction;
+2. final Stage-4 initialization and explicit implementation authorization.
 
-Normative specification cleanup is complete. Do not begin AICAD-080 merely
-because that pass is complete.
+Normative specification cleanup is complete. D20 is not a remaining
+transition blocker. Do not begin AICAD-080 merely because that pass is
+complete.
 
 ## Next action
 
-**Owner review of the normative cleanup and the explicit D20 status
-conflict.** Do not start AICAD-080 or expand CI/CD until separately
-instructed.
+**Owner review of the completed normative cleanup.** Do not start AICAD-080
+or expand CI/CD until separately instructed.
 
 ## Validation note
 
-The execution environment cannot resolve `github.com` from local Git, so
-checkout-dependent `git diff --check`, Cargo formatting, and Cargo test
-commands cannot be reported as fresh validation for this pass. Remote
-GitHub compare/scope validation is used instead. No production Rust/build
-path is changed by the normative cleanup.
+A local `git diff --check` run for the D20 correction could not be completed
+because the execution environment cannot resolve `github.com` and therefore
+cannot access a checkout/ref. Remote GitHub compare/scope and patch/whitespace
+review are used instead. No production Rust/build path is changed by this
+correction.
 
 ## Git policy
 

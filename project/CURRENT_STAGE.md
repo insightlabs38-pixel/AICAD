@@ -72,7 +72,8 @@ Completed transition preparation now includes:
 - restoration of the canonical `specs/language/{grammar,semantics,types,diagnostics}` set;
 - accepted-RFC/current-decision reconciliation while preserving exact pre-cleanup RFC snapshots under `rfcs/history/stage0/`;
 - D5 determinism/equivalence and tolerance-category clarification;
-- frozen-foundation-plan authority clarification.
+- frozen-foundation-plan authority clarification;
+- correction of stale transition-brief wording that incorrectly treated D20 as open; DL-21 remains authoritative and AICAD-076A implements it.
 
 The normative cleanup is recorded at
 `project/planning/transitions/stage3-to-stage4/NORMATIVE_SPEC_CLEANUP.md`.
@@ -93,25 +94,20 @@ claim as current:
 Stage-3 named outputs (`--name <binding>[.<field>]`) remain exact source-
 name selection, not persistent topology identity.
 
-## Explicit transition blocker — D20 status conflict
+## D20 — resolved, not a transition blocker
 
-The live repository records D20 as `RESOLVED — DL-21`, and current Stage-3
-code follows that model. The owner-provided normative-cleanup directive
-states that D20 is open. The cleanup pass does not alter
-`project/OWNER_DECISIONS.md`, supersede DL-21, reopen D20, or invent a new
-architecture decision.
-
-Before final Stage-4 initialization, the owner must explicitly reconcile
-whether DL-21 remains authoritative or D20 is to be reopened/superseded.
+D20 is resolved by `project/DECISION_LOG.md#DL-21`; AICAD-076A implements
+that ruling. The earlier normative-cleanup brief incorrectly described D20
+as open. That stale wording has been corrected and does not reopen or
+supersede DL-21.
 
 ## Remaining transition work
 
 Subject to separate owner-reviewed transition instructions, the remaining
 major preparation areas are:
 
-1. owner reconciliation of the D20 authority-status conflict;
-2. expanded Stage-4 CI/CD preparation;
-3. final Stage-4 initialization/authorization.
+1. expanded Stage-4 CI/CD preparation;
+2. final Stage-4 initialization/authorization.
 
 Normative specification cleanup is complete and is no longer a deferred
 transition item. The remaining items are not authorized merely by appearing
