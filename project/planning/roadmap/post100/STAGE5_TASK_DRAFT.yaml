@@ -1,0 +1,551 @@
+status: DRAFT_NOT_APPROVED
+stage: 5
+name: Advanced geometry
+basis_revision: d82bf82e53a98f3117d3dc17707f1756822e593d
+provisional_id_policy: POST100-S5-* identifiers are planning-only and MUST be replaced only after owner review.
+entry_conditions:
+  - Stage 3 owner gate AICAD-079B approved.
+  - Stage 4 AICAD-080..100 completed and Stage-4 owner gate approved.
+  - MUST_FIX_BEFORE_STAGE_5 items in FINAL_AUDIT_SUMMARY.md resolved or explicitly waived by owner decision.
+  - Canonical language specification authority restored/confirmed.
+  - AICAD-075A spatial semantics are complete and usable by source/runtime geometry APIs.
+  - D7/Stage4 semantic-reference resolver and raw-handle epoch rules are available as inputs.
+checkpoints:
+  - POST100-S5-010
+  - POST100-S5-016
+  - POST100-S5-024
+final_gate: POST100-S5-028
+
+tasks:
+  - id: POST100-S5-001
+    stage: 5
+    title: Freeze Stage-5 normative prerequisites and accepted capability envelope
+    objective: Convert accepted owner decisions, Stage-4 outputs, and approved spec deltas into a Stage-5 implementation baseline without editing semantics ad hoc during geometry work.
+    depends_on: []
+    plan_references:
+      - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+      - docs/plan/15_IMPLEMENTATION_ROADMAP.md#Stage-5
+      - project/planning/post100/SPEC_DELTA_PROPOSALS.md
+      - project/planning/post100/OPEN_DECISIONS.md#BEFORE-STAGE-5
+    spec_dependencies:
+      - D2 functional/value semantics
+      - D6 kernel-neutral boundary
+      - D7 Stage-4 semantic-reference policy
+      - D18 runtime-backed standard-function policy
+      - tolerance taxonomy owner ruling
+      - raw/unsafe geometry owner ruling
+      - kernel-backed source-query evaluation ruling
+    acceptance:
+      - Every Stage-5 source-visible capability maps to an approved semantic/spec section or is explicitly marked implementation-only.
+      - No task relies on unresolved syntax, callable, collection, unsafe, query-evaluation, or tolerance behavior.
+      - Safe/raw tiers and raw-to-safe promotion remain distinct architectural capabilities.
+    required_checks:
+      - review Stage-4 final gate packet and resolver semantics
+      - review canonical language specs for completeness
+      - cross-check RFC-0002/RFC-0003 and owner decisions for stale assumptions
+    likely_crates: []
+    escalate_if:
+      - A required capability conflicts with a Stage-4 owner ruling.
+      - A proposed operation would require a new compiler intrinsic rather than ordinary typed calls.
+    gate_relevance: blocking architecture prerequisite
+
+  - id: POST100-S5-002
+    stage: 5
+    title: Complete and validate the shared spatial-math semantic bridge
+    objective: Ensure Point/Vector/Direction/Axis/Frame/Rotation/Transform semantics are unit-safe, validated, backend-neutral, and consistently convertible between source/HIR/runtime/kernel adapter layers.
+    depends_on: [POST100-S5-001]
+    plan_references:
+      - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+      - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+      - docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md
+    spec_dependencies:
+      - AICAD-075A accepted output
+      - SPEC-DELTA-011
+    acceptance:
+      - Direction/axis/frame invariants are source-semantic and not defined by OCCT or adapter-only thresholds.
+      - Rigid transform composition, inverse, from/to frame, rotation and translation have deterministic tests.
+      - Invalid zero directions and non-rigid frames fail with structured diagnostics/results at the correct layer.
+      - No kernel adapter type leaks into the public language/HIR surface.
+    required_checks:
+      - cargo test for cad-hir cad-runtime cad-kernel-api
+      - unit/dimensional type checks for spatial values
+      - cross-layer conversion round trips
+    likely_crates: [cad-hir, cad-types, cad-units, cad-runtime, cad-kernel-api, cad-geometry-api]
+    escalate_if:
+      - AICAD-075A leaves frame handedness/normalization/equality semantics unresolved.
+      - Conversions require backend-specific public fields.
+    gate_relevance: required foundation for curves surfaces and Stage-6 poses
+
+  - id: POST100-S5-003
+    stage: 5
+    title: Implement typed tolerance-policy primitives for Stage-5 operations
+    objective: Represent geometry-operation and approximation tolerance separately from solver, verification, representation-validity and D5 equivalence policies.
+    depends_on: [POST100-S5-001, POST100-S5-002]
+    plan_references:
+      - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+      - docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md
+      - project/planning/post100/SPEC_DELTA_PROPOSALS.md#SPEC-DELTA-010
+    spec_dependencies:
+      - tolerance taxonomy owner ruling
+      - D19 D5 profile remains separate
+    acceptance:
+      - Operation and approximation tolerances have typed units/scopes and versioned/default provenance.
+      - Effective tolerance is recordable in structured operation evidence.
+      - No Stage-5 API implicitly reuses cad-validation D5 constants or sketch-solver convergence tolerance.
+      - Explicit low-level overrides are validated and cannot silently change unrelated tolerance classes.
+    required_checks:
+      - dimensional tests
+      - serialization/evidence determinism tests for policy values
+      - grep/review for D5 or sketch-solver constants reused by new geometry operations
+    likely_crates: [cad-types, cad-geometry-api, cad-kernel-api, cad-validation]
+    escalate_if:
+      - A kernel operation cannot expose/accept the policy needed to implement the normative semantics.
+    gate_relevance: required numerical foundation
+
+  - id: POST100-S5-004
+    stage: 5
+    title: Scale trusted runtime standard functions and kernel-backed query evaluation
+    objective: Implement the accepted D18 scaling design and explicit evaluation model for source-visible kernel queries without adding geometry-specific language magic.
+    depends_on: [POST100-S5-001, POST100-S5-003]
+    plan_references:
+      - docs/API/safe-cad-api.md
+      - docs/plan/02_LANGUAGE_AND_COMPILER.md
+      - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+    spec_dependencies:
+      - OD-S5-02 ruling
+      - OD-S5-04 ruling
+      - D9 intrinsic gate
+      - D18 runtime-backed standard functions
+    acceptance:
+      - Runtime-backed advanced functions use ordinary lexical binding/call/type-checking semantics.
+      - Trusted native implementation identities/signatures are declared once and consumed by checker/runtime/docs generation or equivalent single source of truth.
+      - Kernel-backed query values can participate in approved source evaluation deterministically with cache/dependency/resource accounting.
+      - Packages/plugins still cannot register arbitrary native callbacks unless separately authorized.
+    required_checks:
+      - catalogue consistency tests
+      - source-defined function and runtime-backed function call-equivalence tests
+      - deterministic query memoization/dependency invalidation tests
+      - resource-budget tests
+    likely_crates: [cad-hir, cad-runtime, cad-compiler, cad-geometry-runtime, cad-diagnostics]
+    escalate_if:
+      - Query evaluation would introduce uncontrolled I/O or nondeterministic effects.
+      - A new syntax/type-checking rule is proposed solely to call geometry runtime code.
+    gate_relevance: prevents Stage-5 compiler/API dead end
+
+  - id: POST100-S5-005
+    stage: 5
+    title: Extend feature DAG and provenance through programmable geometry
+    objective: Preserve feature identity dependencies cache invalidation and source provenance when geometry is created inside ordinary functions parts and approved control flow.
+    depends_on: [POST100-S5-001, POST100-S5-004]
+    plan_references:
+      - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+      - docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md
+      - project/planning/post100/ARCHITECTURE_GAP_REGISTER.md#GAP-003
+    spec_dependencies:
+      - OD-S5-06 ruling
+      - Stage-4 semantic-reference identity model
+    acceptance:
+      - Geometry-producing user functions are visible in semantic feature/dependency provenance according to approved identity semantics.
+      - Repeated calls and branch-dependent geometry have deterministic identities or explicit unsupported/error behavior defined by spec.
+      - Part bodies no longer create an observability hole for features required by references/incremental rebuild.
+      - Existing Stage3 cache-key and dirty-propagation determinism is preserved.
+    required_checks:
+      - helper-function geometry fixture
+      - nested-part geometry fixture
+      - branch/repeated-call identity fixture
+      - incremental invalidation and source-to-feature navigation tests
+    likely_crates: [cad-feature-graph, cad-hir, cad-runtime, cad-compiler, cad-provenance]
+    escalate_if:
+      - Stable semantic feature identity cannot be defined for a supported language construct.
+    gate_relevance: architectural prerequisite for programmable advanced geometry
+
+  - id: POST100-S5-006
+    stage: 5
+    title: Define kernel-neutral advanced geometry value and IR families
+    objective: Establish typed curve surface topology result and report representations that do not mirror OCCT classes and do not make internal GeometryOp variants the public API.
+    depends_on: [POST100-S5-002, POST100-S5-003, POST100-S5-004]
+    plan_references:
+      - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+      - rfcs/0002-geometry-runtime-kernel-abstraction.md
+      - docs/plan/01_SYSTEM_ARCHITECTURE.md
+    spec_dependencies:
+      - D6 kernel neutrality
+      - D2 value semantics
+    acceptance:
+      - Public/HIR values distinguish semantically meaningful curves surfaces and safe topology where required.
+      - Internal geometry execution IR can evolve independently of source signatures.
+      - Failure/result/report types are backend-neutral and structured.
+      - No OCCT class/type names appear in language-visible APIs.
+    required_checks:
+      - architecture review of crate dependency direction
+      - type-level tests
+      - serialization/debug output contains no native pointers
+    likely_crates: [cad-hir, cad-types, cad-geometry-api, cad-kernel-api, cad-runtime]
+    escalate_if:
+      - A source type can only be described by exposing a kernel class or transient topology pointer.
+    gate_relevance: required foundation
+
+  - id: POST100-S5-007
+    stage: 5
+    title: Implement analytic curve construction and evaluation
+    objective: Support core analytic curves as exact kernel-neutral semantic values with deterministic evaluation and parameter domains.
+    depends_on: [POST100-S5-006]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [advanced curve value model, spatial semantics, tolerance taxonomy]
+    acceptance:
+      - Required analytic curve families from canonical plan are constructible without backend-specific source types.
+      - Evaluation tangent/domain behavior is specified and tested at regular/end boundary cases.
+      - Invalid/degenerate construction produces structured results/diagnostics.
+    required_checks: [analytic curve unit corpus, cross-layer dispatch tests, deterministic repeat runs]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-hir, cad-runtime]
+    escalate_if: [canonical plan and OCCT behavior disagree about a public mathematical convention]
+    gate_relevance: Stage-5 core
+
+  - id: POST100-S5-008
+    stage: 5
+    title: Implement Bezier B-spline and NURBS curves
+    objective: Add exact/freeform curve representations with explicit degree control points knots multiplicities weights periodicity and validation.
+    depends_on: [POST100-S5-006, POST100-S5-007]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [general collections, curve value model]
+    acceptance:
+      - Bezier B-spline and rational NURBS examples cover clamped periodic and repeated-knot cases required by plan.
+      - Invalid knot/multiplicity/weight/control-point combinations fail before unsafe kernel behavior.
+      - Mathematical parameter domains and rational evaluation conventions are documented/tested.
+    required_checks: [spline conformance corpus, degeneracy tests, scale tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-hir, cad-runtime]
+    escalate_if: [public model would need to copy OCCT-specific storage conventions]
+    gate_relevance: Stage-5 core
+
+  - id: POST100-S5-009
+    stage: 5
+    title: Implement curve trimming interpolation offset projection and distance operations
+    objective: Complete required curve algorithms with functional semantics explicit tolerance classes deterministic multi-result ordering and structured failure evidence.
+    depends_on: [POST100-S5-007, POST100-S5-008]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [geometry-operation tolerance, approximation tolerance, kernel-backed query evaluation]
+    acceptance:
+      - Trim and offset return new values and never mutate source-observable curves.
+      - Interpolation exposes documented approximation/exactness behavior.
+      - Projection/closest-distance multi-results use deterministic specified ordering and multiplicity metadata.
+      - Tangent/no-solution/degenerate cases are covered by structured outcomes.
+    required_checks: [curve operation corpus, tolerance boundary tests, deterministic candidate ordering tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-query]
+    escalate_if: [result ordering or equivalence cannot be made backend-neutral]
+    gate_relevance: Stage-5 curve capability completion
+
+  - id: POST100-S5-010
+    stage: 5
+    title: Stage-5 checkpoint A — programmable spatial and curve stack
+    objective: Prove the first vertical slice before surface/topology breadth is added.
+    depends_on: [POST100-S5-005, POST100-S5-009]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [all prerequisites of POST100-S5-001 through POST100-S5-009]
+    acceptance:
+      - A nontrivial source-defined helper builds/evaluates freeform curves through ordinary calls.
+      - Feature DAG provenance and incremental invalidation remain correct through the helper.
+      - No unresolved architecture issue is being hidden as an implementation TODO.
+      - Workspace formatting lint targeted tests and deterministic reruns pass.
+    required_checks: [cargo fmt --check, cargo clippy -D warnings, targeted workspace tests, checkpoint report]
+    likely_crates: [cad-feature-graph, cad-hir, cad-runtime, cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge]
+    escalate_if: [any core finding requires changing source semantics already implemented in this batch]
+    gate_relevance: internal checkpoint
+
+  - id: POST100-S5-011
+    stage: 5
+    title: Implement analytic surface construction and evaluation
+    objective: Add exact analytic surface families with source-semantic frames parameter domains evaluation tangents and normals.
+    depends_on: [POST100-S5-010, POST100-S5-006]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [spatial semantics, surface value model]
+    acceptance:
+      - Required plane cylindrical conical spherical toroidal or canonical-plan analytic families are represented kernel-neutrally.
+      - Parameter domains periodicity and singularities are explicit.
+      - Evaluation and normal behavior is deterministic and documented at regular points.
+    required_checks: [analytic surface corpus, singularity tests, cross-layer tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-hir, cad-runtime]
+    escalate_if: [kernel parameterization quirks would leak into language semantics without abstraction]
+    gate_relevance: Stage-5 core
+
+  - id: POST100-S5-012
+    stage: 5
+    title: Implement Bezier B-spline and NURBS surfaces
+    objective: Support general freeform tensor-product/rational surfaces with validated control nets knot vectors weights periodicity and evaluation.
+    depends_on: [POST100-S5-011, POST100-S5-008]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [general collections, surface value model]
+    acceptance:
+      - Bezier B-spline and rational NURBS surfaces cover required rational/periodic/high-degree cases.
+      - Invalid control-net/knot/weight inputs fail deterministically.
+      - Surface data remains AICAD-owned rather than native-kernel object identity.
+    required_checks: [freeform surface corpus, large/small scale cases, rational evaluation tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-hir, cad-runtime]
+    escalate_if: [canonical plan requires representation unsupported without source semantic compromise]
+    gate_relevance: Stage-5 core
+
+  - id: POST100-S5-013
+    stage: 5
+    title: Implement trimmed-surface semantic model
+    objective: Represent trims as semantic boundary data over surfaces with explicit orientation region validity and lineage-ready identity rather than transient face indices.
+    depends_on: [POST100-S5-012, POST100-S5-009]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md, docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md]
+    spec_dependencies: [Stage-4 semantic references, Stage-5 lineage extension contract]
+    acceptance:
+      - Trim loops/regions validate closure orientation and parameter-space consistency.
+      - Reparameterization does not silently change semantic trim identity where equivalence is defined.
+      - Trim boundaries can participate in provenance/reference evidence.
+    required_checks: [trimmed manifold corpus, holes/multiple loops, invalid/open trim tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-references]
+    escalate_if: [trim identity cannot compose with Stage-4 reference recipes]
+    gate_relevance: Stage-5 core and reference prerequisite
+
+  - id: POST100-S5-014
+    stage: 5
+    title: Implement surface offset evaluation and derivative utilities
+    objective: Complete required surface operations under explicit operation/approximation policies with structured singularity/self-intersection outcomes.
+    depends_on: [POST100-S5-011, POST100-S5-012, POST100-S5-013]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [tolerance taxonomy]
+    acceptance:
+      - Surface evaluation derivatives/normals use documented parameter conventions.
+      - Offset reports failure/self-intersection/approximation evidence instead of silently returning questionable geometry.
+      - Operations are functional and provenance-carrying.
+    required_checks: [offset corpus, singularity/adversarial tests, tolerance sensitivity tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge]
+    escalate_if: [operation requires unspecified automatic healing or tolerance escalation]
+    gate_relevance: Stage-5 core
+
+  - id: POST100-S5-015
+    stage: 5
+    title: Implement curve-surface and surface-surface intersection projection and closest-distance queries
+    objective: Provide deterministic structured multi-solution geometry queries suitable for source algorithms verification and later tooling.
+    depends_on: [POST100-S5-009, POST100-S5-014]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md, docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md]
+    spec_dependencies: [kernel-backed query evaluation, deterministic result ordering, tolerance taxonomy]
+    acceptance:
+      - Required intersection/projection/distance combinations return typed results with multiplicity/classification/effective tolerance evidence.
+      - Tangent coincident overlapping and no-solution cases are distinguishable.
+      - Result order is backend-neutral or explicitly normalized before source observation.
+    required_checks: [multi-solution ordering tests, near-tangent corpus, repeatability tests]
+    likely_crates: [cad-query, cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-runtime]
+    escalate_if: [kernel output cannot be normalized without losing semantically relevant distinction]
+    gate_relevance: Stage-5 core query completion
+
+  - id: POST100-S5-016
+    stage: 5
+    title: Stage-5 checkpoint B — freeform surface and query stack
+    objective: Prove advanced curves surfaces trims and queries as one programmable backend-neutral vertical slice before topology editing is added.
+    depends_on: [POST100-S5-015]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage-5 surface/query specs]
+    acceptance:
+      - At least one difficult freeform surface fixture is built trimmed queried and inspected from source.
+      - Effective tolerances and result ordering are machine-inspectable.
+      - Feature/provenance/incremental semantics remain intact.
+      - No OCCT-specific type appears above the kernel boundary.
+    required_checks: [workspace checks, surface integration corpus, architecture dependency review]
+    likely_crates: [cad-hir, cad-runtime, cad-feature-graph, cad-query, cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge]
+    escalate_if: [freeform vertical slice requires weakening D2 D6 or D7]
+    gate_relevance: internal checkpoint
+
+  - id: POST100-S5-017
+    stage: 5
+    title: Implement general topology construction
+    objective: Build validated vertices edges wires faces shells and solids from approved analytic/freeform geometry without relying on transient raw indices as semantic input.
+    depends_on: [POST100-S5-016, POST100-S5-013]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [safe topology value model, semantic references]
+    acceptance:
+      - Required topology constructors are kernel-neutral and functional.
+      - Orientation closure manifoldness and validity failures are structured.
+      - Constructed semantic outputs can be named/referenced without raw enumeration-order identity.
+    required_checks: [wire/face/shell/solid construction corpus, invalid topology tests, reference naming tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-references]
+    escalate_if: [constructor semantics would require exposing backend topology ownership rules]
+    gate_relevance: Stage-5 topology core
+
+  - id: POST100-S5-018
+    stage: 5
+    title: Implement sewing and healing with explicit fidelity evidence
+    objective: Provide controlled sewing/healing that records tolerance use changes and unresolved defects rather than silently rewriting geometry.
+    depends_on: [POST100-S5-017, POST100-S5-003]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md, docs/plan/09_FILE_FORMAT_INTERCHANGE_RECONSTRUCTION.md]
+    spec_dependencies: [operation tolerance policy, provenance/lineage contract]
+    acceptance:
+      - Sewing/healing returns geometry plus structured report of actions tolerances unresolved issues and lineage.
+      - Automatic tolerance growth obeys approved policy or is rejected/escalated.
+      - Provenance from input faces/shells to outputs is retained.
+    required_checks: [open-shell repair corpus, over-tolerance negative tests, lineage tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-provenance]
+    escalate_if: [kernel performs undocumented/destructive repair that cannot be surfaced in evidence]
+    gate_relevance: Stage-5 topology robustness
+
+  - id: POST100-S5-019
+    stage: 5
+    title: Implement low-level topology inspection and traversal
+    objective: Expose kernel-neutral typed inspection of adjacency orientation geometry association and topology hierarchy while preserving deterministic observation.
+    depends_on: [POST100-S5-017]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md, docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md]
+    spec_dependencies: [query semantics, Stage-4 semantic refs]
+    acceptance:
+      - Safe inspection APIs return stable semantic/reference-oriented results where possible.
+      - Raw enumeration is explicitly marked ephemeral and never serialized as semantic identity.
+      - Collection/result ordering is deterministic at observation boundaries.
+    required_checks: [adjacency/traversal corpus, ordering repeat tests, stale identity negative tests]
+    likely_crates: [cad-query, cad-references, cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge]
+    escalate_if: [a required query can only expose native pointers or unspecified enumeration order]
+    gate_relevance: Stage-5 low-level capability
+
+  - id: POST100-S5-020
+    stage: 5
+    title: Extend Stage-4 raw topology handles into the Stage-5 unsafe tier
+    objective: Provide opaque epoch-bound raw handles and operations for cases that cannot be expressed safely while preserving D6 and stale-handle rejection.
+    depends_on: [POST100-S5-001, POST100-S5-019]
+    plan_references: [rfcs/0002-geometry-runtime-kernel-abstraction.md, docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [AICAD-093 accepted semantics, raw/unsafe geometry ruling]
+    acceptance:
+      - Handles are AICAD-owned opaque values with shape/session epoch metadata or equivalent enforcement.
+      - Stale handles fail deterministically before native dereference.
+      - Raw handles cannot become semantic refs persistent IDs or serialized durable state.
+      - Safe and raw APIs are visibly/type-system-distinct.
+    required_checks: [stale epoch tests, cross-shape misuse tests, serialization rejection tests]
+    likely_crates: [cad-references, cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-runtime]
+    escalate_if: [Stage-4 handle rules cannot support required Stage-5 low-level operation without semantic persistence]
+    gate_relevance: Stage-5 unsafe tier
+
+  - id: POST100-S5-021
+    stage: 5
+    title: Implement functional controlled topology editing
+    objective: Expose required split merge replace trim and other canonical-plan topology edits as new-value operations with explicit handle invalidation and lineage.
+    depends_on: [POST100-S5-020, POST100-S5-018]
+    plan_references: [docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [D2, raw handle epochs, lineage event contract]
+    acceptance:
+      - No source-observable in-place mutation or pointer identity semantics.
+      - Edited outputs receive new shape epochs; invalid old raw handles are rejected.
+      - Split merge deleted unchanged modified lineage is reported for relevant entities.
+      - Invalid edits return structured failures and leave original values semantically unchanged.
+    required_checks: [split/merge/delete lineage corpus, stale handle tests, immutability alias tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-references, cad-provenance]
+    escalate_if: [a kernel edit cannot be wrapped without exposing alias-observable mutation]
+    gate_relevance: Stage-5 controlled low-level editing
+
+  - id: POST100-S5-022
+    stage: 5
+    title: Implement validation and adoption from raw geometry into safe semantic geometry
+    objective: Create the explicit trust boundary that checks raw results and promotes them only with required semantic outputs/provenance/evidence.
+    depends_on: [POST100-S5-020, POST100-S5-021]
+    plan_references: [rfcs/0002-geometry-runtime-kernel-abstraction.md, docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [raw-to-safe adoption contract, general Map/record mechanism as approved]
+    acceptance:
+      - Invalid/nonconforming raw geometry cannot be adopted silently.
+      - Adoption report records validation checks effective tolerances lineage/provenance and semantic output bindings.
+      - Result is a safe semantic geometry value whose later use requires no raw handle.
+      - Missing/ambiguous semantic output bindings fail explicitly where required by spec.
+    required_checks: [valid adoption fixture, invalid raw fixture, incomplete semantic map fixture, provenance tests]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-validation, cad-references, cad-provenance, cad-runtime]
+    escalate_if: [safe invariants are not strong enough to distinguish adoptable from merely kernel-valid topology]
+    gate_relevance: critical Stage-5 safe/unsafe boundary
+
+  - id: POST100-S5-023
+    stage: 5
+    title: Integrate advanced-operation lineage with Stage-4 semantic references
+    objective: Prove that advanced construction trimming healing sewing and topology editing preserve or fail semantic references according to Stage-4 policy rather than relying on fingerprints or raw topology.
+    depends_on: [POST100-S5-013, POST100-S5-018, POST100-S5-021, POST100-S5-022]
+    plan_references: [docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md, rfcs/0003-semantic-references.md]
+    spec_dependencies: [Stage-4 resolver precedence, durability levels, advanced lineage extension]
+    acceptance:
+      - Each topology-changing Stage5 operation supplies resolver-consumable lineage evidence.
+      - Split/merge/deletion ambiguity produces candidate/broken outcomes rather than arbitrary selection.
+      - Fingerprints remain within owner-approved fallback policy.
+      - Reference replay survives deterministic rebuild and parameter perturbation corpus where semantically expected.
+    required_checks: [advanced reference durability corpus, perturbation runner extension, silent-wrong metric]
+    likely_crates: [cad-references, cad-query, cad-feature-graph, cad-provenance, cad-geometry-runtime]
+    escalate_if: [silent-wrong recovery appears or Stage4 precedence is insufficient for advanced operations]
+    gate_relevance: hard Stage-5 identity requirement
+
+  - id: POST100-S5-024
+    stage: 5
+    title: Stage-5 checkpoint C — safe/raw topology and semantic-reference integrity
+    objective: Gate the highest-risk architecture boundary before final breadth/performance work.
+    depends_on: [POST100-S5-023]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [all Stage5 topology/ref semantics]
+    acceptance:
+      - One fixture uses raw inspection/editing then validate/adopt and continues through safe high-level modeling.
+      - No native pointers or raw handles escape into durable refs/artifacts.
+      - Reference perturbation metrics show no silent-wrong regression from Stage4 baseline.
+      - Healing/edit evidence is inspectable and deterministic.
+    required_checks: [workspace checks, stale-handle adversarial suite, reference metrics, architecture review]
+    likely_crates: [cad-references, cad-query, cad-provenance, cad-validation, cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge]
+    escalate_if: [safe/raw distinction or Stage4 fail-closed guarantee is weakened]
+    gate_relevance: internal hard checkpoint
+
+  - id: POST100-S5-025
+    stage: 5
+    title: Build difficult freeform-part integration corpus
+    objective: Implement canonical advanced-geometry fixtures that require combinations of spline curves/surfaces trims topology construction and controlled healing rather than only isolated unit operations.
+    depends_on: [POST100-S5-024]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage5 completed core APIs]
+    acceptance:
+      - Corpus covers canonical-plan difficult cases including spline hook variable-section sweep twisted loft impeller/blade-like surface lattice/cam/nonstandard gear tooth manually trimmed manifold and open shell where applicable.
+      - Fixtures are source-first and avoid test-only native-kernel shortcuts.
+      - Expected measurements/topology/reference properties are machine checked.
+    required_checks: [integration corpus, D5 validation where applicable, repeatability]
+    likely_crates: [cad-hir, cad-runtime, cad-feature-graph, cad-references, cad-geometry-api, cad-geometry-runtime, cad-validation]
+    escalate_if: [a canonical fixture cannot be expressed without a missing architectural capability]
+    gate_relevance: Stage-5 realism evidence
+
+  - id: POST100-S5-026
+    stage: 5
+    title: Run adversarial geometry robustness and determinism campaign
+    objective: Target degenerate near-singular high/low-scale periodic tangent self-intersecting invalid and resource-heavy geometry cases and minimize failures.
+    depends_on: [POST100-S5-025]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md, docs/plan/19_RESEARCH_NOTES_AND_SOURCES.md]
+    spec_dependencies: [tolerance taxonomy, structured diagnostics]
+    acceptance:
+      - No panic UB stale-handle dereference arbitrary candidate selection or silent wrong recovery in bounded corpus.
+      - Failures carry actionable structured diagnostics/evidence.
+      - Repeated locked-environment runs meet D5 determinism expectations at appropriate levels.
+      - Minimal reproducers are retained for every material bug discovered and fixed in normal implementation tasks before gate.
+    required_checks: [property/adversarial tests, deterministic reruns, resource limits, sanitizer/native bridge checks where available]
+    likely_crates: [cad-geometry-api, cad-geometry-runtime, cad-kernel-api, cad-occt-bridge, cad-validation, cad-references, cad-diagnostics]
+    escalate_if: [robustness requires silently increasing tolerances or changing source semantics]
+    gate_relevance: Stage-5 adversarial evidence
+
+  - id: POST100-S5-027
+    stage: 5
+    title: Prove Stage-5 learnability inspectability and core-versus-library boundary
+    objective: Demonstrate advanced modeling through ordinary AICAD abstractions and structured inspection without adding domain-specific compiler magic.
+    depends_on: [POST100-S5-025, POST100-S5-026]
+    plan_references: [docs/plan/11_AI_NATIVE_SKILLS_AND_AGENT_PROTOCOL.md, docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md]
+    spec_dependencies: [stable semantic/diagnostic APIs]
+    acceptance:
+      - Representative advanced models can be constructed via reusable source functions/libraries.
+      - Machine inspection exposes operations references provenance validation/healing evidence and measurements.
+      - A bounded AI/tooling benchmark can locate/fix seeded advanced-geometry defects using structured interfaces rather than scraping kernel internals.
+      - Review confirms gears/fasteners/domain generators remain library concerns unless privileged access is proven necessary.
+    required_checks: [AI/tooling fixture, API surface review, compiler-intrinsic inventory]
+    likely_crates: [cad-agent-tools, cad-cli, cad-feature-graph, cad-references, cad-query, cad-diagnostics]
+    escalate_if: [tooling requires unstable HIR/native-kernel structures as its public contract]
+    gate_relevance: Stage-5 product/architecture quality
+
+  - id: POST100-S5-028
+    stage: 5
+    title: Prepare Stage-5 owner gate — advanced geometry
+    objective: Produce a hard gate packet proving capability architecture safety reference integrity numerical policy and realistic advanced-geometry usability before Stage6 begins.
+    depends_on: [POST100-S5-027]
+    plan_references: [docs/plan/15_IMPLEMENTATION_ROADMAP.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [all accepted Stage5 specifications and owner decisions]
+    acceptance:
+      - Checkpoints A B and C are complete with no unresolved blocking escalation.
+      - Difficult freeform corpus and adversarial campaign pass accepted criteria.
+      - Safe/raw tiers promotion provenance and advanced semantic references are demonstrated end-to-end.
+      - No Stage5 feature depends on OCCT-specific public semantics solver-specific semantics or undefined language features.
+      - Gate packet lists residual limitations as explicit later-stage items rather than silent omissions.
+      - Owner approval is required before Stage6 task execution.
+    required_checks: [full workspace fmt, full workspace clippy, full workspace tests, stage-specific integration benchmark, git diff scope review, owner gate packet]
+    likely_crates: []
+    escalate_if: [any MUST Stage5 requirement remains unverified or any silent-wrong reference/geometry behavior remains]
+    gate_relevance: final owner gate

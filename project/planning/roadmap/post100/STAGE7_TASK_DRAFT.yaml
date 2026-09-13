@@ -1,0 +1,523 @@
+status: DRAFT_NOT_APPROVED
+stage: 7
+name: Verification-first CAD
+basis_revision: d82bf82e53a98f3117d3dc17707f1756822e593d
+provisional_id_policy: POST100-S7-* identifiers are planning-only and MUST be replaced only after owner review.
+entry_conditions:
+  - Stage-6 owner gate approved.
+  - OD-S7-01 normalized verification/obligation model resolved.
+  - OD-S7-02 privileged verification language surface resolved.
+  - OD-S7-03 stable requirement/test/case identity resolved.
+  - OD-S7-04 evidence compatibility/versioning policy resolved.
+  - OD-S7-05 determines whether contracts/invariants are gate-critical or optional/deferred.
+  - Verification tolerance is defined as a distinct policy class from solver/operation/approximation/D5 equivalence tolerances.
+checkpoints:
+  - POST100-S7-010
+  - POST100-S7-019
+  - POST100-S7-025
+final_gate: POST100-S7-030
+
+tasks:
+  - id: POST100-S7-001
+    stage: 7
+    title: Freeze Stage-7 verification architecture and language/orchestration boundary
+    objective: Convert owner decisions into an executable split among language declarations runtime semantics library predicates solver/evaluator adapters and build/test orchestration.
+    depends_on: []
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/15_IMPLEMENTATION_ROADMAP.md, project/planning/post100/LANGUAGE_SURFACE_AUDIT.md, project/planning/post100/OPEN_DECISIONS.md#BEFORE-STAGE-7]
+    spec_dependencies: [OD-S7-01, OD-S7-02, OD-S7-03, OD-S7-04, OD-S7-05, D11, verification tolerance policy]
+    acceptance:
+      - Every Stage7 capability is assigned to language runtime/library/orchestration/schema layer.
+      - Domain predicates are not promoted to compiler syntax without privileged semantic need.
+      - Contracts/invariants are explicitly gate-critical optional or deferred; no task silently assumes them.
+      - Common verification model does not force all obligations through one numerical solver.
+    required_checks: [canonical spec review, Stage6 relation/evidence review, owner-decision cross-check]
+    likely_crates: []
+    escalate_if: [a required feature cannot be placed cleanly without changing a resolved owner decision]
+    gate_relevance: blocking architecture prerequisite
+
+  - id: POST100-S7-002
+    stage: 7
+    title: Implement normalized obligation relation and evidence core
+    objective: Define the minimal cross-domain model for stable obligation identity source scope subjects relation/evaluator policy status and evidence while retaining typed domain payloads.
+    depends_on: [POST100-S7-001]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md]
+    spec_dependencies: [OD-S7-01, SPEC-DELTA-005, SPEC-DELTA-018]
+    acceptance:
+      - Sketch assembly geometry and pure-value obligations can share identity/status/evidence envelope without sharing one concrete solver enum.
+      - Domain payload/evaluator interfaces are typed and versionable.
+      - Solver-native variables residual objects and penalty weights are not public obligation semantics.
+      - Evidence records can represent passing failing skipped invalid and evaluation-error states distinctly.
+    required_checks: [cross-domain model tests, serialization/schema prototypes, type-safety tests]
+    likely_crates: [cad-requirements, cad-constraints, cad-types, cad-diagnostics]
+    escalate_if: [common fields erase a domain distinction required by Stage6 or sketch semantics]
+    gate_relevance: Stage-7 core foundation
+
+  - id: POST100-S7-003
+    stage: 7
+    title: Implement approved test and requirement declarations
+    objective: Add only the privileged declaration syntax/AST/HIR semantics approved by OD-S7-02 for discoverable tests and stable engineering requirements.
+    depends_on: [POST100-S7-001, POST100-S7-002]
+    plan_references: [docs/plan/02_LANGUAGE_AND_COMPILER.md, docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [canonical language grammar/semantics, OD-S7-02]
+    acceptance:
+      - Test and requirement declarations parse print/lower/type-check according to canonical spec.
+      - Declarations carry source spans stable semantic identity hooks and metadata required by verification core.
+      - Ordinary predicate expressions/functions remain ordinary language constructs.
+      - No interpreter-only hidden registry duplicates the HIR semantic model.
+    required_checks: [lexer/parser/AST round trip, HIR/type-check tests, malformed declaration diagnostics]
+    likely_crates: [cad-lexer, cad-parser, cad-ast, cad-hir, cad-types, cad-diagnostics, cad-requirements]
+    escalate_if: [implementation requires inventing unstated declaration semantics]
+    gate_relevance: Stage-7 language prerequisite
+
+  - id: POST100-S7-004
+    stage: 7
+    title: Implement stable requirement test and generated-case identity
+    objective: Apply OD-S7-03 so verification history traceability matrices and AI/CI evidence remain stable across ordinary rebuilds/refactors according to documented rules.
+    depends_on: [POST100-S7-003]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md]
+    spec_dependencies: [OD-S7-03, assembly/feature identity principles]
+    acceptance:
+      - Requirement and test IDs are reproducible and never runtime-random authoritative IDs.
+      - Explicit stable labels/IDs behave according to collision/rename rules.
+      - Generated parameter/configuration cases derive stable case IDs from parent + normalized case identity.
+      - Duplicate/colliding IDs fail deterministically with source evidence.
+    required_checks: [rename/move/reorder fixtures per spec, duplicate-ID diagnostics, case-ID determinism]
+    likely_crates: [cad-requirements, cad-hir, cad-provenance]
+    escalate_if: [accepted source identity policy cannot preserve long-lived engineering requirement traceability]
+    gate_relevance: verification traceability foundation
+
+  - id: POST100-S7-005
+    stage: 7
+    title: Implement minimal assertion and evidence-capture primitive
+    objective: Evaluate approved boolean/value obligations while capturing source subject expected/observed values and diagnostics without proliferating domain-specific syntax.
+    depends_on: [POST100-S7-002, POST100-S7-003]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [OD-S7-02, verification result model]
+    acceptance:
+      - Core assertion behavior has explicit pass/fail/error semantics and source span.
+      - Domain-specific geometry/assembly assertions can be implemented as ordinary typed predicates/evaluators.
+      - Evidence distinguishes a false assertion from an evaluation/runtime error.
+      - Assertion evaluation respects normal resource accounting.
+    required_checks: [pass/fail/error fixtures, source span tests, resource-limit tests]
+    likely_crates: [cad-requirements, cad-runtime, cad-hir, cad-diagnostics]
+    escalate_if: [a proposed assertion feature is merely syntactic convenience with no privileged evidence requirement]
+    gate_relevance: Stage-7 core
+
+  - id: POST100-S7-006
+    stage: 7
+    title: Implement approximate and dimensional verification semantics
+    objective: Make approximate comparison explicit dimensionally valid and tied only to verification tolerance policy rather than D5 or solver tolerance.
+    depends_on: [POST100-S7-005]
+    plan_references: [docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md, docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [RFC-0004 approximate comparison, verification tolerance taxonomy]
+    acceptance:
+      - Approximate comparison rejects dimensionally incompatible quantities at type/semantic checking.
+      - Explicit `within` or accepted equivalent semantics records effective tolerance in evidence.
+      - Profile/default tolerance source is inspectable and versioned.
+      - No implicit dependency on D5 comparison profile or numerical solver tolerance.
+    required_checks: [unit dimension tests, boundary tests, profile/override evidence tests]
+    likely_crates: [cad-hir, cad-types, cad-units, cad-runtime, cad-requirements]
+    escalate_if: [operator syntax exists but canonical tolerance selection remains ambiguous]
+    gate_relevance: Stage-7 numerical correctness
+
+  - id: POST100-S7-007
+    stage: 7
+    title: Implement geometry verification predicate library
+    objective: Provide first-party typed predicates/evaluators for geometry measurements validity distance containment/reference and other canonical checks on top of Stage5 query services.
+    depends_on: [POST100-S7-005, POST100-S7-006]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/13_ENGINEERING_MODULES.md]
+    spec_dependencies: [Stage5 query semantics, semantic refs, verification evidence]
+    acceptance:
+      - Geometry checks are ordinary typed library/runtime functions/evaluators unless privileged behavior is proven necessary.
+      - Evidence captures semantic subjects measurements expected values tolerances and relevant query reports.
+      - Broken/ambiguous refs produce verification error/broken-subject state rather than arbitrary geometry selection.
+    required_checks: [area/volume/distance/validity/reference fixtures, ambiguous-ref negative tests]
+    likely_crates: [cad-requirements, cad-query, cad-references, cad-geometry-runtime, cad-validation]
+    escalate_if: [a geometry predicate would require exposing native topology or adding compiler syntax]
+    gate_relevance: Stage-7 geometry verification core
+
+  - id: POST100-S7-008
+    stage: 7
+    title: Implement deterministic test discovery selection and execution orchestration
+    objective: Discover tests/requirements by project/package scope execute them through explicit profiles and produce stable case ordering without making the interpreter itself the test runner.
+    depends_on: [POST100-S7-003, POST100-S7-004, POST100-S7-005]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md]
+    spec_dependencies: [test discovery scope, build/test orchestration boundary]
+    acceptance:
+      - Discovery order and case IDs are deterministic independent of filesystem/hash iteration.
+      - Filtering/tagging/selection if supported cannot change semantic IDs.
+      - Runtime evaluation is invoked through normal compiled/HIR mechanisms while runner owns orchestration.
+      - Resource/time/recursion limits produce structured per-case outcomes.
+    required_checks: [multi-file/package discovery fixtures, filter/order tests, resource-limit cases]
+    likely_crates: [cad-requirements, cad-compiler, cad-runtime, cad-cli]
+    escalate_if: [discovery requires hidden mutable registration during interpretation]
+    gate_relevance: Stage-7 runner foundation
+
+  - id: POST100-S7-009
+    stage: 7
+    title: Implement versioned structured verification result and evidence schema
+    objective: Establish the machine contract for passing/failing/error verification outcomes used by CLI CI AI and later native artifacts.
+    depends_on: [POST100-S7-002, POST100-S7-004, POST100-S7-008]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md]
+    spec_dependencies: [OD-S7-04, SPEC-DELTA-018]
+    acceptance:
+      - Schema contains version result/case IDs status subject IDs source refs expected/observed values effective tolerance/profile configuration/build identity and diagnostic links where applicable.
+      - Passing results can carry affirmative evidence without abusing diagnostic error schema.
+      - Ordering/canonical serialization policy is deterministic.
+      - Backward/forward compatibility policy is documented.
+    required_checks: [JSON/schema conformance, golden pass/fail/error results, deterministic serialization]
+    likely_crates: [cad-requirements, cad-diagnostics, cad-cli, cad-provenance]
+    escalate_if: [schema compatibility policy remains owner-ambiguous]
+    gate_relevance: Stage-7 machine-interface prerequisite
+
+  - id: POST100-S7-010
+    stage: 7
+    title: Stage-7 checkpoint A — declarations assertions runner and evidence
+    objective: Prove the minimal verification language/runtime/orchestration vertical slice before requirements matrices and advanced coverage are added.
+    depends_on: [POST100-S7-006, POST100-S7-007, POST100-S7-008, POST100-S7-009]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage7 core verification specs]
+    acceptance:
+      - Source project declares at least one requirement and multiple tests with value/geometry checks.
+      - Runner discovers and executes deterministically.
+      - Machine evidence and human diagnostics derive from stable structured results.
+      - No domain-specific test behavior is implemented as ad hoc interpreter magic.
+    required_checks: [workspace checks, end-to-end verification fixture, schema validation]
+    likely_crates: [cad-requirements, cad-runtime, cad-compiler, cad-cli, cad-query, cad-references]
+    escalate_if: [core verification requires coupling runner lifecycle into interpreter semantics]
+    gate_relevance: internal architecture checkpoint
+
+  - id: POST100-S7-011
+    stage: 7
+    title: Implement requirement evaluation hard soft priority and status semantics
+    objective: Represent engineering requirements as stable obligations with approved hard/soft/priority behavior independent of any one numerical solver penalty model.
+    depends_on: [POST100-S7-010]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [hard/soft requirement owner semantics, normalized obligation core]
+    acceptance:
+      - Requirement metadata/status is semantic and inspectable.
+      - Soft requirement priority/strength does not directly expose numerical solver weights unless explicitly mapped by an evaluator profile.
+      - Hard requirement failure affects build/verification status according to profile policy.
+      - Invalid/unresolved subject is distinguishable from unsatisfied requirement.
+    required_checks: [hard/soft fixtures, priority ordering evidence, unresolved-subject cases]
+    likely_crates: [cad-requirements, cad-constraints, cad-runtime]
+    escalate_if: [source-level strength is proposed as a solver-native scalar without semantic interpretation]
+    gate_relevance: Stage-7 requirement core
+
+  - id: POST100-S7-012
+    stage: 7
+    title: Implement source geometry assembly requirement traceability graph
+    objective: Link requirements/tests/results to source declarations semantic features references instances configurations and build identity for bidirectional inspection.
+    depends_on: [POST100-S7-004, POST100-S7-009, POST100-S7-011]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md]
+    spec_dependencies: [Stage4/5 provenance and refs, Stage6 identity, verification identity]
+    acceptance:
+      - Evidence can answer which source/semantic subjects a requirement/test covers and which requirements reference a subject.
+      - Links use stable semantic IDs/recipes not raw topology/solver handles.
+      - Rebuild preserves links according to identity durability rules or records explicit breakage.
+    required_checks: [bidirectional trace queries, rebuild/perturbation fixtures, broken-link diagnostics]
+    likely_crates: [cad-requirements, cad-provenance, cad-references, cad-feature-graph, cad-assemblies]
+    escalate_if: [existing provenance IDs are insufficient to link verification without unstable internal pointers]
+    gate_relevance: Stage-7 traceability requirement
+
+  - id: POST100-S7-013
+    stage: 7
+    title: Implement parameterized tests with stable case identity
+    objective: Run one test/requirement body against typed parameter cases while preserving deterministic IDs evidence and resource accounting.
+    depends_on: [POST100-S7-008, POST100-S7-009]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [case identity policy, general collections/iterators]
+    acceptance:
+      - Case enumeration uses ordinary typed data/iterators or runner data model rather than bespoke compiler loops.
+      - Each case has stable identity based on normalized input identity per spec.
+      - Duplicate case identities and unsupported/nonserializable parameters are diagnosed.
+    required_checks: [table-driven fixtures, reorder determinism, duplicate case tests]
+    likely_crates: [cad-requirements, cad-runtime, cad-cli]
+    escalate_if: [case identity depends on nondeterministic map/set order]
+    gate_relevance: Stage-7 verification breadth
+
+  - id: POST100-S7-014
+    stage: 7
+    title: Implement bounded parameter sweeps and sweep evidence
+    objective: Generate deterministic bounded test cases over parameter ranges/sets with explicit resource limits and failure minimization hooks.
+    depends_on: [POST100-S7-013]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [parameter model, case identity, runner resource policy]
+    acceptance:
+      - Sweep enumeration/order is deterministic and bounded.
+      - Each case records exact normalized parameter assignments.
+      - Resource/case-count limits fail structurally rather than truncating silently.
+      - Failing cases can be isolated/replayed independently.
+    required_checks: [range/grid sweep fixtures, limit tests, replay tests]
+    likely_crates: [cad-requirements, cad-runtime, cad-cli]
+    escalate_if: [proposed adaptive/random sweep semantics lack deterministic seed/evidence policy]
+    gate_relevance: Stage-7 robustness verification
+
+  - id: POST100-S7-015
+    stage: 7
+    title: Implement configuration-matrix verification
+    objective: Reuse Stage6 configuration semantics to run requirements/tests across selected valid configurations without creating a test-only configuration model.
+    depends_on: [POST100-S7-013, POST100-S7-014]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [Stage6 configuration identity/rules, case identity]
+    acceptance:
+      - Matrix cases reference stable Stage6 configuration IDs/resolved overlays.
+      - Invalid configurations are reported as configuration-invalid rather than misleading assertion failures.
+      - Cross-product selection/order is deterministic and bounded.
+      - Evidence records configuration identity.
+    required_checks: [multi-config fixture, invalid config case, ordering/resource tests]
+    likely_crates: [cad-requirements, cad-configurations, cad-assemblies, cad-cli]
+    escalate_if: [verification requires duplicating or mutating configuration semantics]
+    gate_relevance: Stage-7 cross-stage integration
+
+  - id: POST100-S7-016
+    stage: 7
+    title: Implement assembly verification predicate/evaluator library
+    objective: Verify poses DOF relations interfaces clearances interference BOM and configuration properties using Stage6 semantic APIs and common verification evidence.
+    depends_on: [POST100-S7-007, POST100-S7-012, POST100-S7-015]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/07_ASSEMBLIES_KINEMATICS_CONFIGURATIONS.md]
+    spec_dependencies: [Stage6 structured assembly APIs, verification evidence]
+    acceptance:
+      - Assembly checks refer to semantic instance/relation/configuration/BOM IDs.
+      - Solver residuals may be evidence but solver-native objects are never assertion subjects.
+      - Interference/clearance checks use verification tolerance explicitly where acceptance differs from geometry-operation contact policy.
+    required_checks: [pose DOF conflict interference BOM config verification fixtures]
+    likely_crates: [cad-requirements, cad-assemblies, cad-configurations, cad-query]
+    escalate_if: [Stage6 exposes insufficient stable semantics and verification would need private solver state]
+    gate_relevance: Stage-7 assembly integration
+
+  - id: POST100-S7-017
+    stage: 7
+    title: Implement versioned verification profiles
+    objective: Define named policies selecting test/requirement sets tolerance defaults resource limits configuration/sweep behavior and gate status without hiding semantic changes.
+    depends_on: [POST100-S7-009, POST100-S7-011, POST100-S7-015]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md]
+    spec_dependencies: [verification profile identity/versioning policy]
+    acceptance:
+      - Effective profile name/version/content identity is recorded in every run.
+      - Profiles can select policies but cannot silently reinterpret source declaration meaning outside approved extension points.
+      - Resource/tolerance overrides are typed and bounded.
+    required_checks: [profile override fixtures, identity/hash determinism, invalid policy diagnostics]
+    likely_crates: [cad-requirements, cad-cli, cad-validation]
+    escalate_if: [profile mechanism is used to smuggle solver/geometry-operation tolerance into verification semantics implicitly]
+    gate_relevance: Stage-7 reproducibility
+
+  - id: POST100-S7-018
+    stage: 7
+    title: Implement CLI verify test requirement and machine-output commands
+    objective: Expose deterministic verification execution filtering inspection and machine-readable results through stable CLI/schema interfaces.
+    depends_on: [POST100-S7-008, POST100-S7-009, POST100-S7-017]
+    plan_references: [docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md, docs/plan/11_AI_NATIVE_SKILLS_AND_AGENT_PROTOCOL.md]
+    spec_dependencies: [verification evidence schema, diagnostic families]
+    acceptance:
+      - Human and JSON output represent the same underlying results.
+      - Command exit status behavior for failures/errors/invalid configs is specified and tested.
+      - Filtering/listing order is deterministic.
+      - Machine output has explicit schema version and no debug-only unstable fields.
+    required_checks: [CLI integration tests, schema validation, exit-status matrix, golden output]
+    likely_crates: [cad-cli, cad-requirements, cad-diagnostics]
+    escalate_if: [CLI needs to parse human text to construct machine results]
+    gate_relevance: Stage-7 user/tool interface
+
+  - id: POST100-S7-019
+    stage: 7
+    title: Stage-7 checkpoint B — requirements traceability matrices and assembly verification
+    objective: Prove the verification substrate composes across parameters configurations and assemblies with versioned reproducible evidence.
+    depends_on: [POST100-S7-011, POST100-S7-012, POST100-S7-014, POST100-S7-015, POST100-S7-016, POST100-S7-017, POST100-S7-018]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage7 cross-domain verification specs]
+    acceptance:
+      - One project runs hard/soft requirements across parameter and configuration cases including assembly assertions.
+      - Trace queries link failures back to source geometry/assembly subjects.
+      - Repeating the locked run produces identical case/result identities and equivalent evidence.
+    required_checks: [workspace checks, cross-domain fixture, deterministic evidence comparison]
+    likely_crates: [cad-requirements, cad-cli, cad-assemblies, cad-configurations, cad-provenance]
+    escalate_if: [cross-domain verification requires domain-specific duplicate identity/evidence systems]
+    gate_relevance: internal hard checkpoint
+
+  - id: POST100-S7-020
+    stage: 7
+    title: Implement requires/ensures contracts if promoted by owner decision
+    objective: If OD-S7-05 makes contracts Stage7 work, map function pre/postconditions into normalized obligations/evidence without altering D2 functional semantics; otherwise record explicit deferral and perform no compiler implementation.
+    depends_on: [POST100-S7-019]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [OD-S7-05, canonical contract language semantics if approved]
+    acceptance:
+      - If implemented, call-boundary timing scoping generic composition failure/evidence and resource behavior are canonical and tested.
+      - Contract predicates reuse ordinary expression/library mechanisms where possible.
+      - If deferred, roadmap/spec preserves extension point and Stage7 gate does not claim contract support.
+    required_checks: [contract positive/negative fixtures if enabled, explicit deferral record otherwise]
+    likely_crates: [cad-parser, cad-ast, cad-hir, cad-runtime, cad-requirements]
+    escalate_if: [contract inheritance/composition semantics are not owner-approved]
+    gate_relevance: optional within Stage7 unless owner promotes
+
+  - id: POST100-S7-021
+    stage: 7
+    title: Implement invariants if promoted by owner decision
+    objective: If OD-S7-05 includes invariants, define their subject lifecycle and evaluation points in the functional/value model; otherwise preserve as deferred capability.
+    depends_on: [POST100-S7-020]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [OD-S7-05, invariant semantics if approved]
+    acceptance:
+      - If implemented, invariant subject/scope and evaluation boundaries are explicit and do not assume mutable-object lifecycle absent from D2.
+      - Evidence integrates with requirement/test identity and traceability.
+      - If deferred, no placeholder syntax is treated as implemented.
+    required_checks: [invariant fixtures if enabled, explicit deferral review otherwise]
+    likely_crates: [cad-parser, cad-ast, cad-hir, cad-runtime, cad-requirements]
+    escalate_if: [invariant semantics implicitly require mutable object state]
+    gate_relevance: optional within Stage7 unless owner promotes
+
+  - id: POST100-S7-022
+    stage: 7
+    title: Define and implement semantic verification coverage
+    objective: Measure meaningful requirement/test coverage over semantic features subjects configurations and requirement relationships rather than only source lines.
+    depends_on: [POST100-S7-012, POST100-S7-019]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [coverage denominator/relationship policy]
+    acceptance:
+      - Coverage categories/denominators are explicitly specified and reproducible.
+      - Reports distinguish uncovered semantic subject from broken trace link and intentionally excluded subject.
+      - Coverage evidence references stable semantic IDs/configurations.
+      - Line coverage if later added remains a separate metric.
+    required_checks: [known coverage fixture, rename/rebuild stability, exclusion tests]
+    likely_crates: [cad-requirements, cad-provenance, cad-feature-graph, cad-assemblies]
+    escalate_if: [coverage percentage is proposed without a stable denominator semantics]
+    gate_relevance: Stage-7 verification quality metric
+
+  - id: POST100-S7-023
+    stage: 7
+    title: Implement bounded semantic mutation testing
+    objective: Seed controlled parameter feature relation and requirement mutations to measure whether the verification suite detects meaningful model defects.
+    depends_on: [POST100-S7-014, POST100-S7-015, POST100-S7-022]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [source transaction model, stable evidence/case IDs]
+    acceptance:
+      - Mutation operators are explicit deterministic and bounded.
+      - Original source is not silently modified; mutants use isolated source transactions/artifacts.
+      - Survived/killed/invalid mutant results have stable IDs and traceability.
+      - Operators do not mutate verification expectations and model under test together unless explicitly testing that scenario.
+    required_checks: [seeded known-mutant corpus, determinism, source-integrity checks]
+    likely_crates: [cad-requirements, cad-compiler, cad-runtime, cad-provenance]
+    escalate_if: [mutation requires hidden AST/HIR edits unavailable through a safe source transaction mechanism]
+    gate_relevance: Stage-7 verification-strength evidence
+
+  - id: POST100-S7-024
+    stage: 7
+    title: Bind verification evidence to reproducible build and environment identity
+    objective: Record source/lock/compiler/kernel/profile/config/external-asset identities needed to interpret results and hand them to Stage8 artifacts later.
+    depends_on: [POST100-S7-009, POST100-S7-017]
+    plan_references: [docs/plan/14_COLLABORATION_PROVENANCE_SECURITY.md, docs/plan/09_FILE_FORMAT_INTERCHANGE_RECONSTRUCTION.md]
+    spec_dependencies: [build identity contract, external asset identity, evidence schema]
+    acceptance:
+      - Evidence identifies the exact semantic build inputs needed by accepted reproducibility policy.
+      - B-rep cache/native pointer identity is not treated as authoritative build identity.
+      - Stage8 can package/reference this evidence without redesigning result IDs.
+    required_checks: [same-input identity test, changed-source/package/profile/config/asset invalidation tests]
+    likely_crates: [cad-requirements, cad-provenance, cad-packages, cad-cli]
+    escalate_if: [required lock/package identity is unavailable before Stage8 and cannot be minimally represented]
+    gate_relevance: Stage-7 reproducibility and Stage-8 seam
+
+  - id: POST100-S7-025
+    stage: 7
+    title: Stage-7 checkpoint C — coverage mutation and reproducible evidence
+    objective: Prove the system can measure verification strength and reproduce evidence without coupling results to hidden runtime state.
+    depends_on: [POST100-S7-020, POST100-S7-021, POST100-S7-022, POST100-S7-023, POST100-S7-024]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [Stage7 coverage/mutation/evidence semantics]
+    acceptance:
+      - Coverage and mutation reports are stable across locked reruns.
+      - Optional contract/invariant status is explicit and truthful.
+      - Evidence contains sufficient build identity to distinguish changed inputs/policies.
+      - No verification result depends on unsaved interpreter/UI state.
+    required_checks: [workspace checks, evidence reproducibility, mutation/coverage integration]
+    likely_crates: [cad-requirements, cad-provenance, cad-cli]
+    escalate_if: [evidence cannot be reproduced or interpreted without unstable implementation internals]
+    gate_relevance: internal hard checkpoint
+
+  - id: POST100-S7-026
+    stage: 7
+    title: Build realistic verification-first engineering fixture
+    objective: Create a source-first multi-part configurable assembly with stable engineering requirements tests tolerances traceability parameter/config matrices and intentional failure/repair scenarios.
+    depends_on: [POST100-S7-025]
+    plan_references: [docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [all required Stage7 capabilities]
+    acceptance:
+      - Fixture exercises source parameters Stage5 geometry Stage4 refs Stage6 assembly/configuration and Stage7 verification in one model.
+      - Requirements include dimensional geometry and assembly properties with explicit tolerances.
+      - At least one seeded defect produces structured traceable failure and one corrected version produces affirmative evidence.
+      - Fixture is public-source/API-driven with no test-only internal shortcuts.
+    required_checks: [end-to-end build/verify, config/parameter matrix, traceability inspection]
+    likely_crates: [cad-requirements, cad-assemblies, cad-configurations, cad-references, cad-query, cad-cli]
+    escalate_if: [fixture reveals an omitted cross-stage semantic capability]
+    gate_relevance: Stage-7 realism evidence
+
+  - id: POST100-S7-027
+    stage: 7
+    title: Run adversarial verification semantics and evidence campaign
+    objective: Attack ambiguous/broken refs tolerance boundaries NaN/invalid measurements config failures test errors duplicate IDs resource exhaustion and nondeterministic ordering.
+    depends_on: [POST100-S7-026]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [diagnostic/evidence/status taxonomy]
+    acceptance:
+      - Invalid/broken/evaluation-error/unsatisfied statuses are never conflated.
+      - Broken semantic refs never auto-select a candidate to make a test pass.
+      - Boundary tolerance cases behave exactly according to verification policy.
+      - Hash/filesystem/parallel execution order cannot change result/case identity or canonical output ordering.
+      - Resource exhaustion yields structured incomplete/error evidence rather than partial success.
+    required_checks: [adversarial corpus, repeated shuffled-order runs, resource limits, schema validation]
+    likely_crates: [cad-requirements, cad-references, cad-runtime, cad-cli, cad-diagnostics]
+    escalate_if: [a failure mode can produce silent false-pass evidence]
+    gate_relevance: Stage-7 trust requirement
+
+  - id: POST100-S7-028
+    stage: 7
+    title: Benchmark verification performance and bounded scale
+    objective: Establish realistic execution/evidence overhead baselines for parameter/configuration matrices assemblies and mutation runs without sacrificing deterministic semantics.
+    depends_on: [POST100-S7-026, POST100-S7-027]
+    plan_references: [docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [resource profile semantics]
+    acceptance:
+      - Benchmarks report model size case count geometry rebuild count cache reuse and evidence size with stable methodology.
+      - Performance optimizations preserve result identity and evidence semantics.
+      - Limits are explicit and diagnostics actionable when exceeded.
+    required_checks: [bounded benchmark suite, cache-on/off comparison where applicable, deterministic result comparison]
+    likely_crates: [cad-requirements, cad-feature-graph, cad-runtime, cad-cli]
+    escalate_if: [acceptable performance would require weakening traceability/determinism without owner review]
+    gate_relevance: Stage-7 operational evidence
+
+  - id: POST100-S7-029
+    stage: 7
+    title: Build structured AI repair benchmark and verify core-versus-library boundary
+    objective: Demonstrate that an AI/tool client can consume failing structured evidence inspect semantic subjects propose source edits and re-run verification without privileged compiler internals or bypassing human/audit boundaries.
+    depends_on: [POST100-S7-026, POST100-S7-027]
+    plan_references: [docs/plan/11_AI_NATIVE_SKILLS_AND_AGENT_PROTOCOL.md, docs/plan/08_CONSTRAINTS_REQUIREMENTS_TESTS.md]
+    spec_dependencies: [structured verification/semantic APIs]
+    acceptance:
+      - Seeded failures are discoverable through machine evidence and semantic query APIs.
+      - Repair workflow modifies source through explicit transactions and preserves audit provenance.
+      - Success is accepted only by normal verification rerun; AI cannot edit/forge evidence as authority.
+      - Review confirms domain predicates remain library/extensible mechanisms where privilege is unnecessary.
+    required_checks: [AI repair benchmark, evidence integrity check, source transaction audit]
+    likely_crates: [cad-agent-tools, cad-cli, cad-requirements, cad-provenance, cad-query]
+    escalate_if: [AI integration needs direct access to private AST/HIR/solver/native-kernel objects as stable API]
+    gate_relevance: Stage-7 structured tooling proof
+
+  - id: POST100-S7-030
+    stage: 7
+    title: Prepare Stage-7 owner gate — verification-first CAD
+    objective: Produce a hard gate packet proving verification semantics traceability reproducibility structured evidence coverage mutation strength and realistic cross-stage engineering use.
+    depends_on: [POST100-S7-028, POST100-S7-029]
+    plan_references: [docs/plan/15_IMPLEMENTATION_ROADMAP.md, docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md]
+    spec_dependencies: [all accepted Stage7 specifications and owner decisions]
+    acceptance:
+      - Checkpoints A B and C pass with no unresolved blocking escalation.
+      - Realistic verification-first fixture passes/fails exactly as expected across approved matrices.
+      - Evidence distinguishes all required statuses and is reproducible/versioned.
+      - Semantic coverage and mutation results meet owner-approved gate thresholds or explicitly documented criteria.
+      - No test/requirement behavior depends on interpreter-only hidden special cases solver-specific semantics or D5 tolerance masquerading as verification tolerance.
+      - Optional/deferred contracts/invariants are represented truthfully and do not block core gate unless owner promoted them.
+      - Owner approval is required before Stage8 execution planning.
+    required_checks: [full workspace fmt, full workspace clippy, full workspace tests, verification fixture, adversarial campaign, performance benchmark, evidence schema validation, owner gate packet]
+    likely_crates: []
+    escalate_if: [any false-pass/silent-wrong evidence mode remains or machine results are not semantically reproducible]
+    gate_relevance: final owner gate
