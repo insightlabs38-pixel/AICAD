@@ -1218,3 +1218,43 @@ them; do not add entries here unilaterally.
   parameter yet" note (superseded by this ruling, to be removed/updated
   by `AICAD-076A`).
 - Supersedes: none (first ruling on D20).
+
+---
+
+## DL-22: Stage 3 passed — owner approval after final incremental-build remediation
+
+- Date: 2026-09-13
+- Resolves: Stage-3 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: **Stage 3 has passed.** The owner explicitly approves the
+  completed Stage-3 implementation and confirms that it has been merged to
+  `main`. The accepted main-line merge is
+  `15fc5a37e4382de717e426ccc5317a491be264cd`; its Stage-3 lineage includes
+  final remediation commit `99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`.
+  This decision closes the stale pre-approval state left in governance
+  files after the merge. It authorizes the bounded Stage-3 -> Stage-4
+  transition/reconciliation work only; it does **not** start Stage 4,
+  authorize `AICAD-080`, or claim that semantic-reference implementation
+  exists.
+- Rationale: `project/gates/stage-3-gate.md` recommends PASS after the
+  final remediation connected `ParamModel` and `FeatureGraph` through the
+  real `cad_cli::parametric_build::ParametricBuildSession` production path,
+  corrected the parameter-evaluation ordering defect discovered during that
+  integration, and re-verified the complete Stage-3 gate. The owner has now
+  explicitly accepted that completed gate/remediation state and directed
+  that the already-made approval be recorded durably in repository
+  governance.
+- Alternatives considered: retaining the stale "awaiting owner approval"
+  state after the owner had already approved and merged Stage 3 (rejected —
+  it makes current governance contradict the accepted repository state);
+  treating Stage-3 approval as automatic authorization to begin Stage 4
+  (rejected — the owner explicitly limits this transition pass to
+  documentation/governance preparation and forbids beginning AICAD-080).
+- Affected RFCs/tasks: Closes Stage 3 (`AICAD-064A` through `AICAD-079B`
+  plus the final gate remediation). Permits Stage-3 -> Stage-4 transition
+  preparation on `claude/aicad-stage4-transition`. `AICAD-080` remains
+  `status: todo` in `project/TASKS.yaml`; Stage-4 implementation requires
+  its own later initialization/authorization after transition review.
+- Supersedes: only the stale pre-approval Stage-3 status in
+  `project/CURRENT_STAGE.md` and `project/SESSION_HANDOFF.md`; it does not
+  reopen, alter, or resolve any `OWNER_DECISIONS.md` item.
