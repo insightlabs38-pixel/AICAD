@@ -79,19 +79,107 @@ independently re-confirmed in §2.5 below.
   feature node a source span and a `declared_as`/`transitive_bindings`
   provenance record (`STAGE3-A` §3.6) — this is the "source/provenance
   traceability" acceptance item.
-- The initial-build -> parameter-edit -> dirty-propagation -> incremental-
-  rebuild -> correct-affected-geometry chain is proven at the model level
-  (`ParamOverrides`/`dirty_set`), not yet end-to-end wired through one CLI
-  command — `STAGE3-A` §5 already recorded this as a known limitation
-  ("`ParamModel` and `FeatureGraph` are not yet wired together") carried
-  forward unresolved by any later batch. This audit re-confirms the gap is
-  still open: `crates/cad-cli/src/build.rs` (independently re-read this
-  audit) computes no dirty set and takes no parameter-override argument; a
-  parameter edit today means re-running `cad build` on edited source from
-  scratch, which independently re-exercises the deterministic topological
-  evaluation order and cache-key content-addressing (both proven
-  independently in `STAGE3-A`) but does not exercise a real incremental,
-  partial-rebuild code path end to end.
+- **REMEDIATED (post-`AICAD-079B` gate remediation, see §2.2A below).** The
+  initial-build -> parameter-edit -> dirty-propagation -> incremental-
+  rebuild -> correct-affected-geometry chain is now wired through one real
+  production `cad-cli` execution path (`cad_cli::parametric_build::
+  ParametricBuildSession`), not merely proven at the model level in
+  isolation. This closes the one gap this packet's original §7
+  recommendation flagged for the owner's own judgment.
+
+### 2.2A Remediation: `ParametricBuildSession` connects `ParamModel` and `FeatureGraph` through one production path
+
+Performed as a dedicated, narrowly-scoped gate-remediation task after this
+packet's own original recommendation (below, unchanged from its own first
+audit) — see `project/reports/AICAD-079B-INCREMENTAL-REMEDIATION.md` for the
+full record; this remediation's own commit is on `origin/claude/
+aicad-stage3-dev` immediately after this packet's own original commit (`git
+log` on that branch shows it directly).
+
+- **Root cause found, not assumed.** Wiring `Interpreter::
+  run_top_level_parametric` into a real build immediately surfaced a real,
+  previously-undiscovered defect: it evaluated every top-level `let`/`const`
+  *before* any `param`, so a `let` referencing an earlier `param` — the
+  ordinary, universal Stage-3 pattern every fixture under `examples/`/
+  `project/benchmarks/` uses — failed with `RuntimeError::UnboundValue`
+  ("has no value yet at this point in execution"). Reproduced first with a
+  minimal failing case, confirmed the exact diagnostic, then fixed the root
+  cause in `crates/cad-runtime/src/interp.rs` (params now evaluated first,
+  in `ParamModel`'s own dependency-ordered schedule, then `let`/`const` in
+  source order) rather than working around it in `cad-cli`. Two new
+  permanent regression tests
+  (`a_geometry_let_referencing_an_earlier_param_evaluates_correctly_under_
+  parametric_run`, `a_geometry_let_referencing_a_derived_param_evaluates_
+  correctly_under_parametric_run`) guard this exact defect from
+  reintroduction; no existing test was weakened to make the reordering safe
+  (independently re-confirmed: no prior test exercised a `param` whose own
+  default references an earlier `let`/`const` under this specific method).
+- **`cad_geometry_runtime::dispatch::dispatch_graph_incremental`** (new)
+  is the incremental counterpart to `dispatch_graph`: given the freshly
+  rebuilt `GeometryGraph` (structurally stable `GeomId` positions across
+  rebuilds of the same source), the prior round's own `GraphResults`, and
+  the raw `GeomId`s known dirty, it recomputes only a dirty node or one
+  whose own operand was itself recomputed this round (forward propagation,
+  correct because `GeometryGraph`'s SSA/append-only shape guarantees every
+  operand has a strictly smaller id), and *moves* every other node's
+  already-built `Shape` forward from the prior round — a real reuse (`Shape`
+  is not `Clone`, by design), not a fresh kernel call. Returns
+  `IncrementalStats { recomputed, reused }` (both in node order, never a
+  `HashSet`'s own iteration order) as the deterministic internal evidence
+  this remediation's own regression tests assert against.
+- **`Interpreter::geom_range_for_call`** (new) records, for every
+  successfully-dispatched `RuntimeBuiltin` call, the exact contiguous
+  `GeomId` range that call pushed, keyed by the call's own expression span —
+  the same span `cad_feature_graph::FeatureGraph::FeatureNode::span` already
+  uses, giving a principled (not positional-guesswork) translation from a
+  dirty `FeatureId` to the raw `GeomId`s `dispatch_graph_incremental` must
+  recompute, correct for both single-node builtins (`box`/`cylinder`/...)
+  and compound/decomposed ones (`hole`/`pocket`/`extrude`/`revolve`/...).
+- **`cad_cli::parametric_build::ParametricBuildSession`** (new) is the one
+  orchestration boundary: owns one real `OcctContext` across an initial
+  build and every subsequent `set_param`/`rebuild` round (an ordinary owned
+  value for one build session's lifetime — not a disk cache, daemon, or
+  watch server); re-derives `ParamModel`/`FeatureGraph` fresh from the same
+  already-lowered `HirProgram` each round (both are pure functions of
+  already-owned HIR, so this avoids a self-referential-struct problem with
+  no correctness cost); computes which top-level param bindings actually
+  changed *this* round by diffing the current overrides against the
+  previous round's own applied overrides (a real bug caught and fixed
+  during this remediation's own test-writing: naively treating "every
+  currently-overridden param" as changed made every rebuild after the first
+  edit dirty forever, defeating incrementality — fixed before landing, with
+  a regression test asserting a repeated rebuild with no new edit reuses
+  everything); asks `FeatureGraph::dirty_set` (the sole semantic authority
+  for dirtiness, never second-guessed) which features are dirty; and
+  dispatches only that recompute set. `ParamModel`/`FeatureGraph` remain
+  exactly as authoritative as before this remediation — no second parameter
+  system or dependency graph was introduced.
+- **Proof, not assertion.** `crates/cad-cli/tests/
+  stage3_parametric_incremental_rebuild.rs` (new, 4 tests) exercises
+  `ParametricBuildSession` itself — the real production orchestration, not a
+  private test harness — end to end: a representative model (one param, one
+  derived param, one feature depending on both, one fully independent
+  feature, one downstream union of the two) proves correct initial geometry
+  (exact closed-form volumes/validity), a no-op rebuild reuses everything, a
+  param edit dirties exactly the dependent chain (by name, matching
+  `FeatureGraph::dirty_set`'s own granularity) while the independent
+  feature's own `Shape` is reused with the *literal same* kernel handle
+  (`Shape::handle()` equality — the strongest available reuse evidence, not
+  merely a coincidentally-equal fresh recomputation), a repeated rebuild
+  with the same override again reuses everything (D5 Level-1 determinism:
+  identical state produces identical results, not merely identical values),
+  an edit to a param nothing depends on dirties/rebuilds nothing, and the
+  rebuilt result still exports to a valid, re-imported STEP file.
+- **No scope creep.** No new public `.aicad` source syntax, no new CLI
+  command/flag, no disk cache, no daemon/watch-mode process, and no Stage-4
+  semantic-reference scope was introduced — confirmed by direct diff
+  inspection: every change is within `crates/cad-runtime/src/interp.rs`
+  (the root-cause fix plus `geom_range_for_call`), `crates/
+  cad-geometry-runtime/src/dispatch.rs` (`dispatch_graph_incremental`), and
+  a new `crates/cad-cli/src/parametric_build.rs` plus its own integration
+  test — no `crates/cad-hir`, `crates/cad-feature-graph`, or
+  `crates/cad-constraints` change at all (both remain exactly as
+  authoritative as before).
 
 ### 2.3 Sketch/high-level modeling slice (independently re-confirmed this audit)
 
@@ -297,24 +385,70 @@ All 10 lines `OK` — the frozen held-out corpus is unmodified since
 Environment: Rust 1.98.1, edition 2024 (`rust-toolchain.toml`), unchanged
 from every prior Stage-3 batch and Stage 2.
 
+### 3A. Remediation re-verification (§2.2A, re-run this audit)
+
+```
+$ cargo fmt --all -- --check
+```
+Clean, zero diffs.
+
+```
+$ cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+Clean, zero warnings, all 29 crates (`cad-cli` gained a new `cad-feature-graph`
+dependency and a new `parametric_build` module; `cad-cli`'s own test target
+gained `cad-types`/`cad-units` dev-dependencies for value construction).
+
+```
+$ cargo test --workspace
+```
+1047 passed, 0 failed — +11 from this packet's own original 1036: +4 in
+`cad-runtime` (2 root-cause regression tests + 2 `geom_range_for_call`
+tests), +3 in `cad-geometry-runtime` (`dispatch_graph_incremental`), +4 in
+`cad-cli` (the new `stage3_parametric_incremental_rebuild.rs` integration
+suite).
+
+```
+$ cargo test -p cad-cli --test stage3_parametric_incremental_rebuild -- --test-threads=1
+```
+4/4 — initial correctness, param-edit incrementality (dirty-feature names,
+raw recompute/reuse counts, literal kernel-handle-identity reuse for the
+untouched feature), a no-op and a repeated-identical-override rebuild both
+reusing everything, an edit to a param nothing depends on dirtying nothing,
+and STEP export/re-import remaining valid after the rebuilt result.
+
+```
+$ cargo test -p cad-runtime run_top_level_parametric  # ad hoc filter, this audit only
+$ cargo test -p cad-geometry-runtime dispatch::
+```
+Both re-run clean this audit as well (139/27 passing respectively, included
+in the `--workspace` total above).
+
+Every other Stage-2/Stage-3 integration suite (`stage2_end_to_end`,
+`stage3_ordinary_parts`, `stage3_skill_doc_snippets`,
+`stage4_reference_benchmark_fixtures`, `spatial_axis_frame_foundation`) was
+re-run serially this audit exactly as in §3 above and remains green,
+confirming the remediation introduced no regression anywhere in the
+already-passed Stage-3 surface.
+
 ## 4. Known limitations / open items
 
-- **Parametric-build slice's own incremental-rebuild wiring is not yet
-  end-to-end** (§2.2): `ParamModel` and `FeatureGraph` are each independently
-  proven correct, but no single CLI command yet takes an edited parameter
-  value and performs a genuinely partial rebuild driven by `dirty_set`. This
-  was flagged by `STAGE3-A` (Batch S3-02) and remained unaddressed by every
-  later batch, since no Stage-3 task (`AICAD-070`-`079A`) was scoped to this
-  integration. Not a blocking defect against any specific `AICAD-0xx`
-  acceptance criterion completed so far — no completed task's own acceptance
-  list required this wiring — but it is a real gap against
-  `CURRENT_STAGE.md`'s own exit-gate *text* ("parameter edit -> dirty
-  propagation/incremental rebuild -> correct affected geometry"), which
-  describes an end-to-end pipeline this codebase does not yet fully execute
-  as one path, only as two independently-correct, unconnected halves. The
-  owner should weigh whether this gap is acceptable for a Stage-3 pass (with
-  the integration as an early Stage-3-hardening or Stage-4-adjacent
-  follow-up) or blocking.
+- **Parametric-build slice's own incremental-rebuild wiring — CLOSED** (§2.2,
+  §2.2A): remediated by a dedicated post-gate task; `cad_cli::
+  parametric_build::ParametricBuildSession` now connects `ParamModel` and
+  `FeatureGraph` through one real production `cad-cli` execution path, with
+  four new integration tests proving correctness and genuine incrementality
+  (including literal kernel-handle-identity reuse evidence). No longer an
+  open item — see `project/reports/AICAD-079B-INCREMENTAL-REMEDIATION.md`.
+  A residual, disclosed limitation of the *remediation itself* (not a
+  regression, not required by any acceptance criterion): the raw-`GeomId`-
+  range correlation `Interpreter::geom_range_for_call` provides is exact for
+  every currently-implemented builtin (compound/decomposed ones included),
+  but `ParametricBuildSession` re-derives `ParamModel`/`FeatureGraph` from
+  scratch on every rebuild round (cheap for every fixture/example size
+  tested; no performance budget applies at Stage 3) rather than
+  incrementally updating them in place — a possible future optimization,
+  not a correctness gap.
 - **Raw kernel-enumeration-order face/edge selection remains the only
   targeting mechanism** for `fillet`/`chamfer`/`extrude`/`revolve`/`shell`
   (unchanged since `STAGE3-C`) — this is exactly the gap Stage 4's
@@ -404,22 +538,30 @@ PASSed with no weakened test or gate; and a whole-workspace scope-creep audit
 Stage-3 diff (139 files, entirely within Stage-3's own declared crate/
 directory scope).
 
-The one item the owner should specifically weigh (§4, first bullet): the
-parametric-build slice's "parameter edit -> dirty propagation -> incremental
-rebuild -> correct affected geometry" exit-gate text describes an end-to-end
-pipeline that `ParamModel` and `FeatureGraph` each independently prove
-correct but that no completed Stage-3 task ever wired into one connected
-path. No individual task's own acceptance criteria required this wiring, so
-this audit does not treat it as disqualifying, but it is a real, disclosed
-gap against the exit-gate's own literal text rather than a mere known
-limitation of one already-passed task — hence a plain **PASS** rather than
-**PASS WITH CONDITIONS**, on the judgment that every task-level acceptance
-criterion in the fixed `S3-00`..`S3-09` batch sequence was independently met
-and no gate was weakened to reach that conclusion, but flagged prominently
-enough here that the owner can instead choose **PASS WITH CONDITIONS** (with
-the end-to-end incremental-rebuild wiring as the named condition, tracked
-under early Stage-3-hardening or as a prerequisite before Stage-4 work
-depends on it) if that framing is preferred.
+**No incremental-rebuild condition remains.** This packet's own original
+recommendation (above, unchanged) flagged exactly one item for the owner's
+judgment: the parametric-build slice's "parameter edit -> dirty propagation
+-> incremental rebuild -> correct affected geometry" exit-gate text
+described an end-to-end pipeline that `ParamModel` and `FeatureGraph` each
+independently proved correct but that no completed Stage-3 task had wired
+into one connected path. A dedicated, narrowly-scoped gate-remediation task
+(§2.2A, `project/reports/AICAD-079B-INCREMENTAL-REMEDIATION.md`) has since
+closed that gap: `cad_cli::parametric_build::ParametricBuildSession` now
+connects both through one real production `cad-cli` execution path,
+re-verified this audit against current source at this exact HEAD (not
+merely cited from that report) — `cargo fmt`/`clippy`/the full workspace
+test suite (1047 passed, 0 failed, +11 from this packet's own original 1036)
+are clean, the four new `stage3_parametric_incremental_rebuild.rs` tests
+pass (re-run serially, §3), and the whole-workspace scope-creep audit (§2.7)
+remains valid (the remediation touched only `crates/cad-runtime`,
+`crates/cad-geometry-runtime`, and a new `crates/cad-cli/src/
+parametric_build.rs` plus its own test file — no crate outside Stage-3's
+own declared scope, no new public source syntax, no new CLI command/flag,
+no disk cache or daemon/watch-mode process). Every task-level acceptance
+criterion in the fixed `S3-00`..`S3-09` batch sequence remains independently
+met, no gate or test was weakened anywhere to reach this conclusion, and the
+one item this packet's own first recommendation offered the owner a choice
+on is now closed rather than merely disclosed.
 
 **This recommendation is not an approval.** Per `AGENTS.md` and
 `CURRENT_STAGE.md` ("Owner approval required to advance: Yes"), Stage 4 work

@@ -48,6 +48,7 @@ use cad_geometry_api::{GeometryOp, GeometryQuery, Quantity};
 use cad_kernel_api::KernelError;
 use cad_kernel_api::Point3;
 use cad_occt_bridge::{BoundingBox, OcctContext, Shape, TriangleMesh, ValidationReport};
+use std::collections::HashSet;
 
 /// One node's dispatched result. [`NodeResult::Shape`] is the only variant
 /// usable as a later node's geometry operand (mirroring
@@ -476,6 +477,150 @@ pub fn dispatch_graph<'ctx>(
         results.push(result);
     }
     Ok(results)
+}
+
+/// Every [`GeomId`] a construction op reads as its own operand (never a
+/// `Quantity`/`EdgeIndex`/`FaceIndex`/kernel-neutral-math field) — the
+/// forward-propagation edges [`dispatch_graph_incremental`] walks to
+/// decide whether a node downstream of a recomputed input must itself
+/// recompute, mirroring `cad_geometry_api::ir::GeometryGraph::push_op`'s
+/// own operand-validation match one-for-one (every operand it validates
+/// here is exactly the set this function returns).
+fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
+    match op {
+        GeometryOp::Box { .. }
+        | GeometryOp::Cylinder { .. }
+        | GeometryOp::ImportStep { .. }
+        | GeometryOp::LineEdge { .. }
+        | GeometryOp::CircleWire { .. }
+        | GeometryOp::ArcEdge { .. } => Vec::new(),
+        GeometryOp::WireFromEdges { edges } => edges.clone(),
+        GeometryOp::MakeFace { wire } => vec![*wire],
+        GeometryOp::GetFace { target, .. } => vec![*target],
+        GeometryOp::Extrude { profile, .. } => vec![*profile],
+        GeometryOp::Revolve { profile, .. } => vec![*profile],
+        GeometryOp::Sweep { profile, spine } => vec![*profile, *spine],
+        GeometryOp::Loft { sections } => sections.clone(),
+        GeometryOp::Union { lhs, rhs }
+        | GeometryOp::Cut { lhs, rhs }
+        | GeometryOp::Intersect { lhs, rhs } => vec![*lhs, *rhs],
+        GeometryOp::Fillet { target, .. }
+        | GeometryOp::Chamfer { target, .. }
+        | GeometryOp::Shell { target, .. }
+        | GeometryOp::Offset { target, .. }
+        | GeometryOp::Transform { target, .. }
+        | GeometryOp::Mirror { target, .. } => vec![*target],
+    }
+}
+
+/// The single [`GeomId`] every [`GeometryQuery`] variant reads as its own
+/// target — see [`op_input_ids`]'s identical purpose for constructions.
+fn query_input_id(query: &GeometryQuery) -> GeomId {
+    match query {
+        GeometryQuery::IsValid(target)
+        | GeometryQuery::Volume(target)
+        | GeometryQuery::Area(target)
+        | GeometryQuery::BoundingBox(target)
+        | GeometryQuery::CenterOfMass(target)
+        | GeometryQuery::Validate(target)
+        | GeometryQuery::Tessellate { target, .. }
+        | GeometryQuery::ExportStep { target, .. } => *target,
+    }
+}
+
+/// Deterministic, internal per-rebuild evidence (`AICAD-079B` gate
+/// remediation): exactly which raw [`GeomId`]s [`dispatch_graph_incremental`]
+/// actually recomputed against the kernel this round, and which it reused
+/// directly from the prior round's own [`GraphResults`] with no kernel call
+/// at all. Both lists are in node (build) order, never a `HashSet`'s own
+/// iteration order (`project/DECISION_LOG.md#DL-12` Level-1 determinism) —
+/// callers needing membership tests should build their own `HashSet` from
+/// these, since this type itself only guarantees stable, replayable order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IncrementalStats {
+    pub recomputed: Vec<GeomId>,
+    pub reused: Vec<GeomId>,
+}
+
+impl IncrementalStats {
+    pub fn was_recomputed(&self, id: GeomId) -> bool {
+        self.recomputed.contains(&id)
+    }
+
+    pub fn was_reused(&self, id: GeomId) -> bool {
+        self.reused.contains(&id)
+    }
+}
+
+/// The incremental counterpart to [`dispatch_graph`]: given `graph` (freshly
+/// rebuilt from the same source this rebuild round, so `GeomId` positions
+/// are stable across rounds — see `crates/cad-cli`'s own orchestration doc
+/// comment for why that assumption holds), `prior` (the previous round's own
+/// [`GraphResults`] for the *same* `ctx`, or `None` for the first build), and
+/// `dirty` (the raw `GeomId`s known to need recomputation because their own
+/// evaluated parameters actually changed — never inferred here, always
+/// supplied by the caller from `cad_feature_graph::FeatureGraph::dirty_set`,
+/// which remains the sole semantic authority for *what* is dirty; this
+/// function only decides, mechanically, how far that dirtiness propagates
+/// through the raw graph and what to do about it), dispatches only the
+/// nodes that must be recomputed (a `dirty` node, or any node whose own
+/// operand was itself recomputed this round — forward propagation, correct
+/// because `GeometryGraph`'s own SSA/append-only shape guarantees every
+/// operand has a strictly smaller `GeomId` and is therefore already decided
+/// by the time this walk reaches a node that consumes it) and reuses every
+/// other node's `NodeResult` directly from `prior` (a real move of the
+/// already-computed [`Shape`], not a fresh kernel call — `Shape` is not
+/// `Clone`, by design, since it uniquely owns a kernel-side resource
+/// released on drop, so genuine reuse is the *only* way to avoid
+/// recomputation here, not an implementation shortcut).
+///
+/// On the first build (`prior: None`) every node is necessarily recomputed
+/// (there is nothing to reuse yet), regardless of `dirty`.
+pub fn dispatch_graph_incremental<'ctx>(
+    graph: &GeometryGraph,
+    ctx: &'ctx OcctContext,
+    prior: Option<GraphResults<'ctx>>,
+    dirty: &HashSet<GeomId>,
+) -> Result<(GraphResults<'ctx>, IncrementalStats), DispatchError> {
+    let mut prior_slots: Vec<Option<NodeResult<'ctx>>> = prior
+        .map(|results| results.into_iter().map(Some).collect())
+        .unwrap_or_default();
+
+    let mut results: GraphResults<'ctx> = Vec::with_capacity(graph.nodes().len());
+    let mut recomputed_ids: HashSet<GeomId> = HashSet::new();
+    let mut stats = IncrementalStats::default();
+
+    for node in graph.nodes() {
+        let inputs = match &node.kind {
+            GeometryNodeKind::Construct(op) => op_input_ids(op),
+            GeometryNodeKind::Query(query) => vec![query_input_id(query)],
+        };
+        let has_reusable_slot = prior_slots
+            .get(node.id.index() as usize)
+            .is_some_and(Option::is_some);
+        let must_recompute = !has_reusable_slot
+            || dirty.contains(&node.id)
+            || inputs.iter().any(|input| recomputed_ids.contains(input));
+
+        if !must_recompute
+            && let Some(slot) = prior_slots.get_mut(node.id.index() as usize)
+            && let Some(reused) = slot.take()
+        {
+            results.push(reused);
+            stats.reused.push(node.id);
+            continue;
+        }
+
+        let result = match &node.kind {
+            GeometryNodeKind::Construct(op) => dispatch_op(node.id, node.span, op, ctx, &results)?,
+            GeometryNodeKind::Query(query) => dispatch_query(node.id, node.span, query, &results)?,
+        };
+        results.push(result);
+        recomputed_ids.insert(node.id);
+        stats.recomputed.push(node.id);
+    }
+
+    Ok((results, stats))
 }
 
 #[cfg(test)]
@@ -1348,5 +1493,189 @@ mod tests {
             ),
             other => panic!("expected Number, got {other:?}"),
         }
+    }
+
+    // --- AICAD-079B: `dispatch_graph_incremental` -----------------------
+
+    /// Two disjoint boxes unioned together (`boss` translated well clear of
+    /// `base` first, so the union's volume is genuinely additive, not
+    /// swallowed by one box containing the other). Rebuilding with only
+    /// `boss`'s own dimension changed must recompute `boss`, the `Transform`
+    /// that moves it (a second-hop transitive dependent), and the `Union`
+    /// that consumes both — while reusing `base`'s own already-dispatched
+    /// `Shape` with no second kernel call for it at all.
+    #[test]
+    fn incremental_dispatch_reuses_an_independent_node_and_recomputes_only_the_affected_branch() {
+        use cad_kernel_api::{Transform, Vector3};
+
+        fn build_graph(boss_side: f64) -> (GeometryGraph, GeomId, GeomId, GeomId, GeomId) {
+            let mut graph = GeometryGraph::new();
+            let base = graph
+                .push_op(
+                    GeometryOp::Box {
+                        dx: length(0.01),
+                        dy: length(0.01),
+                        dz: length(0.01),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let boss = graph
+                .push_op(
+                    GeometryOp::Box {
+                        dx: length(boss_side),
+                        dy: length(boss_side),
+                        dz: length(boss_side),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let boss_moved = graph
+                .push_op(
+                    GeometryOp::Transform {
+                        target: boss,
+                        transform: Transform::translation(Vector3::new(1.0, 0.0, 0.0)),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let combined = graph
+                .push_op(
+                    GeometryOp::Union {
+                        lhs: base,
+                        rhs: boss_moved,
+                    },
+                    span(),
+                )
+                .unwrap();
+            (graph, base, boss, boss_moved, combined)
+        }
+
+        let (graph1, base1, boss1, boss_moved1, combined1) = build_graph(0.02);
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results1, stats1) = dispatch_graph_incremental(&graph1, &ctx, None, &HashSet::new())
+            .expect("first build should succeed");
+        // First build: nothing to reuse yet, every node recomputed.
+        assert_eq!(
+            stats1.recomputed,
+            vec![base1, boss1, boss_moved1, combined1]
+        );
+        assert!(stats1.reused.is_empty());
+
+        // "Edit" boss's own dimension only -- base is untouched. Identical
+        // source structure (same op sequence) means identical GeomId
+        // positions, exactly the stability the orchestration layer relies
+        // on across a real parameter-driven rebuild.
+        let (graph2, base2, boss2, boss_moved2, combined2) = build_graph(0.03);
+        assert_eq!(
+            (base1, boss1, boss_moved1, combined1),
+            (base2, boss2, boss_moved2, combined2)
+        );
+
+        let mut dirty = HashSet::new();
+        dirty.insert(boss2);
+        let (results2, stats2) = dispatch_graph_incremental(&graph2, &ctx, Some(results1), &dirty)
+            .expect("incremental rebuild should succeed");
+
+        assert!(
+            stats2.was_reused(base2),
+            "base did not change and must be reused, not recomputed"
+        );
+        assert!(
+            stats2.was_recomputed(boss2),
+            "boss was directly marked dirty"
+        );
+        assert!(
+            stats2.was_recomputed(boss_moved2),
+            "boss_moved consumes boss, so it is transitively dirty (depth 2) and must recompute"
+        );
+        assert!(
+            stats2.was_recomputed(combined2),
+            "combined consumes boss_moved, so it is transitively dirty (depth 3) and must recompute"
+        );
+        assert!(!stats2.was_reused(boss2));
+        assert!(!stats2.was_reused(boss_moved2));
+        assert!(!stats2.was_reused(combined2));
+
+        // Correctness, not just bookkeeping: the rebuilt union's own volume
+        // reflects boss's *new* (0.03) dimension, not its old (0.02) one,
+        // and is genuinely additive (the two boxes no longer overlap).
+        match &results2[combined2.index() as usize] {
+            NodeResult::Shape(shape) => {
+                let volume = shape.volume().unwrap();
+                let expected = 0.01 * 0.01 * 0.01 + 0.03 * 0.03 * 0.03;
+                assert!(
+                    (volume - expected).abs() < expected * 1e-6,
+                    "volume {volume} did not reflect boss's updated dimension \
+                     (expected ~{expected})"
+                );
+                assert!(shape.is_valid().unwrap());
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    /// An empty `dirty` set (a rebuild where nothing actually changed) must
+    /// reuse every single node -- zero kernel recomputation.
+    #[test]
+    fn incremental_dispatch_with_no_dirty_nodes_reuses_everything() {
+        let mut graph = GeometryGraph::new();
+        let a = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(0.01),
+                    dy: length(0.01),
+                    dz: length(0.01),
+                },
+                span(),
+            )
+            .unwrap();
+        let b = graph
+            .push_op(
+                GeometryOp::Cylinder {
+                    radius: length(0.002),
+                    height: length(0.01),
+                },
+                span(),
+            )
+            .unwrap();
+        let c = graph
+            .push_op(GeometryOp::Cut { lhs: a, rhs: b }, span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results1, _) = dispatch_graph_incremental(&graph, &ctx, None, &HashSet::new())
+            .expect("first build should succeed");
+        let (_, stats2) = dispatch_graph_incremental(&graph, &ctx, Some(results1), &HashSet::new())
+            .expect("no-op rebuild should succeed");
+        assert!(stats2.recomputed.is_empty(), "{:?}", stats2.recomputed);
+        assert_eq!(stats2.reused, vec![a, b, c]);
+    }
+
+    /// Every node dirty (e.g. a change with no known-clean survivors) must
+    /// recompute everything -- the degenerate case at the other extreme.
+    #[test]
+    fn incremental_dispatch_with_every_node_dirty_recomputes_everything() {
+        let mut graph = GeometryGraph::new();
+        let a = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(0.01),
+                    dy: length(0.01),
+                    dz: length(0.01),
+                },
+                span(),
+            )
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results1, _) = dispatch_graph_incremental(&graph, &ctx, None, &HashSet::new())
+            .expect("first build should succeed");
+        let mut dirty = HashSet::new();
+        dirty.insert(a);
+        let (_, stats2) = dispatch_graph_incremental(&graph, &ctx, Some(results1), &dirty)
+            .expect("rebuild should succeed");
+        assert_eq!(stats2.recomputed, vec![a]);
+        assert!(stats2.reused.is_empty());
     }
 }

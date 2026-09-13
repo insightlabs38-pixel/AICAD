@@ -272,6 +272,25 @@ pub struct Interpreter<'a> {
     /// Value::Geometry`] referencing it. Never dispatched into actual
     /// kernel calls by this crate — see [`Interpreter::into_geometry_graph`].
     geometry: cad_geometry_api::GeometryGraph,
+    /// The exact, contiguous `GeomId` range [`Interpreter::dispatch_builtin`]
+    /// pushed onto [`Interpreter::geometry`] for one successfully-dispatched
+    /// `RuntimeBuiltin` call, keyed by that call's own `Span` (`AICAD-079B`
+    /// gate remediation). A single-node builtin (`box`/`cylinder`/`union`/
+    /// ...) always maps to a length-1 range; a compound builtin (`hole`/
+    /// `pocket`/`extrude`/`revolve`/`mirror`/pattern builtins/`shell`) maps
+    /// to every internal node its own decomposition pushed, since all of
+    /// them must be recomputed together whenever the call itself is dirty
+    /// (`cad_feature_graph::FeatureGraph::dirty_set` marks dirtiness at
+    /// exactly this same call-span granularity — one `FeatureNode` per
+    /// call, regardless of how many raw nodes it decomposes into). Lets a
+    /// caller (`cad-cli`'s own parametric build orchestration) translate a
+    /// dirty `FeatureId` (which carries the identical call span) into the
+    /// precise raw-graph `GeomId`s `cad_geometry_runtime::dispatch::
+    /// dispatch_graph_incremental` must recompute, with no positional
+    /// guesswork and no dependency on every builtin being exactly one node.
+    /// Not populated for a call that fails partway through (irrelevant: the
+    /// whole build fails too in that case).
+    call_geom_ranges: HashMap<Span, std::ops::Range<u32>>,
 }
 
 /// The single coherent configuration surface for every execution resource
@@ -412,7 +431,18 @@ impl<'a> Interpreter<'a> {
             peak_call_depth: 0,
             budget: ResourceBudget::default(),
             geometry: cad_geometry_api::GeometryGraph::new(),
+            call_geom_ranges: HashMap::new(),
         }
+    }
+
+    /// The [`GeomId`] range [`Interpreter::dispatch_builtin`] pushed for the
+    /// `RuntimeBuiltin` call at `span`, if that call has already run
+    /// successfully this execution — see [`Interpreter::call_geom_ranges`]'s
+    /// own doc comment. `None` for a span this interpreter never dispatched
+    /// a builtin call at (not a top-level call at all, or a call that
+    /// failed before completing).
+    pub fn geom_range_for_call(&self, span: Span) -> Option<std::ops::Range<u32>> {
+        self.call_geom_ranges.get(&span).cloned()
     }
 
     /// The complete `GeometryGraph` this run has built so far (`project/
@@ -651,21 +681,31 @@ impl<'a> Interpreter<'a> {
         overrides: &crate::params::ParamOverrides,
         type_check: Option<&cad_hir::typeck::TypeCheckResult>,
     ) -> Result<(), Box<cad_diagnostics::Diagnostic>> {
-        for item in &program.items {
-            let (binding, value) = match item {
-                HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
-                    (*binding, value)
-                }
-                HirItem::Param { .. }
-                | HirItem::Fn { .. }
-                | HirItem::Struct { .. }
-                | HirItem::Enum { .. }
-                | HirItem::Part { .. }
-                | HirItem::Import { .. } => continue,
-            };
-            self.eval_top_level_value(binding, value)?;
-        }
-
+        // Params first, in `model`'s own dependency-ordered schedule, THEN
+        // `let`/`const` in source order — not the other way around. Every
+        // real Stage-3 model (every fixture under `examples/`, every case
+        // in `project/benchmarks/`) declares `param`s before the geometry
+        // `let`s that consume them, exactly the ordinary, expected pattern
+        // `crate::feature_graph`'s own `parameter_referencing_a_param_is_
+        // recorded_as_a_binding_reference` test already assumes at the
+        // dependency-graph layer. Evaluating `let`/`const` first (the
+        // order this method used before this fix) left every top-level
+        // `param` unpopulated in `self.globals` at that point, so any
+        // `let` referencing one failed with `RuntimeError::UnboundValue`
+        // ("has no value yet at this point in execution") — a real,
+        // previously-undiscovered defect that made this method unusable
+        // for any realistic parametric model, found while wiring
+        // `cad-cli`'s build orchestration to actually call it
+        // (`AICAD-079B` gate remediation). `crate::params::ParamModel`'s
+        // own documented scope boundary ("a param's default expression
+        // may also reference a top-level let/const... it just is not
+        // part of *this* dependency graph") is not violated by this
+        // reordering — no test anywhere exercises a `param` whose default
+        // references an earlier `let`/`const` under *this* method (that
+        // pattern remains `Interpreter::run_top_level`'s own, unaffected,
+        // plain-source-order scope), so swapping the pass order does not
+        // regress any previously-passing case, only fixes the far more
+        // common and previously-broken "let references param" direction.
         for &id in model.evaluation_order() {
             let decl = model.decl(id).expect(
                 "ParamModel::evaluation_order only ever yields ids the model itself declared",
@@ -692,6 +732,21 @@ impl<'a> Interpreter<'a> {
                 continue;
             };
             self.eval_top_level_value(id.0, default)?;
+        }
+
+        for item in &program.items {
+            let (binding, value) = match item {
+                HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
+                    (*binding, value)
+                }
+                HirItem::Param { .. }
+                | HirItem::Fn { .. }
+                | HirItem::Struct { .. }
+                | HirItem::Enum { .. }
+                | HirItem::Part { .. }
+                | HirItem::Import { .. } => continue,
+            };
+            self.eval_top_level_value(binding, value)?;
         }
         Ok(())
     }
@@ -953,7 +1008,43 @@ impl<'a> Interpreter<'a> {
             };
             frame.insert(param.binding, value);
         }
-        self.run_fn_body(fn_item, frame)
+
+        // `AICAD-079B` gate remediation: for a `RuntimeBuiltin` call
+        // specifically, bracket the raw `GeomId` range this exact call
+        // site pushes onto `self.geometry` by its own call-expression
+        // `span` — deliberately *not* `fn_item`'s own internal span
+        // (`run_fn_body`'s `enter_call`/diagnostic span), which is the
+        // builtin's shared *declaration* span and identical for every
+        // call to the same builtin anywhere in the program (recording
+        // under that key would let a later call silently overwrite an
+        // earlier one's range). `span` here is this call expression's own
+        // unique source span, matching `cad_feature_graph::FeatureGraph`'s
+        // own `FeatureNode::span` one-for-one (both are built from the
+        // same `HirExpr::Call { span, .. }`), which is exactly the
+        // correlation `Interpreter::geom_range_for_call`'s own doc comment
+        // requires. An ordinary AICAD-source function call needs no such
+        // tracking (`cad_feature_graph::FeatureGraph` never treats one as
+        // a feature node — see that module's own "Interprocedural
+        // construction" scope note), so this stays narrowly scoped to
+        // `RuntimeBuiltin` bodies only.
+        let is_runtime_builtin = matches!(
+            fn_item,
+            HirItem::Fn {
+                body: FunctionImplementation::RuntimeBuiltin(_),
+                ..
+            }
+        );
+        if is_runtime_builtin {
+            let start = self.geometry.nodes().len() as u32;
+            let result = self.run_fn_body(fn_item, frame);
+            if result.is_ok() {
+                let end = self.geometry.nodes().len() as u32;
+                self.call_geom_ranges.insert(span, start..end);
+            }
+            result
+        } else {
+            self.run_fn_body(fn_item, frame)
+        }
     }
 
     /// Constructs a [`Value::Struct`] from a struct-literal call-syntax
@@ -5054,5 +5145,173 @@ mod tests {
         assert!(results.windows(2).all(|w| w[0] == w[1]));
         // c = b + a = (a*3) + a = 4*a = 4*0.005 = 0.02
         assert!((results[0] - 0.02).abs() < 1e-12);
+    }
+
+    /// Regression for the exact defect `AICAD-079B`'s gate remediation
+    /// found and fixed: `run_top_level_parametric` used to evaluate every
+    /// top-level `let`/`const` *before* any `param`, so a `let`
+    /// referencing an earlier `param` (the ordinary, universal Stage-3
+    /// pattern — every fixture under `examples/`/`project/benchmarks/`
+    /// declares params before the geometry that consumes them) failed
+    /// with `RuntimeError::UnboundValue`. This is not a synthetic
+    /// worst-case: it is the *only* realistic shape a parametric geometry
+    /// model takes, which is exactly why the bug went undetected until an
+    /// actual end-to-end parametric-rebuild integration was attempted.
+    #[test]
+    fn a_geometry_let_referencing_an_earlier_param_evaluates_correctly_under_parametric_run() {
+        let source = "param radius: Length = 4mm;\nlet boss = cylinder(radius, 12mm);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("a let referencing an earlier param must evaluate cleanly");
+        let radius_id = model.find_by_name("radius").unwrap();
+        assert_number_eq(interp.globals[&radius_id.0].clone(), 0.004);
+        let boss_binding = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let { binding, name, .. } if name == "boss" => Some(*binding),
+                _ => None,
+            })
+            .expect("boss is declared");
+        assert!(
+            matches!(interp.globals.get(&boss_binding), Some(Value::Geometry(_))),
+            "boss must have evaluated to a real Geometry value, using radius's own value"
+        );
+    }
+
+    /// A `let`'s own dependency on a param that is itself derived from
+    /// another param (a two-hop chain) also evaluates correctly — proves
+    /// the fix handles `model.evaluation_order()`'s own transitive
+    /// dependency ordering, not just a single directly-referenced param.
+    #[test]
+    fn a_geometry_let_referencing_a_derived_param_evaluates_correctly_under_parametric_run() {
+        let source = "param width: Length = 40mm;\n\
+                       param half_width: Length = width / 2.0;\n\
+                       let base = box(width, half_width, 5mm);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("a let referencing a derived param must evaluate cleanly");
+        let base_binding = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let { binding, name, .. } if name == "base" => Some(*binding),
+                _ => None,
+            })
+            .expect("base is declared");
+        assert!(matches!(
+            interp.globals.get(&base_binding),
+            Some(Value::Geometry(_))
+        ));
+    }
+
+    // --- AICAD-079B: per-call GeomId range tracking ---------------------
+
+    #[test]
+    fn a_single_node_builtin_call_gets_a_length_one_geom_range() {
+        let source = "let base = box(10mm, 10mm, 10mm);\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        let call_span = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let {
+                    name,
+                    value: HirExpr::Call { span, .. },
+                    ..
+                } if name == "base" => Some(*span),
+                _ => None,
+            })
+            .expect("base's own value is a Call expression");
+        let range = interp
+            .geom_range_for_call(call_span)
+            .expect("a successfully-dispatched call must have a recorded range");
+        assert_eq!(range.end - range.start, 1, "box is a single-node builtin");
+        assert_eq!(interp.geometry_graph().nodes().len(), 1);
+    }
+
+    #[test]
+    fn a_compound_builtin_call_gets_a_multi_node_geom_range() {
+        // `hole` decomposes into Cylinder + Transform + Cut internally
+        // (`AICAD-076`) -- one call, three raw nodes.
+        let source = "let bored = hole(box(20mm, 20mm, 10mm), \
+                       Axis3(origin = Point3(x = 5mm, y = 5mm, z = -1mm), \
+                             direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                       4mm, 12mm);\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        let call_span = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let {
+                    name,
+                    value: HirExpr::Call { span, .. },
+                    ..
+                } if name == "bored" => Some(*span),
+                _ => None,
+            })
+            .expect("bored's own value is a Call expression");
+        let range = interp
+            .geom_range_for_call(call_span)
+            .expect("a successfully-dispatched call must have a recorded range");
+        assert_eq!(
+            range.end - range.start,
+            3,
+            "hole decomposes into exactly 3 raw nodes (Cylinder, Transform, Cut)"
+        );
+        // The nested `box(...)` argument is itself a separate, earlier
+        // call with its own (length-1) range, not merged into `hole`'s own.
+        let box_span = lowered
+            .program
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Let {
+                    name,
+                    value: HirExpr::Call { args, .. },
+                    ..
+                } if name == "bored" => match &args[0] {
+                    HirArg::Positional(HirExpr::Call { span, .. }) => Some(*span),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("bored's own first argument is a nested box(...) call");
+        let box_range = interp
+            .geom_range_for_call(box_span)
+            .expect("the nested box(...) call has its own recorded range");
+        assert_eq!(box_range.end - box_range.start, 1);
+        assert!(
+            box_range.end <= range.start,
+            "box is built before hole's own nodes"
+        );
     }
 }
