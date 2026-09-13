@@ -1,9 +1,25 @@
-# Parametrics and feature DAG
+# Parametric architecture
 
-Stage 3 introduced the parametric/incremental foundation.
+Stage 3 has two distinct semantic graphs plus an orchestration layer that connects them during a real rebuild.
 
-Top-level `param` declarations receive stable parameter identity, explicit dependency edges, deterministic evaluation order, and cycle diagnostics. The feature DAG records supported modeling-operation nodes, geometry dependencies, parameter/binding references, structural cache keys, dirty propagation, and source/provenance mappings.
+```text
+source/HIR
+  ├─► ParamModel ── changed parameter bindings ─┐
+  │                                             ▼
+  └─► FeatureGraph ───────────────────────► dirty_set
+                                                │
+                                                ▼
+                                  call-span → GeomId ranges
+                                                │
+                                                ▼
+                                dispatch_graph_incremental
+                                                │
+                                                ▼
+                                  reused + recomputed shapes
+```
 
-Cache keys are structural/deterministic rather than dependent on process-random hash behavior. Dirty propagation follows explicit parameter/geometry dependencies so unaffected feature results can remain reusable.
+- `ParamModel` answers: *what are the parameters, what do they depend on, and in what deterministic order are they evaluated?*
+- `FeatureGraph` answers: *what supported modeling operations exist, what feature/binding inputs do they depend on, and what becomes dirty after a binding changes?*
+- `ParametricBuildSession` answers: *how does one in-process build session apply an edit, execute source, map dirty features to geometry nodes, and realize only the affected geometry?*
 
-The Stage-3 implementation is a foundation, not the final long-term feature model. Do not infer Stage-4 semantic references or post-100 programmable-feature semantics from this baseline; those have their own future tasks/decisions.
+Read [parameters-and-feature-dag.md](parameters-and-feature-dag.md) for graph semantics and [incremental-rebuild.md](incremental-rebuild.md) for the final production path.

@@ -1,9 +1,23 @@
 # Compiler and runtime
 
-The core Rust workspace separates parsing, semantic lowering/type checking, runtime evaluation, feature/incremental analysis, geometry graph construction, and kernel dispatch.
+The current pipeline is a conventional typed-language frontend feeding a bounded interpreter and a separate geometry realization phase:
 
-Key crates include `cad-lexer`, `cad-parser`, `cad-ast`, `cad-hir`, `cad-types`, `cad-units`, `cad-compiler`, `cad-runtime`, and `cad-diagnostics`.
+```text
+source
+  → lexer/parser/AST
+  → HIR lowering + bindings
+  → type/unit checking
+  → HIR interpretation
+  → GeometryGraph construction
+  → kernel dispatch when geometry is requested
+```
 
-Runtime-backed standard functions are ordinary source calls: they resolve/type-check through the same language call machinery, while their implementations are supplied by trusted runtime dispatch rather than a user-defined function body. The closed catalogue is defined in `cad-hir` and consumed by the runtime; adding a builtin is not equivalent to adding a compiler intrinsic.
+This separation is deliberate. The compiler does not lower every CAD operation into bespoke compiler intrinsics, and the interpreter does not carry live OCCT objects as ordinary source values.
 
-Geometry evaluation is staged through backend-neutral geometry values/IR before native-kernel realization. Keep compiler semantics independent of OCCT object identity or pointers.
+Read:
+
+- [Frontend](frontend.md)
+- [HIR and type checking](hir-and-typechecking.md)
+- [Runtime](runtime.md)
+
+For the geometry representation produced by runtime-backed calls, continue to [Geometry IR](../geometry/geometry-ir.md).

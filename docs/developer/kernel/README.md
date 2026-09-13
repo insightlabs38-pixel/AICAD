@@ -1,7 +1,11 @@
 # Kernel boundary
 
-`cad-kernel-api` is the kernel-neutral contract. `cad-occt-bridge` is the OpenCascade implementation boundary; direct OCCT/native calls must not leak upward into compiler/runtime/source semantics.
+The kernel stack has three layers with deliberately different responsibilities:
 
-Spatial types validate concepts such as directions, axes, frames, planes, and rigid transforms at the kernel-neutral boundary. Native handles are implementation details. Determinism/validation policy is layered: source/compiler determinism, locked-kernel semantic/numerical behavior, and cross-environment comparison are distinct concerns.
+1. **`cad-kernel-api`** — pure Rust, backend-neutral geometry values and operation contracts.
+2. **`cad-occt-bridge`** — Rust adapter implementing those contracts against the native bridge and owning safe Rust-side kernel resources.
+3. **`native/occt_bridge`** — C++/C ABI implementation permitted to include OCCT headers and store OCCT-specific objects.
 
-When adding geometry capability, first decide whether the change belongs in source API, internal Geometry IR, kernel-neutral API, or OCCT implementation; do not automatically mirror one layer into another.
+Everything above this stack should reason in AICAD/geometry-domain terms, not OCCT classes.
+
+See [occt-boundary.md](occt-boundary.md) for lifecycle/ABI rules and build integration.

@@ -1,12 +1,35 @@
-# Geometry architecture
+# Geometry subsystem
 
-AICAD separates the source-level Safe CAD function catalogue from the internal Geometry IR and from the native kernel adapter.
+AICAD deliberately separates **source-level modeling semantics** from **backend-neutral geometry execution** and from the **concrete OCCT kernel**.
 
-- `cad-geometry-api` owns backend-neutral geometry operation/query representation and opaque graph identities.
-- `cad-geometry-runtime` dispatches/evaluates that representation against a kernel implementation.
-- `cad-kernel-api` defines kernel-neutral geometric/spatial contracts.
-- `cad-occt-bridge` implements those contracts using OpenCascade.
+```text
+RuntimeBuiltin source call
+       ↓
+GeometryGraph / GeometryOp
+       ↓
+cad-geometry-runtime
+       ↓
+cad-kernel-api
+       ↓
+cad-occt-bridge
+       ↓
+OCCT
+```
 
-Source `Geometry` values never expose OCCT objects or native topology pointers. Some Stage-3 source operations still accept raw integer face/edge selectors; these are documented limitations rather than durable semantic identity.
+## Source API
 
-See [`safe-cad-api.md`](safe-cad-api.md) for the detailed current source API.
+The closed Safe CAD catalogue is documented in [safe-cad-api.md](safe-cad-api.md). It includes the Stage-2 primitive/boolean/finishing baseline plus Stage-3 part/features/spatial operations such as `plate`, `extrude`, `revolve`, `hole`, `pocket`, `mirror`, patterns, and `shell`.
+
+RuntimeBuiltin source functions are not a 1:1 public mirror of every Geometry IR operation. Internal geometry representation can include lower-level construction/query operations without automatically making them language APIs.
+
+## Geometry IR
+
+[geometry-ir.md](geometry-ir.md) documents the append-only SSA-style graph, typed quantities, and raw topology-selector limitation.
+
+## Realization and validation
+
+`cad-geometry-runtime` maps Geometry IR to the kernel-neutral operation surface. Exact shapes are created only below that boundary. Kernel property/validation queries support evidence-based tests and STEP workflows; rendered appearance alone is not accepted as correctness evidence.
+
+## Stage-4 boundary
+
+Stage 3 still contains raw face/edge index selection for operations that need topology operands. Those indices are ephemeral topology selectors, not durable AICAD semantic references. Do not build current developer APIs around the assumption that an integer edge index is identity; Stage 4 exists specifically to establish the durable reference layer above the kernel.

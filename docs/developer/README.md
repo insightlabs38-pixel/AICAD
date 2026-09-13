@@ -1,14 +1,54 @@
 # AICAD developer documentation
 
-This directory describes the **current implemented system**, not the chronology of how it was built.
+This documentation explains the **current post-Stage-3 implementation**: how source becomes typed HIR and exact geometry, how kernel isolation works, how parameters and features interact, how incremental rebuild is executed, and how to test and contribute without confusing historical planning with current architecture.
 
-- [`architecture/`](architecture/) — repository/layer architecture and source-of-truth boundaries.
-- [`compiler-runtime/`](compiler-runtime/) — frontend → HIR/type system → runtime flow.
-- [`geometry/`](geometry/) — source modeling API, Geometry IR/runtime, and geometry boundaries.
-- [`kernel/`](kernel/) — kernel-neutral API and OCCT adapter boundary.
-- [`parametrics/`](parametrics/) — parameters, feature DAG, cache keys, dirty propagation, provenance.
-- [`constraints/`](constraints/) — current solver-independent sketch constraint architecture.
-- [`testing/`](testing/) — workspace/test/gate expectations.
-- [`contributing/`](contributing/) — repository workflow and where development evidence belongs.
+## Architecture
 
-Historical rationale may be linked from `project/reports/archive/`, `project/gates/archive/`, accepted RFCs, and the decision log when needed, but those archives are not routine developer reading.
+- [System architecture](architecture/)
+- [System overview](architecture/system-overview.md)
+- [Repository layout](architecture/repository-layout.md)
+
+## Compiler and runtime
+
+- [Compiler/runtime overview](compiler-runtime/)
+- [Frontend](compiler-runtime/frontend.md)
+- [HIR and type checking](compiler-runtime/hir-and-typechecking.md)
+- [Runtime](compiler-runtime/runtime.md)
+
+## Geometry and kernel
+
+- [Geometry subsystem](geometry/)
+- [Geometry IR](geometry/geometry-ir.md)
+- [Safe CAD source API](geometry/safe-cad-api.md)
+- [Kernel boundary](kernel/)
+- [OCCT isolation](kernel/occt-boundary.md)
+
+## Parametrics and constraints
+
+- [Parametrics](parametrics/)
+- [Parameters and feature DAG](parametrics/parameters-and-feature-dag.md)
+- [Incremental rebuild](parametrics/incremental-rebuild.md)
+- [Sketches and constraints](constraints/)
+
+## Development workflow
+
+- [Testing and evidence](testing/)
+- [Contributing](contributing/)
+
+## Architectural invariants
+
+The current implementation should be read with these invariants in mind:
+
+1. `.aicad` source and AICAD-owned semantic state are authoritative; generated B-rep, meshes, and exports are derived results.
+2. Public language types, HIR, feature identities, and Geometry IR remain kernel-neutral.
+3. OCCT is isolated behind the kernel adapter and native bridge.
+4. Runtime-backed Safe CAD functions use ordinary typed call semantics; they are not compiler geometry intrinsics.
+5. Geometry follows the established source → HIR/runtime → Geometry IR → geometry dispatcher → kernel-neutral API → OCCT path.
+6. `ParamModel` and `FeatureGraph` solve different problems but are connected by the parametric build orchestration.
+7. Incremental rebuilding is dependency-aware and reuses unaffected realized geometry inside one build session.
+8. Sketch and constraint semantics are AICAD-owned above the numerical solver.
+9. Stage-3 named outputs are explicit source names, not persistent Stage-4 topology references.
+10. Diagnostics, determinism, validation, and ambiguity handling follow accepted project policy rather than ad-hoc backend behavior.
+11. Historical task reports are implementation evidence and archaeology, not the developer manual.
+
+Future architecture proposals live under `project/planning/`; they should not be read as current APIs unless separately accepted and implemented.
