@@ -8,7 +8,7 @@ Configure branch protection on `main` and, while active, `claude/aicad-stage4-de
 
 - `CI / fmt and repository metadata`
 - `CI / clippy`
-- `CI / workspace build and unit tests`
+- `CI / workspace build and tests`
 - `CI / native OCCT bridge`
 - `CI / compiler/runtime/exact-geometry smoke`
 - `Integration and determinism / exact geometry and STEP`
@@ -43,4 +43,4 @@ Integration jobs retain concise logs and useful generated STEP evidence on failu
 
 ## Cost/control policy
 
-Routine PR checks use parallel jobs and dependency/build caches where appropriate. Fuzzing, sanitizers, repeated determinism stress, performance measurements, platform verification, and networked advisory audits stay scheduled/manual. Cache keys include OS plus the Rust toolchain, lockfile, and native bridge build definition so incompatible native/toolchain state is not silently reused.
+Routine PR checks use parallel jobs and dependency/build caches where appropriate. The required workspace lane runs the full `cargo test --workspace` suite; focused smoke/integration lanes make high-value failures easier to localize. Fuzzing, sanitizers, repeated determinism stress, performance measurements, platform verification, and networked advisory audits stay scheduled/manual. Cache keys include OS plus the Rust toolchain, lockfile, and native bridge build definition so incompatible native/toolchain state is not silently reused.

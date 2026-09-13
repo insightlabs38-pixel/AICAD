@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Show toolchain
         run: rustup show
       - name: cargo fmt --all -- --check
@@ -34,6 +36,9 @@ jobs:
         run: python -m py_compile scripts/ci/*.py
       - name: Audit Stage-4 task transition metadata
         run: python scripts/ci/stage4_task_audit.py --check
+      - name: AICAD-079C transition diff whitespace check
+        if: github.ref_name == 'claude/aicad-stage4-transition'
+        run: git diff --check 9e2db88cbbfe9097364fcbfc3ab8115b07b63efd HEAD
 
   clippy:
     name: clippy
@@ -55,7 +60,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
   workspace:
-    name: workspace build and unit tests
+    name: workspace build and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -72,8 +77,8 @@ jobs:
             ${{ runner.os }}-
       - name: cargo build --workspace --all-targets
         run: cargo build --workspace --all-targets --locked
-      - name: cargo test --workspace --lib --bins
-        run: cargo test --workspace --lib --bins --locked
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
 
   native:
     name: native OCCT bridge
