@@ -81,6 +81,16 @@
 //! and, when `Some`, add it to `backend_details` under a `"durability"`
 //! key, alongside (not overwriting) any fingerprint evidence the broken
 //! diagnostic already carries there.
+//!
+//! # Fingerprint ranking is an explicit, opt-in step (`AICAD-092`)
+//!
+//! [`with_fingerprint_ranking`] attaches a
+//! [`crate::fingerprint::rank_by_fingerprint`] result to any already-built
+//! [`Diagnostic`] under a `"fingerprint_ranking"` `backend_details` key.
+//! Neither diagnostic-builder function calls it automatically — see that
+//! function's own doc comment for why automatic attachment would blur
+//! toward the D7/`DL-8` automatic-selection boundary this module must not
+//! cross.
 
 use cad_diagnostics::json::Json;
 use cad_diagnostics::{
@@ -228,6 +238,45 @@ pub fn broken_reference_diagnostic(
 /// field can both be present at once. Returns `None` (omitting
 /// `backend_details` entirely, matching prior behavior) only when neither
 /// input is present.
+/// Attaches a fingerprint-similarity ranking (`AICAD-092`,
+/// [`crate::fingerprint::rank_by_fingerprint`]) to `diagnostic`'s own
+/// `backend_details`, as a `"fingerprint_ranking"` array of `{"distance":
+/// ..., "candidate": <candidate_summary>}` objects in ranked order (most
+/// similar first). Existing `backend_details` fields (durability,
+/// fingerprint evidence) are preserved, never overwritten.
+///
+/// This is a distinct, explicit, opt-in step — neither
+/// [`ambiguous_reference_diagnostic`] nor [`broken_reference_diagnostic`]
+/// calls it automatically. Matching D7/`DL-8`: presenting a fingerprint
+/// ranking to a human is an allowed use of fingerprint evidence; a
+/// diagnostic silently deciding on its own to compute and highlight a
+/// ranking would blur toward the automatic-selection boundary this
+/// feature must not cross, so a caller must ask for it explicitly.
+pub fn with_fingerprint_ranking(
+    mut diagnostic: Diagnostic,
+    ranked: &[crate::fingerprint::RankedCandidate<'_>],
+) -> Diagnostic {
+    let ranking = Json::Array(
+        ranked
+            .iter()
+            .map(|entry| {
+                Json::object([
+                    ("distance".to_string(), Json::Float(entry.distance)),
+                    ("candidate".to_string(), candidate_summary(&entry.candidate)),
+                ])
+            })
+            .collect(),
+    );
+    let mut fields = match diagnostic.backend_details.take() {
+        Some(Json::Object(fields)) => fields,
+        Some(other) => vec![("value".to_string(), other)],
+        None => Vec::new(),
+    };
+    fields.push(("fingerprint_ranking".to_string(), ranking));
+    diagnostic.backend_details = Some(Json::object(fields));
+    diagnostic
+}
+
 fn merged_backend_details(
     durability: Option<DurabilityLevel>,
     fingerprint: Option<&cad_references::FingerprintEvidence>,
@@ -875,6 +924,103 @@ mod tests {
             Some("query_strong"),
             "the QueryHandle strategy's own query_strong durability travels through \
              resolve_reference_with_durability into the diagnostic"
+        );
+    }
+
+    // --- AICAD-092 ---
+
+    #[test]
+    fn with_fingerprint_ranking_adds_a_ranking_array_alongside_existing_backend_details() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let candidates: Vec<_> = (0..cube.face_count().unwrap())
+            .map(|i| Candidate::new(EntityKind::Face, cube.get_face(i).unwrap()))
+            .collect();
+        let target = crate::fingerprint::candidate_fingerprint(&candidates[0]).unwrap();
+        let ranked = crate::fingerprint::rank_by_fingerprint(&target, candidates);
+        assert_eq!(ranked.len(), 6);
+
+        let reason = BrokenReason::FingerprintAutoResolutionDisabled(target);
+        let diagnostic = broken_reference_diagnostic(
+            "body.some_face",
+            None,
+            &reason,
+            Some(DurabilityLevel::QueryGeometric),
+        );
+        let diagnostic = with_fingerprint_ranking(diagnostic, &ranked);
+        let json = diagnostic.to_json();
+        let backend = json.get("backend_details").unwrap();
+
+        assert_eq!(
+            backend.get("durability").unwrap().as_str(),
+            Some("query_geometric"),
+            "durability set before ranking was attached must survive"
+        );
+        assert!(
+            backend
+                .get("fingerprint")
+                .unwrap()
+                .get("position")
+                .is_some(),
+            "fingerprint evidence set before ranking was attached must survive"
+        );
+        let ranking = backend
+            .get("fingerprint_ranking")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            ranking.len(),
+            6,
+            "every candidate is present, never narrowed"
+        );
+        assert_eq!(
+            ranking[0].get("distance").unwrap(),
+            &Json::Float(0.0),
+            "the target's own candidate ranks itself as the exact nearest match first"
+        );
+        assert!(ranking[0].get("candidate").unwrap().get("kind").is_some());
+        fn distance_of(entry: &Json) -> f64 {
+            match entry.get("distance").unwrap() {
+                Json::Float(v) => *v,
+                other => panic!("expected Json::Float, got {other:?}"),
+            }
+        }
+        for pair in ranking.windows(2) {
+            assert!(
+                distance_of(&pair[0]) <= distance_of(&pair[1]),
+                "ranking must be sorted ascending by distance"
+            );
+        }
+    }
+
+    #[test]
+    fn with_fingerprint_ranking_on_a_diagnostic_with_no_prior_backend_details() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let candidates: Vec<_> = (0..cube.face_count().unwrap())
+            .map(|i| Candidate::new(EntityKind::Face, cube.get_face(i).unwrap()))
+            .collect();
+        let target = crate::fingerprint::candidate_fingerprint(&candidates[0]).unwrap();
+        let ranked = crate::fingerprint::rank_by_fingerprint(&target, candidates);
+
+        let diagnostic =
+            broken_reference_diagnostic("body.some_face", None, &BrokenReason::NoMatch, None);
+        assert_eq!(
+            *diagnostic.backend_details.as_ref().unwrap_or(&Json::Null),
+            Json::Null
+        );
+        let diagnostic = with_fingerprint_ranking(diagnostic, &ranked);
+        let json = diagnostic.to_json();
+        assert_eq!(
+            json.get("backend_details")
+                .unwrap()
+                .get("fingerprint_ranking")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            6
         );
     }
 }

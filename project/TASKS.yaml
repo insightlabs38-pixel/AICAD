@@ -2851,7 +2851,7 @@ tasks:
 - id: AICAD-092
   stage: 4
   title: Implement geometry-fingerprint evidence/ranking/benchmark support without automatic recovery
-  status: todo
+  status: done
   depends_on:
   - AICAD-091
   plan_references:

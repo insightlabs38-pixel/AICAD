@@ -11,7 +11,11 @@
 //! ([`resolve::resolve_reference_with_durability`],
 //! [`resolve::ReferenceResolution`]) and surfacing that durability
 //! alongside both diagnostics, per
-//! `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §11.
+//! `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §11;
+//! `AICAD-092`: computing/ranking geometry-fingerprint evidence
+//! ([`fingerprint`]) strictly as diagnostic evidence, candidate-ranking
+//! input, and benchmark/experiment data — never automatic resolution, per
+//! `project/DECISION_LOG.md#DL-8`.
 //!
 //! ## Scope
 //!
@@ -66,6 +70,7 @@
 pub mod diagnostics;
 pub mod eval;
 pub mod feature_lineage;
+pub mod fingerprint;
 pub mod predicate;
 pub mod query;
 pub mod ranking;
@@ -73,11 +78,16 @@ pub mod resolve;
 pub mod serialize;
 pub mod value;
 
-pub use diagnostics::{ambiguous_reference_diagnostic, broken_reference_diagnostic};
+pub use diagnostics::{
+    ambiguous_reference_diagnostic, broken_reference_diagnostic, with_fingerprint_ranking,
+};
 pub use eval::{Candidate, EvalError, EvalResult, EvaluationEvidence, NoEvidence};
 pub use feature_lineage::{
     FeatureLineageError, FeatureLineageReport, PriorEntityRecord, PriorEntityState,
     ResultEntityOrigin, ResultEntityRecord, classify_feature_lineage,
+};
+pub use fingerprint::{
+    RankedCandidate, candidate_fingerprint, fingerprint_distance, rank_by_fingerprint,
 };
 pub use predicate::{
     AdjacencyTarget, BoundaryKind, DirectionComparison, GeometryPredicate, RelativeDirection,
