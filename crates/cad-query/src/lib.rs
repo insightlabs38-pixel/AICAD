@@ -1,18 +1,21 @@
 //! `cad-query` — `AICAD-081`: query AST/IR with cardinality expectations
-//! and deterministic ranking.
+//! and deterministic ranking; `AICAD-082`/`083`/`084`: geometry/topology/
+//! spatial predicate evaluation against a real build ([`eval`]).
 //!
 //! ## Scope
 //!
-//! Per this task's own `project/TASKS.yaml` acceptance list and
-//! `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §5-6, this crate
-//! defines the **representation** of a query criteria object — geometry/
+//! Per `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §5-6, this crate
+//! defines a query criteria object's **representation** — geometry/
 //! topology/spatial predicates, ranking/disambiguation directives, and an
-//! explicit cardinality expectation — and nothing more:
+//! explicit cardinality expectation — plus, as of `AICAD-082`..`084`, a
+//! **per-candidate predicate evaluator** ([`eval`]) that decides whether
+//! one predicate holds for one already-identified candidate against real
+//! `cad-occt-bridge` geometry:
 //!
-//! - **No evaluator.** Nothing here inspects real topology, calls into
-//!   `cad-occt-bridge`/`cad-kernel-api`, or decides which candidate a
-//!   query "actually" resolves to. That is `AICAD-082`..`084` (predicate
-//!   evaluation) and `AICAD-088`+ (the resolver).
+//! - **Still no query executor/resolver.** [`eval`] answers "does this
+//!   predicate hold for this candidate?", never "which entities does
+//!   this whole query select, and how does ranking/cardinality resolve
+//!   ties or ambiguity?" — that remains `AICAD-088`+.
 //! - **No new `.aicad` source syntax.** Same boundary
 //!   `cad-references` states: `query { ... }` blocks remain reserved,
 //!   unimplemented syntax at the language level
@@ -31,14 +34,22 @@
 //! references using those same types rather than inventing parallel ones.
 //! `cad-references` does not depend back on `cad-query` (see
 //! `cad_references::recipe`'s own doc comment on `QueryHandle` for why),
-//! so this dependency is one-directional.
+//! so this dependency is one-directional. [`eval`] additionally depends
+//! on `cad-kernel-api`/`cad-occt-bridge` (the sanctioned kernel adapter,
+//! per RFC-0002 §3) — this crate's *predicate AST* types
+//! ([`GeometryPredicate`] etc.) remain kernel-neutral; only [`eval`]'s
+//! own internal [`eval::Candidate`] wraps a live kernel handle, the same
+//! layering `cad-geometry-runtime` already established for Geometry IR
+//! -> kernel dispatch.
 
+pub mod eval;
 pub mod predicate;
 pub mod query;
 pub mod ranking;
 pub mod serialize;
 pub mod value;
 
+pub use eval::{Candidate, EvalError, EvalResult, EvaluationEvidence, NoEvidence};
 pub use predicate::{
     AdjacencyTarget, BoundaryKind, DirectionComparison, GeometryPredicate, RelativeDirection,
     SpatialPredicate, SpatialTarget, TopologyPredicate,

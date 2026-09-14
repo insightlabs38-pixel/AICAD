@@ -1,10 +1,11 @@
 //! Geometry, topology, and spatial predicates
 //! (`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §6).
 //!
-//! Every predicate here is a plain criterion, never itself a match/no-match
-//! decision against live geometry — evaluating one against a real build is
-//! `AICAD-082`..`084` (which implement these predicates) and, ultimately,
-//! the resolver (`AICAD-088`+). This crate defines the AST/IR shape only.
+//! Every predicate here is a plain criterion; this module itself is only
+//! the AST/IR shape, never a match/no-match decision against live
+//! geometry. `crate::eval` (`AICAD-082`..`084`) evaluates these predicates
+//! against a real build; the resolver (`AICAD-088`+) ultimately decides
+//! which candidates a whole query selects.
 //!
 //! `docs/plan/06...` §6 lists a `curvature ...` geometry predicate and
 //! leaves its comparison semantics unspecified (the plan's own ellipsis).

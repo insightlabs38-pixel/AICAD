@@ -6,9 +6,9 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
-last_completed_batch: S4-00
-last_completed_task: AICAD-081
-next_batch: S4-01 (AICAD-082, AICAD-083, AICAD-084)
+last_completed_batch: S4-01
+last_completed_task: AICAD-084
+next_batch: S4-02 (AICAD-085, AICAD-086, AICAD-087)
 
 ## Stage 0 — closed
 
@@ -54,13 +54,31 @@ transition" step 5 called for. See `project/reports/AICAD-080.md`'s and
 provenance, and this file's own "Working-branch note" below for a
 discrepancy this batch surfaced and did not resolve unilaterally.
 
-## Stage 4 — in progress (Batch S4-00 complete)
+## Stage 4 — in progress (Batches S4-00, S4-01 complete)
 
 `AICAD-080` (stable reference representations) and `AICAD-081` (query
 AST/IR) are **done** — see `project/reports/AICAD-080.md` and
 `project/reports/AICAD-081.md`. Both are representation-only: no
 resolution algorithm, lineage capture, raw-handle epoch, or health report
-exists yet. `AICAD-082` (Batch S4-01, next) remains `status: todo`.
+exists yet.
+
+`AICAD-082`/`083`/`084` (Batch S4-01: geometry/topology/spatial predicate
+*evaluation* against a real build) are **done** — see
+`project/reports/AICAD-082.md`/`083.md`/`084.md`. `cad-query::eval` now
+answers "does this predicate hold for this candidate?" for geometry
+predicates in full, and for the topology/spatial predicates each task's
+own title names; the remaining `TopologyPredicate`/`SpatialPredicate`
+variants (`Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`/
+`Contains`/`Intersects`/`NearestTo`/`FarthestFrom`) return an explicit
+`NotYetSpecified` error rather than a guessed implementation, matching
+`AICAD-081`'s own precedent for deferring `curvature`. Predicates needing
+feature lineage (`generated_by`/`modified_by`/`descended_from`) or
+reference/query resolution (`adjacent_to`'s target, `inside`, `within`'s
+`Ref` target) are evaluator-contract-complete via an injected
+`EvaluationEvidence` trait, but have no production evidence source until
+`AICAD-085`..`087` (lineage) and `AICAD-088`+ (resolver) land — see those
+reports' own "Limitations" sections. `AICAD-085` (Batch S4-02, next)
+remains `status: todo`.
 
 The hard gate remains fail-closed:
 
@@ -81,31 +99,32 @@ correct for the transition batch and remains true of it; `AICAD-080`/
 introduced the representation types, per the "Stage 4 — in progress"
 section above.)
 
-## Working-branch note (Batch S4-00)
+## Working-branch note (Batch S4-00) — resolved this invocation (Batch S4-01)
 
 `project/planning/transitions/stage3-to-stage4/STAGE4_READINESS.md`'s own
 prior owner-flow text (steps 1-4 below) named `origin/claude/aicad-stage4-dev`
 as the canonical Stage-4 development branch, to be created fresh from the
-exact merged transition-`main` HEAD. As of this batch, that branch does not
-exist on `origin`; this session's own outer harness configuration instead
-assigned a differently-named working branch for this repository, which at
-the start of this invocation was already exactly at `origin/main` HEAD
-(`f587251`) — i.e. content-equivalent to what `claude/aicad-stage4-dev`
-would have been had it been created then. Per that harness configuration's
-explicit "never push to a different branch without explicit permission"
-instruction, Batch S4-00's commits were pushed to the assigned working
-branch rather than to a newly-created `claude/aicad-stage4-dev`. This is
-recorded here, not silently resolved, so the owner can either rename/adopt
-the assigned branch as the canonical Stage-4 branch going forward, or
-direct a future invocation to create `claude/aicad-stage4-dev` explicitly
-and continue there instead.
+exact merged transition-`main` HEAD. Batch S4-00 found that branch did not
+yet exist on `origin` and, per its own harness configuration's "never push
+to a different branch without explicit permission" instruction, pushed to
+a differently-named assigned working branch instead (content-equivalent to
+`main`'s post-transition-merge HEAD plus that batch's own commit) —
+recorded rather than silently resolved, per that report's own text above.
+
+This invocation's own explicit instruction directed creating
+`claude/aicad-stage4-dev` from that same S4-00 working branch (preserving
+its `AICAD-080`/`081` commit) rather than from `main`, since the branch
+already carried real, unmerged Stage-4 work. `origin/claude/aicad-stage4-dev`
+now exists and is the canonical Stage-4 branch; Batch S4-01 (`AICAD-082`/
+`083`/`084`) was committed and pushed there directly. The discrepancy above
+is now resolved — no future invocation needs to re-decide the branch name.
 
 ## Owner flow after reviewing this transition (historical)
 
 1. Owner reviews `claude/aicad-stage4-transition` and its AICAD-079C evidence.
 2. If accepted, owner merges that transition branch to `main`. **Done** — merged as PR #12 (`f587251`).
-3. Create `claude/aicad-stage4-dev` from the **exact merged `main` HEAD**. **Not done as literally specified** — see "Working-branch note" above.
-4. All sequential Stage-4 agents synchronize to the newest `origin/claude/aicad-stage4-dev`; do not independently recreate Stage-4 work from some other `main` state. **Superseded by the working-branch note above** until the owner resolves the branch-naming discrepancy.
+3. Create `claude/aicad-stage4-dev` from the **exact merged `main` HEAD**. **Done with a deliberate variance**: created instead from Batch S4-00's own working branch (which already carried real `AICAD-080`/`081` commits on top of that exact `main` HEAD) rather than discarding that work — see "Working-branch note" above.
+4. All sequential Stage-4 agents synchronize to the newest `origin/claude/aicad-stage4-dev`; do not independently recreate Stage-4 work from some other `main` state. **In force as of Batch S4-01** — the branch now exists and this batch synchronized to it.
 5. Owner authorizes Stage-4 implementation and the first implementation task is AICAD-080. **Treated as satisfied** by this campaign's own explicit instruction to execute Stage-4 batches starting at AICAD-080/081, combined with the completed transition merge.
 6. Do not begin AICAD-101+ / Stage 5 until the Stage-4 hard gate is later passed by the owner. **Still in force.**
 

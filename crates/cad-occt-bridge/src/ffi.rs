@@ -284,6 +284,79 @@ unsafe extern "C" {
         file_path: *const std::os::raw::c_char,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_shape_surface_type(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_kind: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_face_radius(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_radius: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_shape_face_axis(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_origin: *mut f64,    // [f64; 3]
+        out_direction: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_face_normal(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_point: *mut f64,  // [f64; 3]
+        out_normal: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_curve_type(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_kind: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_radius(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_radius: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_axis(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_origin: *mut f64,    // [f64; 3]
+        out_direction: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_is_same(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_is_same: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_wire_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_wire(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_wire_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_is_outer_wire(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        wire_handle: aicad_shape_handle_t,
+        out_is_outer: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_vertex_point(
+        context: *mut aicad_occt_context_t,
+        vertex_handle: aicad_shape_handle_t,
+        out_point: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_classify_point(
+        context: *mut aicad_occt_context_t,
+        solid_handle: aicad_shape_handle_t,
+        point: *const f64, // [f64; 3]
+        tolerance: f64,
+        out_classification: *mut c_int,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t

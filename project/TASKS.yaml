@@ -2582,7 +2582,7 @@ tasks:
 - id: AICAD-082
   stage: 4
   title: 'Implement geometry predicates: planar/cylindrical/radius/area/length/normal/axis'
-  status: todo
+  status: done
   depends_on:
   - AICAD-081
   plan_references:
@@ -2609,7 +2609,7 @@ tasks:
 - id: AICAD-083
   stage: 4
   title: 'Implement topology predicates: generated_by/modified_by/descended_from/adjacent_to/boundary'
-  status: todo
+  status: done
   depends_on:
   - AICAD-082
   plan_references:
@@ -2636,7 +2636,7 @@ tasks:
 - id: AICAD-084
   stage: 4
   title: Implement baseline spatial predicates
-  status: todo
+  status: done
   depends_on:
   - AICAD-083
   plan_references:

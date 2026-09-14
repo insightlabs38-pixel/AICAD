@@ -723,6 +723,192 @@ aicad_occt_status_t aicad_occt_import_step(aicad_occt_context_t* context,
                                             const char* file_path,
                                             aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-082: face/edge geometric classification.
+ *
+ * Stage-4 query geometry predicates (docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+ * §6 "Geometry predicates": `planar`/`cylindrical`/`conical`/`spherical`/
+ * `toroidal`/`bspline`/`radius`/`normal`/`axis`) need each face/edge's own
+ * analytic surface/curve family, not just the aggregate area/length this
+ * bridge already exposes. These functions stay kernel-neutral at the type
+ * level (per this header's own top-of-file contract): `aicad_surface_kind_t`/
+ * `aicad_curve_kind_t` are AICAD-owned enums, not re-exported OCCT
+ * `GeomAbs_*` values -- their numeric order is this bridge's own and is
+ * covered by native/occt_bridge's own test suite, not merely assumed
+ * stable across an OCCT upgrade. --- */
+
+/* A face's underlying surface family. `AICAD_SURFACE_OTHER` covers every
+ * analytic/procedural surface kind this enum does not name (e.g. a swept,
+ * offset, or surface-of-revolution/-extrusion face) -- never guessed into
+ * one of the named kinds. */
+typedef enum aicad_surface_kind {
+  AICAD_SURFACE_PLANE = 0,
+  AICAD_SURFACE_CYLINDER = 1,
+  AICAD_SURFACE_CONE = 2,
+  AICAD_SURFACE_SPHERE = 3,
+  AICAD_SURFACE_TORUS = 4,
+  AICAD_SURFACE_BEZIER = 5,
+  AICAD_SURFACE_BSPLINE = 6,
+  AICAD_SURFACE_OTHER = 7,
+} aicad_surface_kind_t;
+
+/* An edge's underlying curve family. `AICAD_CURVE_OTHER` covers every
+ * curve kind this enum does not name (e.g. a hyperbola/parabola/offset
+ * curve), matching `aicad_surface_kind_t::AICAD_SURFACE_OTHER`'s own
+ * never-guess rule. */
+typedef enum aicad_curve_kind {
+  AICAD_CURVE_LINE = 0,
+  AICAD_CURVE_CIRCLE = 1,
+  AICAD_CURVE_ELLIPSE = 2,
+  AICAD_CURVE_BEZIER = 3,
+  AICAD_CURVE_BSPLINE = 4,
+  AICAD_CURVE_OTHER = 5,
+} aicad_curve_kind_t;
+
+/* `face_handle` must address a shape of exactly kind Face (caller-contract
+ * violation otherwise, matching aicad_occt_edge_vertices' own edge-typed
+ * rejection), rejected with AICAD_OCCT_ERR_INVALID_ARGUMENT. */
+aicad_occt_status_t aicad_occt_shape_surface_type(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t face_handle,
+                                                   int* out_kind);
+
+/* The face's single characteristic radius. Defined only for
+ * AICAD_SURFACE_CYLINDER/_SPHERE (their one radius) and AICAD_SURFACE_TORUS
+ * (its major/tube-path radius -- the torus's own minor radius is not
+ * returned by this function; a future task may add it if a predicate
+ * needs it). Any other surface kind (including AICAD_SURFACE_CONE, whose
+ * radius varies continuously along its axis with no single well-defined
+ * value) fails with AICAD_OCCT_ERR_INVALID_ARGUMENT rather than guessing
+ * which parameter to report. */
+aicad_occt_status_t aicad_occt_shape_face_radius(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t face_handle,
+                                                  double* out_radius);
+
+/* The face's rotational axis (origin + unit direction). Defined only for
+ * AICAD_SURFACE_CYLINDER/_CONE/_TORUS; any other surface kind fails with
+ * AICAD_OCCT_ERR_INVALID_ARGUMENT. */
+aicad_occt_status_t aicad_occt_shape_face_axis(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t face_handle,
+                                                double out_origin[3],
+                                                double out_direction[3]);
+
+/* A representative point on the face (its own parametric-domain midpoint,
+ * NOT an area centroid) and the face's own outward unit normal there,
+ * already corrected for the face's TopoDS orientation (a REVERSED face
+ * reports the flipped-sign normal its actual material boundary has, not
+ * its underlying surface's raw parametrization sense). Fails with
+ * AICAD_OCCT_ERR_OPERATION_FAILED if the surface is singular at that exact
+ * parameter (e.g. a cone apex) and no normal can be evaluated there. */
+aicad_occt_status_t aicad_occt_shape_face_normal(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t face_handle,
+                                                  double out_point[3],
+                                                  double out_normal[3]);
+
+/* `edge_handle` must address a shape of exactly kind Edge, matching
+ * aicad_occt_edge_vertices' own contract. */
+aicad_occt_status_t aicad_occt_shape_curve_type(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t edge_handle,
+                                                 int* out_kind);
+
+/* The edge's radius. Defined only for AICAD_CURVE_CIRCLE; an ellipse has
+ * two distinct radii (major/minor) with no single "the" radius, so
+ * AICAD_CURVE_ELLIPSE (and every other curve kind) fails with
+ * AICAD_OCCT_ERR_INVALID_ARGUMENT rather than guessing which one to
+ * report. */
+aicad_occt_status_t aicad_occt_shape_edge_radius(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t edge_handle,
+                                                  double* out_radius);
+
+/* The edge's axis (origin + unit direction), i.e. the normal to the
+ * circle's own plane through its center. Defined only for
+ * AICAD_CURVE_CIRCLE, matching aicad_occt_shape_edge_radius' own scope. */
+aicad_occt_status_t aicad_occt_shape_edge_axis(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t edge_handle,
+                                                double out_origin[3],
+                                                double out_direction[3]);
+
+/* --- AICAD-083: shape identity, needed to test topological adjacency
+ * (e.g. "is this face, obtained via one enumeration path, the SAME face
+ * as that one, obtained via another") without comparing raw handle slots,
+ * which differ across independent aicad_occt_shape_get_face/
+ * _edge_adjacent_face_get calls even when both name the same underlying
+ * TopoDS_Shape. Uses OCCT's own TopoDS_Shape::IsSame (TShape + Location,
+ * ignoring Orientation) -- deliberately not IsEqual (which also compares
+ * Orientation): two differently-oriented handles onto the same underlying
+ * face/edge are still "the same topological entity" for adjacency
+ * purposes. `a`/`b` may address any shape kind and need not be the same
+ * kind as each other (a mismatched kind simply reports not-same, not an
+ * error). --- */
+aicad_occt_status_t aicad_occt_shape_is_same(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t a,
+                                              aicad_shape_handle_t b,
+                                              int* out_is_same);
+
+/* --- AICAD-083: wire enumeration/outer-boundary support, needed for the
+ * `boundary(outer|inner)` topology predicate
+ * (docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md §6). Mirrors
+ * aicad_occt_shape_face_count/_get_face's own raw/indexed, ephemeral,
+ * epoch-bound enumeration pattern applied to TopAbs_WIRE. --- */
+
+/* Number of unique wires in `handle`'s shape (any shape kind, matching
+ * aicad_occt_shape_face_count's own "any shape kind" scope). */
+aicad_occt_status_t aicad_occt_shape_wire_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count);
+
+/* Returns a handle to the wire at `index` (0-based, `< wire_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_face's own
+ * contract. */
+aicad_occt_status_t aicad_occt_shape_get_wire(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_wire_handle);
+
+/* Whether `wire_handle` is `face_handle`'s own designated OUTER wire
+ * (OCCT's own `BRepTools::OuterWire`, chosen by parametric area -- the
+ * largest, in the face's own 2D parameter space) -- false for any of the
+ * face's inner (hole) wires, and false if `wire_handle` does not bound
+ * `face_handle` at all. `face_handle` must address a shape of exactly
+ * kind Face; `wire_handle` must address a shape of exactly kind Wire. */
+aicad_occt_status_t aicad_occt_shape_is_outer_wire(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t face_handle,
+                                                    aicad_shape_handle_t wire_handle,
+                                                    int* out_is_outer);
+
+/* --- AICAD-084: point extraction/classification support for baseline
+ * spatial predicates. --- */
+
+/* The vertex's own coordinate (`BRep_Tool::Pnt`), needed because
+ * aicad_occt_shape_center_of_mass explicitly fails for a bare Vertex
+ * shape (see that function's own doc comment) -- a vertex's "center of
+ * mass" is just its own point, but this is its own function rather than
+ * folding a 5th dispatch case into center_of_mass, since a point and a
+ * mass-weighted centroid are conceptually different queries that happen
+ * to coincide only for this one topological kind. `vertex_handle` must
+ * address a shape of exactly kind Vertex. */
+aicad_occt_status_t aicad_occt_shape_vertex_point(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t vertex_handle,
+                                                   double out_point[3]);
+
+/* Exact point-vs-solid classification (`AICAD_CLASSIFY_OUT`/`_IN`/
+ * `_ON_BOUNDARY`), via OCCT's own `BRepClass3d_SolidClassifier` -- an
+ * exact B-rep test, never a mesh/bounding-box approximation (AGENTS.md's
+ * "Exact B-rep is canonical compiled geometry" non-negotiable applies to
+ * query predicates exactly as it does to modeling operations).
+ * `solid_handle` must address a shape containing at least one Solid;
+ * `tolerance` (> 0, finite) is the classifier's own boundary tolerance. */
+typedef enum aicad_point_classification {
+  AICAD_CLASSIFY_OUT = 0,
+  AICAD_CLASSIFY_IN = 1,
+  AICAD_CLASSIFY_ON_BOUNDARY = 2,
+} aicad_point_classification_t;
+
+aicad_occt_status_t aicad_occt_shape_classify_point(aicad_occt_context_t* context,
+                                                     aicad_shape_handle_t solid_handle,
+                                                     const double point[3],
+                                                     double tolerance,
+                                                     int* out_classification);
+
 #ifdef __cplusplus
 }
 #endif
