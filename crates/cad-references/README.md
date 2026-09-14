@@ -13,13 +13,24 @@ those are `AICAD-085` onward. See `src/lib.rs`'s own module doc comment for
 the exact scope boundary and `project/reports/AICAD-080.md` for this task's
 evidence.
 
-Resolution precedence and geometry-fingerprint fallback policy remain
-partially open owner decisions — see `project/OWNER_DECISIONS.md` D7
+Geometry-fingerprint fallback policy remains a partially open owner
+decision — see `project/OWNER_DECISIONS.md` D7
 (`project/DECISION_LOG.md#DL-8`) and D8 (`project/DECISION_LOG.md#DL-9`).
 This crate's `ConstructionStrategy::GeometricFingerprint` and
 `ConstructionStrategy::semantic_query`'s durability restriction already
 enforce D7's fail-closed policy at the type level (fingerprint/weak-query
 evidence can never be constructed with `explicit`/`lineage` durability).
+`cad_query::resolve` (`AICAD-088`) never resolves a
+`GeometricFingerprint`-only recipe automatically, matching this policy at
+the resolution layer too.
+
+D7's own "exact resolution precedence across construction strategies"
+question turned out not to block resolution: `ConstructionStrategy`'s own
+doc comment already establishes that one recipe carries exactly one
+strategy, so `cad_query::resolve::resolve_reference` (`AICAD-088`)
+dispatches on that single strategy directly rather than adjudicating among
+several — see that module's own doc comment, "Why no cross-strategy
+'resolution precedence' is implemented here."
 
 Plan references: `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md`;
 `docs/plan/22_REPOSITORY_WORK_PACKAGES.md` WP-07;
