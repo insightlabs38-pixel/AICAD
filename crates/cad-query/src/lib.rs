@@ -3,9 +3,9 @@
 //! spatial predicate evaluation against a real build ([`eval`]);
 //! `AICAD-088`: the fail-closed resolver ([`resolve`]) that turns a
 //! [`query::Query`] or a [`cad_references::AnyRef`] into
-//! `Resolved`/`Ambiguous`/`Broken`; `AICAD-089`: the `REF-E102`
-//! ambiguous-reference diagnostic ([`diagnostics`]) built from a real
-//! `Ambiguous` outcome.
+//! `Resolved`/`Ambiguous`/`Broken`; `AICAD-089`/`090`: the `REF-E102`
+//! ambiguous-reference and `REF-E101` broken-reference diagnostics
+//! ([`diagnostics`]) built from real `Ambiguous`/`Broken` outcomes.
 //!
 //! ## Scope
 //!
@@ -67,7 +67,7 @@ pub mod resolve;
 pub mod serialize;
 pub mod value;
 
-pub use diagnostics::ambiguous_reference_diagnostic;
+pub use diagnostics::{ambiguous_reference_diagnostic, broken_reference_diagnostic};
 pub use eval::{Candidate, EvalError, EvalResult, EvaluationEvidence, NoEvidence};
 pub use feature_lineage::{
     FeatureLineageError, FeatureLineageReport, PriorEntityRecord, PriorEntityState,

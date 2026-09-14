@@ -6,9 +6,9 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
-last_completed_batch: S4-02
-last_completed_task: AICAD-087
-next_batch: S4-03 (AICAD-088, AICAD-089, AICAD-090)
+last_completed_batch: S4-03
+last_completed_task: AICAD-090
+next_batch: S4-04 (AICAD-091, AICAD-092, AICAD-093)
 
 ## Stage 0 — closed
 
@@ -97,6 +97,38 @@ addressed by live `cad_occt_bridge::Shape`, exactly matching `AICAD-082`
 ..`084`'s own established "evaluator/capture plumbing, consumed directly,
 not yet wired to persistent references" precedent. `AICAD-088` (Batch
 S4-03, next) remains `status: todo`.
+
+`AICAD-088`/`089`/`090` (Batch S4-03: the semantic-reference resolver,
+ambiguity-as-error diagnostic, and broken-reference diagnostic) are
+**done** — see `project/reports/AICAD-088.md`/`089.md`/`090.md`.
+`cad_query::resolve` turns a `Query` or an `AnyRef`'s own
+`ConstructionStrategy` into `Resolved`/`Ambiguous`/`Broken`: candidate
+enumeration, predicate filtering (via `cad_query::eval`), ranking
+directive application (with `first()` rejected unless an earlier
+directive already established a deterministic order), and
+cardinality-based outcome classification; `FeatureLineage`/`Ancestry`
+recipes resolve by rewriting into an equivalent `generated_by`/
+`modified_by`/`descended_from` query and reusing the same evaluator path;
+`ExplicitExport`/`StructuralRole`/`UserConfirmed`/`SemanticQuery`-by-handle
+use an injected `ResolverContext` evidence hook that reports `Broken` when
+absent (never guesses); `GeometricFingerprint` always reports `Broken`,
+never an automatic resolution, per D7/`DL-8`. `cad_query::diagnostics`
+builds the already-reserved `REF-E102 AMBIGUOUS_REFERENCE` diagnostic
+(plan §7's own worked example) from a real `Ambiguous` outcome with an
+honest per-candidate summary and generic suggested fixes, and this task's
+own new `REF-E101 BROKEN_REFERENCE` code (minted within the
+already-reserved `REF` family per `DL-18` — no owner ruling needed) from
+a real `Broken` outcome with per-reason non-guessing recovery hints,
+never a guessed replacement candidate. No cross-strategy "resolution
+precedence" decision was needed or made — see `AICAD-088`'s own report
+and `crates/cad-query/src/resolve.rs`'s own module doc comment for why.
+Not yet wired to a real `FeatureGraph`/`ParametricBuildSession` build —
+same "evaluator/evidence-hook plumbing proven against a
+hand-constructed operation, not yet production-wired" precedent
+`AICAD-082`..`087` already established; see each report's own
+"Limitations" section for exactly which construction strategies still
+need a real evidence source. `AICAD-091` (Batch S4-04, next) remains
+`status: todo`.
 
 The hard gate remains fail-closed:
 

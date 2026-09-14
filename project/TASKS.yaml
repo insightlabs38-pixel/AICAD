@@ -2797,7 +2797,7 @@ tasks:
 - id: AICAD-090
   stage: 4
   title: Implement broken-reference diagnostic and non-guessing recovery hints
-  status: todo
+  status: done
   depends_on:
   - AICAD-089
   plan_references:
