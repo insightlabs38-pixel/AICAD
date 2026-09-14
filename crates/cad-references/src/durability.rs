@@ -21,7 +21,9 @@ pub enum DurabilityLevel {
     /// reference recipe at all (`rfcs/0003-semantic-references.md` §6,
     /// `project/DECISION_LOG.md#DL-24`). Kept here so a future health
     /// report (`AICAD-095`) can classify "no recipe was used" alongside
-    /// every real recipe's own durability, in the same ordered scale.
+    /// every real recipe's own durability, in the same ordered scale. See
+    /// `crate::raw_handle` (`AICAD-093`) for the concrete
+    /// `Epoch`/`RawHandle`/`StaleHandle` mechanism this level describes.
     Raw,
     /// Uses geometry fingerprint/spatial heuristics
     /// (`ConstructionStrategy::GeometricFingerprint`). Per D7/`DL-8` this

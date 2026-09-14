@@ -2882,7 +2882,7 @@ tasks:
 - id: AICAD-093
   stage: 4
   title: Implement raw topology handle epochs/stale-handle rejection
-  status: todo
+  status: done
   depends_on:
   - AICAD-092
   plan_references:

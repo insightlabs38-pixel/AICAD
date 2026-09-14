@@ -6,9 +6,9 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
-last_completed_batch: S4-03
-last_completed_task: AICAD-090
-next_batch: S4-04 (AICAD-091, AICAD-092, AICAD-093)
+last_completed_batch: S4-04
+last_completed_task: AICAD-093
+next_batch: S4-05 (AICAD-094, AICAD-095)
 
 ## Stage 0 — closed
 
@@ -127,8 +127,32 @@ same "evaluator/evidence-hook plumbing proven against a
 hand-constructed operation, not yet production-wired" precedent
 `AICAD-082`..`087` already established; see each report's own
 "Limitations" section for exactly which construction strategies still
-need a real evidence source. `AICAD-091` (Batch S4-04, next) remains
-`status: todo`.
+need a real evidence source.
+
+`AICAD-091`/`092`/`093` (Batch S4-04: reference durability levels,
+geometry-fingerprint evidence/ranking/benchmark support without
+automatic recovery, and raw topology handle epochs/stale-handle
+rejection) are **done** — see `project/reports/AICAD-091.md`/`092.md`/
+`093.md`. `cad_query::resolve::resolve_reference_with_durability` pairs
+a reference's resolution outcome with its recipe's static
+`DurabilityLevel`, and both `REF-E102`/`REF-E101` diagnostics can
+surface that durability plus an explicit, opt-in fingerprint-similarity
+ranking (`cad_query::fingerprint`, never called automatically) in
+`backend_details`; `cad_query::resolve`'s own unconditional
+`Broken(FingerprintAutoResolutionDisabled)` refusal for
+`GeometricFingerprint` recipes is unchanged and proven unchanged by a
+dedicated end-to-end test. `cad_references::raw_handle` adds the first
+concrete runtime implementation of the "raw handle, epoch-bound, never a
+persistent reference" property every Stage-1..4 kernel-adjacent crate has
+so far only documented: an `EpochCounter`/`RawHandle`/`StaleHandle`
+mechanism proven against real OCCT geometry in `cad-query`'s own test
+suite (a live `Candidate` wrapped in a `RawHandle`, still alive and
+borrow-check-valid after its owning epoch counter advances, is rejected
+explicitly rather than silently trusted). None of the three is wired to a
+real `FeatureGraph`/`ParametricBuildSession` build or regeneration path —
+same established precedent; `AICAD-094` (Batch S4-05, next) is exactly
+that integration for both the durability/resolver path and the epoch
+counter. `AICAD-094` remains `status: todo`.
 
 The hard gate remains fail-closed:
 

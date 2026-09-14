@@ -24,6 +24,14 @@
 //!   durability level and is never treated as authoritative by anything in
 //!   this crate.
 //!
+//! `AICAD-093` adds one exception to "representation only": [`raw_handle`]
+//! implements the *runtime* half of D22/`DL-24`'s raw-handle/epoch
+//! distinction (`Epoch`/`EpochCounter`/`RawHandle`/`StaleHandle`) -- a
+//! real, working stale-handle-rejection mechanism, not merely
+//! representation. It remains a strictly separate concept from
+//! [`ReferenceRecipe`]: see that module's own doc comment, "This is not a
+//! second semantic-reference system."
+//!
 //! ## Why not reuse an existing Stage-3 id/index as reference identity
 //!
 //! See `crate::feature`'s and `crate::refs`' own module doc comments:
@@ -40,6 +48,7 @@ pub mod entity;
 pub mod export;
 pub mod feature;
 pub mod fingerprint;
+pub mod raw_handle;
 pub mod recipe;
 pub mod refs;
 pub mod serialize;
@@ -49,6 +58,7 @@ pub use entity::EntityKind;
 pub use export::{DuplicateExportName, FeatureExports};
 pub use feature::FeatureAnchor;
 pub use fingerprint::FingerprintEvidence;
+pub use raw_handle::{Epoch, EpochCounter, RawHandle, StaleHandle};
 pub use recipe::{
     ConstructionStrategy, InvalidSemanticQueryDurability, LineageRole, QueryHandle, ReferenceRecipe,
 };

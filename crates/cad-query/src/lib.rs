@@ -15,7 +15,12 @@
 //! `AICAD-092`: computing/ranking geometry-fingerprint evidence
 //! ([`fingerprint`]) strictly as diagnostic evidence, candidate-ranking
 //! input, and benchmark/experiment data — never automatic resolution, per
-//! `project/DECISION_LOG.md#DL-8`.
+//! `project/DECISION_LOG.md#DL-8`; `AICAD-093`: real-geometry evidence
+//! (private `raw_handle` test module) for
+//! `cad_references::raw_handle`'s own `Epoch`/`EpochCounter`/`RawHandle`/
+//! `StaleHandle` mechanism, proving a live [`eval::Candidate`] wrapped in
+//! a `RawHandle` is rejected once its owning epoch counter advances, per
+//! `project/DECISION_LOG.md#DL-24` (D22).
 //!
 //! ## Scope
 //!
@@ -74,6 +79,7 @@ pub mod fingerprint;
 pub mod predicate;
 pub mod query;
 pub mod ranking;
+mod raw_handle;
 pub mod resolve;
 pub mod serialize;
 pub mod value;
