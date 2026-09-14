@@ -3,7 +3,9 @@
 //! spatial predicate evaluation against a real build ([`eval`]);
 //! `AICAD-088`: the fail-closed resolver ([`resolve`]) that turns a
 //! [`query::Query`] or a [`cad_references::AnyRef`] into
-//! `Resolved`/`Ambiguous`/`Broken`.
+//! `Resolved`/`Ambiguous`/`Broken`; `AICAD-089`: the `REF-E102`
+//! ambiguous-reference diagnostic ([`diagnostics`]) built from a real
+//! `Ambiguous` outcome.
 //!
 //! ## Scope
 //!
@@ -29,8 +31,9 @@
 //!   `crate::ranking`'s own module doc comment. [`resolve`] guarantees
 //!   candidates still tied after every ranking directive is applied are
 //!   reported [`resolve::ResolutionOutcome::Ambiguous`], never narrowed to
-//!   one by an arbitrary pick — `AICAD-089` (a later task) adds a richer
-//!   candidate-summary diagnostic on top of that same guarantee.
+//!   one by an arbitrary pick; [`diagnostics::ambiguous_reference_diagnostic`]
+//!   (`AICAD-089`) turns that outcome into the plan §7-shaped `REF-E102`
+//!   diagnostic without ever reducing the candidate set itself.
 //! - **Not yet wired to a real `FeatureGraph`/`ParametricBuildSession`
 //!   build.** [`resolve::ResolverContext`] is an injected capability, and
 //!   `FeatureLineage`/`Ancestry` resolution is proven against a
@@ -54,6 +57,7 @@
 //! layering `cad-geometry-runtime` already established for Geometry IR
 //! -> kernel dispatch.
 
+pub mod diagnostics;
 pub mod eval;
 pub mod feature_lineage;
 pub mod predicate;
@@ -63,6 +67,7 @@ pub mod resolve;
 pub mod serialize;
 pub mod value;
 
+pub use diagnostics::ambiguous_reference_diagnostic;
 pub use eval::{Candidate, EvalError, EvalResult, EvaluationEvidence, NoEvidence};
 pub use feature_lineage::{
     FeatureLineageError, FeatureLineageReport, PriorEntityRecord, PriorEntityState,
