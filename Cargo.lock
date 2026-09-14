@@ -33,6 +33,8 @@ dependencies = [
  "cad-hir",
  "cad-occt-bridge",
  "cad-parser",
+ "cad-query",
+ "cad-references",
  "cad-runtime",
  "cad-types",
  "cad-units",

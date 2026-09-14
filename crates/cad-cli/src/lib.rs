@@ -56,7 +56,9 @@
 pub mod build;
 pub mod cli;
 pub mod parametric_build;
+pub mod reference_replay;
 
 pub use build::{BuildReport, BuildStatus, run_build};
 pub use cli::{ArgsError, ParsedArgs, parse_args};
 pub use parametric_build::{ParametricBuildSession, RebuildOutcome};
+pub use reference_replay::FeatureLineageIndex;

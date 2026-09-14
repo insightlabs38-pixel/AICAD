@@ -7,8 +7,8 @@ name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
 last_completed_batch: S4-04
-last_completed_task: AICAD-093
-next_batch: S4-05 (AICAD-094, AICAD-095)
+last_completed_task: AICAD-094
+next_batch: S4-05 (AICAD-095 remaining)
 
 ## Stage 0 — closed
 
@@ -150,9 +150,34 @@ suite (a live `Candidate` wrapped in a `RawHandle`, still alive and
 borrow-check-valid after its owning epoch counter advances, is rejected
 explicitly rather than silently trusted). None of the three is wired to a
 real `FeatureGraph`/`ParametricBuildSession` build or regeneration path —
-same established precedent; `AICAD-094` (Batch S4-05, next) is exactly
-that integration for both the durability/resolver path and the epoch
-counter. `AICAD-094` remains `status: todo`.
+same established precedent; `AICAD-094` (Batch S4-05) is exactly that
+integration.
+
+`AICAD-094` (Batch S4-05, first of two: replaying semantic references
+during real incremental parameter regeneration) is **done** — see
+`project/reports/AICAD-094.md`. `cad_geometry_runtime::dispatch_graph_
+incremental_with_lineage` (new, additive; the existing `dispatch_graph_
+incremental` is unchanged) captures real `cad_occt_bridge::Lineage`
+evidence from the same kernel call that already produces each recomputed
+`Union`/`Cut`/`Intersect`/`Fillet`/`Chamfer` node's own production
+`Shape` — never a second, separately-built shape. `cad_cli::
+ParametricBuildSession` (the real Stage-3 orchestration `AICAD-079B`
+connected `ParamModel`/`FeatureGraph` through) now owns one
+`cad_references::raw_handle::EpochCounter` per session, advanced at the
+start of every `rebuild()` round, and one real `cad_query::resolve::
+ResolverContext`/`EvaluationEvidence` implementation whose `candidates`/
+`generated_by`/`modified_by` are sourced from that same round's own real
+dispatch results and captured `Face` lineage — proven end to end against
+a real `param radius -> cylinder -> cut` hole fixture: re-resolving
+`generated_by(notched)` after editing `radius` and rebuilding returns a
+different live entity whose real radius reflects the actual regenerated
+5mm hole (not the stale 3mm evidence from the first build), while an
+unrelated feature's own resolved reference survives the same rebuild
+round as the literal same live entity. `AICAD-095` (Batch S4-05, second
+of two: `cad refs check` / reference-health report) remains `status:
+todo`; see `project/reports/AICAD-094.md`'s own "Limitations" for exactly
+which construction strategies/entity kinds still have no production
+evidence source.
 
 The hard gate remains fail-closed:
 

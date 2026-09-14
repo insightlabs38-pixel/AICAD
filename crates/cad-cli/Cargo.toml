@@ -15,6 +15,8 @@ cad-geometry-runtime = { path = "../cad-geometry-runtime" }
 cad-hir = { path = "../cad-hir" }
 cad-occt-bridge = { path = "../cad-occt-bridge" }
 cad-parser = { path = "../cad-parser" }
+cad-query = { path = "../cad-query" }
+cad-references = { path = "../cad-references" }
 cad-runtime = { path = "../cad-runtime" }
 
 [dev-dependencies]

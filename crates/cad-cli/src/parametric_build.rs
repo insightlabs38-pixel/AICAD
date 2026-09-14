@@ -79,17 +79,24 @@
 //! cross-process cache.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 use cad_diagnostics::{Diagnostic, Severity};
 use cad_feature_graph::FeatureGraph;
-use cad_geometry_runtime::{GraphResults, IncrementalStats, dispatch_graph_incremental};
+use cad_geometry_runtime::{
+    GraphResults, IncrementalStats, dispatch_graph_incremental_with_lineage,
+};
 use cad_hir::ids::BindingId;
 use cad_hir::lower::LowerResult;
 use cad_hir::typeck::TypeCheckResult;
 use cad_occt_bridge::{OcctContext, Shape};
+use cad_query::{Candidate, EvaluationEvidence, ResolveError, ResolverContext};
+use cad_references::{AnyRef, EntityKind, EpochCounter, FeatureAnchor};
 use cad_runtime::interp::Interpreter;
 use cad_runtime::params::{ParamModel, ParamOverrides};
 use cad_runtime::value::Value;
+
+use crate::reference_replay::{self, FeatureLineageIndex};
 
 fn has_error(diagnostics: &[Diagnostic]) -> bool {
     diagnostics.iter().any(|d| d.severity == Severity::Error)
@@ -202,6 +209,17 @@ pub struct ParametricBuildSession<'ctx> {
     /// `Interpreter` that produced it is local to that one call and does
     /// not outlive it (see [`ParametricBuildSession::rebuild`]).
     last_globals: HashMap<BindingId, Value>,
+    /// One raw-topology-handle epoch (`AICAD-093`) per session, advanced
+    /// at the start of every [`ParametricBuildSession::rebuild`] round
+    /// (including the initial build) — see
+    /// [`ParametricBuildSession::epoch_counter`]'s own doc comment for why
+    /// this is the real integration `AICAD-093`'s own report named as
+    /// this task's job.
+    epoch: EpochCounter,
+    /// Real per-round `Face` lineage evidence (`AICAD-094`) — see
+    /// `crate::reference_replay`'s own module doc comment for exactly
+    /// which features this covers and why.
+    feature_lineage: FeatureLineageIndex<'ctx>,
 }
 
 impl<'ctx> ParametricBuildSession<'ctx> {
@@ -243,6 +261,8 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             last_applied_overrides: ParamOverrides::new(),
             prior_results: None,
             last_globals: HashMap::new(),
+            epoch: EpochCounter::new(),
+            feature_lineage: FeatureLineageIndex::new(),
         };
         session.rebuild().map_err(|(_, diagnostics)| diagnostics)?;
         Ok(session)
@@ -290,6 +310,15 @@ impl<'ctx> ParametricBuildSession<'ctx> {
     /// failure, empty on the very first call) if execution or dispatch
     /// failed.
     pub fn rebuild(&mut self) -> Result<RebuildOutcome, (RebuildOutcome, Vec<Diagnostic>)> {
+        // Advance the raw-handle epoch (`AICAD-093`) at the start of every
+        // round, including the initial build: any `RawHandle` a caller
+        // minted around a candidate from *before* this call must be
+        // rejected once this round's own regenerated geometry exists,
+        // whether or not the wrapped `Shape` value happens to still be
+        // alive via reuse -- see `crate::reference_replay`'s own module
+        // doc comment and `EpochCounter::advance`'s doc comment.
+        self.epoch.advance();
+
         let empty_outcome = || RebuildOutcome {
             dirty_feature_names: Vec::new(),
             stats: IncrementalStats::default(),
@@ -340,32 +369,75 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         let graph = interp.geometry_graph();
         let mut dirty_geom_ids = HashSet::new();
         let mut dirty_feature_names = Vec::new();
+        // Every named top-level feature's own raw geom range, dirty or
+        // not (`AICAD-094`): `reference_replay::capture_named_feature_
+        // lineage` only actually captures the ones the dispatch below
+        // really recomputed this round (present in its own returned
+        // `LineageTable`), so passing every named feature here rather
+        // than filtering by `dirty_features` first is what lets the very
+        // first build -- which recomputes every node unconditionally but
+        // reports an empty `dirty_features` set, since nothing has
+        // "changed" relative to a not-yet-existing prior round -- still
+        // capture real lineage, not just later incremental rounds.
+        let mut named_feature_ranges: Vec<(FeatureAnchor, Range<u32>)> = Vec::new();
         for node in feature_graph.nodes() {
-            if !dirty_features.contains(&node.id) {
-                continue;
-            }
-            if let Some(range) = interp.geom_range_for_call(node.span) {
-                for index in range {
+            let range = interp.geom_range_for_call(node.span);
+            if dirty_features.contains(&node.id)
+                && let Some(range) = &range
+            {
+                for index in range.clone() {
                     dirty_geom_ids.insert(graph.nodes()[index as usize].id);
                 }
             }
             if let Some(name) = node.name {
-                dirty_feature_names.push(name.to_string());
+                if dirty_features.contains(&node.id) {
+                    dirty_feature_names.push(name.to_string());
+                }
+                if let Some(range) = range {
+                    named_feature_ranges.push((FeatureAnchor::named(name), range));
+                }
             }
         }
 
         let prior = self.prior_results.take();
-        let (results, stats) =
-            match dispatch_graph_incremental(graph, self.ctx, prior, &dirty_geom_ids) {
-                Ok(pair) => pair,
-                Err(err) => {
-                    let outcome = RebuildOutcome {
-                        dirty_feature_names,
-                        stats: IncrementalStats::default(),
-                    };
-                    return Err((outcome, vec![err.to_diagnostic(&self.file, &self.source)]));
-                }
-            };
+        let (results, stats, lineage_table) = match dispatch_graph_incremental_with_lineage(
+            graph,
+            self.ctx,
+            prior,
+            &dirty_geom_ids,
+        ) {
+            Ok(triple) => triple,
+            Err(err) => {
+                let outcome = RebuildOutcome {
+                    dirty_feature_names,
+                    stats: IncrementalStats::default(),
+                };
+                return Err((outcome, vec![err.to_diagnostic(&self.file, &self.source)]));
+            }
+        };
+
+        match reference_replay::capture_named_feature_lineage(
+            graph,
+            &results,
+            &lineage_table,
+            &named_feature_ranges,
+        ) {
+            Ok(captured) => self.feature_lineage.extend(captured),
+            Err(err) => {
+                let outcome = RebuildOutcome {
+                    dirty_feature_names,
+                    stats,
+                };
+                return Err((
+                    outcome,
+                    vec![environment_diagnostic(
+                        &self.file,
+                        &self.source,
+                        &format!("failed to classify feature lineage evidence: {err}"),
+                    )],
+                ));
+            }
+        }
 
         let mut last_globals = HashMap::new();
         for item in &self.lowered.program.items {
@@ -401,6 +473,115 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             cad_geometry_runtime::NodeResult::Shape(shape) => Some(shape),
             _ => None,
         }
+    }
+
+    /// This session's own raw-topology-handle epoch (`AICAD-093`),
+    /// advanced once at the start of every
+    /// [`ParametricBuildSession::rebuild`] round. A caller minting a
+    /// `cad_references::RawHandle` around a `Shape`/`Candidate` this
+    /// session produced should mint it against `self.epoch_counter().
+    /// current()` and re-check it against this same accessor after any
+    /// later `rebuild()` call — exactly the property
+    /// `crate::reference_replay`'s own module doc comment and
+    /// `project/reports/AICAD-093.md`'s own "Limitations" section name as
+    /// this task's job: "connecting one `EpochCounter` per build session
+    /// and calling `advance()` exactly on regeneration."
+    pub fn epoch_counter(&self) -> &EpochCounter {
+        &self.epoch
+    }
+
+    /// Resolves `query` against this session's own current regenerated
+    /// state (`AICAD-094`) — the real "reference replay" entry point:
+    /// calling this both before and after a [`ParametricBuildSession::
+    /// rebuild`] round observes this session's *actual* candidate/lineage
+    /// evidence at each point, never a parallel/hand-built stand-in.
+    pub fn resolve(
+        &self,
+        query: &cad_query::Query,
+    ) -> Result<cad_query::ResolutionOutcome<'ctx>, ResolveError> {
+        cad_query::resolve_query(query, self)
+    }
+
+    /// Resolves a stable [`AnyRef`] (any of its seven construction
+    /// strategies — see `cad_query::resolve`'s own module doc comment)
+    /// against this session's own current regenerated state, paired with
+    /// that reference's own static durability — see
+    /// [`ParametricBuildSession::resolve`]'s own doc comment.
+    pub fn resolve_reference(
+        &self,
+        reference: &AnyRef,
+    ) -> Result<cad_query::ReferenceResolution<'ctx>, ResolveError> {
+        cad_query::resolve_reference_with_durability(reference, self)
+    }
+}
+
+/// `generated_by`/`modified_by` evidence sourced from this session's own
+/// real per-round `feature_lineage` index (`AICAD-094`) — the same
+/// classification logic `crate::query::resolve`'s own `AICAD-088` tests
+/// (`LineageBackedContext`) first proved against one hand-constructed
+/// operation, reused here unchanged against this session's real
+/// incremental-rebuild evidence instead. `descended_from`/`resolve_ref`/
+/// `resolve_target` are left at their default `None` ("no evidence") —
+/// `Ancestry`/`adjacent_to`/`inside`/`within` resolution needs an
+/// already-*resolved*-reference lookup this task does not build a
+/// production source for, matching every predecessor Stage-4 task's own
+/// identical "not yet produced" precedent (see `crate::eval`'s own module
+/// doc comment).
+impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
+    fn generated_by(&self, candidate: &Candidate<'ctx>, anchor: &FeatureAnchor) -> Option<bool> {
+        let report = self.feature_lineage.get(anchor)?;
+        Some(report.results.iter().any(|result| {
+            result.origin == Some(cad_query::feature_lineage::ResultEntityOrigin::New)
+                && result.entity.is_same(candidate.shape()).unwrap_or(false)
+        }))
+    }
+
+    fn modified_by(&self, candidate: &Candidate<'ctx>, anchor: &FeatureAnchor) -> Option<bool> {
+        let report = self.feature_lineage.get(anchor)?;
+        Some(report.results.iter().any(|result| {
+            let is_ordinary_carry_forward = result.origin.is_none()
+                && result
+                    .predecessors
+                    .first()
+                    .map(|&i| {
+                        report.prior[i].state
+                            == cad_query::feature_lineage::PriorEntityState::Unchanged
+                    })
+                    .unwrap_or(false);
+            !is_ordinary_carry_forward
+                && result.origin != Some(cad_query::feature_lineage::ResultEntityOrigin::New)
+                && result.entity.is_same(candidate.shape()).unwrap_or(false)
+        }))
+    }
+}
+
+/// `candidates(kind)` aggregates every immediate `kind`-shaped sub-entity
+/// of every named top-level feature's own *current* `Shape` (`AICAD-094`)
+/// — real, whole-session candidate enumeration sourced from this round's
+/// actual dispatch results, via [`ParametricBuildSession::shape_for_
+/// binding`]/[`reference_replay::candidates_of_kind`]. Every other
+/// `ResolverContext` method (`lookup_query`/`resolve_export`/
+/// `resolve_structural_role`/`resolve_user_confirmed`) is left at its
+/// default `None` — this session has no production `SemanticQuery`
+/// registry, export registry, structural-role tag registry, or
+/// user-confirmation registry, matching `cad_query::resolve`'s own module
+/// doc comment ("Evidence this module does not itself produce") and every
+/// predecessor Stage-4 task's identical scope boundary.
+impl<'ctx> ResolverContext<'ctx> for ParametricBuildSession<'ctx> {
+    fn candidates(&self, kind: EntityKind) -> Vec<Candidate<'ctx>> {
+        let mut out = Vec::new();
+        for item in &self.lowered.program.items {
+            let binding = match item {
+                cad_hir::hir::HirItem::Let { binding, .. }
+                | cad_hir::hir::HirItem::Const { binding, .. }
+                | cad_hir::hir::HirItem::Param { binding, .. } => *binding,
+                _ => continue,
+            };
+            if let Some(shape) = self.shape_for_binding(binding) {
+                out.extend(reference_replay::candidates_of_kind(shape, kind));
+            }
+        }
+        out
     }
 }
 
