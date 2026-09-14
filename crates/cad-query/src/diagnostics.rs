@@ -64,6 +64,23 @@
 //! replacement candidate -- that would be exactly the silent-guess
 //! failure class D7/`DL-8` forbids, moved from the resolver into the
 //! diagnostic layer instead of eliminated.
+//!
+//! # Durability is surfaced alongside both diagnostics (`AICAD-091`)
+//!
+//! Per `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §11, "AI and code
+//! review tooling can warn when a critical downstream feature uses weak
+//! references" — a diagnostic that only reports *that* a reference is
+//! ambiguous/broken, without also reporting *how durable a reference it
+//! ever was*, loses exactly that signal. Both
+//! [`ambiguous_reference_diagnostic`] and [`broken_reference_diagnostic`]
+//! take an `Option<`[`cad_references::DurabilityLevel`]`>` — `None` when the
+//! caller has no [`cad_references::AnyRef`] recipe at hand (e.g. resolving
+//! a bare [`crate::query::Query`] rather than a stable reference; see
+//! [`crate::resolve::resolve_reference_with_durability`]'s own doc comment
+//! for why durability is a reference-recipe concept, not a query one) —
+//! and, when `Some`, add it to `backend_details` under a `"durability"`
+//! key, alongside (not overwriting) any fingerprint evidence the broken
+//! diagnostic already carries there.
 
 use cad_diagnostics::json::Json;
 use cad_diagnostics::{
@@ -72,7 +89,7 @@ use cad_diagnostics::{
 
 use crate::eval::Candidate;
 use crate::resolve::BrokenReason;
-use cad_references::EntityKind;
+use cad_references::{DurabilityLevel, EntityKind};
 
 /// `REF-E102`: already-reserved across the plan/RFC/schema examples (see
 /// this module's own doc comment) — never re-minted or repurposed here.
@@ -101,6 +118,7 @@ pub fn ambiguous_reference_diagnostic(
     entity: &str,
     expected_count: usize,
     candidates: &[Candidate<'_>],
+    durability: Option<DurabilityLevel>,
 ) -> Diagnostic {
     let observed_count = candidates.len();
     let message = format!(
@@ -108,7 +126,7 @@ pub fn ambiguous_reference_diagnostic(
         pluralize_entity(candidates.first().map(Candidate::kind), observed_count)
     );
 
-    Diagnostic::new(
+    let mut diagnostic = Diagnostic::new(
         ambiguous_reference_code(),
         Severity::Error,
         "reference",
@@ -138,7 +156,11 @@ pub fn ambiguous_reference_diagnostic(
         "confirm_candidate",
         "if the ambiguity is genuine, record a user-confirmed reference naming the intended \
          candidate explicitly",
-    ))
+    ));
+    if let Some(backend_details) = merged_backend_details(durability, None) {
+        diagnostic = diagnostic.with_backend_details(backend_details);
+    }
+    diagnostic
 }
 
 /// Builds the `REF-E101 BROKEN_REFERENCE` diagnostic for a
@@ -149,13 +171,17 @@ pub fn ambiguous_reference_diagnostic(
 /// single stable reference or a `unique()` query, `Some(n)` for
 /// `expect_count(n)`) — `None` when the reason itself is not a cardinality
 /// mismatch (e.g. missing evidence, or a disabled fingerprint fallback),
-/// since [`BrokenReason`] does not always carry one. Every suggestion this
-/// function attaches is a non-guessing recovery hint — see this module's
-/// own doc comment, "`REF-E101 BROKEN_REFERENCE` (`AICAD-090`)."
+/// since [`BrokenReason`] does not always carry one. `durability` is the
+/// same optional [`DurabilityLevel`] [`ambiguous_reference_diagnostic`]
+/// takes — see this module's own doc comment, "Durability is surfaced
+/// alongside both diagnostics." Every suggestion this function attaches is
+/// a non-guessing recovery hint — see this module's own doc comment,
+/// "`REF-E101 BROKEN_REFERENCE` (`AICAD-090`)."
 pub fn broken_reference_diagnostic(
     entity: &str,
     expected_count: Option<usize>,
     reason: &BrokenReason,
+    durability: Option<DurabilityLevel>,
 ) -> Diagnostic {
     let (message, observed_count, hints) = broken_reason_detail(reason);
 
@@ -181,13 +207,45 @@ pub fn broken_reference_diagnostic(
             Json::Integer(observed_count as i64),
         )]));
     }
-    if let BrokenReason::FingerprintAutoResolutionDisabled(evidence) = reason {
-        diagnostic = diagnostic.with_backend_details(fingerprint_evidence_json(evidence));
+    let fingerprint_evidence = match reason {
+        BrokenReason::FingerprintAutoResolutionDisabled(evidence) => Some(evidence),
+        _ => None,
+    };
+    if let Some(backend_details) = merged_backend_details(durability, fingerprint_evidence) {
+        diagnostic = diagnostic.with_backend_details(backend_details);
     }
     for (action, description) in hints {
         diagnostic = diagnostic.with_suggestion(informational_suggestion(action, &description));
     }
     diagnostic
+}
+
+/// Builds a single `backend_details` object combining an optional
+/// `"durability"` field with an optional fingerprint-evidence object,
+/// merged under their own keys rather than one overwriting the other, so
+/// [`broken_reference_diagnostic`]'s existing
+/// `FingerprintAutoResolutionDisabled` evidence and its new durability
+/// field can both be present at once. Returns `None` (omitting
+/// `backend_details` entirely, matching prior behavior) only when neither
+/// input is present.
+fn merged_backend_details(
+    durability: Option<DurabilityLevel>,
+    fingerprint: Option<&cad_references::FingerprintEvidence>,
+) -> Option<Json> {
+    if durability.is_none() && fingerprint.is_none() {
+        return None;
+    }
+    let mut fields = Vec::new();
+    if let Some(durability) = durability {
+        fields.push(("durability".to_string(), Json::str(durability.as_str())));
+    }
+    if let Some(evidence) = fingerprint {
+        fields.push((
+            "fingerprint".to_string(),
+            fingerprint_evidence_json(evidence),
+        ));
+    }
+    Some(Json::object(fields))
 }
 
 /// The `(message, observed_count, recovery_hints)` this reason implies.
@@ -450,7 +508,7 @@ mod tests {
         };
         assert_eq!(candidates.len(), 6);
 
-        let diagnostic = ambiguous_reference_diagnostic("cube.some_face", 1, &candidates);
+        let diagnostic = ambiguous_reference_diagnostic("cube.some_face", 1, &candidates, None);
         let json = diagnostic.to_json();
 
         assert_eq!(json.get("code").unwrap().as_str(), Some("REF-E102"));
@@ -538,7 +596,7 @@ mod tests {
         };
 
         let diagnostic =
-            broken_reference_diagnostic("cube.some_cylindrical_face", Some(1), &reason);
+            broken_reference_diagnostic("cube.some_cylindrical_face", Some(1), &reason, None);
         let json = diagnostic.to_json();
 
         assert_eq!(json.get("code").unwrap().as_str(), Some("REF-E101"));
@@ -581,7 +639,7 @@ mod tests {
             expected: 3,
             found: 1,
         };
-        let diagnostic = broken_reference_diagnostic("body.mounting_holes", Some(3), &reason);
+        let diagnostic = broken_reference_diagnostic("body.mounting_holes", Some(3), &reason, None);
         let json = diagnostic.to_json();
         assert_eq!(
             json.get("expected").unwrap().get("count").unwrap(),
@@ -605,19 +663,24 @@ mod tests {
             .with_area(42.0)
             .with_radius(5.0);
         let reason = BrokenReason::FingerprintAutoResolutionDisabled(evidence);
-        let diagnostic = broken_reference_diagnostic("body.some_face", None, &reason);
+        let diagnostic = broken_reference_diagnostic("body.some_face", None, &reason, None);
         let json = diagnostic.to_json();
 
         assert_eq!(*json.get("expected").unwrap(), Json::Null);
         assert_eq!(*json.get("observed").unwrap(), Json::Null);
         let backend = json.get("backend_details").unwrap();
+        let fingerprint = backend.get("fingerprint").unwrap();
         assert_eq!(
-            backend.get("area").unwrap(),
+            fingerprint.get("area").unwrap(),
             &Json::Float(42.0),
             "the fingerprint evidence is surfaced for human review, never used to select a \
              candidate"
         );
-        assert_eq!(backend.get("radius").unwrap(), &Json::Float(5.0));
+        assert_eq!(fingerprint.get("radius").unwrap(), &Json::Float(5.0));
+        assert!(
+            backend.get("durability").is_none(),
+            "no durability was supplied, so it must be absent, not fabricated"
+        );
         // No suggestion may name a specific replacement candidate; every
         // one must only describe how to investigate/repair.
         for suggestion in json.get("suggestions").unwrap().as_array().unwrap() {
@@ -629,11 +692,120 @@ mod tests {
         }
     }
 
+    // --- AICAD-091 ---
+
+    #[test]
+    fn broken_diagnostic_merges_durability_alongside_fingerprint_evidence() {
+        // A `GeometricFingerprint` broken reason already carries evidence
+        // under `backend_details` (the test above). This proves supplying
+        // a durability level adds a sibling field rather than clobbering
+        // that existing evidence.
+        let evidence = cad_references::FingerprintEvidence::at_position([1.0, 2.0, 3.0]);
+        let reason = BrokenReason::FingerprintAutoResolutionDisabled(evidence);
+        let diagnostic = broken_reference_diagnostic(
+            "body.some_face",
+            None,
+            &reason,
+            Some(DurabilityLevel::QueryGeometric),
+        );
+        let json = diagnostic.to_json();
+        let backend = json.get("backend_details").unwrap();
+        assert_eq!(
+            backend.get("durability").unwrap().as_str(),
+            Some("query_geometric")
+        );
+        assert!(
+            backend
+                .get("fingerprint")
+                .unwrap()
+                .get("position")
+                .is_some(),
+            "fingerprint evidence must still be present alongside durability"
+        );
+    }
+
+    #[test]
+    fn broken_diagnostic_reports_durability_with_no_fingerprint_evidence() {
+        // A non-fingerprint broken reason (e.g. `NoMatch`) carries no
+        // evidence of its own; durability must still appear alone in
+        // `backend_details` rather than requiring fingerprint evidence to
+        // "unlock" the field.
+        let diagnostic = broken_reference_diagnostic(
+            "base.top_face",
+            Some(1),
+            &BrokenReason::NoMatch,
+            Some(DurabilityLevel::Explicit),
+        );
+        let json = diagnostic.to_json();
+        let backend = json.get("backend_details").unwrap();
+        assert_eq!(
+            backend.get("durability").unwrap().as_str(),
+            Some("explicit")
+        );
+        assert!(backend.get("fingerprint").is_none());
+    }
+
+    #[test]
+    fn ambiguous_diagnostic_reports_durability_when_supplied() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let query = Query::new(EntityKind::Face)
+            .with_clause(QueryClause::Geometry(GeometryPredicate::Area(
+                Comparison::Eq(length(4.0)),
+            )))
+            .with_cardinality(CardinalityExpectation::Unique);
+
+        let outcome = resolve_query(&query, &PlainContext(&cube)).unwrap();
+        let candidates = match outcome {
+            ResolutionOutcome::Ambiguous(candidates) => candidates,
+            _ => panic!("expected Ambiguous"),
+        };
+
+        let diagnostic = ambiguous_reference_diagnostic(
+            "cube.some_face",
+            1,
+            &candidates,
+            Some(DurabilityLevel::QueryStrong),
+        );
+        let json = diagnostic.to_json();
+        let backend = json.get("backend_details").unwrap();
+        assert_eq!(
+            backend.get("durability").unwrap().as_str(),
+            Some("query_strong")
+        );
+    }
+
+    #[test]
+    fn ambiguous_diagnostic_omits_backend_details_when_durability_absent() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let query = Query::new(EntityKind::Face)
+            .with_clause(QueryClause::Geometry(GeometryPredicate::Area(
+                Comparison::Eq(length(4.0)),
+            )))
+            .with_cardinality(CardinalityExpectation::Unique);
+
+        let outcome = resolve_query(&query, &PlainContext(&cube)).unwrap();
+        let candidates = match outcome {
+            ResolutionOutcome::Ambiguous(candidates) => candidates,
+            _ => panic!("expected Ambiguous"),
+        };
+
+        let diagnostic = ambiguous_reference_diagnostic("cube.some_face", 1, &candidates, None);
+        let json = diagnostic.to_json();
+        assert_eq!(
+            *json.get("backend_details").unwrap(),
+            Json::Null,
+            "matching prior behavior: no backend_details field is fabricated when there is \
+             nothing to report"
+        );
+    }
+
     #[test]
     fn query_handle_not_registered_names_the_handle_in_the_message() {
         let reason =
             BrokenReason::QueryHandleNotRegistered(cad_references::QueryHandle::named("top_face"));
-        let diagnostic = broken_reference_diagnostic("base.top_face", Some(1), &reason);
+        let diagnostic = broken_reference_diagnostic("base.top_face", Some(1), &reason, None);
         let json = diagnostic.to_json();
         assert_eq!(*json.get("observed").unwrap(), Json::Null);
         assert!(
@@ -649,7 +821,7 @@ mod tests {
     #[test]
     fn insufficient_evidence_includes_the_reason_in_its_single_hint() {
         let reason = BrokenReason::InsufficientEvidence("generated_by requires feature lineage");
-        let diagnostic = broken_reference_diagnostic("wall.pierced_face", Some(1), &reason);
+        let diagnostic = broken_reference_diagnostic("wall.pierced_face", Some(1), &reason, None);
         let json = diagnostic.to_json();
         let suggestions = json.get("suggestions").unwrap().as_array().unwrap();
         assert_eq!(suggestions.len(), 1);
@@ -680,15 +852,29 @@ mod tests {
                 Vec::new()
             }
         }
-        let outcome = crate::resolve::resolve_reference(&reference, &EmptyContext).unwrap();
-        let reason = match outcome {
+        let resolution =
+            crate::resolve::resolve_reference_with_durability(&reference, &EmptyContext).unwrap();
+        let reason = match resolution.outcome {
             ResolutionOutcome::Broken(reason) => reason,
             other => panic!("expected Broken, got {other:?}"),
         };
-        let diagnostic = broken_reference_diagnostic("base.top_face", Some(1), &reason);
+        let diagnostic = broken_reference_diagnostic(
+            "base.top_face",
+            Some(1),
+            &reason,
+            Some(resolution.durability),
+        );
+        let json = diagnostic.to_json();
+        assert_eq!(json.get("code").unwrap().as_str(), Some("REF-E101"));
         assert_eq!(
-            diagnostic.to_json().get("code").unwrap().as_str(),
-            Some("REF-E101")
+            json.get("backend_details")
+                .unwrap()
+                .get("durability")
+                .unwrap()
+                .as_str(),
+            Some("query_strong"),
+            "the QueryHandle strategy's own query_strong durability travels through \
+             resolve_reference_with_durability into the diagnostic"
         );
     }
 }

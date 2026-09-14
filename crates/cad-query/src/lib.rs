@@ -5,7 +5,13 @@
 //! [`query::Query`] or a [`cad_references::AnyRef`] into
 //! `Resolved`/`Ambiguous`/`Broken`; `AICAD-089`/`090`: the `REF-E102`
 //! ambiguous-reference and `REF-E101` broken-reference diagnostics
-//! ([`diagnostics`]) built from real `Ambiguous`/`Broken` outcomes.
+//! ([`diagnostics`]) built from real `Ambiguous`/`Broken` outcomes;
+//! `AICAD-091`: pairing a reference's resolution outcome with its own
+//! static [`cad_references::DurabilityLevel`]
+//! ([`resolve::resolve_reference_with_durability`],
+//! [`resolve::ReferenceResolution`]) and surfacing that durability
+//! alongside both diagnostics, per
+//! `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §11.
 //!
 //! ## Scope
 //!
@@ -80,7 +86,7 @@ pub use predicate::{
 pub use query::{Query, QueryClause};
 pub use ranking::{CardinalityExpectation, Metric, RankingDirective};
 pub use resolve::{
-    BrokenReason, ResolutionOutcome, ResolveError, ResolverContext, resolve_query,
-    resolve_reference,
+    BrokenReason, ReferenceResolution, ResolutionOutcome, ResolveError, ResolverContext,
+    resolve_query, resolve_reference, resolve_reference_with_durability,
 };
 pub use value::{Comparison, Direction3, Frame3, Magnitude, Point3};

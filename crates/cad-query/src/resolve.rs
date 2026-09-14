@@ -85,8 +85,8 @@ use std::cmp::Ordering;
 
 use cad_kernel_api::{KernelError, Point3 as KernelPoint3};
 use cad_references::{
-    AnyRef, ConstructionStrategy, EntityKind, FeatureAnchor, FingerprintEvidence, LineageRole,
-    QueryHandle,
+    AnyRef, ConstructionStrategy, DurabilityLevel, EntityKind, FeatureAnchor, FingerprintEvidence,
+    LineageRole, QueryHandle,
 };
 
 use crate::eval::{self, Candidate, EvalError, EvaluationEvidence};
@@ -321,6 +321,44 @@ pub fn resolve_reference<'ctx>(
             BrokenReason::FingerprintAutoResolutionDisabled(*evidence),
         )),
     }
+}
+
+/// A reference's resolution outcome paired with the static
+/// [`DurabilityLevel`] its own recipe/[`ConstructionStrategy`] implies
+/// (`AICAD-091`, `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §11).
+///
+/// Durability is never computed *from* the outcome — it is intrinsic to
+/// *how* the reference was constructed
+/// ([`ConstructionStrategy::durability`]), fixed the moment the recipe was
+/// built, and identical whether resolution ultimately reports `Resolved`,
+/// `Ambiguous`, or `Broken`. Pairing the two here is what actually "exposes
+/// [durability] in diagnostics and tooling" per the plan, instead of
+/// leaving a caller to separately call `reference.recipe().durability()`
+/// and remember to join it with the resolution result themselves — a step
+/// that is easy to skip, silently dropping exactly the confidence signal
+/// this task exists to surface (e.g. a weak `query_geometric` reference
+/// that happens to resolve today looks identical to an `explicit` one
+/// unless the durability travels with the outcome).
+pub struct ReferenceResolution<'ctx> {
+    pub outcome: ResolutionOutcome<'ctx>,
+    pub durability: DurabilityLevel,
+}
+
+/// Resolves `reference` exactly as [`resolve_reference`] does, additionally
+/// pairing the result with `reference`'s own recipe durability. Use this
+/// instead of calling [`resolve_reference`] directly whenever the caller
+/// (diagnostics, a future health report, tooling) needs to report or act on
+/// reference confidence, not just the raw resolution outcome.
+pub fn resolve_reference_with_durability<'ctx>(
+    reference: &AnyRef,
+    ctx: &dyn ResolverContext<'ctx>,
+) -> Result<ReferenceResolution<'ctx>, ResolveError> {
+    let durability = reference.recipe().durability();
+    let outcome = resolve_reference(reference, ctx)?;
+    Ok(ReferenceResolution {
+        outcome,
+        durability,
+    })
 }
 
 fn resolve_query_with_cardinality<'ctx>(
@@ -1006,6 +1044,99 @@ mod tests {
             outcome,
             ResolutionOutcome::Broken(BrokenReason::FingerprintAutoResolutionDisabled(_))
         ));
+    }
+
+    // --- AICAD-091 ---
+
+    #[test]
+    fn resolve_reference_with_durability_pairs_a_broken_fingerprint_with_query_geometric() {
+        // A weak `GeometricFingerprint` reference is always `Broken`
+        // (D7/`DL-8`) -- this proves its durability travels with that
+        // outcome rather than being silently dropped, so a caller can tell
+        // "this was never going to resolve automatically" apart from "a
+        // strong reference unexpectedly broke."
+        let reference = AnyRef::Face(FaceRef::from_strategy(
+            ConstructionStrategy::GeometricFingerprint(FingerprintEvidence::at_position([
+                1.0, 2.0, 3.0,
+            ])),
+        ));
+        struct EmptyContext;
+        impl<'ctx> EvaluationEvidence<'ctx> for EmptyContext {}
+        impl<'ctx> ResolverContext<'ctx> for EmptyContext {
+            fn candidates(&self, _kind: EntityKind) -> Vec<Candidate<'ctx>> {
+                Vec::new()
+            }
+        }
+        let resolution = resolve_reference_with_durability(&reference, &EmptyContext).unwrap();
+        assert_eq!(resolution.durability, DurabilityLevel::QueryGeometric);
+        assert!(matches!(
+            resolution.outcome,
+            ResolutionOutcome::Broken(BrokenReason::FingerprintAutoResolutionDisabled(_))
+        ));
+    }
+
+    #[test]
+    fn resolve_reference_with_durability_pairs_a_resolved_lineage_reference_with_lineage() {
+        // Real lineage evidence (the same fixture
+        // `generated_by_resolves_the_new_hole_wall_face_from_real_lineage`
+        // uses), proving the pairing holds for a genuinely `Resolved`
+        // outcome too, not only a `Broken` one.
+        let context = OcctContext::new().unwrap();
+        let base = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let cyl_raw = context.create_cylinder(2.0, 20.0).unwrap();
+        let cyl = cyl_raw
+            .transform(&Transform::translation(Vector3::new(5.0, 5.0, -5.0)))
+            .unwrap();
+        let prior: Vec<_> = (0..base.face_count().unwrap())
+            .map(|i| base.get_face(i).unwrap())
+            .collect();
+        let (result, lineage) = base.cut_with_lineage(&cyl).expect("cut should succeed");
+        let report = classify_feature_lineage(EntityKind::Face, prior, &result, &lineage).unwrap();
+
+        let anchor = FeatureAnchor::named("hole_a");
+        let ctx = LineageBackedContext {
+            anchor: anchor.clone(),
+            result: &result,
+            report,
+        };
+
+        let reference = AnyRef::Face(FaceRef::from_strategy(
+            ConstructionStrategy::FeatureLineage {
+                feature: anchor,
+                role: LineageRole::Generated,
+            },
+        ));
+        let resolution = resolve_reference_with_durability(&reference, &ctx).unwrap();
+        assert_eq!(resolution.durability, DurabilityLevel::Lineage);
+        match resolution.outcome {
+            ResolutionOutcome::Resolved(candidates) => assert_eq!(candidates.len(), 1),
+            other => panic!("expected Resolved, got a different outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_reference_with_durability_reports_explicit_for_explicit_export() {
+        // Durability is fixed by the recipe's own strategy, independent of
+        // whether the outcome is `Resolved`/`Ambiguous`/`Broken` -- an
+        // `ExplicitExport` recipe with no export-binding evidence wired in
+        // this context is `Broken`, but it must still report `Explicit`
+        // durability, never silently downgraded because resolution failed.
+        let reference = AnyRef::Face(FaceRef::from_strategy(
+            ConstructionStrategy::ExplicitExport {
+                feature: FeatureAnchor::named("base"),
+                export_name: "top_face".into(),
+            },
+        ));
+        struct EmptyContext;
+        impl<'ctx> EvaluationEvidence<'ctx> for EmptyContext {}
+        impl<'ctx> ResolverContext<'ctx> for EmptyContext {
+            fn candidates(&self, _kind: EntityKind) -> Vec<Candidate<'ctx>> {
+                Vec::new()
+            }
+        }
+        let resolution = resolve_reference_with_durability(&reference, &EmptyContext).unwrap();
+        assert_eq!(resolution.durability, DurabilityLevel::Explicit);
+        assert!(resolution.outcome.is_broken());
     }
 
     #[test]
