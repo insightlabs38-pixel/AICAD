@@ -23,7 +23,11 @@
 //! crate's second command, `cad refs check <path> [--json]` — §3's
 //! reference-health verification command — via [`cli::parse_command`]/
 //! [`refs_check`]; see that module's own doc comment for why its own
-//! reported reference set is currently always empty.
+//! reported reference set is currently always empty. `AICAD-097` adds
+//! [`perturbation`] — a deterministic perturbation-case runner (`docs/
+//! plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md` §5's own "topological naming
+//! benchmark" methodology) — as a library module only, with no CLI
+//! subcommand of its own yet.
 //!
 //! `AICAD-063`'s own end-to-end proof (a full bracket-shaped fixture with
 //! parameters/derived expressions/control flow, verified by exact B-rep
@@ -60,6 +64,7 @@
 pub mod build;
 pub mod cli;
 pub mod parametric_build;
+pub mod perturbation;
 pub mod reference_replay;
 pub mod refs_check;
 
@@ -68,5 +73,6 @@ pub use cli::{
     ArgsError, Command, ParsedArgs, RefsCheckArgs, parse_args, parse_command, parse_refs_check_args,
 };
 pub use parametric_build::{ParametricBuildSession, RebuildOutcome};
+pub use perturbation::{PerturbationCase, PerturbationRun, RunOutcome, run_case};
 pub use reference_replay::FeatureLineageIndex;
 pub use refs_check::{RefsCheckReport, RefsCheckStatus, refs_check_source, run_refs_check};

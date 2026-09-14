@@ -2994,7 +2994,7 @@ tasks:
 - id: AICAD-097
   stage: 4
   title: Create deterministic perturbation runner
-  status: todo
+  status: done
   depends_on:
   - AICAD-096
   plan_references:
