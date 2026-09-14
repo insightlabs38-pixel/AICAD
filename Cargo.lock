@@ -167,10 +167,19 @@ version = "0.0.0"
 [[package]]
 name = "cad-query"
 version = "0.0.0"
+dependencies = [
+ "cad-diagnostics",
+ "cad-references",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-references"
 version = "0.0.0"
+dependencies = [
+ "cad-diagnostics",
+]
 
 [[package]]
 name = "cad-requirements"

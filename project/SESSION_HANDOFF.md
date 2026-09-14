@@ -4,9 +4,9 @@
 
 **Stage 3 is complete, owner-approved, and merged.** Approval is `project/DECISION_LOG.md#DL-22`; accepted Stage-3 `main` merge is `15fc5a37e4382de717e426ccc5317a491be264cd`, including final incremental-build remediation lineage `99fb0d3b17000b0a1c6a1a3c175ea16f0d450180`.
 
-**The Stage-3 -> Stage-4 transition is complete pending owner review/merge.** The transition branch remains `origin/claude/aicad-stage4-transition`. **Stage 4 is READY but not implemented.** `AICAD-080` is still `todo` and depends on completed AICAD-079C.
+**The Stage-3 -> Stage-4 transition is complete and merged** (`claude/aicad-stage4-transition` -> `main`, PR #12, `f587251`). **Stage 4 implementation has started.** Batch S4-00 (`AICAD-080`, `AICAD-081`) is done — see `project/reports/AICAD-080.md`/`AICAD-081.md` and `project/CURRENT_STAGE.md`'s "Stage 4 — in progress" section. Batch S4-01 (`AICAD-082`, `AICAD-083`, `AICAD-084`) is next.
 
-Do not restart/rebase the transition from `main`, do not merge it automatically, and do not begin Stage-4 implementation from this branch.
+**Working-branch discrepancy (see `project/CURRENT_STAGE.md`'s "Working-branch note"):** the previously-planned `origin/claude/aicad-stage4-dev` branch does not exist; Batch S4-00 was committed to this session's own harness-assigned working branch instead, which was content-identical to `main`'s post-transition-merge HEAD at the start of the batch. A future invocation should check `project/CURRENT_STAGE.md` for whether the owner has since resolved this (created `claude/aicad-stage4-dev` explicitly, or adopted the working branch as canonical) before assuming either branch name.
 
 ## Transition history preserved
 
@@ -54,22 +54,18 @@ No AICAD-079C change implements persistent topology-reference types, recipe/quer
 
 D21-D30 remain future semantic constraints, not Stage-5/6 implementation authorization. Their deliberately deferred details remain in `project/planning/transitions/stage3-to-stage4/DEFERRED_TRANSITION_ITEMS.md`.
 
-## Owner handoff after transition review
+## Owner handoff after transition review (historical — transition now merged)
 
-After accepting this transition:
-
-1. merge `claude/aicad-stage4-transition` to `main`;
-2. create `claude/aicad-stage4-dev` from the **exact merged `main` HEAD**;
-3. all sequential Stage-4 agents use the newest `origin/claude/aicad-stage4-dev` as canonical working state;
-4. do not independently recreate Stage-4 work from `main` or another branch;
-5. authorize and begin AICAD-080 only then;
-6. do not begin AICAD-101+ / Stage 5 until Stage 4 later passes its owner hard gate.
-
-The Stage-4 dev branch should not exist before the transition merge unless the owner deliberately changes this policy.
+1. merge `claude/aicad-stage4-transition` to `main`; **done** (PR #12, `f587251`).
+2. create `claude/aicad-stage4-dev` from the **exact merged `main` HEAD**; **not done as literally specified** — see `project/CURRENT_STAGE.md`'s "Working-branch note" for the branch this batch actually used instead and why.
+3. all sequential Stage-4 agents use the newest `origin/claude/aicad-stage4-dev` as canonical working state; **superseded** until the owner resolves the branch-naming discrepancy — check `project/CURRENT_STAGE.md` first.
+4. do not independently recreate Stage-4 work from `main` or another branch; **followed** — Batch S4-00 built on the exact post-transition-merge state, not a re-derived one.
+5. authorize and begin AICAD-080 only then; **done** — Batch S4-00 (`AICAD-080`, `AICAD-081`) is complete, see `project/reports/AICAD-080.md`/`AICAD-081.md`.
+6. do not begin AICAD-101+ / Stage 5 until Stage 4 later passes its owner hard gate. **Still in force** — only Batch S4-00 (Stage 4) has run.
 
 ## Validation and evidence
 
-Fresh AICAD-079C validation belongs in `project/reports/AICAD-079C.md`. Historical Stage-3 evidence remains historical and is not substituted for fresh transition CI results. The local execution environment used for the transition cannot access a repository checkout because local Git cannot resolve `github.com`; consequently checkout-dependent local Cargo/git commands are not claimed. Live GitHub Actions on the transition branch are used for executable validation, supplemented by connector compare/patch review.
+Fresh AICAD-079C validation belongs in `project/reports/AICAD-079C.md`. `AICAD-080`/`AICAD-081` validation belongs in `project/reports/AICAD-080.md`/`AICAD-081.md`. Historical Stage-3 evidence remains historical and is not substituted for fresh results. This invocation had a real repository checkout and ran `cargo fmt`/`clippy`/`test` directly (workspace-wide, 0 failures) plus the `scripts/ci/semantic_ref_harness.py` validate/self-test and `scripts/ci/stage4_task_audit.py --check` commands — see the task reports for exact output.
 
 ## Git policy
 

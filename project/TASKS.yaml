@@ -2526,7 +2526,7 @@ tasks:
 - id: AICAD-080
   stage: 4
   title: Define stable VertexRef/EdgeRef/WireRef/FaceRef/ShellRef/SolidRef semantic-recipe representations
-  status: todo
+  status: done
   depends_on:
   - AICAD-079C
   plan_references:
@@ -2555,7 +2555,7 @@ tasks:
 - id: AICAD-081
   stage: 4
   title: Create query AST/IR with cardinality expectations and deterministic ranking
-  status: todo
+  status: done
   depends_on:
   - AICAD-080
   plan_references:
