@@ -1330,6 +1330,75 @@ manifest format.
 
 ---
 
+## D31. `part { ... }` scoping in the Stage-3/4 feature-dependency graph and semantic-reference lineage
+
+**Status:** Open — found during `AICAD-096` (Stage 4, Batch S4-06), blocks
+lineage-based (`generated_by`/`modified_by`) semantic-reference resolver
+execution against any `part`-wrapped program.
+
+**Question:** `cad_feature_graph::FeatureGraph::build` only scans
+`HirProgram::items` directly and its own module doc comment already names
+`part` bodies as deliberately out of scope ("Only `program.items`-level
+(module top-level) `let`/`const` are scanned... `part` instantiation
+semantics are `AICAD-072`'s job, not yet decided"). `AICAD-096` found the
+concrete consequence this produces one layer up: `cad_cli::
+ParametricBuildSession::rebuild`'s own `named_feature_ranges` (and
+therefore every `Face`/`Edge` lineage entry `AICAD-094`'s `capture_named_
+feature_lineage` can ever produce) is sourced from `feature_graph.nodes()`,
+so **no named feature declared inside a `part { ... }` block is ever
+tracked as a feature-graph node, is ever dirty-set-eligible, or ever gets
+real captured lineage evidence** — meaning `cad_query::resolve`'s
+`generated_by`/`modified_by` predicates always report
+`Broken(InsufficientEvidence)` for such a feature, regardless of whether
+the underlying reference is actually fine, ambiguous, or genuinely broken.
+This is not a silent-wrong outcome (it fails closed, matching D7's
+required direction) but it does make real resolver execution against the
+frozen `AICAD-079A` benchmark corpus's own worked-example queries
+(`generated_by(hole_a)`, etc.) impossible today, since every one of that
+corpus's fixtures wraps its geometry in `part { ... }` — the idiomatic,
+recommended style (`skills/cad-core.skill.md`'s own worked examples).
+`AICAD-096` worked around this for its own two in-scope resolver-execution
+cases by using pure geometry predicates (no lineage) instead, and left the
+frozen cases that need lineage (`01`, `02`, `04`, `07`) as documented
+follow-up rather than forcing a result — see `project/reports/
+AICAD-096.md` and `crates/cad-cli/tests/stage4_resolver_execution.rs`'s
+own module doc comment for the full account and reproduction.
+
+Two related defects one layer *below* this (the parametric interpreter
+entry point never evaluating a `part` body's own geometry at all, and
+`ParametricBuildSession`'s own candidate/global-binding enumeration never
+looking inside a part once it did) were real, previously-undiscovered
+completeness bugs with an unambiguous, already-established-elsewhere
+correct behavior to mirror — `AICAD-096` fixed both at the root rather
+than escalating them. This `part`/`FeatureGraph` scoping question is
+different in kind: it requires deciding how `part` instantiation composes
+with feature identity/dependency-graph modeling, which
+`cad_feature_graph`'s own author already flagged as a real, unresolved
+design question (not an oversight), so `AICAD-096` did not invent an
+answer.
+
+**Plan references:** `crates/cad-feature-graph/src/graph.rs` module doc
+comment ("`part` bodies"); `crates/cad-runtime/src/params.rs` (`ParamModel`'s
+own identical, already-documented "top-level only" scope boundary);
+`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §3/§8/§9 (feature-DAG/
+lineage semantics); `project/reports/AICAD-094.md`, `AICAD-096.md`.
+AGENTS.md escalation trigger: "an unresolved architecture alternative must
+be selected."
+
+**Blocking impact:** Any future Stage-4 task that needs `generated_by`/
+`modified_by` resolver execution against a real, idiomatic (`part`-
+wrapped) `.aicad` program — including further frozen-corpus coverage,
+`AICAD-097`'s perturbation runner if it exercises lineage-based queries,
+and `AICAD-099`'s adversarial bug hunt — is blocked on this until an owner
+decides how a `part`'s own named features should be modeled in
+`FeatureGraph` (e.g.: flatten every part's own items into the
+feature-graph's own top-level scan, matching this task's own `cad-cli`-
+side `collect_geometry_globals` fix; give a part its own nested
+sub-graph; or something else). Not urgent for Stage-4 tasks that only need
+pure geometry/topology-shape predicates (unaffected).
+
+---
+
 ## Non-decision items carried forward for awareness (not owner rulings needed yet)
 
 These are plan-acknowledged gaps/research items that do not currently block

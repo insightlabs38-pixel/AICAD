@@ -1,0 +1,27 @@
+// AICAD-096 resolver-execution corpus extension.
+// Category: extrusion resize. See ./case.md for the intended query
+// target, expected classification, and measured evidence.
+//
+// The base box is deliberately inlined (never bound to its own `let`) so
+// this fixture has exactly one named top-level feature (`body`) — every
+// top-level `let`'s own shape remains an independently-addressable
+// resolver candidate for the lifetime of the session (`cad_cli::
+// ParametricBuildSession::candidates`'s own established, deliberate
+// design), so a separate `base` binding would leave its own +Z-normal
+// top face permanently resolvable alongside `body`'s, making the query
+// below ambiguous by construction rather than by the perturbation this
+// case actually means to test.
+
+param base_x: Length = 20mm;
+param base_y: Length = 20mm;
+param base_z: Length = 5mm;
+param extrude_distance: Length = 10mm;
+
+part Boss {
+    let body: Geometry = extrude(
+        box(base_x, base_y, base_z),
+        5,
+        Vector3(x = 0.0, y = 0.0, z = 1.0),
+        extrude_distance,
+    );
+}

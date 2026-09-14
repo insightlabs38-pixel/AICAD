@@ -116,6 +116,78 @@ fn top_level_binding_named(lowered: &LowerResult, name: &str) -> Option<BindingI
         .map(|b| b.id)
 }
 
+/// Collects every `let`/`const`/`param` binding's own current value into
+/// `out`, recursing into `part { ... }` bodies — `AICAD-096`'s own
+/// regression fix: every `AICAD-079A` corpus fixture, and idiomatic
+/// `.aicad` source in general (`skills/cad-core.skill.md`'s own worked
+/// examples), wraps its geometry in a `part { ... }` block, and this
+/// function's predecessor (a shallow `for item in
+/// &self.lowered.program.items` loop reading `interp.global(binding)`
+/// directly) silently found none of them: every named feature a real
+/// `part`-wrapped program declares was invisible to
+/// [`ParametricBuildSession::rebuild`]'s own `last_globals` snapshot and
+/// [`ResolverContext::candidates`] alike, so every query against a
+/// `part`-wrapped build reported `Broken` regardless of whether the named
+/// reference actually existed — never a *wrong* answer, D7's fail-closed
+/// direction, but one that made resolver execution against the frozen
+/// corpus impossible until fixed at the root.
+///
+/// A `part` body's own inner bindings are deliberately **not** written
+/// into [`Interpreter::globals`] by [`Interpreter::eval_part_body`]
+/// (`cad_runtime::value::Value::Part`'s own doc comment: collected into
+/// one `Value::Part` aggregate, name-keyed, "rather than written into
+/// `self.globals` directly" — an `AICAD-071` design choice this task has
+/// no reason to revisit). This function is the `cad-cli`-side counterpart
+/// that design already implies: given `interp.global(part_binding)`'s own
+/// `Value::Part { fields, .. }`, match each of the part's own HIR items
+/// back to its evaluated value **by name** (the only key `fields` carries)
+/// and record it under that item's own real [`BindingId`] — never guessed,
+/// never positional, an exact name match against the same HIR the part
+/// was built from. Does not recurse into a function body's own local
+/// `let`s (`HirItem::Fn`) or into a nested `part`-in-`part` (matching
+/// `eval_part_body`'s own identical, already-documented boundary) — only
+/// one level of `part` nesting exists in the grammar today.
+fn collect_geometry_globals(
+    items: &[cad_hir::hir::HirItem],
+    interp: &Interpreter<'_>,
+    out: &mut HashMap<BindingId, Value>,
+) {
+    for item in items {
+        match item {
+            cad_hir::hir::HirItem::Let { binding, .. }
+            | cad_hir::hir::HirItem::Const { binding, .. }
+            | cad_hir::hir::HirItem::Param { binding, .. } => {
+                if let Some(value) = interp.global(*binding) {
+                    out.insert(*binding, value.clone());
+                }
+            }
+            cad_hir::hir::HirItem::Part {
+                binding: part_binding,
+                items: part_items,
+                ..
+            } => {
+                let Some(Value::Part { fields, .. }) = interp.global(*part_binding) else {
+                    continue;
+                };
+                for inner in part_items {
+                    let (inner_binding, inner_name) = match inner {
+                        cad_hir::hir::HirItem::Let { binding, name, .. }
+                        | cad_hir::hir::HirItem::Const { binding, name, .. }
+                        | cad_hir::hir::HirItem::Param { binding, name, .. } => {
+                            (*binding, name.as_str())
+                        }
+                        _ => continue,
+                    };
+                    if let Some((_, value)) = fields.iter().find(|(name, _)| name == inner_name) {
+                        out.insert(inner_binding, value.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Every `param` whose own override *actually differs* between two rounds:
 /// present with a different value in `current` than in `previous` (or
 /// present in only one of the two — a newly-added override, or one reverted
@@ -440,17 +512,7 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         }
 
         let mut last_globals = HashMap::new();
-        for item in &self.lowered.program.items {
-            let binding = match item {
-                cad_hir::hir::HirItem::Let { binding, .. }
-                | cad_hir::hir::HirItem::Const { binding, .. }
-                | cad_hir::hir::HirItem::Param { binding, .. } => *binding,
-                _ => continue,
-            };
-            if let Some(value) = interp.global(binding) {
-                last_globals.insert(binding, value.clone());
-            }
-        }
+        collect_geometry_globals(&self.lowered.program.items, &interp, &mut last_globals);
         self.last_globals = last_globals;
         self.prior_results = Some(results);
         self.last_applied_overrides = self.overrides.clone();
@@ -559,7 +621,13 @@ impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
 /// of every named top-level feature's own *current* `Shape` (`AICAD-094`)
 /// — real, whole-session candidate enumeration sourced from this round's
 /// actual dispatch results, via [`ParametricBuildSession::shape_for_
-/// binding`]/[`reference_replay::candidates_of_kind`]. Every other
+/// binding`]/[`reference_replay::candidates_of_kind`]. "Every named
+/// top-level feature" includes one declared inside a `part { ... }` body
+/// (`AICAD-096`, via `self.last_globals`'s own `collect_geometry_globals`
+/// population in [`ParametricBuildSession::rebuild`]) — not only a bare
+/// top-level `let`, matching how every real `.aicad` program (and the
+/// entire frozen `AICAD-079A` corpus) actually declares its geometry.
+/// Every other
 /// `ResolverContext` method (`lookup_query`/`resolve_export`/
 /// `resolve_structural_role`/`resolve_user_confirmed`) is left at its
 /// default `None` — this session has no production `SemanticQuery`
@@ -570,13 +638,7 @@ impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
 impl<'ctx> ResolverContext<'ctx> for ParametricBuildSession<'ctx> {
     fn candidates(&self, kind: EntityKind) -> Vec<Candidate<'ctx>> {
         let mut out = Vec::new();
-        for item in &self.lowered.program.items {
-            let binding = match item {
-                cad_hir::hir::HirItem::Let { binding, .. }
-                | cad_hir::hir::HirItem::Const { binding, .. }
-                | cad_hir::hir::HirItem::Param { binding, .. } => *binding,
-                _ => continue,
-            };
+        for &binding in self.last_globals.keys() {
             if let Some(shape) = self.shape_for_binding(binding) {
                 out.extend(reference_replay::candidates_of_kind(shape, kind));
             }
