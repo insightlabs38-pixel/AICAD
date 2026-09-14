@@ -16,10 +16,14 @@
 //! added by `AICAD-079`, see below) — none of the other command groups
 //! §2-9 name, and only the subset of §13's build-output schema this
 //! stage's pipeline can actually populate (`status`/`diagnostics`/
-//! `artifacts`; `configuration`/`changed_features`/`reference_health`/
-//! `verification`/`resource_usage` are Stage 3+ concepts with no backing
-//! crate yet — omitted entirely rather than emitted as empty placeholders,
-//! per `AGENTS.md`'s "No speculative future work").
+//! `artifacts`; `configuration`/`changed_features`/`verification`/
+//! `resource_usage` are Stage 3+ concepts with no backing crate yet —
+//! omitted entirely rather than emitted as empty placeholders, per
+//! `AGENTS.md`'s "No speculative future work"). `AICAD-095` adds this
+//! crate's second command, `cad refs check <path> [--json]` — §3's
+//! reference-health verification command — via [`cli::parse_command`]/
+//! [`refs_check`]; see that module's own doc comment for why its own
+//! reported reference set is currently always empty.
 //!
 //! `AICAD-063`'s own end-to-end proof (a full bracket-shaped fixture with
 //! parameters/derived expressions/control flow, verified by exact B-rep
@@ -57,8 +61,12 @@ pub mod build;
 pub mod cli;
 pub mod parametric_build;
 pub mod reference_replay;
+pub mod refs_check;
 
 pub use build::{BuildReport, BuildStatus, run_build};
-pub use cli::{ArgsError, ParsedArgs, parse_args};
+pub use cli::{
+    ArgsError, Command, ParsedArgs, RefsCheckArgs, parse_args, parse_command, parse_refs_check_args,
+};
 pub use parametric_build::{ParametricBuildSession, RebuildOutcome};
 pub use reference_replay::FeatureLineageIndex;
+pub use refs_check::{RefsCheckReport, RefsCheckStatus, refs_check_source, run_refs_check};

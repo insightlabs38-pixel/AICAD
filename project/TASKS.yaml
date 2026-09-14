@@ -2936,7 +2936,7 @@ tasks:
 - id: AICAD-095
   stage: 4
   title: Create cad refs check / reference-health report
-  status: todo
+  status: done
   depends_on:
   - AICAD-094
   plan_references:

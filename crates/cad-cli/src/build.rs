@@ -420,7 +420,10 @@ pub fn build_source(
 /// failure with no more specific `Diagnostic` of its own to reuse and no
 /// meaningful span (a build/environment-level failure, not a specific
 /// program location — reported at file offset 0).
-fn environment_diagnostic(
+/// `pub(crate)`, not private: `crate::refs_check` (`AICAD-095`) reuses this
+/// exact "no source text to parse at all" diagnostic shape for its own
+/// unreadable-source-file case, rather than duplicating it.
+pub(crate) fn environment_diagnostic(
     family: &'static str,
     number: u16,
     category: &'static str,

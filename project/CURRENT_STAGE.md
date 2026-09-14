@@ -6,9 +6,9 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
-last_completed_batch: S4-04
-last_completed_task: AICAD-094
-next_batch: S4-05 (AICAD-095 remaining)
+last_completed_batch: S4-05
+last_completed_task: AICAD-095
+next_batch: S4-06 (AICAD-096, AICAD-097, AICAD-098)
 
 ## Stage 0 — closed
 
@@ -173,11 +173,25 @@ a real `param radius -> cylinder -> cut` hole fixture: re-resolving
 different live entity whose real radius reflects the actual regenerated
 5mm hole (not the stale 3mm evidence from the first build), while an
 unrelated feature's own resolved reference survives the same rebuild
-round as the literal same live entity. `AICAD-095` (Batch S4-05, second
-of two: `cad refs check` / reference-health report) remains `status:
-todo`; see `project/reports/AICAD-094.md`'s own "Limitations" for exactly
-which construction strategies/entity kinds still have no production
-evidence source.
+round as the literal same live entity. `AICAD-095` (Batch S4-05, second of two: `cad refs check` / reference-
+health report) is **done** — see `project/reports/AICAD-095.md`.
+`cad_query::health::check_reference_health` aggregates real resolution
+outcomes/durability levels across a reference set (`resolved`/
+`ambiguous`/`broken` counts, plus a per-`DurabilityLevel` breakdown),
+never re-implementing resolution or attempting repair; `cad-cli` gains
+its first real subcommand dispatch (`Command`/`parse_command`) and a new
+`cad refs check <path> [--json]` command reporting that same aggregation
+against a real `ParametricBuildSession` build. Since `.aicad` source has
+no syntax yet to *declare* a persistent stable reference, that command's
+own real reference set is honestly always empty for any real program
+today — the aggregation logic itself is separately proven against a
+real, non-empty, mixed-outcome reference set in `cad_query::health`'s own
+test suite. See `project/reports/AICAD-094.md`'s/`AICAD-095.md`'s own
+"Limitations" for exactly which construction strategies/entity kinds
+still have no production evidence source.
+
+Batch S4-05 (`AICAD-094`, `AICAD-095`) is complete. The next batch is
+S4-06 (`AICAD-096`/`097`/`098`), which remains `status: todo`.
 
 The hard gate remains fail-closed:
 

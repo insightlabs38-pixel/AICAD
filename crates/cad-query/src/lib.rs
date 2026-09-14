@@ -20,7 +20,10 @@
 //! `cad_references::raw_handle`'s own `Epoch`/`EpochCounter`/`RawHandle`/
 //! `StaleHandle` mechanism, proving a live [`eval::Candidate`] wrapped in
 //! a `RawHandle` is rejected once its owning epoch counter advances, per
-//! `project/DECISION_LOG.md#DL-24` (D22).
+//! `project/DECISION_LOG.md#DL-24` (D22); `AICAD-095`: the reference
+//! health report ([`health`]) aggregating real resolution outcomes/
+//! durability levels across a reference set, per `docs/plan/
+//! 06_REFERENCES_QUERIES_FEATURE_DAG.md` §12.
 //!
 //! ## Scope
 //!
@@ -76,6 +79,7 @@ pub mod diagnostics;
 pub mod eval;
 pub mod feature_lineage;
 pub mod fingerprint;
+pub mod health;
 pub mod predicate;
 pub mod query;
 pub mod ranking;
@@ -95,6 +99,7 @@ pub use feature_lineage::{
 pub use fingerprint::{
     RankedCandidate, candidate_fingerprint, fingerprint_distance, rank_by_fingerprint,
 };
+pub use health::{ReferenceHealthReport, check_reference_health};
 pub use predicate::{
     AdjacencyTarget, BoundaryKind, DirectionComparison, GeometryPredicate, RelativeDirection,
     SpatialPredicate, SpatialTarget, TopologyPredicate,
