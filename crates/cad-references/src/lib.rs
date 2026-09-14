@@ -37,6 +37,7 @@
 
 pub mod durability;
 pub mod entity;
+pub mod export;
 pub mod feature;
 pub mod fingerprint;
 pub mod recipe;
@@ -45,6 +46,7 @@ pub mod serialize;
 
 pub use durability::DurabilityLevel;
 pub use entity::EntityKind;
+pub use export::{DuplicateExportName, FeatureExports};
 pub use feature::FeatureAnchor;
 pub use fingerprint::FingerprintEvidence;
 pub use recipe::{

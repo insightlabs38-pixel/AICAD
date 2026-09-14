@@ -43,6 +43,7 @@
 //! -> kernel dispatch.
 
 pub mod eval;
+pub mod feature_lineage;
 pub mod predicate;
 pub mod query;
 pub mod ranking;
@@ -50,6 +51,10 @@ pub mod serialize;
 pub mod value;
 
 pub use eval::{Candidate, EvalError, EvalResult, EvaluationEvidence, NoEvidence};
+pub use feature_lineage::{
+    FeatureLineageError, FeatureLineageReport, PriorEntityRecord, PriorEntityState,
+    ResultEntityOrigin, ResultEntityRecord, classify_feature_lineage,
+};
 pub use predicate::{
     AdjacencyTarget, BoundaryKind, DirectionComparison, GeometryPredicate, RelativeDirection,
     SpatialPredicate, SpatialTarget, TopologyPredicate,

@@ -2663,7 +2663,7 @@ tasks:
 - id: AICAD-085
   stage: 4
   title: Implement explicit semantic feature exports
-  status: todo
+  status: done
   depends_on:
   - AICAD-084
   plan_references:
@@ -2690,7 +2690,7 @@ tasks:
 - id: AICAD-086
   stage: 4
   title: Capture available generated/modified lineage from kernel operations
-  status: todo
+  status: done
   depends_on:
   - AICAD-085
   plan_references:
@@ -2717,7 +2717,7 @@ tasks:
 - id: AICAD-087
   stage: 4
   title: Store feature-level lineage for unchanged/new/modified/split/merged/deleted entities
-  status: todo
+  status: done
   depends_on:
   - AICAD-086
   plan_references:

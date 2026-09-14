@@ -74,6 +74,21 @@ typedef struct aicad_shape_handle {
 #define AICAD_NULL_SHAPE_HANDLE \
   { 0, 0, 0 }
 
+/* Opaque, context-scoped handle to one operation's own captured
+ * Generated/Modified/IsDeleted lineage (AICAD-086) -- see
+ * aicad_occt_boolean_union_lineage's own doc comment. Same field layout
+ * and validation contract as aicad_shape_handle_t, but a distinct type so
+ * a lineage handle can never be passed where a shape handle is expected
+ * (or vice versa) without a compiler error. */
+typedef struct aicad_lineage_handle {
+  uint64_t context_id;
+  uint32_t slot;
+  uint32_t generation;
+} aicad_lineage_handle_t;
+
+#define AICAD_NULL_LINEAGE_HANDLE \
+  { 0, 0, 0 }
+
 /* Opaque kernel context. Owns a shape table and is conservatively
  * single-thread-affine (Stage-1 kernel policy #9): every function that
  * takes a context must be called from the thread that created it, or
@@ -401,6 +416,107 @@ aicad_occt_status_t aicad_occt_chamfer(aicad_occt_context_t* context,
                                         size_t edge_count,
                                         double distance,
                                         aicad_shape_handle_t* out_handle);
+
+/* --- AICAD-086: lineage-capturing operation variants, needed for
+ * generated_by/modified_by feature-lineage evidence
+ * (docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md §8). OCCT's own
+ * Generated/Modified/IsDeleted history is only answerable while the
+ * builder object that performed the operation is still alive; this
+ * bridge therefore captures it at the moment of the operation itself
+ * (one face/edge entry per unique face/edge of the operation's own input
+ * shape(s)) and returns a second, independent handle a caller queries
+ * afterward via aicad_occt_lineage_is_deleted, aicad_occt_lineage_
+ * generated_count/_get, and aicad_occt_lineage_modified_count/_get.
+ * Every other respect (arguments, failure modes, output shape) is
+ * identical to the corresponding non-lineage function; only box/
+ * cylinder/transform have no lineage variant (a primitive has no
+ * consumed input shape for Generated/Modified/IsDeleted to describe
+ * against). `out_lineage` must eventually be released via
+ * aicad_occt_release_lineage, exactly like a shape handle. --- */
+
+aicad_occt_status_t aicad_occt_boolean_union_lineage(aicad_occt_context_t* context,
+                                                       aicad_shape_handle_t a,
+                                                       aicad_shape_handle_t b,
+                                                       aicad_shape_handle_t* out_handle,
+                                                       aicad_lineage_handle_t* out_lineage);
+
+aicad_occt_status_t aicad_occt_boolean_cut_lineage(aicad_occt_context_t* context,
+                                                     aicad_shape_handle_t a,
+                                                     aicad_shape_handle_t b,
+                                                     aicad_shape_handle_t* out_handle,
+                                                     aicad_lineage_handle_t* out_lineage);
+
+aicad_occt_status_t aicad_occt_boolean_intersect_lineage(aicad_occt_context_t* context,
+                                                           aicad_shape_handle_t a,
+                                                           aicad_shape_handle_t b,
+                                                           aicad_shape_handle_t* out_handle,
+                                                           aicad_lineage_handle_t* out_lineage);
+
+/* See aicad_occt_fillet for the edges/edge_count contract. */
+aicad_occt_status_t aicad_occt_fillet_lineage(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t shape_handle,
+                                               const aicad_shape_handle_t* edges,
+                                               size_t edge_count,
+                                               double radius,
+                                               aicad_shape_handle_t* out_handle,
+                                               aicad_lineage_handle_t* out_lineage);
+
+/* See aicad_occt_chamfer for the edges/edge_count contract. */
+aicad_occt_status_t aicad_occt_chamfer_lineage(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t shape_handle,
+                                                const aicad_shape_handle_t* edges,
+                                                size_t edge_count,
+                                                double distance,
+                                                aicad_shape_handle_t* out_handle,
+                                                aicad_lineage_handle_t* out_lineage);
+
+/* Releases a lineage handle -- mirrors aicad_occt_release_shape. */
+aicad_occt_status_t aicad_occt_release_lineage(aicad_occt_context_t* context,
+                                                aicad_lineage_handle_t handle);
+
+/* Whether `input` (a face or edge handle belonging to one of the
+ * lineage-capturing operation's own original input shapes, obtained from
+ * a call made BEFORE that operation) has no surviving generated/modified
+ * counterpart in the operation's result. AICAD_ERR_INVALID_ARGUMENT means
+ * `input` was never one of the shapes this lineage was captured for
+ * (e.g. it names an output shape instead) -- deliberately distinct from
+ * "not deleted," which would silently conflate "no evidence" with a real
+ * evidenced answer. */
+aicad_occt_status_t aicad_occt_lineage_is_deleted(aicad_occt_context_t* context,
+                                                   aicad_lineage_handle_t lineage,
+                                                   aicad_shape_handle_t input,
+                                                   int* out_is_deleted);
+
+/* Number of shapes `input` was generated into by the operation this
+ * `lineage` was captured from (OCCT's own Generated(input) -- e.g. a new
+ * face created where a hole broke through an existing face). 0 if
+ * `input` has no generated counterpart (including when it was deleted). */
+aicad_occt_status_t aicad_occt_lineage_generated_count(aicad_occt_context_t* context,
+                                                        aicad_lineage_handle_t lineage,
+                                                        aicad_shape_handle_t input,
+                                                        size_t* out_count);
+
+/* Returns a fresh handle to the generated shape at `index` (0-based, <
+ * aicad_occt_lineage_generated_count against the same lineage/input). */
+aicad_occt_status_t aicad_occt_lineage_generated_get(aicad_occt_context_t* context,
+                                                      aicad_lineage_handle_t lineage,
+                                                      aicad_shape_handle_t input,
+                                                      size_t index,
+                                                      aicad_shape_handle_t* out_handle);
+
+/* Same as generated_count/_get, for OCCT's own Modified(input) -- `input`
+ * carried forward as a geometrically changed (but not newly created)
+ * counterpart, e.g. a face re-trimmed by a boolean cut. */
+aicad_occt_status_t aicad_occt_lineage_modified_count(aicad_occt_context_t* context,
+                                                       aicad_lineage_handle_t lineage,
+                                                       aicad_shape_handle_t input,
+                                                       size_t* out_count);
+
+aicad_occt_status_t aicad_occt_lineage_modified_get(aicad_occt_context_t* context,
+                                                     aicad_lineage_handle_t lineage,
+                                                     aicad_shape_handle_t input,
+                                                     size_t index,
+                                                     aicad_shape_handle_t* out_handle);
 
 /* --- AICAD-028: shell and offset (spike).
  *

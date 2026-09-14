@@ -82,6 +82,23 @@ pub enum AnyRef {
 }
 
 impl AnyRef {
+    /// Builds the wrapper variant matching `kind` at runtime, all sharing
+    /// `strategy` -- needed by callers (e.g. `crate::export::
+    /// FeatureExports`) that only know which [`EntityKind`] to build
+    /// until runtime, unlike an ordinary call site that names
+    /// `FaceRef::from_strategy` directly because it already knows the
+    /// entity kind at compile time.
+    pub fn from_strategy(kind: EntityKind, strategy: ConstructionStrategy) -> AnyRef {
+        match kind {
+            EntityKind::Vertex => AnyRef::Vertex(VertexRef::from_strategy(strategy)),
+            EntityKind::Edge => AnyRef::Edge(EdgeRef::from_strategy(strategy)),
+            EntityKind::Wire => AnyRef::Wire(WireRef::from_strategy(strategy)),
+            EntityKind::Face => AnyRef::Face(FaceRef::from_strategy(strategy)),
+            EntityKind::Shell => AnyRef::Shell(ShellRef::from_strategy(strategy)),
+            EntityKind::Solid => AnyRef::Solid(SolidRef::from_strategy(strategy)),
+        }
+    }
+
     pub fn kind(&self) -> EntityKind {
         match self {
             AnyRef::Vertex(_) => EntityKind::Vertex,
@@ -151,6 +168,22 @@ mod tests {
         let any = AnyRef::Face(face.clone());
         assert_eq!(any.kind(), EntityKind::Face);
         assert_eq!(any.recipe(), face.recipe());
+    }
+
+    #[test]
+    fn any_ref_from_strategy_builds_the_variant_matching_kind() {
+        let strategy = || ConstructionStrategy::StructuralRole("outer_boundary".into());
+        for kind in [
+            EntityKind::Vertex,
+            EntityKind::Edge,
+            EntityKind::Wire,
+            EntityKind::Face,
+            EntityKind::Shell,
+            EntityKind::Solid,
+        ] {
+            let any = AnyRef::from_strategy(kind, strategy());
+            assert_eq!(any.kind(), kind);
+        }
     }
 
     #[test]

@@ -687,6 +687,90 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Like [`Shape::union`], but also captures Generated/Modified/
+    /// IsDeleted lineage for every unique face/edge of `self`/`other`
+    /// (`AICAD-086`) -- needed to give `generated_by`/`modified_by`
+    /// (`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §6/§8) real
+    /// evidence. The returned [`Lineage`] answers "what became of this
+    /// specific face/edge of one of my two original operands?" -- see
+    /// that type's own doc comment.
+    pub fn union_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        self.boolean_with_lineage(other, ffi::aicad_occt_boolean_union_lineage)
+    }
+
+    /// Like [`Shape::cut`], but also captures lineage -- see
+    /// [`Shape::union_with_lineage`].
+    pub fn cut_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        self.boolean_with_lineage(other, ffi::aicad_occt_boolean_cut_lineage)
+    }
+
+    /// Like [`Shape::intersect`], but also captures lineage -- see
+    /// [`Shape::union_with_lineage`].
+    pub fn intersect_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        self.boolean_with_lineage(other, ffi::aicad_occt_boolean_intersect_lineage)
+    }
+
+    /// Shared implementation for `union_with_lineage`/`cut_with_lineage`/
+    /// `intersect_with_lineage`: each ABI function has an identical
+    /// signature (`context, a, b, out_handle, out_lineage`), differing
+    /// only in which underlying Boolean operation runs.
+    fn boolean_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+        raw_fn: unsafe extern "C" fn(
+            *mut ffi::aicad_occt_context_t,
+            ffi::aicad_shape_handle_t,
+            ffi::aicad_shape_handle_t,
+            *mut ffi::aicad_shape_handle_t,
+            *mut ffi::aicad_lineage_handle_t,
+        ) -> c_int,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`other.raw_handle()`
+        // as in `union`; `&mut handle`/`&mut lineage_handle` are valid
+        // out-params per the header's contract for every `*_lineage`
+        // variant (identical shape to the non-lineage function, plus one
+        // more out-param).
+        let status = unsafe {
+            raw_fn(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+                &mut lineage_handle,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self.context,
+                handle: lineage_handle,
+            },
+        ))
+    }
+
     /// The number of unique edges in this shape (AICAD-027), via OCCT's
     /// own de-duplicated `TopExp::MapShapes` (a raw `TopExp_Explorer`
     /// traversal instead revisits each edge once per adjacent face,
@@ -787,6 +871,97 @@ impl<'ctx> Shape<'ctx> {
             context: self.context,
             id: handle_to_id(handle),
         })
+    }
+
+    /// Like [`Shape::fillet`], but also captures Generated/Modified/
+    /// IsDeleted lineage for every unique face/edge of `self`
+    /// (`AICAD-086`) -- see [`Shape::union_with_lineage`].
+    pub fn fillet_with_lineage(
+        &self,
+        edges: &[&Shape<'ctx>],
+        radius: f64,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `fillet`'s own SAFETY comment; `&mut lineage_handle`
+        // is a valid out-param, matching `aicad_occt_fillet_lineage`'s
+        // own contract.
+        let status = unsafe {
+            ffi::aicad_occt_fillet_lineage(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                radius,
+                &mut handle,
+                &mut lineage_handle,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self.context,
+                handle: lineage_handle,
+            },
+        ))
+    }
+
+    /// Like [`Shape::chamfer`], but also captures lineage -- see
+    /// [`Shape::fillet_with_lineage`].
+    pub fn chamfer_with_lineage(
+        &self,
+        edges: &[&Shape<'ctx>],
+        distance: f64,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `fillet_with_lineage` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_chamfer_lineage(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                distance,
+                &mut handle,
+                &mut lineage_handle,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self.context,
+                handle: lineage_handle,
+            },
+        ))
     }
 
     /// The number of unique faces in this shape (AICAD-028), via OCCT's
@@ -1418,6 +1593,150 @@ impl<'ctx> Shape<'ctx> {
 
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
+    }
+}
+
+/// One operation's own captured Generated/Modified/IsDeleted lineage
+/// (`AICAD-086`), returned alongside the result [`Shape`] by
+/// [`Shape::union_with_lineage`]/`cut_with_lineage`/`intersect_with_lineage`/
+/// `fillet_with_lineage`/`chamfer_with_lineage`. Answers, for a specific
+/// face/edge of one of that operation's own *original input* shapes
+/// (never the result shape): was it deleted, what did it generate, and
+/// what did it get modified into?
+///
+/// This is deliberately a snapshot, not a live query against the OCCT
+/// builder that performed the operation -- that builder is a C++ local
+/// variable inside the native function that produced this `Lineage` and
+/// no longer exists by the time this type's methods run (see `native/
+/// occt_bridge/src/aicad_occt_bridge.cpp`'s own `LineageEntry` doc
+/// comment). Automatically released (`aicad_occt_release_lineage`) when
+/// dropped, exactly like [`Shape`].
+#[derive(Debug)]
+pub struct Lineage<'ctx> {
+    context: &'ctx OcctContext,
+    handle: ffi::aicad_lineage_handle_t,
+}
+
+impl<'ctx> Lineage<'ctx> {
+    /// Whether `input` (a face/edge [`Shape`] obtained from one of this
+    /// lineage's own two original operands, via a handle obtained
+    /// *before* the operation ran) has no surviving generated/modified
+    /// counterpart in the operation's result -- e.g. a face entirely
+    /// consumed by a boolean cut. `input` must belong to the same
+    /// operation this lineage was captured from; a face/edge from an
+    /// unrelated shape returns [`KernelError::InvalidArgument`], never a
+    /// guessed `false` -- see `ResolveLineageEntry`'s own native doc
+    /// comment for why "no evidence" and "evidenced not-deleted" are kept
+    /// distinct.
+    pub fn is_deleted(&self, input: &Shape<'ctx>) -> KernelResult<bool> {
+        let mut is_deleted: c_int = 0;
+        // SAFETY: `self.context.raw` is valid for `'ctx`; `self.handle`
+        // addresses a lineage slot this `Lineage` owns and has not yet
+        // released; `input.raw_handle()` addresses a slot `input` owns in
+        // the same context; `&mut is_deleted` is a valid out-param.
+        let status = unsafe {
+            ffi::aicad_occt_lineage_is_deleted(
+                self.context.raw,
+                self.handle,
+                input.raw_handle(),
+                &mut is_deleted,
+            )
+        };
+        status_result(status)?;
+        Ok(is_deleted != 0)
+    }
+
+    /// Every shape `input` was generated into by this operation (OCCT's
+    /// own `Generated(input)`) -- e.g. a new face created where a hole
+    /// broke through an existing face. Empty (not an error) if `input`
+    /// has no generated counterpart, including when it was deleted. See
+    /// [`Lineage::is_deleted`] for `input`'s own membership requirement.
+    pub fn generated(&self, input: &Shape<'ctx>) -> KernelResult<Vec<Shape<'ctx>>> {
+        self.shape_list(
+            input,
+            ffi::aicad_occt_lineage_generated_count,
+            ffi::aicad_occt_lineage_generated_get,
+        )
+    }
+
+    /// Every shape `input` was modified into by this operation (OCCT's
+    /// own `Modified(input)`) -- `input` carried forward as a
+    /// geometrically changed (but not newly created) counterpart, e.g. a
+    /// face re-trimmed by a boolean cut. See [`Lineage::generated`].
+    pub fn modified(&self, input: &Shape<'ctx>) -> KernelResult<Vec<Shape<'ctx>>> {
+        self.shape_list(
+            input,
+            ffi::aicad_occt_lineage_modified_count,
+            ffi::aicad_occt_lineage_modified_get,
+        )
+    }
+
+    /// Shared count-then-index-each implementation for
+    /// [`Lineage::generated`]/[`Lineage::modified`] -- both native query
+    /// pairs share an identical count/get shape.
+    fn shape_list(
+        &self,
+        input: &Shape<'ctx>,
+        count_fn: unsafe extern "C" fn(
+            *mut ffi::aicad_occt_context_t,
+            ffi::aicad_lineage_handle_t,
+            ffi::aicad_shape_handle_t,
+            *mut usize,
+        ) -> c_int,
+        get_fn: unsafe extern "C" fn(
+            *mut ffi::aicad_occt_context_t,
+            ffi::aicad_lineage_handle_t,
+            ffi::aicad_shape_handle_t,
+            usize,
+            *mut ffi::aicad_shape_handle_t,
+        ) -> c_int,
+    ) -> KernelResult<Vec<Shape<'ctx>>> {
+        let mut count: usize = 0;
+        // SAFETY: see `is_deleted`'s SAFETY comment; `&mut count` is a
+        // valid out-param.
+        let status = unsafe {
+            count_fn(
+                self.context.raw,
+                self.handle,
+                input.raw_handle(),
+                &mut count,
+            )
+        };
+        status_result(status)?;
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let mut handle = ffi::aicad_shape_handle_t {
+                context_id: 0,
+                slot: 0,
+                generation: 0,
+            };
+            // SAFETY: see `is_deleted`'s SAFETY comment; `index < count`
+            // from the successful `count_fn` call above; `&mut handle` is
+            // a valid out-param.
+            let status = unsafe {
+                get_fn(
+                    self.context.raw,
+                    self.handle,
+                    input.raw_handle(),
+                    index,
+                    &mut handle,
+                )
+            };
+            status_result(status)?;
+            out.push(Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            });
+        }
+        Ok(out)
+    }
+}
+
+impl<'ctx> Drop for Lineage<'ctx> {
+    fn drop(&mut self) {
+        // SAFETY: see `Shape`'s own `Drop` impl -- identical argument, a
+        // different table on the same context.
+        let _ = unsafe { ffi::aicad_occt_release_lineage(self.context.raw, self.handle) };
     }
 }
 
@@ -3472,6 +3791,227 @@ mod tests {
         let bad = Point3::new(f64::NAN, 0.0, 0.0);
         assert_eq!(
             cube.classify_point(bad, 1e-7).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    /// Classifies one of a 10x10x10 origin box's own axis-aligned faces by
+    /// which coordinate plane it lies flat against, for the `_lineage`
+    /// tests below (a plain, geometry-based classification independent of
+    /// `get_face`'s own raw enumeration order, matching this crate's own
+    /// "never assume kernel enumeration order" convention).
+    fn classify_axis_aligned_box_face(bbox: &BoundingBox) -> &'static str {
+        let flat_x = (bbox.max.x - bbox.min.x).abs() < 1e-6;
+        let flat_y = (bbox.max.y - bbox.min.y).abs() < 1e-6;
+        let flat_z = (bbox.max.z - bbox.min.z).abs() < 1e-6;
+        if flat_z && bbox.min.z < 1.0 {
+            "bottom"
+        } else if flat_z {
+            "top"
+        } else if flat_x || flat_y {
+            "side"
+        } else {
+            panic!("face is not axis-aligned-flat: {bbox:?}")
+        }
+    }
+
+    /// `AICAD-086`: a straight-through cylindrical hole only ever touches
+    /// the two faces it actually pierces (top/bottom); the four side
+    /// faces it never reaches must report no lineage evidence at all
+    /// (`deleted == false`, `generated`/`modified` both empty) -- not a
+    /// guessed `false`, a real evidenced absence.
+    #[test]
+    fn cut_with_lineage_marks_pierced_faces_and_leaves_untouched_faces_evidence_free() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let cyl_raw = context.create_cylinder(2.0, 20.0).unwrap();
+        // A radius-2 cylinder centered at box XY-center (5, 5), spanning
+        // z -5..15 -- comfortably inside the box's own x/y=0..10 footprint
+        // (never touching the four side faces) while fully piercing
+        // through the box's own z=0..10 extent (touching top and bottom).
+        let cyl = cyl_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                5.0, 5.0, -5.0,
+            )))
+            .unwrap();
+        let faces: Vec<Shape> = (0..a.face_count().unwrap())
+            .map(|i| a.get_face(i).unwrap())
+            .collect();
+        let (result, lineage) = a.cut_with_lineage(&cyl).expect("cut should succeed");
+        assert!(result.is_valid().unwrap());
+        for f in &faces {
+            let bbox = f.bounding_box().unwrap();
+            let kind = classify_axis_aligned_box_face(&bbox);
+            let deleted = lineage.is_deleted(f).unwrap();
+            let generated = lineage.generated(f).unwrap();
+            let modified = lineage.modified(f).unwrap();
+            assert!(
+                !deleted,
+                "a pierced-but-not-fully-removed face is never deleted"
+            );
+            match kind {
+                "top" | "bottom" => assert!(
+                    !generated.is_empty() || !modified.is_empty(),
+                    "a face the hole actually pierces must carry generated/modified evidence"
+                ),
+                "side" => assert!(
+                    generated.is_empty() && modified.is_empty(),
+                    "a face the hole never reaches must carry no lineage evidence at all"
+                ),
+                other => panic!("unexpected face classification {other}"),
+            }
+        }
+    }
+
+    /// `AICAD-086`: a cutting tool that entirely swallows one whole face
+    /// (rather than merely trimming it) must report that face `deleted`
+    /// -- with no generated/modified counterpart of its own, since it
+    /// does not survive into the result at all. The opposite (untouched)
+    /// face and the four trimmed side faces must each report their own,
+    /// different, correctly evidenced state.
+    #[test]
+    fn cut_with_lineage_marks_a_wholly_removed_face_as_deleted() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let tool_raw = context.create_box(20.0, 20.0, 10.0).unwrap();
+        // A 20x20x10 tool centered over the box's own top half (z 5..15,
+        // x/y -5..15) entirely contains the box's own top face (z=10,
+        // x/y 0..10) while leaving the bottom face (z=0) untouched.
+        let tool = tool_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                -5.0, -5.0, 5.0,
+            )))
+            .unwrap();
+        let faces: Vec<Shape> = (0..a.face_count().unwrap())
+            .map(|i| a.get_face(i).unwrap())
+            .collect();
+        let (result, lineage) = a.cut_with_lineage(&tool).expect("cut should succeed");
+        assert!(result.is_valid().unwrap());
+        for f in &faces {
+            let bbox = f.bounding_box().unwrap();
+            let kind = classify_axis_aligned_box_face(&bbox);
+            let deleted = lineage.is_deleted(f).unwrap();
+            let generated = lineage.generated(f).unwrap();
+            let modified = lineage.modified(f).unwrap();
+            match kind {
+                "top" => {
+                    assert!(
+                        deleted,
+                        "the wholly-swallowed top face must be reported deleted"
+                    );
+                    assert!(generated.is_empty() && modified.is_empty());
+                }
+                "bottom" => {
+                    assert!(!deleted);
+                    assert!(
+                        generated.is_empty() && modified.is_empty(),
+                        "the untouched bottom face must carry no lineage evidence"
+                    );
+                }
+                "side" => {
+                    assert!(!deleted, "a merely-trimmed side face is not deleted");
+                    assert!(
+                        !generated.is_empty() || !modified.is_empty(),
+                        "a side face trimmed by the tool must carry evidence"
+                    );
+                }
+                other => panic!("unexpected face classification {other}"),
+            }
+        }
+    }
+
+    /// `AICAD-086`: filleting one edge of a box must leave real,
+    /// differentiated lineage evidence -- some faces touched (adjacent to
+    /// the filleted edge or its endpoints), some left with no evidence at
+    /// all, and none ever wholly deleted by a single-edge fillet. Exactly
+    /// which faces land in which group is real OCCT behavior this test
+    /// observes rather than assumes (the box's own face-enumeration order
+    /// is not itself semantic, matching this crate's other tests), but
+    /// the differentiation itself -- not "every face identically
+    /// touched," not "every face identically untouched" -- is the
+    /// property this task actually needs.
+    #[test]
+    fn fillet_with_lineage_differentiates_touched_from_untouched_faces() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let faces: Vec<Shape> = (0..a.face_count().unwrap())
+            .map(|i| a.get_face(i).unwrap())
+            .collect();
+        let edge0 = a.get_edge(0).unwrap();
+        let (result, lineage) = a
+            .fillet_with_lineage(&[&edge0], 1.0)
+            .expect("fillet should succeed");
+        assert!(result.is_valid().unwrap());
+        assert!(
+            result.volume().unwrap() < a.volume().unwrap(),
+            "rounding an edge must remove material"
+        );
+        let mut touched = 0;
+        let mut untouched = 0;
+        for f in &faces {
+            assert!(
+                !lineage.is_deleted(f).unwrap(),
+                "a single-edge fillet never wholly deletes one of the box's own six faces"
+            );
+            let generated = lineage.generated(f).unwrap();
+            let modified = lineage.modified(f).unwrap();
+            if generated.is_empty() && modified.is_empty() {
+                untouched += 1;
+            } else {
+                touched += 1;
+            }
+        }
+        assert!(
+            touched >= 2,
+            "at least the two faces adjacent to the filleted edge must carry evidence"
+        );
+        assert!(
+            untouched >= 1,
+            "a face far from the filleted edge must carry no evidence"
+        );
+    }
+
+    /// `AICAD-086`: `union_with_lineage`/`intersect_with_lineage` produce
+    /// the same result geometry as their non-lineage counterparts
+    /// (`Shape::union`/`Shape::intersect`) -- capturing lineage must never
+    /// change the operation's own outcome.
+    #[test]
+    fn union_and_intersect_with_lineage_match_their_plain_counterparts() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let (fused, _) = a.union_with_lineage(&b).expect("union should succeed");
+        assert!((fused.volume().unwrap() - 15.0).abs() < 1e-6);
+        let (a2, b2) = overlapping_boxes(&context);
+        let (common, _) = a2
+            .intersect_with_lineage(&b2)
+            .expect("intersect should succeed");
+        assert!((common.volume().unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    /// `AICAD-086`: querying lineage with a face from a shape that was
+    /// never one of the operation's own two original operands at all is a
+    /// distinct, explicit error -- never silently answered as
+    /// "unchanged," which would be indistinguishable from real evidence.
+    /// (A face of the operation's own *result* is deliberately not used
+    /// here: cut/union/intersect can carry an untouched or even
+    /// unmodified operand face through into the result unchanged, so it
+    /// would not reliably exercise the "truly unrelated" case this test
+    /// targets -- an entirely separate, never-passed-in shape does.)
+    #[test]
+    fn lineage_query_for_an_unrelated_shape_is_an_explicit_error_not_a_silent_unchanged() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let cyl_raw = context.create_cylinder(2.0, 20.0).unwrap();
+        let cyl = cyl_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                5.0, 5.0, -5.0,
+            )))
+            .unwrap();
+        let (_result, lineage) = a.cut_with_lineage(&cyl).expect("cut should succeed");
+        let unrelated = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let unrelated_face = unrelated.get_face(0).unwrap();
+        assert_eq!(
+            lineage.is_deleted(&unrelated_face).unwrap_err(),
             KernelError::InvalidArgument
         );
     }

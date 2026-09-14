@@ -6,9 +6,9 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
-last_completed_batch: S4-01
-last_completed_task: AICAD-084
-next_batch: S4-02 (AICAD-085, AICAD-086, AICAD-087)
+last_completed_batch: S4-02
+last_completed_task: AICAD-087
+next_batch: S4-03 (AICAD-088, AICAD-089, AICAD-090)
 
 ## Stage 0 — closed
 
@@ -54,7 +54,7 @@ transition" step 5 called for. See `project/reports/AICAD-080.md`'s and
 provenance, and this file's own "Working-branch note" below for a
 discrepancy this batch surfaced and did not resolve unilaterally.
 
-## Stage 4 — in progress (Batches S4-00, S4-01 complete)
+## Stage 4 — in progress (Batches S4-00, S4-01, S4-02 complete)
 
 `AICAD-080` (stable reference representations) and `AICAD-081` (query
 AST/IR) are **done** — see `project/reports/AICAD-080.md` and
@@ -77,8 +77,26 @@ reference/query resolution (`adjacent_to`'s target, `inside`, `within`'s
 `Ref` target) are evaluator-contract-complete via an injected
 `EvaluationEvidence` trait, but have no production evidence source until
 `AICAD-085`..`087` (lineage) and `AICAD-088`+ (resolver) land — see those
-reports' own "Limitations" sections. `AICAD-085` (Batch S4-02, next)
-remains `status: todo`.
+reports' own "Limitations" sections.
+
+`AICAD-085`/`086`/`087` (Batch S4-02: explicit feature exports and
+lineage evidence) are **done** — see `project/reports/AICAD-085.md`/
+`086.md`/`087.md`. `cad_references::FeatureExports` registers explicit
+named exports (`ConstructionStrategy::ExplicitExport`, `Explicit`
+durability); `cad_occt_bridge::Shape::union_with_lineage`/`cut_with_
+lineage`/`intersect_with_lineage`/`fillet_with_lineage`/`chamfer_with_
+lineage` capture real OCCT Generated/Modified/IsDeleted evidence at
+operation time; `cad_query::classify_feature_lineage` classifies that raw
+evidence into the plan §8 six-state model (unchanged/modified/split/
+deleted for prior entities; new/merged for result entities that are not
+an ordinary one-to-one carry-forward), verified empirically against real
+box/cylinder/fillet geometry rather than assumed. None of the three is
+yet wired to a real `FeatureGraph`/`ParametricBuildSession` build, a
+`FeatureAnchor`, or persistent `AnyRef` identity — every entity is
+addressed by live `cad_occt_bridge::Shape`, exactly matching `AICAD-082`
+..`084`'s own established "evaluator/capture plumbing, consumed directly,
+not yet wired to persistent references" precedent. `AICAD-088` (Batch
+S4-03, next) remains `status: todo`.
 
 The hard gate remains fail-closed:
 
