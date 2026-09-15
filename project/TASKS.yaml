@@ -3047,7 +3047,7 @@ tasks:
 - id: AICAD-099
   stage: 4
   title: Run adversarial bug-hunt; minimize and preserve every silent-wrong reproducer
-  status: todo
+  status: done
   depends_on:
   - AICAD-098
   plan_references:

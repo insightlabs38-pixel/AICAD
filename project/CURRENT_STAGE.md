@@ -6,9 +6,9 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
-last_completed_batch: S4-06
-last_completed_task: AICAD-098
-next_batch: S4-07 (AICAD-099)
+last_completed_batch: S4-07
+last_completed_task: AICAD-099
+next_batch: S4-08 (AICAD-100)
 
 ## Stage 0 — closed
 
@@ -223,8 +223,42 @@ from `project/benchmarks/stage4_semantic_reference/` case metadata into
 report's own "Limitations" section; `AICAD-099`'s adversarial campaign
 is the natural next consumer of this aggregation.
 
-Batch S4-06 (`AICAD-096`, `AICAD-097`, `AICAD-098`) is complete. The next
-batch is S4-07 (`AICAD-099`), which remains `status: todo`.
+Batch S4-06 (`AICAD-096`, `AICAD-097`, `AICAD-098`) is complete.
+
+`AICAD-099` (Batch S4-07: the adversarial bug-hunt campaign) is **done**
+— see `project/reports/AICAD-099.md`. `crates/cad-cli/tests/
+stage4_adversarial_bug_hunt.rs` wires the four already-proven
+pure-geometry corpus cases (`06`/`08`/`11`/`12`) into a real, end-to-end
+`cad_cli::metrics` benchmark run (`BenchmarkMetrics` with
+`silent_wrong == 0`, `mismatch == 0`) — the "real corpus fixtures ->
+`aggregate` -> reported metrics" run `AICAD-098`'s own report named as
+not yet done — then runs the three held-out cases
+(`03_symmetric_candidates`/`05_boolean_topology_change`/
+`10_near_degenerate`) as this campaign's own deliberate held-out
+checkpoint (manifest checksum re-verified first) via pure-geometry
+proxies for their own lineage-based intended queries, plus new
+adversarial probes reusing the frozen `04_pattern_count_change` fixture's
+real `radial_pattern` pipeline (a genuine 5-way/6-way geometric tie, and
+a `nearest()`-ranked reference proven to track the same real position
+across a pattern-count change) and two negative controls (a coincidental
+same-radius collision between unrelated fillets; a pathological
+near-zero hole diameter). Zero `SILENT_WRONG` outcomes were found. One
+real, honest, non-`SILENT_WRONG` finding was preserved as a permanent
+test rather than discarded: resolving a query through the real
+*unrestricted* `ParametricBuildSession::resolve` candidate universe
+(every top-level binding permanently live, `AICAD-094`) can report
+`Ambiguous` even for `03`'s own baseline (not just its perturbed build),
+because an intermediate binding (`with_left`) carries its own live copy
+of a face `body` also carries — fail-closed, never silently wrong, but a
+real limitation worth keeping visible (see the report's own "A real,
+honest finding" section for the root cause and why it is real, open
+follow-up work, not something this task invents an answer for). No
+`tests/semantic_refs/regressions/` entry was added, since no
+`SILENT_WRONG` case was found to preserve there.
+
+Batch S4-07 (`AICAD-099`) is complete. The next batch is S4-08
+(`AICAD-100`, the Stage-4 owner hard-gate packet), which remains
+`status: todo`.
 
 The hard gate remains fail-closed:
 
