@@ -201,6 +201,22 @@ mod tests {
                 self.cube.get_face(0).unwrap(),
             )]
         }
+
+        /// A persistent `FeatureLineage` reference always requests an
+        /// explicit scope (`AICAD-100A`) — this fixture's own single
+        /// feature is `"generates"`, so answering only that name (exactly
+        /// the same single candidate `candidates` above already returns)
+        /// keeps this test's own real end-to-end `Resolved` outcome real.
+        fn candidates_in_scope(
+            &self,
+            kind: EntityKind,
+            scope: &FeatureAnchor,
+        ) -> Option<Vec<Candidate<'ctx>>> {
+            if *scope != FeatureAnchor::named("generates") {
+                return None;
+            }
+            Some(self.candidates(kind))
+        }
     }
 
     /// A real, end-to-end mix: one `Explicit`-durability reference that

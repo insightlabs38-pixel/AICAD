@@ -107,6 +107,21 @@ fn approx_eq(a: f64, b: f64) -> bool {
     (a - b).abs() <= a.abs().max(b.abs()) * FLOAT_NOISE_RELATIVE + f64::EPSILON
 }
 
+/// The named feature `reference` is itself anchored to, when `reference`'s
+/// own recipe strategy is [`ConstructionStrategy::FeatureLineage`] — the
+/// scope [`resolve_reference`]'s own `Ancestry` arm derives its query
+/// scope from (`AICAD-100A`). `None` for every other strategy: this crate
+/// does not invent a feature scope for an ancestor anchored some other
+/// way (an `ExplicitExport`/`StructuralRole`/`UserConfirmed`/
+/// `SemanticQuery`/`GeometricFingerprint`/nested-`Ancestry` reference has
+/// no single named feature to scope to without guessing).
+fn feature_scope_of(reference: &AnyRef) -> Option<FeatureAnchor> {
+    match &reference.recipe().strategy {
+        ConstructionStrategy::FeatureLineage { feature, .. } => Some(feature.clone()),
+        _ => None,
+    }
+}
+
 /// Extends [`EvaluationEvidence`] with what a resolver additionally needs
 /// beyond per-candidate predicate evaluation: enumerating the current
 /// candidate universe for a [`Query`]'s own entity kind, and resolving the
@@ -306,12 +321,45 @@ pub fn resolve_reference<'ctx>(
                 LineageRole::Generated => TopologyPredicate::GeneratedBy(feature.clone()),
                 LineageRole::Modified => TopologyPredicate::ModifiedBy(feature.clone()),
             };
-            let query = Query::new(kind).with_clause(QueryClause::Topology(predicate));
+            // A persistent `FeatureLineage` reference's own candidate
+            // universe is always explicitly scoped to its own anchor
+            // feature (`AICAD-100A`) — never the implicit whole-session
+            // unscoped universe, which an unrelated intermediate binding
+            // carrying its own live copy of the same entity can make
+            // spuriously `Ambiguous` (`AICAD-099`'s own finding,
+            // generalized here from an ad hoc hand-scoped `Query` to
+            // every `FeatureLineage`-strategy persistent reference). A
+            // `ResolverContext` that cannot resolve this scope reports
+            // `Broken(ScopeNotFound)` (`filter_and_rank`'s own contract),
+            // never a silent fallback to the wider universe.
+            let query = Query::new(kind)
+                .with_clause(QueryClause::Topology(predicate))
+                .scoped_to(feature.clone());
             resolve_query_with_cardinality(&query, ctx, CardinalityExpectation::Unique)
         }
         ConstructionStrategy::Ancestry(ancestor) => {
             let predicate = TopologyPredicate::DescendedFrom(ancestor.as_ref().clone());
-            let query = Query::new(kind).with_clause(QueryClause::Topology(predicate));
+            // Same explicit-scope requirement as `FeatureLineage` above —
+            // derived from the ancestor's own anchor feature when the
+            // ancestor is itself `FeatureLineage`-strategy (the realistic,
+            // supported case; matches `cad_cli::parametric_build::
+            // ParametricBuildSession::descended_from`'s own identical
+            // restriction). An ancestor with no derivable feature scope
+            // reports `Broken(InsufficientEvidence)` rather than silently
+            // falling back to the whole-session universe.
+            let Some(scope) = feature_scope_of(ancestor) else {
+                return Ok(ResolutionOutcome::Broken(
+                    BrokenReason::InsufficientEvidence(
+                        "ancestry resolution requires its own ancestor reference to be anchored to \
+                     a named feature (a FeatureLineage-strategy ancestor) so an explicit \
+                     candidate scope can be derived; whole-session unscoped resolution is never \
+                     used for a persistent reference",
+                    ),
+                ));
+            };
+            let query = Query::new(kind)
+                .with_clause(QueryClause::Topology(predicate))
+                .scoped_to(scope);
             resolve_query_with_cardinality(&query, ctx, CardinalityExpectation::Unique)
         }
         ConstructionStrategy::SemanticQuery { query: handle, .. } => match ctx.lookup_query(handle)
@@ -762,6 +810,24 @@ mod tests {
                 .map(|i| Candidate::new(EntityKind::Face, self.result.get_face(i).unwrap()))
                 .collect()
         }
+
+        /// This fixture's own single feature IS `self.anchor` -- scoping
+        /// to it (or to any other name) returns exactly the same
+        /// unscoped universe `candidates` above already does, since this
+        /// hand-built context models one operation only (`AICAD-100A`:
+        /// `resolve_reference`'s own `FeatureLineage`/`Ancestry` arms now
+        /// always request a scope, so a `ResolverContext` exercising them
+        /// must answer it).
+        fn candidates_in_scope(
+            &self,
+            kind: EntityKind,
+            scope: &FeatureAnchor,
+        ) -> Option<Vec<Candidate<'ctx>>> {
+            if *scope != self.anchor {
+                return None;
+            }
+            Some(self.candidates(kind))
+        }
     }
 
     #[test]
@@ -1094,6 +1160,178 @@ mod tests {
             outcome,
             ResolutionOutcome::Broken(BrokenReason::FingerprintAutoResolutionDisabled(_))
         ));
+    }
+
+    // --- AICAD-100A: persistent references carry an explicit candidate
+    // scope, never the implicit whole-session universe ---
+
+    /// A `FeatureLineage`-strategy persistent reference now *always*
+    /// requests an explicit scope (its own anchor feature) — a
+    /// `ResolverContext` with no scoping support at all (the trait's own
+    /// default `candidates_in_scope` -> `None`) must therefore fail
+    /// closed, never silently fall back to its own unscoped `candidates`
+    /// universe, even though that unscoped universe is right here,
+    /// non-empty, and would have "worked" under the pre-`AICAD-100A`
+    /// behavior.
+    #[test]
+    fn a_feature_lineage_reference_fails_closed_against_a_context_with_no_scoping_support() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        struct UnscopedOnlyContext<'ctx>(&'ctx Shape<'ctx>);
+        impl<'ctx> EvaluationEvidence<'ctx> for UnscopedOnlyContext<'ctx> {
+            fn generated_by(&self, _c: &Candidate<'ctx>, _a: &FeatureAnchor) -> Option<bool> {
+                Some(true)
+            }
+        }
+        impl<'ctx> ResolverContext<'ctx> for UnscopedOnlyContext<'ctx> {
+            fn candidates(&self, kind: EntityKind) -> Vec<Candidate<'ctx>> {
+                if kind != EntityKind::Face {
+                    return Vec::new();
+                }
+                (0..self.0.face_count().unwrap())
+                    .map(|i| Candidate::new(EntityKind::Face, self.0.get_face(i).unwrap()))
+                    .collect()
+            }
+        }
+
+        let reference = AnyRef::Face(FaceRef::from_strategy(
+            ConstructionStrategy::FeatureLineage {
+                feature: FeatureAnchor::named("base"),
+                role: LineageRole::Generated,
+            },
+        ));
+        let outcome = resolve_reference(&reference, &UnscopedOnlyContext(&cube)).unwrap();
+        assert_eq!(
+            outcome_broken_reason(&outcome),
+            Some(BrokenReason::ScopeNotFound(FeatureAnchor::named("base"))),
+            "a persistent FeatureLineage reference must never silently resolve against the \
+             whole-session unscoped universe, even when that universe is non-empty and would \
+             have answered the query"
+        );
+    }
+
+    /// The `case03_symmetric_candidates` held-out fixture's own real
+    /// bug (`AICAD-099`'s "A real, honest finding"): `with_left`'s own
+    /// permanently-live copy of the left hole's wall face and `body`'s own
+    /// later carry-forward copy of that same real entity can tie against
+    /// each other under the *whole-session unscoped* candidate universe.
+    /// This proves the fix generalizes from an ad hoc hand-scoped `Query`
+    /// (`crates/cad-cli/tests/stage4_adversarial_bug_hunt.rs`'s own
+    /// `case03_symmetric_candidates_scoped_to_body_via_the_real_production_
+    /// path`) to a genuine *persistent reference* (`AnyRef`,
+    /// `ConstructionStrategy::FeatureLineage`) resolved via
+    /// `resolve_reference` with no caller-supplied scope at all — the
+    /// scope is now derived automatically from the reference's own anchor
+    /// feature, so `with_left`'s own duplicate is excluded from candidate
+    /// enumeration by construction, not merely by an opt-in the caller
+    /// might forget.
+    #[test]
+    fn a_generated_by_body_reference_is_automatically_scoped_away_from_with_lefts_own_duplicate() {
+        let context = OcctContext::new().unwrap();
+        // `with_left` cuts the left hole into a plain box; `body` then
+        // cuts the right hole into `with_left`'s own result -- mirrors
+        // `project/benchmarks/stage4_semantic_reference/held_out/
+        // 03_symmetric_candidates/baseline.aicad` exactly (both hole
+        // walls share the same radius by construction).
+        let plate = context.create_box(0.06, 0.03, 0.008).unwrap();
+        let left_hole = context
+            .create_cylinder(0.0025, 0.01)
+            .unwrap()
+            .transform(&Transform::translation(Vector3::new(0.015, 0.015, -0.001)))
+            .unwrap();
+        let (with_left, _lineage_left) = plate.cut_with_lineage(&left_hole).unwrap();
+        let right_hole = context
+            .create_cylinder(0.0025, 0.01)
+            .unwrap()
+            .transform(&Transform::translation(Vector3::new(0.05, 0.015, -0.001)))
+            .unwrap();
+        let (body, lineage_body) = with_left.cut_with_lineage(&right_hole).unwrap();
+
+        let prior_of_with_left: Vec<_> = (0..with_left.face_count().unwrap())
+            .map(|i| with_left.get_face(i).unwrap())
+            .collect();
+        let report_body = crate::feature_lineage::classify_feature_lineage(
+            EntityKind::Face,
+            prior_of_with_left,
+            &body,
+            &lineage_body,
+        )
+        .unwrap();
+
+        struct TwoFeatureContext<'ctx> {
+            with_left: &'ctx Shape<'ctx>,
+            body: &'ctx Shape<'ctx>,
+            report_body: crate::feature_lineage::FeatureLineageReport<'ctx>,
+        }
+        impl<'ctx> EvaluationEvidence<'ctx> for TwoFeatureContext<'ctx> {
+            fn generated_by(
+                &self,
+                candidate: &Candidate<'ctx>,
+                anchor: &FeatureAnchor,
+            ) -> Option<bool> {
+                if *anchor != FeatureAnchor::named("body") {
+                    return Some(false);
+                }
+                Some(self.report_body.results.iter().any(|result| {
+                    result.origin == Some(ResultEntityOrigin::New)
+                        && result.entity.is_same(candidate.shape()).unwrap_or(false)
+                }))
+            }
+        }
+        impl<'ctx> ResolverContext<'ctx> for TwoFeatureContext<'ctx> {
+            fn candidates(&self, kind: EntityKind) -> Vec<Candidate<'ctx>> {
+                if kind != EntityKind::Face {
+                    return Vec::new();
+                }
+                let mut all: Vec<Candidate<'ctx>> = (0..self.with_left.face_count().unwrap())
+                    .map(|i| Candidate::new(EntityKind::Face, self.with_left.get_face(i).unwrap()))
+                    .collect();
+                all.extend(
+                    (0..self.body.face_count().unwrap())
+                        .map(|i| Candidate::new(EntityKind::Face, self.body.get_face(i).unwrap())),
+                );
+                all
+            }
+
+            fn candidates_in_scope(
+                &self,
+                kind: EntityKind,
+                scope: &FeatureAnchor,
+            ) -> Option<Vec<Candidate<'ctx>>> {
+                if kind != EntityKind::Face || *scope != FeatureAnchor::named("body") {
+                    return None;
+                }
+                Some(
+                    (0..self.body.face_count().unwrap())
+                        .map(|i| Candidate::new(EntityKind::Face, self.body.get_face(i).unwrap()))
+                        .collect(),
+                )
+            }
+        }
+
+        let ctx = TwoFeatureContext {
+            with_left: &with_left,
+            body: &body,
+            report_body,
+        };
+
+        let reference = AnyRef::Face(FaceRef::from_strategy(
+            ConstructionStrategy::FeatureLineage {
+                feature: FeatureAnchor::named("body"),
+                role: LineageRole::Generated,
+            },
+        ));
+        let outcome = resolve_reference(&reference, &ctx).unwrap();
+        match outcome {
+            ResolutionOutcome::Resolved(candidates) => assert_eq!(
+                candidates.len(),
+                1,
+                "automatically scoped to 'body' alone, exactly the real right-hole wall face \
+                 generated by body's own operation must resolve uniquely -- 'with_left's own \
+                 unrelated candidates must never even enter the candidate universe"
+            ),
+            other => panic!("expected Resolved(1), got a different outcome: {other:?}"),
+        }
     }
 
     // --- AICAD-091 ---
