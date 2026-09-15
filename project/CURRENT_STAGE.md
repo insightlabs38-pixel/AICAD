@@ -4,11 +4,11 @@ stage: 4
 from_stage: 3
 to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
-status: in-progress
-stage4_readiness: implementation-started
-last_completed_batch: S4-07
-last_completed_task: AICAD-099A
-next_batch: S4-08 (AICAD-100)
+status: gate-packet-prepared-pending-owner-review
+stage4_readiness: implementation-complete-pending-owner-gate
+last_completed_batch: S4-08
+last_completed_task: AICAD-100
+next_batch: none — roadmap development stopped pending owner Stage-4 approval (see "Stage 4 hard-gate packet" below)
 
 ## Stage 0 — closed
 
@@ -287,9 +287,40 @@ perturbed build's genuine tie (`Ambiguous(2)`) — never an arbitrary pick.
 `scripts/ci/stage4_task_audit.py` was updated to audit that same
 correction.
 
-Batch S4-07 (including its `AICAD-099A` remediation) is complete. The next
-batch is S4-08 (`AICAD-100`, the Stage-4 owner hard-gate packet), which
-remains `status: todo`.
+Batch S4-07 (including its `AICAD-099A` remediation) is complete.
+
+## Stage 4 hard-gate packet (`AICAD-100`, Batch S4-08) — prepared, pending owner review
+
+`AICAD-100` is **done** — see `project/gates/stage-4-gate.md` (the full
+evidence packet) and `project/reports/AICAD-100.md` (a short
+cross-reference). The packet independently re-runs, at this exact HEAD,
+the full workspace verification suite (clean; 1251 passed, 0 failed), both
+Stage-4 CI harness scripts, and the frozen held-out fixture checksums; it
+reports the real end-to-end wired-corpus benchmark (`silent_wrong == 0`,
+`mismatch == 0`), the held-out checkpoint (`03`/`05`/`10`), the new
+adversarial probes and `AICAD-099A`'s own scoped-resolution proofs, a
+direct source re-read confirming the resolver's fail-closed cardinality
+logic and the unconditional `GeometricFingerprint -> Broken` mapping, a
+kernel-neutrality grep across both new Stage-4 crates, durability results,
+the (empty) `tests/semantic_refs/regressions/` corpus, six disclosed known
+limitations (most significantly `D31`, the open `part { ... }`
+feature-graph-scoping question that blocks lineage-based resolver
+execution against idiomatic `part`-wrapped programs), and a
+whole-Stage-4-diff scope-creep audit finding no drift into Stage-5+
+territory. **Recommendation: PASS** (recommendation only — the agent does
+not approve a roadmap stage; see the packet's own §9 for the full
+reasoning and caveats).
+
+Per `AGENTS.md`'s own final stop rule: **ROADMAP DEVELOPMENT IS STOPPED**
+as of this commit. No future invocation may begin `AICAD-101`, finalize or
+activate a provisional Stage-5 task queue as executable roadmap work, or
+otherwise expand into Stage-5 scope without a separate, later, explicit
+owner approval recorded in `project/DECISION_LOG.md` (following the same
+pattern as `DL-10`/`DL-11`/`DL-16`). Only the owner may review the gate
+packet, approve Stage 4, and authorize `AICAD-101`+/Stage 5.
+
+Batch S4-08 (`AICAD-100`) is complete. Stage 4 implementation work is
+complete; Stage 4 itself awaits owner review/approval.
 
 The hard gate remains fail-closed:
 

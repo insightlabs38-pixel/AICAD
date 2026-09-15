@@ -3111,7 +3111,7 @@ tasks:
 - id: AICAD-100
   stage: 4
   title: Prepare Stage-4 hard-gate packet for owner review
-  status: todo
+  status: done
   depends_on:
   - AICAD-099A
   plan_references:
