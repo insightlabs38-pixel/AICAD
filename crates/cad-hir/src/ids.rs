@@ -92,6 +92,9 @@ pub enum BindingKind {
     /// `BindingKind::Struct`/`Enum` names live in `Checker::type_names`
     /// rather than the value-binding table.
     TypeParam,
+    /// A `query name : EntityKind in scope { ... }` declaration
+    /// (`AICAD-100A`, `crate::hir::HirItem::Query`).
+    Query,
 }
 
 /// One declaration lowering created: its kind, source name, and the span

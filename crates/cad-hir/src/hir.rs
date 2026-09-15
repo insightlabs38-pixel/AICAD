@@ -611,6 +611,42 @@ pub enum HirImportPath {
     },
 }
 
+/// One argument to an [`HirQueryClause`] (`AICAD-100A`), lowered from
+/// `cad_ast::expr::Arg::Positional`'s inner `Expr` — the only `Arg` shape a
+/// query clause accepts; `crate::lower::lower_item_body`'s `Item::Query`
+/// arm rejects (structured diagnostic, never guesses) `Arg::Named` and any
+/// `Expr` shape that is not one of the two below, matching `Item::Query`'s
+/// own doc comment ("no new expression syntax ... is introduced").
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirQueryArg {
+    /// A bare or dotted identifier (`base`, `body.faces`) — `cad_ast::
+    /// Expr::Ident` or a chain of `Expr::Field` over `Expr::Ident`, joined
+    /// with `.` exactly like `crate::lower`'s scope-path convention
+    /// elsewhere.
+    Name(String),
+    /// A numeric literal (`cad_ast::Expr::Literal(Literal::Number)`), or
+    /// that same literal under a leading `Expr::Unary { op: UnaryOp::Neg,
+    /// .. }` (needed for a negative direction component, e.g. `normal(0, 0,
+    /// -1)` for a -Z face) — the sign is folded into `text` (a leading
+    /// `-`) rather than kept as a separate flag, so this variant stays a
+    /// plain re-statement of `cad_ast::Literal::Number`'s own shape.
+    Number { text: String, unit: Option<String> },
+}
+
+/// One [`Item::Query`]-body clause (`AICAD-100A`), lowered from `cad_ast::
+/// Expr::Call` — every clause is call-shaped by parser construction (see
+/// `cad_ast::item::Item::Query`'s own doc comment), so this type carries
+/// only a clause name and its argument list, never a general `HirExpr`.
+/// Resolving `name` against the closed predicate/ranking/cardinality
+/// vocabulary is `cad-cli`'s job (mirrors `HirItem::Query::entity_kind` not
+/// being validated here either — see that field's own doc comment).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirQueryClause {
+    pub name: String,
+    pub args: Vec<HirQueryArg>,
+    pub span: Span,
+}
+
 /// A top-level (or `part`-body) declaration, lowered from `cad_ast::Item`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirItem {
@@ -684,6 +720,34 @@ pub enum HirItem {
         names: Vec<HirImportedName>,
         span: Span,
     },
+    /// `query name : EntityKind in scope { clause* }` — a persistent
+    /// semantic-reference declaration (`AICAD-100A`, `cad_ast::item::Item::
+    /// Query`'s own doc comment has the full rationale). `binding` is this
+    /// query's own newly minted id (kind `BindingKind::Query`) so a later
+    /// reference back to it resolves like any other name.
+    Query {
+        binding: BindingId,
+        name: String,
+        /// The entity-kind spelling, validated here against the six closed
+        /// spellings (`"Vertex"`/`"Edge"`/`"Wire"`/`"Face"`/`"Shell"`/
+        /// `"Solid"`) a diagnostic rejects anything else — `cad-hir`
+        /// intentionally checks only the *spelling* here, not against
+        /// `cad_references::EntityKind` itself (this crate has, and takes,
+        /// no dependency on that Stage-4-only crate; constructing the real
+        /// `EntityKind`/`Query`/`AnyRef` values from this validated string
+        /// is `cad-cli`'s job, matching `Item::Query`'s own doc comment).
+        entity_kind: String,
+        /// The raw dotted scope name, carried structurally and
+        /// unresolved — `scope` names a `cad-feature-graph`/`cad-cli`-
+        /// owned D31 scoped feature/binding name, not an ordinary lexical
+        /// `BindingId`, so resolving it against this module's own binder
+        /// scope stack would conflate two different scope mechanisms.
+        /// Mirrors `HirItem::Import::path`'s own "not this task's job"
+        /// precedent.
+        scope: String,
+        clauses: Vec<HirQueryClause>,
+        span: Span,
+    },
 }
 
 impl HirItem {
@@ -696,7 +760,8 @@ impl HirItem {
             | HirItem::Struct { span, .. }
             | HirItem::Enum { span, .. }
             | HirItem::Part { span, .. }
-            | HirItem::Import { span, .. } => *span,
+            | HirItem::Import { span, .. }
+            | HirItem::Query { span, .. } => *span,
         }
     }
 }

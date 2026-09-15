@@ -205,7 +205,46 @@ impl Printer {
                 }
                 self.write(";");
             }
+            Item::Query {
+                name,
+                entity_kind,
+                scope,
+                clauses,
+                ..
+            } => {
+                self.write("query ");
+                self.write(&name.node);
+                self.write(": ");
+                self.write(&entity_kind.node);
+                self.write(" in ");
+                self.write(&scope.node);
+                self.write(" ");
+                self.print_query_clause_block(clauses);
+            }
         }
+    }
+
+    /// `{ clause; clause; ... }` — [`Item::Query`]'s own clause list, one
+    /// `;`-terminated `Expr::Call` per line (mirrors [`Printer::
+    /// print_block`]'s shape exactly, but semicolon-terminated expressions
+    /// rather than statements, since a clause is never itself a `Stmt`).
+    fn print_query_clause_block(&mut self, clauses: &[Expr]) {
+        if clauses.is_empty() {
+            self.write("{}");
+            return;
+        }
+        self.write("{");
+        self.newline();
+        self.indent += 1;
+        for clause in clauses {
+            self.push_indent();
+            self.print_expr(clause);
+            self.write(";");
+            self.newline();
+        }
+        self.indent -= 1;
+        self.push_indent();
+        self.write("}");
     }
 
     fn print_type_annotation(&mut self, ty: &Option<Type>) {

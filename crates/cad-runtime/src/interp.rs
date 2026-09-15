@@ -522,7 +522,8 @@ impl<'a> Interpreter<'a> {
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
-                | HirItem::Import { .. } => {}
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => {}
             }
         }
         Ok(())
@@ -598,7 +599,8 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
                 | HirItem::Part { .. }
-                | HirItem::Import { .. } => continue,
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => continue,
             };
             let Some(value) = value else { continue };
             match self.eval_expr(&mut frame, value) {
@@ -766,7 +768,8 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
-                | HirItem::Import { .. } => continue,
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => continue,
             }
         }
         Ok(())

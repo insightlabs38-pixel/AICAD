@@ -505,6 +505,97 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `identifier ( "." identifier )*` — a dotted qualified name
+    /// (`AICAD-100A`), used for [`Item::Query`]'s own `scope`. An ordinary
+    /// `receiver.field` expression already covers this same textual shape
+    /// in expression position (`Expr::Field`); this is a narrower,
+    /// item-syntax-only production restricted to bare name segments, no
+    /// arbitrary receiver expression, matching the qualified-path
+    /// convention `crate::parametric_build::qualified_feature_name`
+    /// (`D31`) already establishes on the `cad-cli` side.
+    fn parse_dotted_name(&mut self, what: &str) -> Option<Spanned<String>> {
+        let first = self.expect_ident(what)?;
+        let mut text = first.node.clone();
+        let mut end = first.span;
+        while self.peek_kind() == &TokenKind::Dot {
+            self.advance();
+            let seg = self.expect_ident("a name segment")?;
+            text.push('.');
+            text.push_str(&seg.node);
+            end = seg.span;
+        }
+        Some(Spanned::new(text, first.span.join(end)))
+    }
+
+    /// [`Item::Query`]'s own clause list body (`AICAD-100A`) — every
+    /// clause is `name(args);`, parsed via [`Parser::parse_query_clause`]
+    /// below, one per iteration, mirroring `part`'s own item-list loop
+    /// shape (`parse_item`'s `Keyword::Part` arm): on a clause that fails
+    /// to parse, if nothing was consumed, force one token of progress so a
+    /// malformed clause can never spin the parser forever.
+    fn parse_query_clauses(&mut self) -> Vec<Expr> {
+        let mut clauses = Vec::new();
+        while !self.at_end_of_braced_body() {
+            let before = self.pos;
+            if let Some(clause) = self.parse_query_clause() {
+                clauses.push(clause);
+            }
+            self.eat(|k| *k == TokenKind::Semicolon);
+            if self.pos == before {
+                self.advance();
+            }
+        }
+        clauses
+    }
+
+    /// One [`Item::Query`] clause: `name(args)` (`AICAD-100A`) — reuses
+    /// [`Parser::parse_call_args`] verbatim, exactly like
+    /// [`Parser::parse_primary`]'s own `Expr::Call` branch, but a clause
+    /// is *required* to be call-shaped: a bare identifier or any other
+    /// expression shape in clause position is a structured
+    /// `PARSE-E013 EXPECTED_QUERY_CLAUSE` diagnostic, never silently
+    /// accepted or guessed at (this crate introduces no bare-predicate/
+    /// comparison/`within`-modifier clause grammar — see [`Item::Query`]'s
+    /// own doc comment for why).
+    fn parse_query_clause(&mut self) -> Option<Expr> {
+        let tok = self.peek();
+        let TokenKind::Ident(name) = tok.kind.clone() else {
+            self.error(
+                13,
+                "EXPECTED_QUERY_CLAUSE",
+                format!(
+                    "Expected a query clause (name(args);), found {}.",
+                    describe_token(&tok.kind)
+                ),
+                tok.span,
+            );
+            self.advance();
+            return None;
+        };
+        let name_span = tok.span;
+        self.advance();
+        if self.peek_kind() != &TokenKind::LParen {
+            self.error(
+                13,
+                "EXPECTED_QUERY_CLAUSE",
+                format!(
+                    "Expected '(' after '{name}' in query clause position -- every query \
+                     clause is name(args), e.g. 'planar()' or 'generated_by(base)'."
+                ),
+                self.peek().span,
+            );
+            return None;
+        }
+        let args = self.parse_call_args();
+        let close = self.expect(&TokenKind::RParen, "')'");
+        let end = close.map(|t| t.span).unwrap_or(name_span);
+        Some(Expr::Call {
+            callee: Spanned::new(name, name_span),
+            args,
+            span: name_span.join(end),
+        })
+    }
+
     /// `list_expr = "[" [ expression { "," expression } [","] ] "]"` —
     /// `project/OWNER_DECISIONS.md#D16`'s owner-approved list-literal
     /// syntax. Mirrors `parse_call_args`'s own trailing-comma handling
@@ -1625,12 +1716,35 @@ impl<'a> Parser<'a> {
                     span: start.join(end),
                 })
             }
+            TokenKind::Keyword(Keyword::Query) => {
+                let start = tok.span;
+                self.advance();
+                let name = self.expect_ident("a query name")?;
+                self.expect(&TokenKind::Colon, "':'")?;
+                let entity_kind =
+                    self.expect_ident("an entity kind (Vertex/Edge/Wire/Face/Shell/Solid)")?;
+                self.expect(&TokenKind::Keyword(Keyword::In), "'in'")?;
+                let scope = self.parse_dotted_name("a scope binding name")?;
+                self.expect(&TokenKind::LBrace, "'{'")?;
+                let clauses = self.parse_query_clauses();
+                let close = self.expect(&TokenKind::RBrace, "'}'");
+                let end = close
+                    .map(|t| t.span)
+                    .unwrap_or_else(|| clauses.last().map(Expr::span).unwrap_or(scope.span));
+                Some(Item::Query {
+                    name,
+                    entity_kind,
+                    scope,
+                    clauses,
+                    span: start.join(end),
+                })
+            }
             _ => {
                 self.error(
                     10,
                     "EXPECTED_ITEM",
                     format!(
-                        "Expected a declaration (let/const/param/fn/struct/enum/part/import), found {}.",
+                        "Expected a declaration (let/const/param/fn/struct/enum/part/import/query), found {}.",
                         describe_token(&tok.kind)
                     ),
                     tok.span,

@@ -485,8 +485,8 @@ mod tests {
 
     #[test]
     fn lexes_all_declaration_keywords() {
-        let source =
-            "let var const param fn struct enum interface part assembly requirement test import";
+        let source = "let var const param fn struct enum interface part assembly requirement \
+                       test import query";
         let expected = vec![
             Keyword::Let,
             Keyword::Var,
@@ -501,6 +501,7 @@ mod tests {
             Keyword::Requirement,
             Keyword::Test,
             Keyword::Import,
+            Keyword::Query,
         ];
         let (tokens, diagnostics) = tokenize(source, "t.aicad");
         assert!(diagnostics.is_empty());
