@@ -752,7 +752,9 @@ impl<'ctx> ParametricBuildSession<'ctx> {
 /// own identical scope boundary below.
 impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
     fn generated_by(&self, candidate: &Candidate<'ctx>, anchor: &FeatureAnchor) -> Option<bool> {
-        let report = self.feature_lineage.get(anchor)?;
+        let report = self
+            .feature_lineage
+            .get(&(anchor.clone(), candidate.kind()))?;
         let shapes =
             reference_replay::feature_result_shapes_for_role(report, LineageRole::Generated);
         Some(
@@ -763,7 +765,9 @@ impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
     }
 
     fn modified_by(&self, candidate: &Candidate<'ctx>, anchor: &FeatureAnchor) -> Option<bool> {
-        let report = self.feature_lineage.get(anchor)?;
+        let report = self
+            .feature_lineage
+            .get(&(anchor.clone(), candidate.kind()))?;
         let shapes =
             reference_replay::feature_result_shapes_for_role(report, LineageRole::Modified);
         Some(
@@ -795,8 +799,12 @@ impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
         else {
             return None;
         };
-        let known =
-            reference_replay::descended_from_closure(&self.feature_lineage, feature, *role)?;
+        let known = reference_replay::descended_from_closure(
+            &self.feature_lineage,
+            feature,
+            *role,
+            candidate.kind(),
+        )?;
         Some(
             known
                 .iter()

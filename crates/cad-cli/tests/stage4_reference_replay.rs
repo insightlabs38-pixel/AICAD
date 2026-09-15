@@ -232,6 +232,104 @@ fn the_new_cylindrical_wall_face_is_classified_new_by_real_captured_lineage() {
     let _ = ResultEntityOrigin::New; // documents which classification this proves, above
 }
 
+/// `AICAD-100A`: Edge lineage, not only Face — the same real
+/// `notched = cut(base, poker)` operation's own new circular rim edges
+/// (where the new cylindrical wall face meets `base`'s own top/bottom
+/// faces) are classified `New` by real captured evidence, exactly
+/// mirroring `the_new_cylindrical_wall_face_is_classified_new_by_real_
+/// captured_lineage`'s own Face-kind proof one entity kind over.
+#[test]
+fn the_new_hole_rim_edges_are_classified_new_by_real_captured_edge_lineage() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let session = ParametricBuildSession::new("test.aicad", SOURCE, &ctx)
+        .expect("initial build should succeed");
+
+    let notched = session.binding_named("notched").unwrap();
+    let notched_shape = session.shape_for_binding(notched).unwrap();
+    let circular_edges: Vec<_> = (0..notched_shape.edge_count().unwrap())
+        .map(|i| notched_shape.get_edge(i).unwrap())
+        .filter(|edge| edge.curve_type().unwrap() == cad_occt_bridge::CurveKind::Circle)
+        .collect();
+    assert_eq!(
+        circular_edges.len(),
+        2,
+        "a straight-through round hole has exactly two circular rim edges (top and bottom)"
+    );
+
+    let anchor = FeatureAnchor::named("notched");
+    for edge in &circular_edges {
+        let candidate = Candidate::new(EntityKind::Edge, edge.duplicate().unwrap());
+        assert_eq!(
+            cad_query::EvaluationEvidence::generated_by(&session, &candidate, &anchor),
+            Some(true),
+            "each rim edge must be classified generated_by(notched)"
+        );
+        assert_eq!(
+            cad_query::EvaluationEvidence::modified_by(&session, &candidate, &anchor),
+            Some(false)
+        );
+    }
+
+    // A pre-existing, untouched box edge is neither generated nor
+    // modified by `notched` -- proves this evidence source does not
+    // over-match every edge in the result shape.
+    let untouched_edge = (0..notched_shape.edge_count().unwrap())
+        .map(|i| notched_shape.get_edge(i).unwrap())
+        .find(|edge| edge.curve_type().unwrap() != cad_occt_bridge::CurveKind::Circle)
+        .expect("a straight-line box edge exists");
+    let untouched_candidate = Candidate::new(EntityKind::Edge, untouched_edge);
+    assert_eq!(
+        cad_query::EvaluationEvidence::generated_by(&session, &untouched_candidate, &anchor),
+        Some(false)
+    );
+}
+
+/// The same Edge lineage through the real resolver path (`Query`/
+/// `TopologyPredicate::GeneratedBy`), scoped to `notched` (`AICAD-099A`).
+#[test]
+fn generated_by_notched_resolves_ambiguous_across_both_real_rim_edges() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let session = ParametricBuildSession::new("test.aicad", SOURCE, &ctx)
+        .expect("initial build should succeed");
+
+    let query = cad_query::Query::new(EntityKind::Edge)
+        .with_clause(cad_query::QueryClause::Topology(
+            cad_query::TopologyPredicate::GeneratedBy(FeatureAnchor::named("notched")),
+        ))
+        // Narrows to the two genuinely circular rim edges, excluding a
+        // real OCCT implementation detail (a straight vertical seam edge
+        // some kernel versions add where a full cylindrical face is
+        // internally split into two half-cylinder patches) -- `edge_
+        // radius` is only defined for `CurveKind::Circle`
+        // (`Shape::edge_radius`'s own doc comment), so a non-circular
+        // edge simply never matches this clause, not an arbitrary
+        // narrowing.
+        .with_clause(cad_query::QueryClause::Geometry(
+            cad_query::GeometryPredicate::Radius(cad_query::Comparison::Gt(length(0.0))),
+        ))
+        .with_cardinality(cad_query::CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("notched"));
+    let outcome = session
+        .resolve(&query)
+        .expect("resolution should not error");
+    match outcome {
+        cad_query::ResolutionOutcome::Ambiguous(candidates) => assert_eq!(
+            candidates.len(),
+            2,
+            "both real rim edges are genuinely generated_by(notched); a resolver that narrowed \
+             this to one would be silently wrong"
+        ),
+        other => {
+            let description = match &other {
+                cad_query::ResolutionOutcome::Resolved(c) => format!("Resolved({})", c.len()),
+                cad_query::ResolutionOutcome::Ambiguous(c) => format!("Ambiguous({})", c.len()),
+                cad_query::ResolutionOutcome::Broken(r) => format!("Broken({r:?})"),
+            };
+            panic!("expected Ambiguous(2), got a different outcome ({description})")
+        }
+    }
+}
+
 /// `AICAD-093`'s raw-handle epoch, wired to a real session
 /// (`AICAD-094`): a `RawHandle` minted around a real live `Candidate` from
 /// before a rebuild round is explicitly rejected after it, even though

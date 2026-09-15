@@ -18,14 +18,14 @@
 //!
 //! # Scope
 //!
-//! Only [`EntityKind::Face`] lineage is classified (matching
-//! `cad_query::feature_lineage`'s own doc comment: "Faces and edges only,
-//! matching `AICAD-086`'s own native capture scope" — this task captures
-//! the Face half of that already-supported pair; Edge lineage capture is
-//! not wired here, see `project/reports/AICAD-094.md`'s own
-//! "Limitations"). Only a named top-level feature whose own *final* IR
-//! node (the last [`GeomId`] in its `geom_range_for_call`) is directly one
-//! of the five lineage-capable ops
+//! Both [`EntityKind::Face`] and [`EntityKind::Edge`] lineage are
+//! classified (`AICAD-100A`; matching `cad_query::feature_lineage`'s own
+//! doc comment, "Faces and edges only, matching `AICAD-086`'s own native
+//! capture scope" — `AICAD-094` originally captured only the Face half,
+//! see `project/reports/AICAD-094.md`'s own "Limitations"; this task
+//! completes the pair). Only a named top-level feature whose own *final*
+//! IR node (the last [`GeomId`] in its `geom_range_for_call`) is directly
+//! one of the five lineage-capable ops
 //! (`Union`/`Cut`/`Intersect`/`Fillet`/`Chamfer`) is captured — a compound
 //! builtin decomposed into multiple raw ops whose *final* node is not
 //! itself lineage-capable (or an anonymous/nested-argument feature with no
@@ -51,16 +51,23 @@ use cad_query::feature_lineage::{
 };
 use cad_references::{EntityKind, FeatureAnchor, LineageRole};
 
-/// Real, per-round `EntityKind::Face` lineage evidence for every named
+/// Real, per-round `Face`/`Edge` lineage evidence for every named
 /// top-level feature this session has ever captured it for — see this
 /// module's own doc comment for exactly which features qualify. Keyed by
-/// [`FeatureAnchor::Named`]; an entry, once captured, is only replaced
-/// (never removed) by a later round that recomputes that same feature
-/// again, so a feature the current round left untouched keeps reporting
-/// its own last-real-rebuild evidence, exactly matching the real identity
-/// continuity `cad_geometry_runtime::dispatch_graph_incremental`'s own
-/// reuse path already guarantees for that feature's live `Shape`.
-pub type FeatureLineageIndex<'ctx> = HashMap<FeatureAnchor, FeatureLineageReport<'ctx>>;
+/// `(`[`FeatureAnchor::Named`]`, `[`EntityKind`]`)` (`AICAD-100A`: a
+/// feature's own captured Face report and Edge report are two entirely
+/// separate classifications — a Face and an Edge are never comparable via
+/// `Shape::is_same`, so storing them under one shared key per feature
+/// would either silently discard one kind or require the caller to guess
+/// which kind a stored report belongs to). An entry, once captured, is
+/// only replaced (never removed) by a later round that recomputes that
+/// same feature again, so a feature the current round left untouched
+/// keeps reporting its own last-real-rebuild evidence, exactly matching
+/// the real identity continuity `cad_geometry_runtime::
+/// dispatch_graph_incremental`'s own reuse path already guarantees for
+/// that feature's live `Shape`.
+pub type FeatureLineageIndex<'ctx> =
+    HashMap<(FeatureAnchor, EntityKind), FeatureLineageReport<'ctx>>;
 
 /// The [`GeomId`] operand a lineage-capable [`GeometryOp`] reads whose own
 /// pre-operation entities `classify_feature_lineage` needs as its
@@ -88,21 +95,42 @@ fn lineage_operand_id(op: &GeometryOp) -> Option<GeomId> {
     }
 }
 
-fn enumerate_faces<'ctx>(shape: &Shape<'ctx>) -> Result<Vec<Shape<'ctx>>, FeatureLineageError> {
-    let count = shape.face_count().map_err(FeatureLineageError::from)?;
-    (0..count)
-        .map(|i| shape.get_face(i).map_err(FeatureLineageError::from))
-        .collect()
+/// Every unique entity of `kind` in `shape` (`AICAD-086`'s own capture
+/// scope — Face or Edge only; any other kind is a caller bug, defensive
+/// `unreachable!` matching this module's own closed internal usage, never
+/// reachable from a public API since `classify_feature_lineage` itself
+/// already rejects any other kind structurally).
+fn enumerate_prior_entities<'ctx>(
+    shape: &Shape<'ctx>,
+    kind: EntityKind,
+) -> Result<Vec<Shape<'ctx>>, FeatureLineageError> {
+    match kind {
+        EntityKind::Face => {
+            let count = shape.face_count().map_err(FeatureLineageError::from)?;
+            (0..count)
+                .map(|i| shape.get_face(i).map_err(FeatureLineageError::from))
+                .collect()
+        }
+        EntityKind::Edge => {
+            let count = shape.edge_count().map_err(FeatureLineageError::from)?;
+            (0..count)
+                .map(|i| shape.get_edge(i).map_err(FeatureLineageError::from))
+                .collect()
+        }
+        other => {
+            unreachable!("enumerate_prior_entities is only ever called with Face/Edge: {other}")
+        }
+    }
 }
 
 /// For every `(anchor, geom_range)` pair naming one of this round's own
 /// top-level features (every named feature, whether or not it was
 /// recomputed this round — see this module's own doc comment for why
 /// filtering happens naturally against `lineage_table` instead), captures
-/// real `EntityKind::Face` lineage for the ones whose own final node both
-/// (a) was actually recomputed this round (present in `lineage_table`,
-/// which — per `dispatch_graph_incremental_with_lineage`'s own contract —
-/// only ever contains recomputed nodes) and (b) is itself a
+/// real `Face` *and* `Edge` lineage (`AICAD-100A`) for the ones whose own
+/// final node both (a) was actually recomputed this round (present in
+/// `lineage_table`, which — per `dispatch_graph_incremental_with_lineage`'s
+/// own contract — only ever contains recomputed nodes) and (b) is itself a
 /// lineage-capable op. Every other feature contributes nothing to the
 /// returned map (the caller merges this into its own longer-lived
 /// [`FeatureLineageIndex`], so an untouched feature simply keeps its own
@@ -132,18 +160,19 @@ pub(crate) fn capture_named_feature_lineage<'ctx>(
         let Some(operand_id) = lineage_operand_id(op) else {
             continue;
         };
-
-        let prior_faces = match results.get(operand_id.index() as usize) {
-            Some(NodeResult::Shape(shape)) => enumerate_faces(shape)?,
-            _ => continue,
+        let Some(NodeResult::Shape(operand_shape)) = results.get(operand_id.index() as usize)
+        else {
+            continue;
         };
         let Some(NodeResult::Shape(result_shape)) = results.get(node_id.index() as usize) else {
             continue;
         };
 
-        let report =
-            classify_feature_lineage(EntityKind::Face, prior_faces, result_shape, lineage)?;
-        out.insert(anchor.clone(), report);
+        for kind in [EntityKind::Face, EntityKind::Edge] {
+            let prior = enumerate_prior_entities(operand_shape, kind)?;
+            let report = classify_feature_lineage(kind, prior, result_shape, lineage)?;
+            out.insert((anchor.clone(), kind), report);
+        }
     }
 
     Ok(out)
@@ -207,18 +236,26 @@ pub(crate) fn feature_result_shapes_for_role<'a, 'ctx>(
 /// `feature_lineage.len()` passes.
 ///
 /// `None` when `target` itself has no captured report at all (no evidence
-/// — same "never guess" contract as every other evidence hook).
+/// — same "never guess" contract as every other evidence hook). `kind`
+/// restricts both the base case and every transitive hop to reports of
+/// that same [`EntityKind`] (`AICAD-100A`) — a Face can only ever descend
+/// from another Face's own lineage, never accidentally chain through an
+/// unrelated Edge report.
 pub(crate) fn descended_from_closure<'a, 'ctx>(
     feature_lineage: &'a FeatureLineageIndex<'ctx>,
     target: &FeatureAnchor,
     role: LineageRole,
+    kind: EntityKind,
 ) -> Option<Vec<&'a Shape<'ctx>>> {
-    let target_report = feature_lineage.get(target)?;
+    let target_report = feature_lineage.get(&(target.clone(), kind))?;
     let mut known: Vec<&Shape<'ctx>> = feature_result_shapes_for_role(target_report, role);
 
     loop {
         let mut added = false;
-        for report in feature_lineage.values() {
+        for ((_, report_kind), report) in feature_lineage.iter() {
+            if *report_kind != kind {
+                continue;
+            }
             for prior in &report.prior {
                 if known
                     .iter()
