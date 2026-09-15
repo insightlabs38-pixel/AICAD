@@ -6,9 +6,9 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
-last_completed_batch: S4-05
-last_completed_task: AICAD-095
-next_batch: S4-06 (AICAD-096, AICAD-097, AICAD-098)
+last_completed_batch: S4-06
+last_completed_task: AICAD-098
+next_batch: S4-07 (AICAD-099)
 
 ## Stage 0 — closed
 
@@ -190,8 +190,41 @@ test suite. See `project/reports/AICAD-094.md`'s/`AICAD-095.md`'s own
 "Limitations" for exactly which construction strategies/entity kinds
 still have no production evidence source.
 
-Batch S4-05 (`AICAD-094`, `AICAD-095`) is complete. The next batch is
-S4-06 (`AICAD-096`/`097`/`098`), which remains `status: todo`.
+Batch S4-05 (`AICAD-094`, `AICAD-095`) is complete.
+
+`AICAD-096`/`097`/`098` (Batch S4-06: extending the frozen `AICAD-079A`
+corpus for real resolver execution, the deterministic perturbation
+runner, and benchmark metrics) are **done** — see
+`project/reports/AICAD-096.md`/`097.md`/`098.md`.
+`crates/cad-cli/tests/stage4_resolver_execution.rs` proves real
+`cad_query::resolve` execution against six corpus cases (correct
+resolution, ambiguity, breakage, and a real `GEOM-E005` kernel-dispatch
+failure, each distinguished rather than conflated).
+`crates/cad-cli/src/perturbation.rs` generalizes that same
+"build baseline, build perturbed, resolve the same query against both"
+shape into one reusable, ground-truth-agnostic `PerturbationCase`/
+`run_case` primitive whose `RunOutcome` reports the real resolution
+outcome only, never a correctness verdict. `crates/cad-cli/src/
+metrics.rs` supplies that verdict as a separate pass: `BenchmarkCase`
+pairs a `PerturbationRun` with an author-asserted `ExpectedOutcome`/
+`DurabilityLevel`, `grade` compares the perturbed-side outcome against
+that ground truth (producing `Grade::SilentWrong` only in the
+catastrophic `Resolved`-when-`Ambiguous`/`Broken`-was-expected
+direction, never the reverse), and `aggregate` tallies a
+`BenchmarkMetrics` matching plan §5's own "Metrics" table
+(`correct`/`ambiguous_detected`/`broken_detected`/`kernel_failure`/
+`silent_wrong`/`mismatch`/`unrelated_failure`, `silent_wrong_ids` for
+direct inspection, and a `by_durability: BTreeMap<DurabilityLevel,
+usize>` reusing `cad_query::health::ReferenceHealthReport`'s own
+aggregation shape). None of the three is yet wired to the frozen
+corpus's own case files as a real, automated benchmark run (no loader
+from `project/benchmarks/stage4_semantic_reference/` case metadata into
+`BenchmarkCase` exists) or to a `cad`-facing subcommand — see each
+report's own "Limitations" section; `AICAD-099`'s adversarial campaign
+is the natural next consumer of this aggregation.
+
+Batch S4-06 (`AICAD-096`, `AICAD-097`, `AICAD-098`) is complete. The next
+batch is S4-07 (`AICAD-099`), which remains `status: todo`.
 
 The hard gate remains fail-closed:
 

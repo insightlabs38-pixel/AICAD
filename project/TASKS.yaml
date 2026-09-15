@@ -3021,7 +3021,7 @@ tasks:
 - id: AICAD-098
   stage: 4
   title: 'Implement benchmark metrics: correct / ambiguous-detected / broken-detected / silent-wrong / durability'
-  status: todo
+  status: done
   depends_on:
   - AICAD-097
   plan_references:

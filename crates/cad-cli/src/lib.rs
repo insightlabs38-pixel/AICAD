@@ -63,6 +63,7 @@
 
 pub mod build;
 pub mod cli;
+pub mod metrics;
 pub mod parametric_build;
 pub mod perturbation;
 pub mod reference_replay;
