@@ -160,13 +160,28 @@ it is real, reproducible, and worth keeping visible: a pure-geometry
 `unique()` query against the current whole-session candidate model can be
 spuriously ambiguous whenever an intermediate binding happens to preserve
 an unmodified copy of a face a later binding also carries, independent of
-whether the fixture's own modeled entities are actually symmetric. The
-fix — giving a query a way to scope its own candidate universe to one
-named feature/binding rather than every live top-level binding (e.g. via
-`ExplicitExport`/an export registry, once one has a production evidence
-source) — is real, unimplemented follow-up work this task does not
-invent an answer for; `ExplicitExport`'s own evidence source remains open
-since `AICAD-088`/`090` (see those reports' own "Limitations").
+whether the fixture's own modeled entities are actually symmetric.
+
+**Fixed by `AICAD-099A`:** a narrow, single-task remediation batch
+(inserted immediately after this task, before `AICAD-100`) gave a query an
+explicit way to scope its own candidate universe to one named feature/
+binding (`cad_query::query::Query::scoped_to(FeatureAnchor)`, resolved via
+a new `ResolverContext::candidates_in_scope` hook, `ParametricBuildSession`
+implementing it via the same `binding_named`/`shape_for_binding` identity
+machinery `AICAD-094` already established) rather than every live
+top-level binding — never an `ExplicitExport`/export-registry mechanism,
+since none has a production evidence source. `project/reports/
+AICAD-099A.md` has the full account; its own critical acceptance test
+(`case03_symmetric_candidates_scoped_to_body_via_the_real_production_path`,
+replacing this task's original `case03_symmetric_candidates_nearest_
+ranking_proxy`) proves the real production path (`ParametricBuildSession::
+resolve`/`crate::perturbation::run_case`, not the `SingleShapeContext`
+test-only stand-in) now resolves `case03`'s baseline correctly once scoped
+to `body`, while this section's own unscoped finding remains preserved,
+unchanged, as its own dedicated test
+(`unscoped_resolution_keeps_its_pre_099a_whole_session_ambiguity_
+semantics`) proving the unscoped production API's behavior is intentionally
+unchanged.
 
 ## Why no `SILENT_WRONG` case was found
 
@@ -237,7 +252,8 @@ preserved as a permanent test instead, per its own documented reasoning.
 
 ## Next dependency
 
-`AICAD-100` (Prepare Stage-4 hard-gate packet for owner review),
-`depends_on: AICAD-099` (satisfied). Per the campaign's own fixed-batch-
-order instruction, `AICAD-100` is Batch S4-08 and begins in a future
-invocation, not this one — Batch S4-07 (`AICAD-099`) is now complete.
+`AICAD-099A` (Scoped candidate-universe resolution — the remediation for
+this report's own "A real, honest finding" above), `depends_on: AICAD-099`
+(satisfied, see `project/reports/AICAD-099A.md`); `AICAD-100`'s own
+`depends_on` was updated to `AICAD-099A` accordingly. Batch S4-07
+(`AICAD-099`) is complete.

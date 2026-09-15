@@ -23,7 +23,7 @@
 //! corpus (`tests/semantic_refs/`, `project/benchmarks/
 //! stage4_semantic_reference/`).
 
-use cad_references::EntityKind;
+use cad_references::{EntityKind, FeatureAnchor};
 
 use crate::predicate::{GeometryPredicate, SpatialPredicate, TopologyPredicate};
 use crate::ranking::{CardinalityExpectation, RankingDirective};
@@ -41,23 +41,39 @@ pub enum QueryClause {
 }
 
 /// A query criteria object: which [`EntityKind`] it targets, its ordered
-/// clauses (implicitly conjunctive — every clause must hold), and its
-/// cardinality expectation.
+/// clauses (implicitly conjunctive — every clause must hold), its
+/// cardinality expectation, and an optional [`Query::scope`] restricting
+/// which named feature/binding's own candidates are even considered before
+/// any clause is evaluated.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Query {
     pub entity_kind: EntityKind,
     pub clauses: Vec<QueryClause>,
     pub cardinality: CardinalityExpectation,
+    /// `None` (the default) means the unscoped, whole-candidate-universe
+    /// behavior every construction site before `AICAD-099A` already had —
+    /// unchanged. `Some(anchor)` restricts candidate enumeration
+    /// (`crate::resolve::ResolverContext::candidates_in_scope`) to exactly
+    /// the named feature/binding `anchor` identifies, using the same
+    /// [`FeatureAnchor`] identity `generated_by`/`modified_by` already use
+    /// — never a topology index, OCCT handle, or geometry fingerprint. A
+    /// [`ResolverContext`](crate::resolve::ResolverContext) that cannot
+    /// resolve the requested scope must fail explicitly
+    /// (`crate::resolve::BrokenReason::ScopeNotFound`), never silently
+    /// fall back to the unscoped universe.
+    pub scope: Option<FeatureAnchor>,
 }
 
 impl Query {
-    /// A query with no clauses and an unstated cardinality expectation —
-    /// build up criteria with [`Query::with_clause`]/[`Query::with_cardinality`].
+    /// A query with no clauses, an unstated cardinality expectation, and no
+    /// scope (the whole live candidate universe) — build up criteria with
+    /// [`Query::with_clause`]/[`Query::with_cardinality`]/[`Query::scoped_to`].
     pub fn new(entity_kind: EntityKind) -> Query {
         Query {
             entity_kind,
             clauses: Vec::new(),
             cardinality: CardinalityExpectation::Unstated,
+            scope: None,
         }
     }
 
@@ -68,6 +84,14 @@ impl Query {
 
     pub fn with_cardinality(mut self, cardinality: CardinalityExpectation) -> Query {
         self.cardinality = cardinality;
+        self
+    }
+
+    /// Restricts this query's own candidate universe to exactly the named
+    /// feature/binding `feature` identifies — see [`Query::scope`]'s own
+    /// doc comment for the fail-closed contract this establishes.
+    pub fn scoped_to(mut self, feature: FeatureAnchor) -> Query {
+        self.scope = Some(feature);
         self
     }
 }

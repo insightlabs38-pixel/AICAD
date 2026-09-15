@@ -76,14 +76,14 @@ use std::path::PathBuf;
 
 use cad_cli::ParametricBuildSession;
 use cad_cli::metrics::{BenchmarkCase, ExpectedOutcome, aggregate};
-use cad_cli::perturbation::{PerturbationCase, run_case};
+use cad_cli::perturbation::{PerturbationCase, RunOutcome, run_case};
 use cad_occt_bridge::{OcctContext, Shape};
 use cad_query::{
-    Candidate, CardinalityExpectation, Comparison, EvaluationEvidence, GeometryPredicate,
-    Magnitude, Point3, Query, QueryClause, RankingDirective, ResolutionOutcome, ResolverContext,
-    resolve_query,
+    BrokenReason, Candidate, CardinalityExpectation, Comparison, EvaluationEvidence,
+    GeometryPredicate, Magnitude, Point3, Query, QueryClause, RankingDirective, ResolutionOutcome,
+    ResolverContext, resolve_query,
 };
-use cad_references::{DurabilityLevel, EntityKind};
+use cad_references::{DurabilityLevel, EntityKind, FeatureAnchor};
 use cad_types::Dimension;
 use cad_units::OperandType;
 
@@ -416,9 +416,20 @@ fn sha256_hex(data: &[u8]) -> String {
 /// cuts at deliberately symmetric positions) as tied, rather than treating
 /// accumulated floating-point noise from the independent computation as a
 /// genuine (and silently wrong) distinction.
+///
+/// `AICAD-099A` update: this now runs through the **real, unmodified
+/// production path** — `PerturbationCase`/`crate::perturbation::run_case`,
+/// which call `ParametricBuildSession::resolve` exactly as `cad refs check`
+/// or any real caller would — with the query's own `Query::scoped_to`
+/// restricting candidate enumeration to the `body` binding alone. Before
+/// `AICAD-099A`, no way existed to isolate this question through the real
+/// production path without the test-only [`SingleShapeContext`] helper
+/// above (`AICAD-099`'s own original version of this test used it,
+/// documented in that task's own report as a real, if narrow, gap); this
+/// version proves the same result through the exact API a real caller has
+/// today, never a test-only stand-in.
 #[test]
-fn case03_symmetric_candidates_nearest_ranking_proxy() {
-    let ctx = OcctContext::new().expect("context creation should succeed");
+fn case03_symmetric_candidates_scoped_to_body_via_the_real_production_path() {
     // plate_y/2 = 15mm, plate_z/2 = 4mm -- both holes' own wall faces
     // share this y/z by construction (see `03_symmetric_candidates/
     // baseline.aicad`'s own `Axis3` origins), so distance-to-this-point
@@ -433,44 +444,183 @@ fn case03_symmetric_candidates_nearest_ranking_proxy() {
         .with_clause(QueryClause::Ranking(RankingDirective::Nearest(
             cad_query::predicate::SpatialTarget::Point(target),
         )))
-        .with_cardinality(CardinalityExpectation::Unique);
+        .with_cardinality(CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("body"));
 
-    let baseline = session(
+    let case = PerturbationCase::new(
+        "03_symmetric_candidates_scoped_to_body",
+        fixture_source(&format!(
+            "{HELD_OUT}/03_symmetric_candidates/baseline.aicad"
+        )),
+        fixture_source(&format!(
+            "{HELD_OUT}/03_symmetric_candidates/perturbed.aicad"
+        )),
+        query,
+    );
+    let run = run_case(&case);
+
+    assert_eq!(
+        run.baseline,
+        RunOutcome::Resolved { count: 1 },
+        "baseline, scoped to 'body': the left hole (15mm from mid-plane) is strictly nearer \
+         than the right (20mm), and 'body' alone (excluding 'with_left's own separate live \
+         copy of the left hole's wall face) is the correct target -- expected \
+         Resolved(1), got {:?}",
+        run.baseline
+    );
+    assert_eq!(
+        run.perturbed,
+        RunOutcome::Ambiguous { count: 2 },
+        "perturbed, scoped to 'body': both holes are exactly 15mm from the mid-plane by \
+         construction -- a resolver that silently narrows this to Resolved(1) is exactly the \
+         silent_wrong_resolution this held-out case exists to catch; got {:?}",
+        run.perturbed
+    );
+}
+
+// ---------------------------------------------------------------------
+// AICAD-099A: scoped candidate-universe resolution — focused tests beyond
+// the case03 critical acceptance test above.
+// ---------------------------------------------------------------------
+
+/// Direct, side-by-side proof that `Query::scoped_to` excludes an
+/// unrelated/intermediate binding's own live candidates: the exact same
+/// query, against the exact same real `ParametricBuildSession` build,
+/// reports `Ambiguous` unscoped (`with_left`'s own live duplicate of the
+/// left hole's wall face ties against `body`'s own copy — the real finding
+/// `project/reports/AICAD-099.md` recorded) but `Resolved(1)` once scoped
+/// to `body` alone (`with_left` excluded entirely from candidate
+/// enumeration).
+#[test]
+fn scoped_resolution_excludes_unrelated_intermediate_bindings() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let build = session(
         &ctx,
         &format!("{HELD_OUT}/03_symmetric_candidates/baseline.aicad"),
     );
-    let body = baseline.binding_named("body").expect("body binding");
-    let body_shape = baseline.shape_for_binding(body).expect("body shape");
-    let baseline_outcome = resolve_query(&query, &SingleShapeContext(body_shape))
-        .expect("resolution should not error");
-    assert!(
-        baseline_outcome.is_resolved(),
-        "baseline: left hole (15mm from mid-plane) is strictly nearer than right (20mm), \
-         expected Resolved(1), got {}",
-        describe(&baseline_outcome)
-    );
-    if let ResolutionOutcome::Resolved(candidates) = &baseline_outcome {
-        assert_eq!(candidates.len(), 1);
-    }
+    let target = point_mm(30.0, 15.0, 4.0);
+    let base_query = Query::new(EntityKind::Face)
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Cylindrical))
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Radius(
+            Comparison::Eq(length_mm(2.5)),
+        )))
+        .with_clause(QueryClause::Ranking(RankingDirective::Nearest(
+            cad_query::predicate::SpatialTarget::Point(target),
+        )))
+        .with_cardinality(CardinalityExpectation::Unique);
 
-    let perturbed = session(
-        &ctx,
-        &format!("{HELD_OUT}/03_symmetric_candidates/perturbed.aicad"),
-    );
-    let body = perturbed.binding_named("body").expect("body binding");
-    let body_shape = perturbed.shape_for_binding(body).expect("body shape");
-    let perturbed_outcome = resolve_query(&query, &SingleShapeContext(body_shape))
+    let unscoped_outcome = build
+        .resolve(&base_query)
         .expect("resolution should not error");
     assert!(
-        perturbed_outcome.is_ambiguous(),
-        "perturbed: both holes are exactly 15mm from the mid-plane by construction -- a \
-         resolver that silently narrows this to Resolved(1) is exactly the \
-         silent_wrong_resolution this held-out case exists to catch; got {}",
-        describe(&perturbed_outcome)
+        unscoped_outcome.is_ambiguous(),
+        "unscoped: 'with_left's own permanently-live duplicate of the left hole's wall face \
+         must still tie against 'body's own copy, exactly as AICAD-099 recorded; got {}",
+        describe(&unscoped_outcome)
     );
-    if let ResolutionOutcome::Ambiguous(candidates) = &perturbed_outcome {
-        assert_eq!(candidates.len(), 2, "expected both symmetric holes tied");
+
+    let scoped_query = base_query.scoped_to(FeatureAnchor::named("body"));
+    let scoped_outcome = build
+        .resolve(&scoped_query)
+        .expect("resolution should not error");
+    match scoped_outcome {
+        ResolutionOutcome::Resolved(candidates) => assert_eq!(
+            candidates.len(),
+            1,
+            "scoped to 'body': 'with_left's own duplicate candidate must be excluded entirely, \
+             leaving only 'body's own left-hole wall face"
+        ),
+        other => panic!(
+            "scoped to 'body': expected Resolved(1) once the intermediate binding's own \
+             duplicate is excluded, got {}",
+            describe(&other)
+        ),
     }
+}
+
+/// Scoping never deduplicates candidates by geometry: within one scoped
+/// binding, multiple *distinct* faces that happen to share identical
+/// geometry (two unrelated `3mm`-radius fillets on the same final `body` —
+/// the same fixture `coincidental_radius_collision_between_unrelated_
+/// fillets_is_ambiguous_not_silently_resolved` above uses; `body`'s own
+/// final shape carries three real `3mm`-radius cylindrical faces once both
+/// fillet operations are applied, confirmed empirically below rather than
+/// assumed) must still tie as `Ambiguous`, exactly as the unscoped case
+/// already does. Scoping narrows *which bindings* are candidates; it is
+/// not a geometry-fingerprint identity mechanism that could ever collapse
+/// several real, distinct entities into one.
+#[test]
+fn same_geometry_candidates_are_not_deduplicated_within_a_scope() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let source = "\
+param box_x: Length = 40mm;\n\
+param box_y: Length = 30mm;\n\
+param box_z: Length = 20mm;\n\
+param radius: Length = 3mm;\n\
+\n\
+part Block {\n\
+    let once: Geometry = fillet(box(box_x, box_y, box_z), [1], radius);\n\
+    let body: Geometry = fillet(once, [3], radius);\n\
+}\n\
+";
+    let build = ParametricBuildSession::new("same_geometry_scoped", source, &ctx)
+        .unwrap_or_else(|diags| panic!("expected a successful build, got {diags:?}"));
+    let query = Query::new(EntityKind::Face)
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Cylindrical))
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Radius(
+            Comparison::Eq(length_mm(3.0)),
+        )))
+        .with_cardinality(CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("body"));
+    let outcome = build.resolve(&query).expect("resolution should not error");
+    match outcome {
+        ResolutionOutcome::Ambiguous(candidates) => assert_eq!(
+            candidates.len(),
+            3,
+            "'body' alone already carries every same-radius fillet face -- scoping must not \
+             collapse any of them into fewer distinct candidates just because their geometry \
+             is identical"
+        ),
+        other => panic!(
+            "expected Ambiguous(3) within the single 'body' scope (never a silent dedup to \
+             Resolved), got {}",
+            describe(&other)
+        ),
+    }
+}
+
+/// A scope naming a binding that does not exist in the program must fail
+/// closed (`Broken(ScopeNotFound)`), never silently fall back to the whole
+/// live-binding universe `ParametricBuildSession::candidates` would
+/// otherwise enumerate — proven against a build where the unscoped query
+/// would find real, resolvable candidates, so a silent-fallback bug would
+/// otherwise be masked as an apparently-correct `Resolved`/`Ambiguous`
+/// result rather than surfacing as a visible behavior change.
+#[test]
+fn invalid_scope_fails_closed_never_falls_back_to_the_whole_universe() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let build = session(
+        &ctx,
+        &format!("{HELD_OUT}/03_symmetric_candidates/baseline.aicad"),
+    );
+    let query = Query::new(EntityKind::Face)
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Cylindrical))
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Radius(
+            Comparison::Eq(length_mm(2.5)),
+        )))
+        .with_cardinality(CardinalityExpectation::ExpectCount(2))
+        .scoped_to(FeatureAnchor::named("no_such_binding"));
+    let outcome = build.resolve(&query).expect("resolution should not error");
+    assert!(
+        matches!(
+            outcome,
+            ResolutionOutcome::Broken(BrokenReason::ScopeNotFound(_))
+        ),
+        "an unresolvable scope must report Broken(ScopeNotFound), never silently widen to the \
+         whole live-binding universe (which does contain 2 real matching candidates here); \
+         got {}",
+        describe(&outcome)
+    );
 }
 
 /// Held-out `05_boolean_topology_change`, pure-geometry proxy: the case's
@@ -841,17 +991,17 @@ part Block {\n\
     }
 }
 
-/// A real, honest finding this campaign's own first draft surfaced (not a
+/// A real, honest finding `AICAD-099`'s own first draft surfaced (not a
 /// bug — recorded here as a permanent regression-shaped test rather than
 /// silently discarded): running `case03`'s own proxy query through the
-/// *real*, unrestricted production path (`ParametricBuildSession::
-/// resolve`/`crate::perturbation::run_case`, exactly what `cad refs
-/// check` or any real caller uses today) rather than the deliberately
-/// binding-scoped [`SingleShapeContext`] above reports `Ambiguous` in
-/// **both** the baseline and the perturbed build — not just the
-/// perturbed one `case03_symmetric_candidates_nearest_ranking_proxy`
-/// proves. Root cause: `ParametricBuildSession::candidates`'s own
-/// established "every top-level binding stays permanently live"
+/// *real*, unrestricted, **unscoped** production path (`ParametricBuildSession::
+/// resolve`/`crate::perturbation::run_case` with no `Query::scoped_to` —
+/// exactly what a caller that has not opted into `AICAD-099A`'s own new
+/// scoping mechanism still gets today) reports `Ambiguous` in **both** the
+/// baseline and the perturbed build — not just the perturbed one
+/// `case03_symmetric_candidates_scoped_to_body_via_the_real_production_path`
+/// proves once scoped. Root cause: `ParametricBuildSession::candidates`'s
+/// own established "every top-level binding stays permanently live"
 /// semantics (`AICAD-094`, and `case08_upstream_suppression`'s own
 /// already-documented precedent) means the fixture's own intermediate
 /// `with_left` binding contributes its own live copy of the left hole's
@@ -862,21 +1012,20 @@ part Block {\n\
 ///
 /// This is fail-closed, not silently wrong (`Ambiguous`, never an
 /// arbitrary pick) — so it is not itself a `SILENT_WRONG` regression
-/// under `tests/semantic_refs/regressions/`. It is a real, worth-recording
-/// limitation of resolving any query against the *whole* current
-/// candidate universe without a narrower scope
-/// (`ExplicitExport`/lineage/an export registry — none has a production
-/// evidence source yet, `AICAD-085`+/D31): a pure-geometry `unique()`
-/// query can be spuriously ambiguous whenever an intermediate binding
-/// happens to preserve an unmodified copy of the very face a later
-/// binding also carries, independent of whether the *fixture's own*
-/// modeled entities are actually symmetric. Documented in
-/// `project/reports/AICAD-099.md`; the fix (giving a query a way to scope
-/// its own candidate universe to one named feature/binding, rather than
-/// every live top-level binding) is real follow-up work, not something
-/// this task invents an answer for.
+/// under `tests/semantic_refs/regressions/`. It documents a real,
+/// intentionally-preserved boundary: the **unscoped** `Query`/
+/// `ParametricBuildSession::resolve` API keeps its pre-`AICAD-099A`
+/// whole-live-universe semantics unchanged (per that task's own
+/// "the unscoped production API may retain its current whole-live-universe
+/// semantics where compatibility requires it" instruction) — a caller
+/// that wants `case03`'s own narrower scope must opt in via
+/// `Query::scoped_to`, exactly as the test above now does. If this test
+/// ever starts reporting `Resolved` instead, the underlying unscoped
+/// candidate-enumeration behavior changed and needs re-review, not a
+/// silent test update. Documented in `project/reports/AICAD-099.md`/
+/// `AICAD-099A.md`.
 #[test]
-fn case03_full_session_candidate_scope_is_ambiguous_in_both_variants_not_silently_resolved() {
+fn unscoped_resolution_keeps_its_pre_099a_whole_session_ambiguity_semantics() {
     let ctx = OcctContext::new().expect("context creation should succeed");
     let target = point_mm(30.0, 15.0, 4.0);
     let query = Query::new(EntityKind::Face)

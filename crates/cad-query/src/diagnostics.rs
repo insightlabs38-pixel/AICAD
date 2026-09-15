@@ -410,6 +410,27 @@ fn broken_reason_detail(
                 ),
             ],
         ),
+        BrokenReason::ScopeNotFound(scope) => (
+            format!(
+                "Requested query scope '{scope}' could not be resolved to a currently-live \
+                     feature/binding in this context."
+            ),
+            None,
+            vec![
+                (
+                    "verify_scope_name",
+                    "verify the scoped feature/binding name still exists and was not renamed or \
+                     deleted"
+                        .to_string(),
+                ),
+                (
+                    "check_scope_still_geometry",
+                    "check that the named binding still evaluates to a Geometry value in the \
+                     current build"
+                        .to_string(),
+                ),
+            ],
+        ),
     }
 }
 

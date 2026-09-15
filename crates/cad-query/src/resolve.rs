@@ -118,6 +118,31 @@ pub trait ResolverContext<'ctx>: EvaluationEvidence<'ctx> {
     /// build scope, before any predicate filtering or ranking is applied.
     fn candidates(&self, kind: EntityKind) -> Vec<Candidate<'ctx>>;
 
+    /// Every currently-live candidate of `kind`, restricted to exactly the
+    /// named feature/binding `scope` identifies (`AICAD-099A`) — never the
+    /// whole [`ResolverContext::candidates`] universe. Returns `None` when
+    /// `scope` cannot be resolved to a real, currently-live entity in this
+    /// context: an unknown name, a name that no longer names geometry, or
+    /// (the default implementation) a context with no scoping support at
+    /// all. `crate::resolve::filter_and_rank` never falls back to the
+    /// unscoped universe when this returns `None` — a caller-requested
+    /// scope that cannot be resolved always becomes
+    /// [`BrokenReason::ScopeNotFound`] instead, matching every other
+    /// "evidence this context does not produce" hook on this trait
+    /// (`resolve_export`/`resolve_structural_role`/`resolve_user_confirmed`,
+    /// each also defaulting to `None`/"no guess"). A `Some(candidates)`
+    /// result is never deduplicated by geometry, OCCT/native identity, or
+    /// fingerprint similarity — two distinct candidates with identical
+    /// geometry inside the same scope remain two distinct candidates,
+    /// exactly like the unscoped universe.
+    fn candidates_in_scope(
+        &self,
+        _kind: EntityKind,
+        _scope: &FeatureAnchor,
+    ) -> Option<Vec<Candidate<'ctx>>> {
+        None
+    }
+
     /// The literal [`Query`] a [`ConstructionStrategy::SemanticQuery`]
     /// recipe names by [`QueryHandle`] — see `crate::recipe::QueryHandle`'s
     /// own doc comment for why the recipe itself only stores the handle.
@@ -197,6 +222,13 @@ pub enum BrokenReason {
     /// [`QueryHandle`] [`ResolverContext::lookup_query`] does not
     /// recognize.
     QueryHandleNotRegistered(QueryHandle),
+    /// A [`crate::query::Query::scope`] named a feature/binding
+    /// [`ResolverContext::candidates_in_scope`] could not resolve to a
+    /// currently-live entity in this context (`AICAD-099A`) — an unknown
+    /// name, a name that no longer names geometry, or a context with no
+    /// scoping support at all. Never silently widened to the unscoped
+    /// whole-candidate-universe search.
+    ScopeNotFound(FeatureAnchor),
 }
 
 /// A hard failure to execute resolution at all — distinct from a semantic
@@ -407,7 +439,13 @@ fn filter_and_rank<'ctx>(query: &Query, ctx: &dyn ResolverContext<'ctx>) -> Stag
         }
     }
 
-    let universe = ctx.candidates(query.entity_kind);
+    let universe = match &query.scope {
+        Some(scope) => match ctx.candidates_in_scope(query.entity_kind, scope) {
+            Some(candidates) => candidates,
+            None => return Ok(Err(BrokenReason::ScopeNotFound(scope.clone()))),
+        },
+        None => ctx.candidates(query.entity_kind),
+    };
     let mut matched = Vec::new();
     for candidate in universe {
         let mut keep = true;
@@ -1226,5 +1264,158 @@ mod tests {
             ResolutionOutcome::Broken(reason) => Some(reason.clone()),
             _ => None,
         }
+    }
+
+    // --- AICAD-099A ---
+
+    /// A [`ResolverContext`] with two named "features," each contributing
+    /// its own faces to the unscoped [`ResolverContext::candidates`]
+    /// universe — the same shape `cad_cli::ParametricBuildSession::
+    /// candidates`'s real "every live top-level binding" aggregation has
+    /// (`AICAD-099`'s own case03 finding), reduced to a minimal, from-first-
+    /// principles fixture. [`ScopedTwoFeatureContext::candidates_in_scope`]
+    /// answers only for `FeatureAnchor::named("known")`; every other scope
+    /// (including a genuinely unknown name) is unresolvable — proving the
+    /// resolver never invents an answer for a scope this context does not
+    /// recognize.
+    struct ScopedTwoFeatureContext<'ctx> {
+        known: &'ctx Shape<'ctx>,
+        other: &'ctx Shape<'ctx>,
+    }
+
+    impl<'ctx> EvaluationEvidence<'ctx> for ScopedTwoFeatureContext<'ctx> {}
+
+    fn faces_of<'ctx>(shape: &'ctx Shape<'ctx>) -> Vec<Candidate<'ctx>> {
+        (0..shape.face_count().unwrap())
+            .map(|i| Candidate::new(EntityKind::Face, shape.get_face(i).unwrap()))
+            .collect()
+    }
+
+    impl<'ctx> ResolverContext<'ctx> for ScopedTwoFeatureContext<'ctx> {
+        fn candidates(&self, kind: EntityKind) -> Vec<Candidate<'ctx>> {
+            if kind != EntityKind::Face {
+                return Vec::new();
+            }
+            let mut all = faces_of(self.known);
+            all.extend(faces_of(self.other));
+            all
+        }
+
+        fn candidates_in_scope(
+            &self,
+            kind: EntityKind,
+            scope: &FeatureAnchor,
+        ) -> Option<Vec<Candidate<'ctx>>> {
+            if kind != EntityKind::Face {
+                return None;
+            }
+            if *scope == FeatureAnchor::named("known") {
+                Some(faces_of(self.known))
+            } else {
+                None
+            }
+        }
+    }
+
+    /// A query scoped to `"known"` must consider only `known`'s own faces
+    /// — never `other`'s, even though the unscoped universe would include
+    /// both. This is the exact `AICAD-099A` fix: the same query, unscoped,
+    /// ties across both cylinders' identical-radius walls (`Ambiguous`);
+    /// scoped to one of them, it resolves uniquely.
+    #[test]
+    fn scoped_query_restricts_candidates_to_the_named_feature_only() {
+        let context = OcctContext::new().unwrap();
+        // Two congruent cylinders -- each contributes exactly one
+        // `Cylindrical` face at the same radius, so an unscoped
+        // `Radius(2mm)` query genuinely ties across both.
+        let known = context.create_cylinder(2.0, 5.0).unwrap();
+        let other = context.create_cylinder(2.0, 5.0).unwrap();
+        let ctx = ScopedTwoFeatureContext {
+            known: &known,
+            other: &other,
+        };
+
+        let unscoped = Query::new(EntityKind::Face)
+            .with_clause(QueryClause::Geometry(GeometryPredicate::Cylindrical))
+            .with_clause(QueryClause::Geometry(GeometryPredicate::Radius(
+                Comparison::Eq(length(2.0)),
+            )))
+            .with_cardinality(CardinalityExpectation::Unique);
+        let unscoped_outcome = resolve_query(&unscoped, &ctx).unwrap();
+        assert!(
+            unscoped_outcome.is_ambiguous(),
+            "sanity check: two congruent cylinders' own wall faces really do tie across the \
+             whole unscoped universe, got {unscoped_outcome:?}"
+        );
+
+        let scoped = unscoped.clone().scoped_to(FeatureAnchor::named("known"));
+        let scoped_outcome = resolve_query(&scoped, &ctx).unwrap();
+        match scoped_outcome {
+            ResolutionOutcome::Resolved(candidates) => assert_eq!(
+                candidates.len(),
+                1,
+                "scoped to 'known' alone, only its own single wall face should survive; \
+                 'other's own identical-radius wall face must not be counted"
+            ),
+            other => panic!("expected Resolved once scoped to 'known' alone, got {other:?}"),
+        }
+    }
+
+    /// A scope [`ResolverContext::candidates_in_scope`] cannot resolve
+    /// (an unknown feature/binding name) must report
+    /// [`BrokenReason::ScopeNotFound`], never silently widen back to the
+    /// unscoped whole-candidate-universe search — even though that wider
+    /// universe (`ctx.candidates`) exists and is non-empty in this same
+    /// context.
+    #[test]
+    fn unresolvable_scope_is_broken_never_falls_back_to_the_whole_universe() {
+        let context = OcctContext::new().unwrap();
+        let known = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let other = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let ctx = ScopedTwoFeatureContext {
+            known: &known,
+            other: &other,
+        };
+
+        let query = Query::new(EntityKind::Face)
+            .with_cardinality(CardinalityExpectation::Unstated)
+            .scoped_to(FeatureAnchor::named("does_not_exist"));
+        let outcome = resolve_query(&query, &ctx).unwrap();
+        assert_eq!(
+            outcome_broken_reason(&outcome),
+            Some(BrokenReason::ScopeNotFound(FeatureAnchor::named(
+                "does_not_exist"
+            )))
+        );
+    }
+
+    /// The default [`ResolverContext::candidates_in_scope`] implementation
+    /// (no override at all) reports every scope unresolvable — proving a
+    /// context that has not opted into scoping support fails closed rather
+    /// than silently ignoring the caller's scope request and searching the
+    /// whole universe anyway.
+    #[test]
+    fn a_context_with_no_scoping_support_fails_closed_for_any_requested_scope() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        struct PlainContext<'ctx>(&'ctx Shape<'ctx>);
+        impl<'ctx> EvaluationEvidence<'ctx> for PlainContext<'ctx> {}
+        impl<'ctx> ResolverContext<'ctx> for PlainContext<'ctx> {
+            fn candidates(&self, kind: EntityKind) -> Vec<Candidate<'ctx>> {
+                if kind != EntityKind::Face {
+                    return Vec::new();
+                }
+                faces_of(self.0)
+            }
+        }
+
+        let query = Query::new(EntityKind::Face)
+            .with_cardinality(CardinalityExpectation::Unstated)
+            .scoped_to(FeatureAnchor::named("anything"));
+        let outcome = resolve_query(&query, &PlainContext(&cube)).unwrap();
+        assert!(matches!(
+            outcome_broken_reason(&outcome),
+            Some(BrokenReason::ScopeNotFound(_))
+        ));
     }
 }

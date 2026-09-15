@@ -627,7 +627,9 @@ impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
 /// population in [`ParametricBuildSession::rebuild`]) — not only a bare
 /// top-level `let`, matching how every real `.aicad` program (and the
 /// entire frozen `AICAD-079A` corpus) actually declares its geometry.
-/// Every other
+/// `candidates_in_scope` (`AICAD-099A`, below) narrows this same
+/// enumeration to one named binding on request, rather than aggregating
+/// every one of them. Every other
 /// `ResolverContext` method (`lookup_query`/`resolve_export`/
 /// `resolve_structural_role`/`resolve_user_confirmed`) is left at its
 /// default `None` — this session has no production `SemanticQuery`
@@ -644,6 +646,47 @@ impl<'ctx> ResolverContext<'ctx> for ParametricBuildSession<'ctx> {
             }
         }
         out
+    }
+
+    /// `AICAD-099A`: restricts candidate enumeration to exactly one named
+    /// top-level binding's own current `Shape`, instead of
+    /// [`ParametricBuildSession::candidates`]'s own "every live top-level
+    /// binding" universe — the concrete fix for `AICAD-099`'s own recorded
+    /// finding (`project/reports/AICAD-099.md`'s "A real, honest finding"):
+    /// an intermediate binding (e.g. `with_left`) permanently carrying its
+    /// own live copy of a face a later binding (`body`) also carries can
+    /// make a whole-session query spuriously ambiguous even when the two
+    /// candidates are, semantically, the same intended entity reached
+    /// through two different bindings.
+    ///
+    /// Reuses exactly the binding/feature identity machinery this session
+    /// already owns — [`ParametricBuildSession::binding_named`] (the same
+    /// name lookup [`ParametricBuildSession::set_param`] uses) and
+    /// [`ParametricBuildSession::shape_for_binding`] (the same live-shape
+    /// lookup [`ParametricBuildSession::candidates`] uses per-binding
+    /// above) — never a topology index, an OCCT handle, or a geometry
+    /// fingerprint. `None` (never a guessed fallback to the whole
+    /// universe) when: `scope` is [`FeatureAnchor::CurrentFeature`] (no
+    /// notion of "the enclosing feature" exists for an ad hoc resolver
+    /// call outside an `expose { ... }` body); `scope` names a binding
+    /// this program does not declare; or that binding did not evaluate to
+    /// a `Geometry` value in the most recent build/rebuild round (matching
+    /// [`ParametricBuildSession::shape_for_binding`]'s own identical
+    /// `None` cases). Candidates within the resolved scope are never
+    /// deduplicated by geometry — `reference_replay::candidates_of_kind`
+    /// is the exact same enumeration [`ParametricBuildSession::candidates`]
+    /// already uses per-binding, unchanged.
+    fn candidates_in_scope(
+        &self,
+        kind: EntityKind,
+        scope: &FeatureAnchor,
+    ) -> Option<Vec<Candidate<'ctx>>> {
+        let FeatureAnchor::Named(name) = scope else {
+            return None;
+        };
+        let binding = self.binding_named(name)?;
+        let shape = self.shape_for_binding(binding)?;
+        Some(reference_replay::candidates_of_kind(shape, kind))
     }
 }
 

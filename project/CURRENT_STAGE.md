@@ -7,7 +7,7 @@ name: Stage 4 — semantic-topology-reference hard gate
 status: in-progress
 stage4_readiness: implementation-started
 last_completed_batch: S4-07
-last_completed_task: AICAD-099
+last_completed_task: AICAD-099A
 next_batch: S4-08 (AICAD-100)
 
 ## Stage 0 — closed
@@ -256,9 +256,40 @@ follow-up work, not something this task invents an answer for). No
 `tests/semantic_refs/regressions/` entry was added, since no
 `SILENT_WRONG` case was found to preserve there.
 
-Batch S4-07 (`AICAD-099`) is complete. The next batch is S4-08
-(`AICAD-100`, the Stage-4 owner hard-gate packet), which remains
-`status: todo`.
+Batch S4-07 (`AICAD-099`) is complete.
+
+`AICAD-099A` (a narrow, single-task remediation batch, inserted between
+`AICAD-099` and `AICAD-100`) is **done** — see `project/reports/
+AICAD-099A.md`. It fixes the one real, honest finding `AICAD-099`'s own
+report recorded (its own "A real, honest finding" section, unchanged
+above): `cad_query::query::Query` gains an explicit `scope:
+Option<cad_references::FeatureAnchor>` field (`Query::scoped_to`),
+`cad_query::resolve::ResolverContext` gains a `candidates_in_scope` hook
+(defaulted to `None`, matching every other "evidence this context does
+not produce" hook already on that trait) that `filter_and_rank` consults
+in place of the unscoped `candidates` call whenever a query carries a
+scope, reporting the new `BrokenReason::ScopeNotFound` (never falling back
+to the unscoped universe) when a requested scope cannot be resolved; and
+`cad_cli::ParametricBuildSession` implements it via the exact same
+`binding_named`/`shape_for_binding` identity machinery `AICAD-094` already
+established (never a topology index, OCCT handle, or fingerprint). The
+unscoped production API keeps its exact prior whole-live-universe
+semantics unchanged (proven by a dedicated, still-passing test). `case03`'s
+own critical acceptance test now runs through the real production path
+(`ParametricBuildSession::resolve`/`crate::perturbation::run_case`, not
+the `SingleShapeContext` test-only stand-in `AICAD-099` used), proving
+`Query::scoped_to(FeatureAnchor::named("body"))` correctly resolves
+`case03`'s baseline (`Resolved(1)`, the left hole) and reports the
+perturbed build's genuine tie (`Ambiguous(2)`) — never an arbitrary pick.
+`project/TASKS.yaml` records this as its own `AICAD-099A` entry (mirroring
+`AICAD-064A`'s own established lettered-remediation-task precedent), with
+`AICAD-100`'s own `depends_on` updated accordingly;
+`scripts/ci/stage4_task_audit.py` was updated to audit that same
+correction.
+
+Batch S4-07 (including its `AICAD-099A` remediation) is complete. The next
+batch is S4-08 (`AICAD-100`, the Stage-4 owner hard-gate packet), which
+remains `status: todo`.
 
 The hard gate remains fail-closed:
 
