@@ -32,37 +32,46 @@
 //! ultimately means for the user-visible outcome (most likely `Broken`);
 //! this module only refuses to guess.
 //!
-//! # Predicates not in scope
+//! # `Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`/`Contains`/
+//! `Intersects` (`AICAD-100A`)
 //!
-//! `TopologyPredicate::{Convex, Concave, Manifold, NonManifold,
-//! ConnectedTo, Contains, Intersects}` and `SpatialPredicate::{NearestTo,
-//! FarthestFrom}` are already-shipped AST variants (`AICAD-081`) that
-//! `AICAD-083`'s and `AICAD-084`'s own task titles do not name (`083`:
-//! "generated_by/modified_by/descended_from/adjacent_to/boundary" only;
-//! `084`: "baseline spatial predicates", which `nearest_to`/`farthest_from`
-//! do not fit — see below). Every evaluator function here is exhaustive
-//! over its predicate enum (so the match itself cannot silently drift out
-//! of sync with a future AST addition), but these specific variants
-//! return [`EvalError::NotYetSpecified`] rather than a guessed
-//! implementation, matching `AICAD-081`'s own precedent for deferring
-//! `curvature` (`crate::predicate`'s module doc comment) instead of
-//! inventing comparison/traversal semantics no task has specified:
+//! These seven `TopologyPredicate` variants were originally left
+//! `EvalError::NotYetSpecified` by `AICAD-083` (whose own task title named
+//! only `generated_by`/`modified_by`/`descended_from`/`adjacent_to`/
+//! `boundary`) pending a defined entity-kind restriction and geometric
+//! test for each. `AICAD-100A` specifies and implements all seven with
+//! explicit, tested topology-kind restrictions (see each `eval_*`
+//! function's own doc comment for the exact kind/algorithm):
+//! `Convex`/`Concave`/`Manifold`/`NonManifold` apply only to an
+//! [`EntityKind::Edge`]; `ConnectedTo` only to [`EntityKind::Face`];
+//! `Contains`/`Intersects` only to [`EntityKind::Solid`]. Every other
+//! candidate kind reports `Ok(false)` ("does not apply"), never a guessed
+//! match. `Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`
+//! additionally need the candidate's own enclosing shape
+//! ([`Candidate::with_root`]) to evaluate adjacency beyond the single
+//! candidate — absent that, they report [`EvalError::NoEvidence`], never a
+//! guess.
 //!
-//! - `Convex`/`Concave`: the plan doc (`docs/plan/06...` §6) names them
-//!   with no definition of which entity kind they apply to or what
-//!   geometric test decides them (dihedral-angle sign across an edge?
-//!   surface curvature sign for a face? both are common CAD meanings).
-//! - `Manifold`/`NonManifold`/`ConnectedTo`/`Contains`/`Intersects`: each
-//!   needs either whole-shape topology-graph traversal (connectivity) or
-//!   a defined aggregation policy this task's own scope does not cover.
-//! - `NearestTo`/`FarthestFrom`: comparative across a candidate *set*
-//!   (the plan's own `largest(area)`/`smallest(radius)`/`nearest(target)`
-//!   precedent in the same §6 puts genuinely comparative operations under
-//!   a separate "Ranking/disambiguation" heading) -- a single candidate
-//!   has no boolean "is nearest" truth value in isolation. How a
-//!   candidate-set-wide predicate like this composes with this module's
-//!   per-candidate evaluator shape is a resolver-level design question,
-//!   not a `GeometryPredicate`-style comparison this task can invent.
+//! # `SpatialPredicate::{NearestTo, FarthestFrom}` (`AICAD-100A`)
+//!
+//! These remain genuinely comparative across a candidate *set* — a single
+//! candidate still has no boolean "is nearest" truth value in isolation,
+//! so [`evaluate_spatial`] itself still reports `EvalError::
+//! NotYetSpecified` for a *direct* call bypassing the resolver, honestly:
+//! this per-candidate evaluator layer cannot decide them alone. Real
+//! production semantics exist one layer up instead: `crate::resolve::
+//! filter_and_rank` rewrites a `QueryClause::Spatial(SpatialPredicate::
+//! NearestTo(target))`/`FarthestFrom(target)` clause into the equivalent
+//! `RankingDirective::Nearest`/`Farthest` before evaluation — the exact
+//! precedent `crate::resolve`'s own module doc comment already establishes
+//! for `ConstructionStrategy::FeatureLineage`/`Ancestry` ("resolved by
+//! rewriting the recipe into an equivalent ... query and reusing the exact
+//! same evaluator/evidence path"), applied to a query clause instead of a
+//! reference recipe. Every real query executed through `cad_query::
+//! resolve_query`/`resolve_reference` (i.e. every production path in this
+//! workspace) therefore gives `nearest_to`/`farthest_from` real,
+//! already-tested comparative semantics via `crate::resolve::
+//! keep_nearest`, never a placeholder.
 //!
 //! # No invented numeric-tolerance policy
 //!
@@ -114,6 +123,22 @@ const POINT_CLASSIFY_TOLERANCE: f64 = 1e-7;
 /// a DL-26 "tolerance domain."
 const FLOAT_NOISE_RELATIVE: f64 = 1e-9;
 
+/// A minimum-distance-from-the-tangent-plane threshold (kernel-internal
+/// length units) below which two adjacent faces are treated as tangent
+/// (neither convex nor concave) rather than guessing a sign from float
+/// noise -- see `eval_convexity`'s own doc comment. Like
+/// `POINT_CLASSIFY_TOLERANCE`, this is a numerical-robustness input to a
+/// specific geometric algorithm, not a DL-26 query-matching tolerance
+/// domain.
+const CONVEXITY_EPSILON: f64 = 1e-9;
+
+/// A minimum post-boolean-intersection volume (kernel-internal cubic
+/// length units) above which two solids are considered to genuinely
+/// intersect, rather than share only a float-noise-thin sliver an exact
+/// boolean operation can produce for two solids that are actually merely
+/// touching -- see `eval_intersects`'s own doc comment.
+const INTERSECTION_VOLUME_EPSILON: f64 = 1e-12;
+
 /// One entity in a real build, already identified as belonging to
 /// `kind`, that a predicate is evaluated against.
 pub struct Candidate<'ctx> {
@@ -124,6 +149,16 @@ pub struct Candidate<'ctx> {
     /// never says which face it bounds. `None` for every other predicate
     /// and entity kind.
     parent_face: Option<Shape<'ctx>>,
+    /// The whole shape `shape` was enumerated from (`AICAD-100A`) --
+    /// needed for predicates that require adjacency/connectivity context
+    /// beyond the single candidate itself (`Convex`/`Concave`/`Manifold`/
+    /// `NonManifold`/`ConnectedTo`). `None` for a candidate built without
+    /// that context (e.g. every pre-`AICAD-100A` construction site/test
+    /// fixture, and every candidate of a kind those predicates do not
+    /// apply to) -- those predicates report [`EvalError::NoEvidence`]
+    /// rather than guessing when this is absent, exactly like
+    /// [`TopologyPredicate::Boundary`]'s own `parent_face`.
+    root: Option<Shape<'ctx>>,
 }
 
 impl<'ctx> Candidate<'ctx> {
@@ -132,6 +167,7 @@ impl<'ctx> Candidate<'ctx> {
             kind,
             shape,
             parent_face: None,
+            root: None,
         }
     }
 
@@ -142,6 +178,22 @@ impl<'ctx> Candidate<'ctx> {
             kind: EntityKind::Wire,
             shape,
             parent_face: Some(parent_face),
+            root: None,
+        }
+    }
+
+    /// A candidate built together with the whole shape it was enumerated
+    /// from (`AICAD-100A`) -- required by `Convex`/`Concave`/`Manifold`/
+    /// `NonManifold`/`ConnectedTo`; see [`Candidate::root`]'s own doc
+    /// comment. `root` should be an independently-owned handle (e.g.
+    /// `cad_occt_bridge::Shape::duplicate`), never the same handle another
+    /// live `Candidate`/caller still holds an exclusive reference to.
+    pub fn with_root(kind: EntityKind, shape: Shape<'ctx>, root: Shape<'ctx>) -> Self {
+        Candidate {
+            kind,
+            shape,
+            parent_face: None,
+            root: Some(root),
         }
     }
 
@@ -337,18 +389,216 @@ pub fn evaluate_topology<'ctx>(
             )),
         TopologyPredicate::AdjacentTo(target) => eval_adjacent_to(candidate, target, evidence),
         TopologyPredicate::Boundary(kind) => eval_boundary(candidate, *kind),
-        TopologyPredicate::Convex
-        | TopologyPredicate::Concave
-        | TopologyPredicate::Manifold
-        | TopologyPredicate::NonManifold
-        | TopologyPredicate::ConnectedTo(_)
-        | TopologyPredicate::Contains(_)
-        | TopologyPredicate::Intersects(_) => Err(EvalError::NotYetSpecified(
-            "not in AICAD-083's scope (generated_by/modified_by/descended_from/adjacent_to/\
-             boundary only); no later Stage-4 task has specified this predicate's evaluation \
-             semantics yet",
-        )),
+        TopologyPredicate::Convex => eval_convexity(candidate, true),
+        TopologyPredicate::Concave => eval_convexity(candidate, false),
+        TopologyPredicate::Manifold => eval_manifold(candidate, true),
+        TopologyPredicate::NonManifold => eval_manifold(candidate, false),
+        TopologyPredicate::ConnectedTo(target) => eval_connected_to(candidate, target, evidence),
+        TopologyPredicate::Contains(point) => eval_contains(candidate, point),
+        TopologyPredicate::Intersects(target) => eval_intersects(candidate, target, evidence),
     }
+}
+
+/// `Convex`/`Concave` (`AICAD-100A`) -- defined only for an interior
+/// manifold [`EntityKind::Edge`] (exactly two adjacent faces; any other
+/// candidate kind, or an edge with a different adjacent-face count, does
+/// not match either predicate -- `Ok(false)`, never a guess). Classifies
+/// the edge via a standard tangent-plane probe: at each of the edge's two
+/// adjacent faces' own representative point/outward-normal pair
+/// ([`Shape::face_normal`]), the *other* face's own representative point
+/// lies either on the material (inward) side of this face's tangent
+/// plane -- a convex edge, material bulging outward, like an ordinary box
+/// corner -- or on the non-material (outward) side -- a concave edge,
+/// material recessing inward, like the inner corner of a pocket/notch.
+/// Verified against both textbook cases (a box corner; the inner corner
+/// of a rectangular notch) before being trusted here. Faces closer than
+/// [`CONVEXITY_EPSILON`] to exactly tangent (coplanar) report `false` for
+/// *both* `Convex` and `Concave`, never an arbitrary sign from float
+/// noise.
+fn eval_convexity(candidate: &Candidate<'_>, want_convex: bool) -> EvalResult<bool> {
+    if candidate.kind != EntityKind::Edge {
+        return Ok(false);
+    }
+    let root = candidate.root.as_ref().ok_or(EvalError::NoEvidence(
+        "convex/concave requires the candidate's own enclosing root shape (Candidate::with_root)",
+    ))?;
+    let Some(edge_index) = find_edge_index(root, &candidate.shape)? else {
+        return Ok(false);
+    };
+    if root.edge_adjacent_face_count(edge_index)? != 2 {
+        // Not a well-defined interior manifold edge -- a free boundary
+        // edge or a non-manifold junction has no convex/concave meaning.
+        return Ok(false);
+    }
+    let f1 = root.edge_adjacent_face(edge_index, 0)?;
+    let f2 = root.edge_adjacent_face(edge_index, 1)?;
+    let (c1, n1) = f1.face_normal()?;
+    let (c2, _) = f2.face_normal()?;
+    let d = (c2 - c1).dot(n1.as_vector3());
+    if d.abs() < CONVEXITY_EPSILON {
+        return Ok(false);
+    }
+    let is_convex = d < 0.0;
+    Ok(is_convex == want_convex)
+}
+
+/// Every index into `root`'s own [`Shape::edge_count`] enumeration whose
+/// edge [`Shape::is_same`]-matches `edge` -- the parent-shape-relative
+/// index [`Shape::edge_adjacent_face_count`]/[`Shape::edge_adjacent_face`]
+/// need, since a bare edge [`Candidate`] carries no index of its own.
+/// Returns the first match (an edge is never listed twice in one shape's
+/// own unique-edge enumeration, per [`Shape::edge_count`]'s own doc
+/// comment).
+fn find_edge_index(root: &Shape<'_>, edge: &Shape<'_>) -> KernelResult<Option<usize>> {
+    let count = root.edge_count()?;
+    for i in 0..count {
+        if root.get_edge(i)?.is_same(edge)? {
+            return Ok(Some(i));
+        }
+    }
+    Ok(None)
+}
+
+/// `Manifold`/`NonManifold` (`AICAD-100A`) -- defined only for
+/// [`EntityKind::Edge`]: manifold means exactly two adjacent faces (an
+/// ordinary interior edge); non-manifold means any other adjacent-face
+/// count (one, a free/boundary edge; three or more, a non-manifold
+/// junction). Any other candidate kind does not match either -- `Ok(false)`.
+fn eval_manifold(candidate: &Candidate<'_>, want_manifold: bool) -> EvalResult<bool> {
+    if candidate.kind != EntityKind::Edge {
+        return Ok(false);
+    }
+    let root = candidate.root.as_ref().ok_or(EvalError::NoEvidence(
+        "manifold/non_manifold requires the candidate's own enclosing root shape \
+         (Candidate::with_root)",
+    ))?;
+    let Some(edge_index) = find_edge_index(root, &candidate.shape)? else {
+        return Ok(false);
+    };
+    let adjacent = root.edge_adjacent_face_count(edge_index)?;
+    Ok((adjacent == 2) == want_manifold)
+}
+
+/// `ConnectedTo` (`AICAD-100A`) -- defined only for [`EntityKind::Face`]:
+/// true iff a path of face-to-face shared-edge adjacency (a real
+/// breadth-first search over every face of the candidate's own enclosing
+/// [`Candidate::root`] shape, reusing [`any_shared_edge`]) connects
+/// `candidate` to *any* of `target`'s own resolved candidates -- a
+/// genuine graph-connectivity test, never a coincidental geometric
+/// heuristic. Any other candidate kind does not match -- `Ok(false)`.
+fn eval_connected_to<'ctx>(
+    candidate: &Candidate<'ctx>,
+    target: &AdjacencyTarget,
+    evidence: &dyn EvaluationEvidence<'ctx>,
+) -> EvalResult<bool> {
+    if candidate.kind != EntityKind::Face {
+        return Ok(false);
+    }
+    let root = candidate.root.as_ref().ok_or(EvalError::NoEvidence(
+        "connected_to requires the candidate's own enclosing root shape (Candidate::with_root)",
+    ))?;
+    let targets = evidence
+        .resolve_target(target)
+        .ok_or(EvalError::NoEvidence(
+            "connected_to requires its target reference/query to already be resolved",
+        ))?;
+
+    let face_count = root.face_count()?;
+    let mut faces = Vec::with_capacity(face_count);
+    for i in 0..face_count {
+        faces.push(root.get_face(i)?);
+    }
+    let Some(start) = faces
+        .iter()
+        .position(|f| f.is_same(&candidate.shape).unwrap_or(false))
+    else {
+        return Ok(false);
+    };
+
+    let mut visited = vec![false; face_count];
+    let mut queue = std::collections::VecDeque::new();
+    visited[start] = true;
+    queue.push_back(start);
+    while let Some(i) = queue.pop_front() {
+        if targets
+            .iter()
+            .any(|t| t.shape().is_same(&faces[i]).unwrap_or(false))
+        {
+            return Ok(true);
+        }
+        for j in 0..face_count {
+            if !visited[j] && any_shared_edge(&faces[i], &faces[j])? {
+                visited[j] = true;
+                queue.push_back(j);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// `Contains(point)` (`AICAD-100A`) -- defined only for
+/// [`EntityKind::Solid`], via exact point-vs-solid classification
+/// ([`Shape::classify_point`], never a bounding-box/mesh approximation) --
+/// the volumetric-containment counterpart to [`SpatialPredicate::Inside`]
+/// (which tests whether a candidate's own representative point lies
+/// inside an already-resolved *reference*; this tests whether the
+/// candidate *itself* contains a literal authored point). Any other
+/// candidate kind does not match -- `Ok(false)`.
+fn eval_contains(candidate: &Candidate<'_>, point: &QueryPoint3) -> EvalResult<bool> {
+    if candidate.kind != EntityKind::Solid {
+        return Ok(false);
+    }
+    let kernel_point = to_kernel_point(*point);
+    match candidate
+        .shape
+        .classify_point(kernel_point, POINT_CLASSIFY_TOLERANCE)
+    {
+        Ok(classification) => Ok(matches!(
+            classification,
+            PointClassification::Inside | PointClassification::OnBoundary
+        )),
+        Err(KernelError::InvalidArgument) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `Intersects(target)` (`AICAD-100A`) -- defined only for a
+/// [`EntityKind::Solid`] candidate against a `target` whose own resolved
+/// candidates include at least one Solid: performs the real kernel
+/// boolean intersection ([`Shape::intersect`]) and reports `true` iff the
+/// result has non-negligible volume ([`INTERSECTION_VOLUME_EPSILON`]) --
+/// two solids that merely touch along a zero-volume boundary (sharing a
+/// face/edge/vertex only) are not "intersecting" in the volumetric sense
+/// this predicate names. Any other candidate kind, or a target with no
+/// Solid candidate, does not match -- `Ok(false)`, never a guess. A
+/// kernel boolean failure against one target candidate is treated as "no
+/// intersection with that candidate" (not every solid pair is booleanable
+/// -- see [`Shape::intersect`]'s own doc comment) rather than aborting the
+/// whole predicate.
+fn eval_intersects<'ctx>(
+    candidate: &Candidate<'ctx>,
+    target: &AdjacencyTarget,
+    evidence: &dyn EvaluationEvidence<'ctx>,
+) -> EvalResult<bool> {
+    if candidate.kind != EntityKind::Solid {
+        return Ok(false);
+    }
+    let targets = evidence
+        .resolve_target(target)
+        .ok_or(EvalError::NoEvidence(
+            "intersects requires its target reference/query to already be resolved",
+        ))?;
+    for other in &targets {
+        if other.kind() != EntityKind::Solid {
+            continue;
+        }
+        if let Ok(result) = candidate.shape.intersect(other.shape())
+            && result.volume().unwrap_or(0.0) > INTERSECTION_VOLUME_EPSILON
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn eval_boundary(candidate: &Candidate<'_>, kind: BoundaryKind) -> EvalResult<bool> {
@@ -573,6 +823,7 @@ fn approx_eq(a: f64, b: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cad_kernel_api::{Transform, Vector3};
     use cad_occt_bridge::OcctContext;
     use cad_types::Dimension;
     use cad_units::OperandType;
@@ -797,14 +1048,14 @@ mod tests {
     }
 
     #[test]
-    fn convex_and_nearest_to_are_explicitly_not_yet_specified() {
+    fn nearest_to_still_reports_not_yet_specified_for_a_direct_per_candidate_call() {
+        // The real production semantics for `nearest_to`/`farthest_from`
+        // now exist at the query/resolver level (`crate::resolve`'s own
+        // clause-rewriting, `AICAD-100A`) -- a *direct* call to this bare
+        // per-candidate evaluator still cannot decide them alone, honestly
+        // (see this module's own doc comment).
         let context = OcctContext::new().unwrap();
         let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
-        let edge = Candidate::new(EntityKind::Edge, cube.get_edge(0).unwrap());
-        assert!(matches!(
-            evaluate_topology(&TopologyPredicate::Convex, &edge, &NoEvidence),
-            Err(EvalError::NotYetSpecified(_))
-        ));
         let face = Candidate::new(EntityKind::Face, cube.get_face(0).unwrap());
         assert!(matches!(
             evaluate_spatial(
@@ -818,6 +1069,305 @@ mod tests {
             ),
             Err(EvalError::NotYetSpecified(_))
         ));
+    }
+
+    // --- AICAD-100A: Convex/Concave/Manifold/NonManifold/ConnectedTo/
+    // Contains/Intersects ---
+
+    fn edge_candidates_with_root<'ctx>(root: &'ctx Shape<'ctx>) -> Vec<Candidate<'ctx>> {
+        (0..root.edge_count().unwrap())
+            .map(|i| {
+                Candidate::with_root(
+                    EntityKind::Edge,
+                    root.get_edge(i).unwrap(),
+                    root.duplicate().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_box_edge_is_convex_and_none_are_concave() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        for candidate in edge_candidates_with_root(&cube) {
+            assert!(
+                evaluate_topology(&TopologyPredicate::Convex, &candidate, &NoEvidence).unwrap(),
+                "every ordinary box edge is convex"
+            );
+            assert!(
+                !evaluate_topology(&TopologyPredicate::Concave, &candidate, &NoEvidence).unwrap()
+            );
+        }
+    }
+
+    /// A box with a rectangular notch cut from one corner has both convex
+    /// edges (the box's own remaining outer corners) and exactly one
+    /// concave edge (the inner corner of the notch, running the full
+    /// height) -- the textbook counter-example `eval_convexity`'s own doc
+    /// comment cites as having been checked before being trusted.
+    #[test]
+    fn a_notched_box_has_both_convex_and_concave_edges() {
+        let context = OcctContext::new().unwrap();
+        let base = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let notch_raw = context.create_box(5.0, 5.0, 12.0).unwrap();
+        let notch = notch_raw
+            .transform(&Transform::translation(Vector3::new(6.0, 6.0, -1.0)))
+            .unwrap();
+        let notched = base.cut(&notch).expect("cut should succeed");
+
+        let mut saw_convex = false;
+        let mut saw_concave = false;
+        for candidate in edge_candidates_with_root(&notched) {
+            if evaluate_topology(&TopologyPredicate::Convex, &candidate, &NoEvidence).unwrap() {
+                saw_convex = true;
+            }
+            if evaluate_topology(&TopologyPredicate::Concave, &candidate, &NoEvidence).unwrap() {
+                saw_concave = true;
+            }
+        }
+        assert!(saw_convex, "the notched box's own outer corners are convex");
+        assert!(
+            saw_concave,
+            "the notch's own inner corner edge must be classified concave"
+        );
+    }
+
+    #[test]
+    fn convex_and_concave_do_not_apply_to_a_non_edge_candidate() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = Candidate::with_root(
+            EntityKind::Face,
+            cube.get_face(0).unwrap(),
+            cube.duplicate().unwrap(),
+        );
+        assert!(!evaluate_topology(&TopologyPredicate::Convex, &face, &NoEvidence).unwrap());
+        assert!(!evaluate_topology(&TopologyPredicate::Concave, &face, &NoEvidence).unwrap());
+    }
+
+    #[test]
+    fn convex_without_a_root_shape_is_no_evidence() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge = Candidate::new(EntityKind::Edge, cube.get_edge(0).unwrap());
+        assert!(matches!(
+            evaluate_topology(&TopologyPredicate::Convex, &edge, &NoEvidence),
+            Err(EvalError::NoEvidence(_))
+        ));
+    }
+
+    #[test]
+    fn every_box_edge_is_manifold_and_none_are_non_manifold() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        for candidate in edge_candidates_with_root(&cube) {
+            assert!(
+                evaluate_topology(&TopologyPredicate::Manifold, &candidate, &NoEvidence).unwrap()
+            );
+            assert!(
+                !evaluate_topology(&TopologyPredicate::NonManifold, &candidate, &NoEvidence)
+                    .unwrap()
+            );
+        }
+    }
+
+    /// A single standalone [`Shape`] of kind Face (detached from any
+    /// solid -- e.g. one face lifted out of a box) has every one of its
+    /// own boundary edges adjacent to exactly *one* face within its own
+    /// enclosing shape (itself): a real, textbook free-boundary
+    /// (non-manifold) edge, unlike the same edge back when it was part of
+    /// a closed solid (adjacent to two faces there).
+    #[test]
+    fn a_standalone_faces_own_boundary_edges_are_non_manifold() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let face = cube.get_face(0).unwrap();
+        assert_eq!(
+            face.edge_count().unwrap(),
+            4,
+            "a box face has four boundary edges"
+        );
+
+        for candidate in edge_candidates_with_root(&face) {
+            assert!(
+                evaluate_topology(&TopologyPredicate::NonManifold, &candidate, &NoEvidence)
+                    .unwrap(),
+                "a standalone face's own boundary edge has only itself as an adjacent face"
+            );
+            assert!(
+                !evaluate_topology(&TopologyPredicate::Manifold, &candidate, &NoEvidence).unwrap()
+            );
+        }
+    }
+
+    struct FixedTarget<'ctx>(Vec<Candidate<'ctx>>);
+    impl<'ctx> EvaluationEvidence<'ctx> for FixedTarget<'ctx> {
+        fn resolve_target(&self, _t: &AdjacencyTarget) -> Option<Vec<Candidate<'ctx>>> {
+            Some(
+                self.0
+                    .iter()
+                    .map(|c| Candidate::new(c.kind(), c.shape().duplicate().unwrap()))
+                    .collect(),
+            )
+        }
+    }
+
+    #[test]
+    fn connected_to_reaches_a_non_adjacent_face_of_the_same_solid() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let start = Candidate::with_root(
+            EntityKind::Face,
+            cube.get_face(0).unwrap(),
+            cube.duplicate().unwrap(),
+        );
+        // The face directly opposite face 0 shares no edge with it, but is
+        // still reachable via the other four faces -- a real transitive
+        // BFS result, not a direct-adjacency check.
+        let opposite = (1..cube.face_count().unwrap())
+            .map(|i| cube.get_face(i).unwrap())
+            .find(|f| !any_shared_edge(&cube.get_face(0).unwrap(), f).unwrap())
+            .expect("a box has exactly one face not directly adjacent to face 0");
+        let evidence = FixedTarget(vec![Candidate::new(EntityKind::Face, opposite)]);
+        assert!(
+            evaluate_topology(
+                &TopologyPredicate::ConnectedTo(any_ref_placeholder()),
+                &start,
+                &evidence
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn connected_to_is_false_across_two_unrelated_solids() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let b = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let start = Candidate::with_root(
+            EntityKind::Face,
+            a.get_face(0).unwrap(),
+            a.duplicate().unwrap(),
+        );
+        let evidence = FixedTarget(vec![Candidate::new(
+            EntityKind::Face,
+            b.get_face(0).unwrap(),
+        )]);
+        assert!(
+            !evaluate_topology(
+                &TopologyPredicate::ConnectedTo(any_ref_placeholder()),
+                &start,
+                &evidence
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn connected_to_does_not_apply_to_a_non_face_candidate() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge = Candidate::with_root(
+            EntityKind::Edge,
+            cube.get_edge(0).unwrap(),
+            cube.duplicate().unwrap(),
+        );
+        let evidence = FixedTarget(vec![Candidate::new(
+            EntityKind::Face,
+            cube.get_face(0).unwrap(),
+        )]);
+        assert!(
+            !evaluate_topology(
+                &TopologyPredicate::ConnectedTo(any_ref_placeholder()),
+                &edge,
+                &evidence
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn contains_reports_true_for_the_box_center_and_false_far_away() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let solid = Candidate::new(EntityKind::Solid, cube);
+        let center = QueryPoint3::new(length(1.0), length(1.0), length(1.0));
+        let far = QueryPoint3::new(length(1000.0), length(1000.0), length(1000.0));
+        assert!(
+            evaluate_topology(&TopologyPredicate::Contains(center), &solid, &NoEvidence).unwrap()
+        );
+        assert!(
+            !evaluate_topology(&TopologyPredicate::Contains(far), &solid, &NoEvidence).unwrap()
+        );
+    }
+
+    #[test]
+    fn contains_does_not_apply_to_a_face_candidate() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = Candidate::new(EntityKind::Face, cube.get_face(0).unwrap());
+        let point = QueryPoint3::new(length(0.5), length(0.5), length(0.5));
+        assert!(
+            !evaluate_topology(&TopologyPredicate::Contains(point), &face, &NoEvidence).unwrap()
+        );
+    }
+
+    #[test]
+    fn intersects_is_true_for_overlapping_solids_and_false_for_disjoint_ones() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let overlapping = context
+            .create_box(2.0, 2.0, 2.0)
+            .unwrap()
+            .transform(&Transform::translation(Vector3::new(1.0, 0.0, 0.0)))
+            .unwrap();
+        let disjoint = context
+            .create_box(2.0, 2.0, 2.0)
+            .unwrap()
+            .transform(&Transform::translation(Vector3::new(100.0, 0.0, 0.0)))
+            .unwrap();
+
+        let candidate = Candidate::new(EntityKind::Solid, a);
+        let overlapping_evidence =
+            FixedTarget(vec![Candidate::new(EntityKind::Solid, overlapping)]);
+        assert!(
+            evaluate_topology(
+                &TopologyPredicate::Intersects(any_ref_placeholder()),
+                &candidate,
+                &overlapping_evidence
+            )
+            .unwrap()
+        );
+
+        let disjoint_evidence = FixedTarget(vec![Candidate::new(EntityKind::Solid, disjoint)]);
+        assert!(
+            !evaluate_topology(
+                &TopologyPredicate::Intersects(any_ref_placeholder()),
+                &candidate,
+                &disjoint_evidence
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn intersects_does_not_apply_to_a_face_candidate() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let face = Candidate::new(EntityKind::Face, cube.get_face(0).unwrap());
+        let evidence = FixedTarget(vec![Candidate::new(
+            EntityKind::Solid,
+            cube.duplicate().unwrap(),
+        )]);
+        assert!(
+            !evaluate_topology(
+                &TopologyPredicate::Intersects(any_ref_placeholder()),
+                &face,
+                &evidence
+            )
+            .unwrap()
+        );
     }
 
     #[test]

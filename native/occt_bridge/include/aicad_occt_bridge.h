@@ -130,6 +130,13 @@ aicad_occt_status_t aicad_occt_context_destroy(aicad_occt_context_t* context);
 aicad_occt_status_t aicad_occt_release_shape(aicad_occt_context_t* context,
                                               aicad_shape_handle_t handle);
 
+/* Returns a second, independently-releasable handle onto the exact same
+ * underlying shape as `handle` (a cheap map re-insertion, never a real
+ * geometry copy). */
+aicad_occt_status_t aicad_occt_shape_duplicate(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                aicad_shape_handle_t* out_handle);
+
 /* --- Stage-1 starting operation set (native/occt_bridge/README.md) ---
  * Only create_box is implemented by AICAD-016; the remaining operations
  * in the README's list are added incrementally by later Stage-1 tasks,
@@ -545,6 +552,36 @@ aicad_occt_status_t aicad_occt_shape_get_face(aicad_occt_context_t* context,
                                                aicad_shape_handle_t handle,
                                                size_t index,
                                                aicad_shape_handle_t* out_face_handle);
+
+/* Number of unique shells in `handle`'s shape (any shape kind, matching
+ * aicad_occt_shape_face_count's own "any shape kind" scope). */
+aicad_occt_status_t aicad_occt_shape_shell_count(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t handle,
+                                                  size_t* out_count);
+
+/* Returns a handle to the shell at `index` (0-based, `< shell_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_face's own
+ * contract. */
+aicad_occt_status_t aicad_occt_shape_get_shell(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                size_t index,
+                                                aicad_shape_handle_t* out_shell_handle);
+
+/* Number of unique solids in `handle`'s shape (any shape kind, matching
+ * aicad_occt_shape_face_count's own "any shape kind" scope). */
+aicad_occt_status_t aicad_occt_shape_solid_count(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t handle,
+                                                  size_t* out_count);
+
+/* Returns a handle to the solid at `index` (0-based, `< solid_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_face's own
+ * contract. */
+aicad_occt_status_t aicad_occt_shape_get_solid(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                size_t index,
+                                                aicad_shape_handle_t* out_solid_handle);
 
 /* Hollows `shape_handle` into a shell of constant wall `thickness`,
  * removing (opening) the given `faces_to_remove` (>= 1, each obtained

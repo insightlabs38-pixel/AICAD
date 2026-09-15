@@ -1708,6 +1708,156 @@ aicad_occt_status_t aicad_occt_shape_get_face(aicad_occt_context_t* context,
   }
 }
 
+aicad_occt_status_t aicad_occt_shape_duplicate(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    // A cheap second, independently-releasable handle onto the exact same
+    // underlying TopoDS_Shape (OCCT's own TopoDS_Shape is a lightweight
+    // handle+location value; re-inserting it is a map entry, never a real
+    // geometry copy) -- used by `cad-query`'s own `Candidate::with_root`
+    // (`AICAD-100A`) to give a candidate its own independently-owned
+    // handle onto the whole shape it was enumerated from, without the
+    // caller needing to keep the original handle alive/aliased.
+    *out_handle = context->shapes.Insert(context->id, *shape);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_shell_count(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t handle,
+                                                  size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape shells;
+    TopExp::MapShapes(*shape, TopAbs_SHELL, shells);
+    *out_count = static_cast<size_t>(shells.Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_get_shell(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                size_t index,
+                                                aicad_shape_handle_t* out_shell_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_shell_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape shells;
+    TopExp::MapShapes(*shape, TopAbs_SHELL, shells);
+    if (index >= static_cast<size_t>(shells.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopoDS_Shape& shell = shells.FindKey(static_cast<Standard_Integer>(index) + 1);
+    *out_shell_handle = context->shapes.Insert(context->id, shell);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_solid_count(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t handle,
+                                                  size_t* out_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_count == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(*shape, TopAbs_SOLID, solids);
+    *out_count = static_cast<size_t>(solids.Extent());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_get_solid(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                size_t index,
+                                                aicad_shape_handle_t* out_solid_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_solid_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopTools_IndexedMapOfShape solids;
+    TopExp::MapShapes(*shape, TopAbs_SOLID, solids);
+    if (index >= static_cast<size_t>(solids.Extent())) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    const TopoDS_Shape& solid = solids.FindKey(static_cast<Standard_Integer>(index) + 1);
+    *out_solid_handle = context->shapes.Insert(context->id, solid);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
 aicad_occt_status_t aicad_occt_shell(aicad_occt_context_t* context,
                                       aicad_shape_handle_t shape_handle,
                                       const aicad_shape_handle_t* faces_to_remove,

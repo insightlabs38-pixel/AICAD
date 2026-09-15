@@ -381,6 +381,32 @@ impl<'ctx> Shape<'ctx> {
         Ok(is_valid != 0)
     }
 
+    /// A second, independently-releasable handle onto the exact same
+    /// underlying shape (`AICAD-100A`) — a cheap map re-insertion on the
+    /// native side, never a real geometry copy (`Shape` itself has no
+    /// `Clone` impl, matching every other `RAII`-owned-resource wrapper in
+    /// this crate — this is the one deliberate, explicit exception, needed
+    /// by `cad_query::Candidate::with_root` to give a candidate its own
+    /// independently-owned handle onto the whole shape it was enumerated
+    /// from, without borrowing the original).
+    pub fn duplicate(&self) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_duplicate(self.context.raw, self.raw_handle(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     /// This shape's volume, per OCCT's `BRepGProp::VolumeProperties`, in
     /// the kernel's internal linear unit (unit semantics belong to
     /// `cad-units` above this crate, not here).
@@ -993,6 +1019,83 @@ impl<'ctx> Shape<'ctx> {
         // in `is_valid`/`create_box`.
         let status = unsafe {
             ffi::aicad_occt_shape_get_face(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// The number of unique shells in this shape (`AICAD-100A`), via
+    /// OCCT's own de-duplicated `TopExp::MapShapes` over `TopAbs_SHELL` --
+    /// same pattern as [`Shape::face_count`], applied to the next topology
+    /// kind up. Closes the Stage-4 gap `crate::reference_replay::
+    /// candidates_of_kind`'s own prior doc comment named: no bridge
+    /// accessor existed to enumerate a shape's own sub-shells, so a
+    /// `ShellRef` query against real geometry could never find a
+    /// candidate at all.
+    pub fn shell_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_shell_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the shell at `index` (0-based, `< self.shell_count()`) in
+    /// this shape's own current raw enumeration order (`AICAD-100A`) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_face`].
+    pub fn get_shell(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_shell(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// The number of unique solids in this shape (`AICAD-100A`), via
+    /// OCCT's own de-duplicated `TopExp::MapShapes` over `TopAbs_SOLID` --
+    /// same pattern as [`Shape::shell_count`].
+    pub fn solid_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_solid_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the solid at `index` (0-based, `< self.solid_count()`) in
+    /// this shape's own current raw enumeration order (`AICAD-100A`) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_face`].
+    pub fn get_solid(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_solid(self.context.raw, self.raw_handle(), index, &mut handle)
         };
         status_result(status)?;
         Ok(Shape {
@@ -2795,6 +2898,73 @@ mod tests {
             box_shape.get_face(6).unwrap_err(),
             KernelError::InvalidArgument
         );
+    }
+
+    #[test]
+    fn duplicate_is_independently_releasable_and_addresses_the_same_shape() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let dup = box_shape.duplicate().unwrap();
+        assert!(box_shape.is_same(&dup).unwrap());
+        assert_eq!(dup.face_count().unwrap(), box_shape.face_count().unwrap());
+        // Releasing one handle must not invalidate the other -- confirmed
+        // by both still answering queries cleanly afterward.
+        drop(dup);
+        assert!(box_shape.is_valid().unwrap());
+    }
+
+    // --- AICAD-100A: shell/solid candidate enumeration ---
+
+    #[test]
+    fn a_box_solid_has_exactly_one_unique_solid_and_one_unique_shell() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        assert_eq!(box_shape.solid_count().unwrap(), 1);
+        assert_eq!(box_shape.shell_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn get_solid_and_get_shell_return_a_shape_with_the_same_face_count_as_the_box() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let solid = box_shape.get_solid(0).unwrap();
+        assert_eq!(solid.face_count().unwrap(), box_shape.face_count().unwrap());
+        let shell = box_shape.get_shell(0).unwrap();
+        assert_eq!(shell.face_count().unwrap(), box_shape.face_count().unwrap());
+    }
+
+    #[test]
+    fn get_solid_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_solid(1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn get_shell_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_shell(1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn a_bare_face_has_zero_shells_and_zero_solids() {
+        // A Face-kind shape contains no TopAbs_SHELL/TopAbs_SOLID
+        // sub-shapes at all -- matching `face_radius`'s own "not
+        // applicable to this kind -> Ok(0)/Ok(false)" precedent rather
+        // than an error, so a `ShellRef`/`SolidRef` query against a Face
+        // candidate correctly finds zero candidates instead of failing.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        assert_eq!(face.solid_count().unwrap(), 0);
+        assert_eq!(face.shell_count().unwrap(), 0);
     }
 
     #[test]

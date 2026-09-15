@@ -90,7 +90,7 @@ use cad_references::{
 };
 
 use crate::eval::{self, Candidate, EvalError, EvaluationEvidence};
-use crate::predicate::{SpatialTarget, TopologyPredicate};
+use crate::predicate::{SpatialPredicate, SpatialTarget, TopologyPredicate};
 use crate::query::{Query, QueryClause};
 use crate::ranking::{CardinalityExpectation, Metric, RankingDirective};
 use crate::value::Point3 as QueryPoint3;
@@ -435,6 +435,18 @@ fn filter_and_rank<'ctx>(query: &Query, ctx: &dyn ResolverContext<'ctx>) -> Stag
     for clause in &query.clauses {
         match clause {
             QueryClause::Ranking(directive) => ranking_directives.push(directive.clone()),
+            // `SpatialPredicate::NearestTo`/`FarthestFrom` are rewritten
+            // into the equivalent `RankingDirective` here (`AICAD-100A`)
+            // -- see `crate::eval`'s own module doc comment, "Spatial
+            // Predicate::{NearestTo, FarthestFrom}", for why this is the
+            // real production execution path for these two variants
+            // rather than a per-candidate boolean evaluation.
+            QueryClause::Spatial(SpatialPredicate::NearestTo(target)) => {
+                ranking_directives.push(RankingDirective::Nearest(target.clone()));
+            }
+            QueryClause::Spatial(SpatialPredicate::FarthestFrom(target)) => {
+                ranking_directives.push(RankingDirective::Farthest(target.clone()));
+            }
             other => predicate_clauses.push(other),
         }
     }

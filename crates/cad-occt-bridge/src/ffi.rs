@@ -52,6 +52,11 @@ unsafe extern "C" {
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_shape_duplicate(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_create_box(
         context: *mut aicad_occt_context_t,
         dx: f64,
@@ -276,6 +281,28 @@ unsafe extern "C" {
         handle: aicad_shape_handle_t,
         index: usize,
         out_face_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_shell_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_shell(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_shell_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_solid_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_solid(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_solid_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
     pub fn aicad_occt_shell(
         context: *mut aicad_occt_context_t,

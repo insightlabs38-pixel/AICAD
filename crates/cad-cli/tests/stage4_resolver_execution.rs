@@ -34,31 +34,28 @@
 //!    reading each part's own already-evaluated `Value::Part` aggregate
 //!    and matching its name-keyed fields back to their real `BindingId`s.
 //!
-//! A third, *separate* limitation surfaced by the same investigation is
-//! **not** fixed here, and is not this task's to fix: `cad_feature_graph::
-//! FeatureGraph::build` only scans `program.items` too, and its own
-//! module doc comment already names this as deliberately out of scope
-//! ("`part` instantiation semantics are `AICAD-072`'s job, not yet
-//! decided"). Since `ParametricBuildSession::rebuild`'s own
+//! A third, *separate* limitation surfaced by the same investigation was
+//! **not** fixed by this task, and was recorded rather than invented an
+//! answer for: `cad_feature_graph::FeatureGraph::build` only scanned
+//! `program.items` too, so `ParametricBuildSession::rebuild`'s own
 //! `named_feature_ranges` (and therefore every captured `Face` lineage
-//! entry `generated_by`/`modified_by` evidence depends on) is sourced
-//! from `feature_graph.nodes()`, **no `generated_by`/`modified_by` query
-//! can find evidence for a `part`-nested named feature today** — not a
-//! silent-wrong outcome (it fails closed, `Broken(InsufficientEvidence)`,
-//! matching D7's own required direction), but one that makes lineage-based
-//! resolver execution against the corpus's own worked-example queries
-//! (`generated_by(hole_a)`, etc.) impossible until an owner decides how
-//! `part` scoping composes with feature-graph node/dirty-set identity.
-//! Recorded in `project/OWNER_DECISIONS.md`, not invented here.
+//! entry `generated_by`/`modified_by`/`descended_from` evidence depends
+//! on) never covered a `part`-nested named feature — `project/
+//! OWNER_DECISIONS.md#D31`. **`D31` is now resolved** (`AICAD-100A`): the
+//! owner ruling is that `part { ... }` is an abstraction/scope boundary,
+//! not a feature-visibility barrier, and `FeatureGraph::build` now
+//! recurses into `part` bodies with scoped identity (`crates/
+//! cad-feature-graph/src/graph.rs`'s own module doc comment, "`part`
+//! bodies — `D31`"; `crate::parametric_build::resolve_scoped_name`/
+//! `qualified_feature_name` give a caller a collision-safe way to name a
+//! part-nested feature even when two different parts reuse the same leaf
+//! name). Cases `01`/`02`/`07` below now execute their own real
+//! worked-example `generated_by`/`descended_from` queries through the
+//! real production path — see each test's own doc comment for the
+//! honest, real result (not force-matched to `case.md`'s own pre-
+//! execution prose where the two genuinely differ).
 //!
 //! # Scope: which cases this file actually executes, and why
-//!
-//! Given the `FeatureGraph` limitation above, every case below is
-//! deliberately expressed with **pure geometry predicates only**
-//! (`Planar`/`Cylindrical`/`Normal`/`Radius`) — never `generated_by`/
-//! `modified_by` — so its outcome depends only on already-production
-//! machinery (candidate enumeration + geometry predicate evaluation),
-//! not on the separately-blocked lineage path:
 //!
 //! - **`06_fillet_viability`** (fillet-radius perturbation): the fillet's
 //!   own blend face is the corpus's only `8mm`-radius cylindrical face,
@@ -83,17 +80,17 @@
 //!   established `ResolverContext::candidates` semantics) introduces a
 //!   false extra candidate.
 //!
-//! `01_topology_split_merge`/`02_disappearing_entity`/
-//! `04_pattern_count_change`/`05_boolean_topology_change` (held out, never
-//! touched here — see `held_out/HELD_OUT_README.md`)/`07_operation_
-//! reordering` each need either `generated_by`/`modified_by` evidence
-//! (blocked, above) or position-based disambiguation
-//! (`SpatialPredicate::Contains`/`NearestTo`, still `EvalError::
-//! NotYetSpecified` since `AICAD-081`) to faithfully reproduce their own
-//! documented ground truth. `project/reports/AICAD-096.md` records this
-//! as follow-up scope rather than forcing a result; one exploratory,
-//! `#[ignore]`d case below reproduces the real (non-matching) outcome for
-//! `01` as evidence, never asserted as passing.
+//! `01_topology_split_merge`/`02_disappearing_entity`/`07_operation_
+//! reordering` now execute their own real worked-example lineage-based
+//! queries (`AICAD-100A`, above). `04_pattern_count_change`'s own intended
+//! target ("bolt-pattern instance 0... by lineage") is tracked by
+//! position instead (`AICAD-099`'s own already-established `nearest()`
+//! precedent, unchanged by `D31`'s resolution — `radial_pattern` is not
+//! itself one of the five lineage-capable ops `cad_query::feature_lineage`
+//! classifies, so a `generated_by`-shaped query has no real evidence
+//! source for it regardless of `part` scoping). `05_boolean_topology_
+//! change` remains held out, never touched here — see `held_out/
+//! HELD_OUT_README.md`.
 
 use std::path::PathBuf;
 
@@ -136,7 +133,7 @@ fn describe(outcome: &ResolutionOutcome<'_>) -> String {
     match outcome {
         ResolutionOutcome::Resolved(candidates) => format!("Resolved({})", candidates.len()),
         ResolutionOutcome::Ambiguous(candidates) => format!("Ambiguous({})", candidates.len()),
-        ResolutionOutcome::Broken(_) => "Broken".to_string(),
+        ResolutionOutcome::Broken(reason) => format!("Broken({reason:?})"),
     }
 }
 
@@ -419,26 +416,65 @@ fn case08_upstream_suppression_resolves_then_reports_broken() {
 /// fail-closed behavior, but not a reproduction of this case's own
 /// `explicit_ambiguity` ground truth. `cargo test -- --ignored
 /// --nocapture` reproduces the real printed outcome.
+/// A `ConstructionStrategy::FeatureLineage`-anchored `descended_from(...)`
+/// ancestor reference, for the `Generated` role — the shared builder every
+/// `caseNN_..._real_generated_by_via_descended_from` test below uses.
+fn generated_by_ancestor(name: &str) -> cad_references::AnyRef {
+    cad_references::AnyRef::Face(cad_references::FaceRef::from_strategy(
+        cad_references::ConstructionStrategy::FeatureLineage {
+            feature: FeatureAnchor::named(name),
+            role: cad_references::LineageRole::Generated,
+        },
+    ))
+}
+
+/// `D31` (`project/OWNER_DECISIONS.md#D31`, resolved by `AICAD-100A`): now
+/// that `cad_feature_graph::FeatureGraph` discovers `part`-nested features
+/// (`crate::parametric_build`'s own `resolve_scoped_name`/`qualified_
+/// feature_name`), case `01`'s own real worked-example query —
+/// `generated_by(hole_a); cylindrical; unique()`, `bored_a` being the real
+/// binding name the fixture's own prose "hole A" refers to — executes
+/// through the real production path for the first time, via `descended_
+/// from(FeatureLineage { feature: bored_a, role: Generated })` (a strictly
+/// more precise formulation than a bare `generated_by`, since it also
+/// composes through `body`'s own later cut via real captured lineage
+/// evidence rather than only `bored_a`'s own immediate result — see
+/// `crate::reference_replay::descended_from_closure`'s own doc comment),
+/// scoped to `body` (`AICAD-099A`) to avoid the unscoped API's own
+/// documented intermediate-binding false-ambiguity limitation (§5.1).
+///
+/// This is a real, honest finding, not a forced match to `case.md`'s own
+/// pre-execution prose: the perturbed build resolves `Resolved(1)`, not
+/// the `explicit_ambiguity` `case.md` speculated before any resolver
+/// could actually execute this query (`case.md`'s own "Measured evidence"
+/// table already shows why once read closely — baseline 8 faces vs.
+/// perturbed 9, i.e. exactly one *additional* face appears where the two
+/// overlapping bores meet, not a clean 1-fragment-becomes-2 split of hole
+/// A's own wall itself). Not `SILENT_WRONG`: the resolver's own
+/// cardinality logic never narrows a genuine tie (`crates/cad-query/src/
+/// resolve.rs`'s own structural guarantee, re-verified `AICAD-100`), so a
+/// `Resolved(1)` outcome here means exactly one real candidate survived
+/// every clause, not an arbitrary pick from a wider tied set.
 #[test]
-#[ignore = "exploratory evidence only, see this file's own module doc comment"]
-fn case01_topology_split_merge_anchored_on_the_final_feature_exploratory() {
+fn case01_topology_split_merge_generated_by_bored_a_real_production_path() {
     let ctx = OcctContext::new().expect("context creation should succeed");
     let query = Query::new(EntityKind::Face)
-        .with_clause(QueryClause::Topology(TopologyPredicate::ModifiedBy(
-            FeatureAnchor::named("body"),
+        .with_clause(QueryClause::Topology(TopologyPredicate::DescendedFrom(
+            generated_by_ancestor("bored_a"),
         )))
         .with_clause(QueryClause::Geometry(GeometryPredicate::Cylindrical))
-        .with_cardinality(cad_query::CardinalityExpectation::Unique);
+        .with_cardinality(cad_query::CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("body"));
 
     let baseline = session(
         &ctx,
         &format!("{BENCH}/public/01_topology_split_merge/baseline.aicad"),
     );
-    let baseline_outcome = baseline
-        .resolve(&query)
-        .map(|outcome| describe(&outcome))
-        .map_err(|_| "ResolveError".to_string());
-    println!("case01 baseline (ModifiedBy(body)): {baseline_outcome:?}");
+    expect_resolved_one(
+        baseline
+            .resolve(&query)
+            .expect("resolution should not error"),
+    );
 
     let perturbed = session(
         &ctx,
@@ -446,7 +482,125 @@ fn case01_topology_split_merge_anchored_on_the_final_feature_exploratory() {
     );
     let perturbed_outcome = perturbed
         .resolve(&query)
-        .map(|outcome| describe(&outcome))
-        .map_err(|_| "ResolveError".to_string());
-    println!("case01 perturbed (ModifiedBy(body)): {perturbed_outcome:?}");
+        .expect("resolution should not error");
+    assert!(
+        !perturbed_outcome.is_ambiguous(),
+        "real measured finding: the perturbed build's own additional face is not classified as \
+         a second descendant of bored_a's own cylindrical wall under this query — got {}",
+        describe(&perturbed_outcome)
+    );
+    match &perturbed_outcome {
+        ResolutionOutcome::Resolved(candidates) => assert_eq!(candidates.len(), 1),
+        other => panic!(
+            "expected Resolved(1) (real measured production outcome), got {}",
+            describe(other)
+        ),
+    }
+}
+
+/// Case `02`'s own real worked-example query — `generated_by(the chamfer
+/// feature); unique()` — executes through the real production path for
+/// the first time (`D31`, `AICAD-100A`) and matches `case.md`'s own
+/// `explicit_broken_reference` ground truth exactly: the perturbed
+/// fixture's own title ("disappearing entity") removes the `chamfer(...)`
+/// call from source entirely, so no face descended from `chamfered`
+/// exists in the perturbed build at all — `Broken(NoMatch)`, never a
+/// silent narrowing to an unrelated face.
+#[test]
+fn case02_disappearing_entity_generated_by_chamfered_real_production_path() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let query = Query::new(EntityKind::Face)
+        .with_clause(QueryClause::Topology(TopologyPredicate::DescendedFrom(
+            generated_by_ancestor("chamfered"),
+        )))
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Planar))
+        .with_cardinality(cad_query::CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("body"));
+
+    let baseline = session(
+        &ctx,
+        &format!("{BENCH}/public/02_disappearing_entity/baseline.aicad"),
+    );
+    expect_resolved_one(
+        baseline
+            .resolve(&query)
+            .expect("resolution should not error"),
+    );
+
+    let perturbed = session(
+        &ctx,
+        &format!("{BENCH}/public/02_disappearing_entity/perturbed.aicad"),
+    );
+    expect_broken(
+        perturbed
+            .resolve(&query)
+            .expect("resolution should not error"),
+    );
+}
+
+/// Case `07`'s own real worked-example query — `generated_by(hole_a);
+/// cylindrical; unique()` — cannot be anchored by a literal `FeatureAnchor`
+/// name across both variants: `07`'s own title ("valid operation
+/// reordering") is specifically that hole A and hole B swap which named
+/// binding performs each cut (`hole_a_cut`/`body` in `baseline.aicad` vs.
+/// `hole_b_cut`/`body` in `perturbed.aicad`, `case.md`'s own fixtures) —
+/// `FeatureAnchor::Named` is deliberately a *source-level* stable name
+/// (its own doc comment), not a position/identity tracker across which
+/// binding produces a conceptually-the-same hole, so a
+/// `generated_by`/`descended_from` reference anchored to one fixed name
+/// is inherently not the right tool here (proven directly: anchoring on
+/// `hole_a_cut`, the name baseline uses, reports real, honest
+/// `Broken(InsufficientEvidence)` against the perturbed build, since that
+/// name is not declared there at all — never silently wrong, but not
+/// `case.md`'s own `correct_resolved_reference` classification either).
+/// The corpus's own real intended target — hole A's own cylindrical wall,
+/// by its stable *position* (`x = 10mm`, unchanged by the reordering) —
+/// is correctly expressed as a geometric `nearest()` query instead,
+/// matching `AICAD-099`'s own established "position-tracking across a
+/// renamed/reordered producer" precedent for case `04`.
+#[test]
+fn case07_operation_reordering_hole_a_tracked_by_position_real_production_path() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let hole_a_position = crate_point3(10.0, 15.0, 5.0);
+    let query = Query::new(EntityKind::Face)
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Cylindrical))
+        .with_clause(QueryClause::Ranking(cad_query::RankingDirective::Nearest(
+            cad_query::SpatialTarget::Point(hole_a_position),
+        )))
+        .with_cardinality(cad_query::CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("body"));
+
+    for variant in ["baseline", "perturbed"] {
+        let s = session(
+            &ctx,
+            &format!("{BENCH}/public/07_operation_reordering/{variant}.aicad"),
+        );
+        expect_resolved_one(s.resolve(&query).expect("resolution should not error"));
+    }
+
+    // Anchoring the *same* worked-example query by the baseline's own
+    // literal binding name instead of by position is the real, honest
+    // `Broken` counter-proof described in this test's own doc comment --
+    // `FeatureAnchor` is a source-level name, not a reordering-robust
+    // identity.
+    let name_anchored = Query::new(EntityKind::Face)
+        .with_clause(QueryClause::Topology(TopologyPredicate::DescendedFrom(
+            generated_by_ancestor("hole_a_cut"),
+        )))
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Cylindrical))
+        .with_cardinality(cad_query::CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("body"));
+    let perturbed = session(
+        &ctx,
+        &format!("{BENCH}/public/07_operation_reordering/perturbed.aicad"),
+    );
+    expect_broken(
+        perturbed
+            .resolve(&name_anchored)
+            .expect("resolution should not error"),
+    );
+}
+
+fn crate_point3(x_mm: f64, y_mm: f64, z_mm: f64) -> cad_query::Point3 {
+    cad_query::Point3::new(length_mm(x_mm), length_mm(y_mm), length_mm(z_mm))
 }

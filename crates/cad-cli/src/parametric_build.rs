@@ -90,8 +90,13 @@ use cad_hir::ids::BindingId;
 use cad_hir::lower::LowerResult;
 use cad_hir::typeck::TypeCheckResult;
 use cad_occt_bridge::{OcctContext, Shape};
-use cad_query::{Candidate, EvaluationEvidence, ResolveError, ResolverContext};
-use cad_references::{AnyRef, EntityKind, EpochCounter, FeatureAnchor};
+use cad_query::{
+    AdjacencyTarget, Candidate, EvaluationEvidence, ResolutionOutcome, ResolveError,
+    ResolverContext,
+};
+use cad_references::{
+    AnyRef, ConstructionStrategy, EntityKind, EpochCounter, FeatureAnchor, LineageRole,
+};
 use cad_runtime::interp::Interpreter;
 use cad_runtime::params::{ParamModel, ParamOverrides};
 use cad_runtime::value::Value;
@@ -102,18 +107,106 @@ fn has_error(diagnostics: &[Diagnostic]) -> bool {
     diagnostics.iter().any(|d| d.severity == Severity::Error)
 }
 
-/// Every top-level `let`/`const`/`param` binding name in `program`, paired
-/// with its own [`BindingId`] — the only name resolution this module needs
-/// (mirrors `crate::build::resolve_named_output`'s own plain-name lookup,
-/// restricted here to what [`ParametricBuildSession`] itself resolves by
-/// name: a parameter to override, or a binding whose resulting geometry the
-/// caller wants back).
-fn top_level_binding_named(lowered: &LowerResult, name: &str) -> Option<BindingId> {
-    lowered
-        .bindings
-        .iter()
-        .find(|b| b.name == name)
-        .map(|b| b.id)
+/// Every `let`/`const`/`param` declaration in `items`, paired with the
+/// scope path (`D31`, `cad_feature_graph::graph::FeatureNode::scope`'s own
+/// identical convention — empty for a top-level declaration, `["Wall"]`
+/// for one declared directly inside `part Wall { ... }`) it was declared
+/// under. Recurses one level into `HirItem::Part` bodies, matching every
+/// other Stage-4 `part`-aware walk in this crate (`collect_geometry_
+/// globals`, `cad_feature_graph::graph::FeatureGraph::build_items`) — the
+/// grammar itself supports no deeper nesting today.
+fn collect_scoped_bindings<'a>(
+    items: &'a [cad_hir::hir::HirItem],
+    scope: &[String],
+    out: &mut Vec<(Vec<String>, &'a str, BindingId)>,
+) {
+    for item in items {
+        match item {
+            cad_hir::hir::HirItem::Let { binding, name, .. }
+            | cad_hir::hir::HirItem::Const { binding, name, .. }
+            | cad_hir::hir::HirItem::Param { binding, name, .. } => {
+                out.push((scope.to_vec(), name.as_str(), *binding));
+            }
+            cad_hir::hir::HirItem::Part {
+                name: part_name,
+                items: part_items,
+                ..
+            } => {
+                let mut child_scope = scope.to_vec();
+                child_scope.push(part_name.clone());
+                collect_scoped_bindings(part_items, &child_scope, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Joins a `D31` scope path and a leaf name into the canonical dotted
+/// qualified-name string (`AICAD-100A`) — e.g. `(["Wall"], "bored_a")` ->
+/// `"Wall.bored_a"`. An empty scope yields the bare name unchanged, so a
+/// top-level feature's own qualified name is byte-identical to its
+/// pre-`D31` plain name — full backward compatibility for every existing
+/// (non-`part`-nested) fixture/test.
+pub(crate) fn qualified_feature_name(scope: &[String], name: &str) -> String {
+    if scope.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}.{}", scope.join("."), name)
+    }
+}
+
+/// Resolves `name` against `lowered`'s own `let`/`const`/`param`
+/// declarations at any part-nesting depth — `D31`'s collision-safe name
+/// resolution (`AICAD-100A`), replacing the pre-`D31` flat, scope-blind
+/// `lowered.bindings` search this function used to be (which, now that a
+/// program may declare the same plain name inside two different `part`
+/// bodies, could otherwise silently return whichever declaration happened
+/// to be minted first — exactly the kind of arbitrary-selection-by-
+/// construction-order `AGENTS.md`'s "ambiguity is an error, never an
+/// arbitrary selection" non-negotiable forbids).
+///
+/// `name` may be:
+/// - a fully qualified dotted path (`"Wall.bored_a"`), matched exactly
+///   against a declaration's own scope path + leaf name — always
+///   unambiguous, regardless of how many other declarations share the
+///   same leaf name elsewhere;
+/// - a bare leaf name (`"bored_a"`, or a top-level feature's own plain
+///   name, unchanged), resolved only if *exactly one* declaration
+///   anywhere in the program carries that leaf name. A genuine collision
+///   (the same bare name declared in two different parts, or in a part
+///   and at the top level) reports `None` — never an arbitrary pick —
+///   exactly mirroring `cad_query::resolve`'s own fail-closed
+///   `BrokenReason::ScopeNotFound` contract one layer up (`crate::
+///   parametric_build::ParametricBuildSession`'s `ResolverContext::
+///   candidates_in_scope` implementation calls this function directly, so
+///   a `None` here becomes that same fail-closed outcome, never a silent
+///   fallback to an arbitrarily-chosen candidate).
+fn resolve_scoped_name(lowered: &LowerResult, name: &str) -> Option<BindingId> {
+    let mut all = Vec::new();
+    collect_scoped_bindings(&lowered.program.items, &[], &mut all);
+
+    if let Some((scope_part, leaf)) = name.rsplit_once('.') {
+        let scope_path: Vec<&str> = scope_part.split('.').collect();
+        return all
+            .into_iter()
+            .find(|(scope, n, _)| {
+                scope
+                    .iter()
+                    .map(String::as_str)
+                    .eq(scope_path.iter().copied())
+                    && *n == leaf
+            })
+            .map(|(_, _, b)| b);
+    }
+
+    let mut matches = all.into_iter().filter(|(_, n, _)| *n == name);
+    let first = matches.next()?;
+    if matches.next().is_some() {
+        // A genuine bare-name collision -- fail closed, never guess which
+        // of the colliding declarations the caller meant.
+        return None;
+    }
+    Some(first.2)
 }
 
 /// Collects every `let`/`const`/`param` binding's own current value into
@@ -340,12 +433,15 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         Ok(session)
     }
 
-    /// Resolves `name` against this program's own top-level bindings — the
-    /// only name lookup this session needs (a `param` to override, or a
-    /// binding whose resulting geometry a caller wants via
-    /// [`ParametricBuildSession::shape_for_binding`]).
+    /// Resolves `name` against this program's own `let`/`const`/`param`
+    /// declarations (top-level or `part`-nested, `D31`) — the only name
+    /// lookup this session needs (a `param` to override, or a binding
+    /// whose resulting geometry a caller wants via
+    /// [`ParametricBuildSession::shape_for_binding`]). See
+    /// `crate::parametric_build::resolve_scoped_name`'s own doc comment
+    /// for the exact bare-name-vs-qualified-path, collision-safe contract.
     pub fn binding_named(&self, name: &str) -> Option<BindingId> {
-        top_level_binding_named(&self.lowered, name)
+        resolve_scoped_name(&self.lowered, name)
     }
 
     /// Overrides top-level `param` named `name` to `value` for every
@@ -441,6 +537,23 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         let graph = interp.geometry_graph();
         let mut dirty_geom_ids = HashSet::new();
         let mut dirty_feature_names = Vec::new();
+        // Every named feature's own bare leaf name, counted across the
+        // *whole* graph regardless of scope (`D31`) — used below to decide
+        // whether a bare-name `FeatureAnchor` alias may be registered
+        // alongside a part-nested feature's own qualified name. A count of
+        // exactly 1 means the bare name is unambiguous program-wide; a
+        // count > 1 (the same leaf name declared in two different parts,
+        // or a part and the top level) means the bare alias must be
+        // withheld for *both* colliding features, so a `FeatureAnchor::
+        // named(bare_name)` lookup fails closed (`InsufficientEvidence`)
+        // rather than silently landing on whichever one this loop happens
+        // to visit last.
+        let mut bare_name_counts: HashMap<&str, usize> = HashMap::new();
+        for node in feature_graph.nodes() {
+            if let Some(name) = node.name {
+                *bare_name_counts.entry(name).or_insert(0) += 1;
+            }
+        }
         // Every named top-level feature's own raw geom range, dirty or
         // not (`AICAD-094`): `reference_replay::capture_named_feature_
         // lineage` only actually captures the ones the dispatch below
@@ -462,11 +575,23 @@ impl<'ctx> ParametricBuildSession<'ctx> {
                 }
             }
             if let Some(name) = node.name {
+                let qualified = qualified_feature_name(&node.scope, name);
                 if dirty_features.contains(&node.id) {
-                    dirty_feature_names.push(name.to_string());
+                    dirty_feature_names.push(qualified.clone());
                 }
                 if let Some(range) = range {
-                    named_feature_ranges.push((FeatureAnchor::named(name), range));
+                    named_feature_ranges
+                        .push((FeatureAnchor::named(qualified.clone()), range.clone()));
+                    // Also register the bare leaf name as a convenience
+                    // alias resolving to the exact same evidence, but only
+                    // when it is unambiguous program-wide (`D31`) -- see
+                    // `bare_name_counts`'s own doc comment above. For an
+                    // ordinary top-level feature (empty scope),
+                    // `qualified == name` already, so this is a no-op,
+                    // never a duplicate registration.
+                    if qualified != name && bare_name_counts.get(name) == Some(&1) {
+                        named_feature_ranges.push((FeatureAnchor::named(name), range));
+                    }
                 }
             }
         }
@@ -582,38 +707,109 @@ impl<'ctx> ParametricBuildSession<'ctx> {
 /// classification logic `crate::query::resolve`'s own `AICAD-088` tests
 /// (`LineageBackedContext`) first proved against one hand-constructed
 /// operation, reused here unchanged against this session's real
-/// incremental-rebuild evidence instead. `descended_from`/`resolve_ref`/
-/// `resolve_target` are left at their default `None` ("no evidence") —
-/// `Ancestry`/`adjacent_to`/`inside`/`within` resolution needs an
-/// already-*resolved*-reference lookup this task does not build a
-/// production source for, matching every predecessor Stage-4 task's own
-/// identical "not yet produced" precedent (see `crate::eval`'s own module
-/// doc comment).
+/// incremental-rebuild evidence instead. `descended_from` is real too
+/// (`AICAD-100A`, composed via `crate::reference_replay::
+/// descended_from_closure` — see that function's own doc comment) for a
+/// `FeatureLineage`-anchored ancestor. `resolve_ref`/`resolve_target`
+/// remain at their default `None` ("no evidence") — `adjacent_to`/
+/// `inside`/`within` need an already-*resolved* arbitrary-query/reference
+/// lookup (not merely a named-feature lookup) this session does not build
+/// a production source for; see `ResolverContext::lookup_query`/
+/// `resolve_export`/`resolve_structural_role`/`resolve_user_confirmed`'s
+/// own identical scope boundary below.
 impl<'ctx> EvaluationEvidence<'ctx> for ParametricBuildSession<'ctx> {
     fn generated_by(&self, candidate: &Candidate<'ctx>, anchor: &FeatureAnchor) -> Option<bool> {
         let report = self.feature_lineage.get(anchor)?;
-        Some(report.results.iter().any(|result| {
-            result.origin == Some(cad_query::feature_lineage::ResultEntityOrigin::New)
-                && result.entity.is_same(candidate.shape()).unwrap_or(false)
-        }))
+        let shapes =
+            reference_replay::feature_result_shapes_for_role(report, LineageRole::Generated);
+        Some(
+            shapes
+                .iter()
+                .any(|shape| shape.is_same(candidate.shape()).unwrap_or(false)),
+        )
     }
 
     fn modified_by(&self, candidate: &Candidate<'ctx>, anchor: &FeatureAnchor) -> Option<bool> {
         let report = self.feature_lineage.get(anchor)?;
-        Some(report.results.iter().any(|result| {
-            let is_ordinary_carry_forward = result.origin.is_none()
-                && result
-                    .predecessors
-                    .first()
-                    .map(|&i| {
-                        report.prior[i].state
-                            == cad_query::feature_lineage::PriorEntityState::Unchanged
-                    })
-                    .unwrap_or(false);
-            !is_ordinary_carry_forward
-                && result.origin != Some(cad_query::feature_lineage::ResultEntityOrigin::New)
-                && result.entity.is_same(candidate.shape()).unwrap_or(false)
-        }))
+        let shapes =
+            reference_replay::feature_result_shapes_for_role(report, LineageRole::Modified);
+        Some(
+            shapes
+                .iter()
+                .any(|shape| shape.is_same(candidate.shape()).unwrap_or(false)),
+        )
+    }
+
+    /// `TopologyPredicate::DescendedFrom`/`ConstructionStrategy::Ancestry`
+    /// evidence (`AICAD-100A`), composed from this session's own real
+    /// captured per-feature lineage reports — see
+    /// `crate::reference_replay::descended_from_closure`'s own doc comment
+    /// for the exact composition algorithm and why it is real evidence,
+    /// never synthesized geometric coincidence.
+    ///
+    /// Only supports an `ancestor` whose own recipe strategy is
+    /// `ConstructionStrategy::FeatureLineage` (the realistic, common case:
+    /// "descended from *this feature's* own output" — matching how every
+    /// corpus fixture and `generated_by`/`modified_by` already anchor
+    /// lineage) — composing ancestry from an arbitrary *other* reference
+    /// strategy would first require resolving that reference to a live
+    /// historical entity, which no Stage-4 evidence source in this session
+    /// builds (see this crate's own established "evidence this module does
+    /// not itself produce" precedent); `None` ("no evidence"), never a
+    /// guess, for any other strategy.
+    fn descended_from(&self, candidate: &Candidate<'ctx>, ancestor: &AnyRef) -> Option<bool> {
+        let ConstructionStrategy::FeatureLineage { feature, role } = &ancestor.recipe().strategy
+        else {
+            return None;
+        };
+        let known =
+            reference_replay::descended_from_closure(&self.feature_lineage, feature, *role)?;
+        Some(
+            known
+                .iter()
+                .any(|k| k.is_same(candidate.shape()).unwrap_or(false)),
+        )
+    }
+
+    /// `adjacent_to`/`inside`/`within` all need an already-*resolved*
+    /// reference target (`crate::eval`'s own module doc comment) —
+    /// `AICAD-100A` supplies real production evidence by recursively
+    /// calling this session's own `cad_query::resolve_reference` against
+    /// itself (`self` already implements `ResolverContext`), the exact
+    /// same fail-closed resolution path every top-level query/reference in
+    /// this session already goes through, never a second/parallel
+    /// resolution mechanism. Only a target that resolves `Resolved`
+    /// (exactly the expected count — `Unique` for a bare reference, or the
+    /// nested query's own stated cardinality) is real, determinate
+    /// evidence; `Ambiguous`/`Broken`/a hard `ResolveError` all report
+    /// `None` ("no evidence") here — a caller cannot reason about "is X
+    /// adjacent to an ambiguous, not-yet-narrowed target," so this never
+    /// guesses which candidate among an ambiguous target the caller meant.
+    fn resolve_ref(&self, reference: &AnyRef) -> Option<Vec<Candidate<'ctx>>> {
+        match cad_query::resolve_reference(reference, self) {
+            Ok(ResolutionOutcome::Resolved(candidates)) => Some(candidates),
+            _ => None,
+        }
+    }
+
+    /// Resolves an [`AdjacencyTarget`] the same way as
+    /// [`ParametricBuildSession::resolve_ref`] — a bare [`AnyRef`] target
+    /// through that same method (always `Unique`); a nested [`cad_query::
+    /// Query`] target through `cad_query::resolve_query` directly, honoring
+    /// *that* query's own stated cardinality (so an author-written
+    /// `adjacent_to(query { ... })` with no cardinality clause may
+    /// legitimately designate more than one candidate, per
+    /// `CardinalityExpectation::Unstated`'s own "always `Resolved`,
+    /// whatever the count" semantics — never forced through the stricter
+    /// single-reference `Unique` rule a bare `AnyRef` target implies).
+    fn resolve_target(&self, target: &AdjacencyTarget) -> Option<Vec<Candidate<'ctx>>> {
+        match target {
+            AdjacencyTarget::Ref(reference) => self.resolve_ref(reference),
+            AdjacencyTarget::Query(query) => match cad_query::resolve_query(query, self) {
+                Ok(ResolutionOutcome::Resolved(candidates)) => Some(candidates),
+                _ => None,
+            },
+        }
     }
 }
 

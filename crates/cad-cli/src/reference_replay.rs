@@ -46,9 +46,10 @@ use cad_geometry_runtime::{GraphResults, LineageTable, NodeResult};
 use cad_occt_bridge::Shape;
 use cad_query::Candidate;
 use cad_query::feature_lineage::{
-    FeatureLineageError, FeatureLineageReport, classify_feature_lineage,
+    FeatureLineageError, FeatureLineageReport, PriorEntityState, ResultEntityOrigin,
+    classify_feature_lineage,
 };
-use cad_references::{EntityKind, FeatureAnchor};
+use cad_references::{EntityKind, FeatureAnchor, LineageRole};
 
 /// Real, per-round `EntityKind::Face` lineage evidence for every named
 /// top-level feature this session has ever captured it for — see this
@@ -148,26 +149,129 @@ pub(crate) fn capture_named_feature_lineage<'ctx>(
     Ok(out)
 }
 
+/// `target_report`'s own result entities actually attributable to `role`
+/// (`Generated` -> classified `New`; `Modified` -> real, non-ordinary-
+/// carry-forward change, matching `cad_cli::parametric_build::
+/// ParametricBuildSession`'s `generated_by`/`modified_by` `Evaluation
+/// Evidence` methods exactly) — shared by those two methods and by
+/// [`descended_from_closure`]'s own base case below, so "descended from
+/// feature X" starts from the same real entity/entities `generated_by(X)`/
+/// `modified_by(X)` would themselves report, never the looser "anything
+/// currently among X's results, including untouched sibling faces X never
+/// actually touched" (which `Ancestry`'s own "descendant of a stable prior
+/// entity" contract — `crate::recipe::ConstructionStrategy::Ancestry`'s own
+/// doc comment — does not intend).
+pub(crate) fn feature_result_shapes_for_role<'a, 'ctx>(
+    report: &'a FeatureLineageReport<'ctx>,
+    role: LineageRole,
+) -> Vec<&'a Shape<'ctx>> {
+    match role {
+        LineageRole::Generated => report
+            .results
+            .iter()
+            .filter(|r| r.origin == Some(ResultEntityOrigin::New))
+            .map(|r| &r.entity)
+            .collect(),
+        LineageRole::Modified => report
+            .results
+            .iter()
+            .filter(|r| {
+                let is_ordinary_carry_forward = r.origin.is_none()
+                    && r.predecessors
+                        .first()
+                        .map(|&i| report.prior[i].state == PriorEntityState::Unchanged)
+                        .unwrap_or(false);
+                !is_ordinary_carry_forward && r.origin != Some(ResultEntityOrigin::New)
+            })
+            .map(|r| &r.entity)
+            .collect(),
+    }
+}
+
+/// Computes the transitive closure of every currently-captured shape
+/// "descended from" `target`'s own feature operation under `role`
+/// (`AICAD-100A`, `D31`/`TopologyPredicate::DescendedFrom`/
+/// `ConstructionStrategy::Ancestry`): the entities `target`'s own report
+/// actually attributes to `role` (base case — see
+/// [`feature_result_shapes_for_role`]'s own doc comment for exactly which
+/// ones that is), plus, transitively, every result entity any *other*
+/// captured feature's own report links via a real predecessor edge to an
+/// already-known-descended entity. Composed strictly from real
+/// per-operation Generated/Modified/Split/Merged evidence this session has
+/// actually captured (`cad_query::feature_lineage::classify_feature_
+/// lineage`'s own six-state model) — never synthesized from geometric
+/// coincidence (`AGENTS.md`'s evidence rule).
+///
+/// Terminates: `feature_lineage` is finite and each pass only ever adds
+/// entities, never removes any, so the fixed point is reached in at most
+/// `feature_lineage.len()` passes.
+///
+/// `None` when `target` itself has no captured report at all (no evidence
+/// — same "never guess" contract as every other evidence hook).
+pub(crate) fn descended_from_closure<'a, 'ctx>(
+    feature_lineage: &'a FeatureLineageIndex<'ctx>,
+    target: &FeatureAnchor,
+    role: LineageRole,
+) -> Option<Vec<&'a Shape<'ctx>>> {
+    let target_report = feature_lineage.get(target)?;
+    let mut known: Vec<&Shape<'ctx>> = feature_result_shapes_for_role(target_report, role);
+
+    loop {
+        let mut added = false;
+        for report in feature_lineage.values() {
+            for prior in &report.prior {
+                if known
+                    .iter()
+                    .any(|k| prior.entity.is_same(k).unwrap_or(false))
+                {
+                    for &succ_idx in &prior.successors {
+                        let succ_shape = &report.results[succ_idx].entity;
+                        if !known.iter().any(|k| succ_shape.is_same(k).unwrap_or(false)) {
+                            known.push(succ_shape);
+                            added = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+
+    Some(known)
+}
+
 /// Every live candidate of `kind` among `shape`'s own immediate
 /// sub-entities — the per-feature building block
 /// [`cad_query::ResolverContext::candidates`] aggregates across every
-/// named top-level feature's own current `Shape`. `Shell`/`Solid` return
-/// empty (never a guess): `cad_occt_bridge::Shape` exposes no
-/// `shell_count`/`solid_count`/`get_shell`/`get_solid` accessor to
-/// enumerate sub-shells/sub-solids by, unlike `Vertex`/`Edge`/`Wire`/
-/// `Face`, which each have a real `*_count`/`get_*` pair.
+/// named top-level feature's own current `Shape`. `Shell`/`Solid` use the
+/// same `*_count`/`get_*` pair `cad_occt_bridge::Shape` now exposes for
+/// them (`AICAD-100A`, mirroring `Vertex`/`Edge`/`Wire`/`Face`'s own
+/// identical shape) — previously always empty, since no bridge accessor
+/// existed to enumerate a shape's own sub-shells/sub-solids at all,
+/// meaning a `ShellRef`/`SolidRef` query against real geometry could never
+/// find a candidate regardless of whether one genuinely existed.
 pub(crate) fn candidates_of_kind<'ctx>(
     shape: &Shape<'ctx>,
     kind: EntityKind,
 ) -> Vec<Candidate<'ctx>> {
     match kind {
+        // `Face`/`Edge` candidates carry their own enclosing `shape` as
+        // `root` (`AICAD-100A`, `Candidate::with_root`) — required by
+        // `ConnectedTo` (Face) and `Convex`/`Concave`/`Manifold`/
+        // `NonManifold` (Edge). A duplicate that fails to fetch (should
+        // not happen for a live `shape`) simply skips that one candidate
+        // rather than aborting the whole enumeration, matching this
+        // function's own existing `filter_map`/`unwrap_or(0)` "skip what
+        // fails, never guess" convention.
         EntityKind::Face => (0..shape.face_count().unwrap_or(0))
-            .filter_map(|i| shape.get_face(i).ok())
-            .map(|entity| Candidate::new(EntityKind::Face, entity))
+            .filter_map(|i| shape.get_face(i).ok().zip(shape.duplicate().ok()))
+            .map(|(entity, root)| Candidate::with_root(EntityKind::Face, entity, root))
             .collect(),
         EntityKind::Edge => (0..shape.edge_count().unwrap_or(0))
-            .filter_map(|i| shape.get_edge(i).ok())
-            .map(|entity| Candidate::new(EntityKind::Edge, entity))
+            .filter_map(|i| shape.get_edge(i).ok().zip(shape.duplicate().ok()))
+            .map(|(entity, root)| Candidate::with_root(EntityKind::Edge, entity, root))
             .collect(),
         EntityKind::Wire => (0..shape.wire_count().unwrap_or(0))
             .filter_map(|i| shape.get_wire(i).ok())
@@ -177,6 +281,13 @@ pub(crate) fn candidates_of_kind<'ctx>(
             .filter_map(|i| shape.get_vertex(i).ok())
             .map(|entity| Candidate::new(EntityKind::Vertex, entity))
             .collect(),
-        EntityKind::Shell | EntityKind::Solid => Vec::new(),
+        EntityKind::Shell => (0..shape.shell_count().unwrap_or(0))
+            .filter_map(|i| shape.get_shell(i).ok())
+            .map(|entity| Candidate::new(EntityKind::Shell, entity))
+            .collect(),
+        EntityKind::Solid => (0..shape.solid_count().unwrap_or(0))
+            .filter_map(|i| shape.get_solid(i).ok())
+            .map(|entity| Candidate::new(EntityKind::Solid, entity))
+            .collect(),
     }
 }
