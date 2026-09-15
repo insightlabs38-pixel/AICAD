@@ -96,8 +96,9 @@ use std::path::PathBuf;
 
 use cad_cli::ParametricBuildSession;
 use cad_occt_bridge::OcctContext;
+use cad_query::predicate::DirectionComparison;
 use cad_query::{
-    Comparison, GeometryPredicate, Magnitude, Query, QueryClause, ResolutionOutcome,
+    Comparison, Direction3, GeometryPredicate, Magnitude, Query, QueryClause, ResolutionOutcome,
     TopologyPredicate,
 };
 use cad_references::{EntityKind, FeatureAnchor};
@@ -403,19 +404,45 @@ fn case08_upstream_suppression_resolves_then_reports_broken() {
     );
 }
 
-/// Exploratory, `#[ignore]`d evidence (never asserted as passing, per
-/// this file's own module doc comment): case `01`'s own worked-example
-/// query (`generated_by(hole_a); cylindrical; unique()`) cannot be
-/// evaluated at all against this fixture's real `bored_a`/`body`
-/// features — both are declared inside `part Wall { ... }`, and
-/// `cad_feature_graph::FeatureGraph`'s own documented scope boundary
-/// ("`part` instantiation semantics are `AICAD-072`'s job") means no
-/// lineage evidence is ever captured for either, so *any*
-/// `generated_by`/`modified_by` query against them reports
-/// `Broken(InsufficientEvidence)` regardless of the perturbation — real,
-/// fail-closed behavior, but not a reproduction of this case's own
-/// `explicit_ambiguity` ground truth. `cargo test -- --ignored
-/// --nocapture` reproduces the real printed outcome.
+/// Case `09`'s own real worked-example query — `generated_by(the pocket
+/// feature); planar; unique()` — executes through the real production
+/// path (`D31`, `AICAD-100A`): `body` (the pocket feature itself, a
+/// single-op `pocket(...)` call with no downstream chain, unlike cases
+/// `01`/`02`/`07`) generates five new planar faces (the floor plus four
+/// side walls), so `generated_by(body); planar; unique()` alone is
+/// genuinely `Ambiguous(5)` — the query needs the same `normal ~= +Z`
+/// discriminator a human author would add to name the floor specifically
+/// (the floor's own outward normal is +Z; every side wall's own normal is
+/// horizontal). Matches `case.md`'s own `correct_resolved_reference`
+/// ground truth in both variants: the pocket's own footprint size changes
+/// but it remains the same single feature producing the same floor face
+/// shape.
+#[test]
+fn case09_changing_region_generated_by_body_real_production_path() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let query = Query::new(EntityKind::Face)
+        .with_clause(QueryClause::Topology(TopologyPredicate::GeneratedBy(
+            FeatureAnchor::named("body"),
+        )))
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Planar))
+        .with_clause(QueryClause::Geometry(GeometryPredicate::Normal(
+            DirectionComparison {
+                target: Direction3::POSITIVE_Z,
+                tolerance: None,
+            },
+        )))
+        .with_cardinality(cad_query::CardinalityExpectation::Unique)
+        .scoped_to(FeatureAnchor::named("body"));
+
+    for variant in ["baseline", "perturbed"] {
+        let s = session(
+            &ctx,
+            &format!("{BENCH}/public/09_changing_region/{variant}.aicad"),
+        );
+        expect_resolved_one(s.resolve(&query).expect("resolution should not error"));
+    }
+}
+
 /// A `ConstructionStrategy::FeatureLineage`-anchored `descended_from(...)`
 /// ancestor reference, for the `Generated` role — the shared builder every
 /// `caseNN_..._real_generated_by_via_descended_from` test below uses.
