@@ -18,8 +18,8 @@ cad-parser = { path = "../cad-parser" }
 cad-query = { path = "../cad-query" }
 cad-references = { path = "../cad-references" }
 cad-runtime = { path = "../cad-runtime" }
-
-[dev-dependencies]
 cad-types = { path = "../cad-types" }
 cad-units = { path = "../cad-units" }
+
+[dev-dependencies]
 cad-validation = { path = "../cad-validation" }

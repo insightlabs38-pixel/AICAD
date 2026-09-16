@@ -21,17 +21,18 @@
 //!
 //! # Where the reference set itself comes from
 //!
-//! Per `rfcs/0003-semantic-references.md` §7 and every predecessor
-//! Stage-4 task's own identical precedent, `.aicad` source has no syntax
-//! yet for a program to *declare* a persistent stable reference (`query {
-//! ... }` blocks remain reserved/unimplemented). This module therefore
-//! takes the reference set as a plain `&[AnyRef]` parameter rather than
-//! trying to discover one from a real program — there is nothing in a
-//! real `.aicad` program today for it to discover. `cad-cli`'s own `cad
-//! refs check` subcommand (`crate::refs_check` in that crate) is
-//! consequently a real, working command whose own reference set is
-//! currently always empty for any real source file — see that crate's own
-//! module doc comment for why that is an honest boundary, not a stub.
+//! This module deliberately takes the reference set as a plain
+//! `&[AnyRef]` parameter rather than discovering one itself: this crate
+//! has, and takes, no dependency on `cad-hir` (only `cad-cli` depends on
+//! both), so it cannot parse/lower `.aicad` source itself. A real
+//! program's own source-declared `query { ... }` references (`AICAD-100A`,
+//! `rfcs/0003-semantic-references.md` §7, real grammar as of that task —
+//! no longer reserved/unimplemented) are discovered by `cad-cli`'s own
+//! `crate::query_lowering::lower_hir_queries` and passed in here by
+//! `cad-cli`'s own `cad refs check` subcommand (`crate::refs_check` in
+//! that crate, via `ParametricBuildSession::source_references`) — a real,
+//! working command whose reference set is non-empty for a real source
+//! file that declares one, and honestly empty for one that does not.
 
 use std::collections::BTreeMap;
 

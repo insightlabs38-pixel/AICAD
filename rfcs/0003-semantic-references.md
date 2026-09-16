@@ -72,13 +72,15 @@ Likewise, current raw integer indices are temporary selectors and should be trea
 
 ## 7. Source syntax/status boundary
 
-Older Stage-0 examples and foundation-plan material show illustrative reference/query/export syntax. Those examples are design targets, not current `.aicad` grammar unless promoted into `specs/language/grammar.ebnf` by an authorized Stage-4 task.
+Older Stage-0 examples and foundation-plan material show illustrative reference/query/export syntax. Those examples remain design targets, not literal current `.aicad` grammar, unless promoted into `specs/language/grammar.ebnf` by an authorized Stage-4 task.
 
-The current Stage-3 language does not expose persistent `VertexRef` / `EdgeRef` / `WireRef` / `FaceRef` / `ShellRef` / `SolidRef` construction or resolution APIs. It also does not gain them simply because workspace crates/benchmarks for Stage 4 already exist.
+`AICAD-100A` is that promotion for this section's own reserved `query { ... }` surface: `specs/language/grammar.ebnf`'s `query_decl` production (`query name : EntityKind in scope { clause* }`) is now real, parsed, lowered, and executable `.aicad` source syntax — see `cad_ast::item::Item::Query`'s own doc comment for the exact shape, and `crates/cad-cli/src/query_lowering.rs`'s own module doc comment for the closed clause-name vocabulary it currently interprets. This is the smallest completion consistent with this section's own promotion clause: no new expression syntax (comparison operators, a `within` modifier, direction literals) was introduced, `scope` is mandatory (never defaulting to the whole-session unscoped candidate universe — §3's fail-closed contract applies to a source-declared reference exactly as it does to one constructed directly against `cad-query`/`cad-references`), and a persistent reference declared this way is an ordinary typed `VertexRef`/`EdgeRef`/`WireRef`/`FaceRef`/`ShellRef`/`SolidRef` value (`cad_references::AnyRef`), never an OCCT-specific type.
+
+Illustrative syntax this promotion does *not* cover (`adjacent_to`, `boundary`, `connected_to`, `contains`, `intersects`, `area`, spatial predicates needing a point/frame/nested-reference argument, ranking `nearest`/`farthest`, an `expose { ... }` block) remains a design target only, not current grammar, pending a later authorized promotion.
 
 ## 8. Diagnostics/tooling target
 
-Stage-4 tooling should expose reference status/evidence in structured machine-readable form and support explicit checks for unresolved/ambiguous/broken references. Historical references to commands such as `cad refs check` are planned Stage-4 tooling concepts; the current CLI implements only `cad build` and must not document those commands as available today.
+Stage-4 tooling should expose reference status/evidence in structured machine-readable form and support explicit checks for unresolved/ambiguous/broken references. `cad refs check` (`AICAD-095`, wired to real source-declared `query { ... }` references by `AICAD-100A`) is real, current CLI tooling meeting this target — not a planned concept — built through the same `ParametricBuildSession` pipeline `cad build` itself uses.
 
 ## 9. Mutation/regeneration durability
 

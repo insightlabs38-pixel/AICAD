@@ -1,29 +1,21 @@
-//! `cad refs check` (`AICAD-095`), per `docs/plan/17_CLI_DIAGNOSTICS_
-//! SCHEMA.md` §3 and `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md`
-//! §12: builds a `.aicad` source file through the real
-//! [`ParametricBuildSession`] pipeline (the same one `cad build` itself
-//! uses, via `crate::build`) and reports the health
-//! (`cad_query::check_reference_health`) of that build's own stable
-//! reference set.
+//! `cad refs check` (`AICAD-095`, reference set wired to real source
+//! syntax by `AICAD-100A`), per `docs/plan/17_CLI_DIAGNOSTICS_SCHEMA.md`
+//! §3 and `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §12: builds a
+//! `.aicad` source file through the real [`ParametricBuildSession`]
+//! pipeline (the same one `cad build` itself uses, via `crate::build`)
+//! and reports the health (`cad_query::check_reference_health`) of that
+//! build's own real, source-declared reference set
+//! ([`ParametricBuildSession::source_references`], `crate::
+//! query_lowering::lower_hir_queries`).
 //!
-//! # Why the reported reference set is currently always empty
-//!
-//! See `cad_query::health`'s own module doc comment: `.aicad` source has
-//! no syntax yet to *declare* a persistent stable reference (`query {
-//! ... }` blocks remain reserved/unimplemented, per
-//! `rfcs/0003-semantic-references.md` §7), so a real build's own
-//! reference set is, honestly, always empty today — this module supplies
-//! [`cad_query::check_reference_health`] with the real (currently empty)
-//! set a real program can produce, rather than inventing one (e.g.
-//! treating every top-level binding as an implicit "explicit export"
-//! would be exactly the kind of unapproved semantics this campaign's own
-//! escalation rules forbid). This command is nonetheless real, working
-//! machinery — parsing/lowering/type-checking/building the program
-//! through the exact same [`ParametricBuildSession`] `cad build` itself
-//! uses, and reporting real diagnostics on failure — not a stub that
-//! merely prints a canned report; `cad_query::health`'s own test suite
-//! separately proves the underlying aggregation logic against a real,
-//! non-empty, mixed-outcome reference set.
+//! A program with no `query { ... }` declarations at all still reports an
+//! honestly-empty reference set (never a fabricated one — e.g. treating
+//! every top-level binding as an implicit "explicit export" would be
+//! exactly the kind of unapproved semantics this campaign's own
+//! escalation rules forbid); one that does declare persistent references
+//! reports real `Resolved`/`Ambiguous`/`Broken` outcomes for each,
+//! computed by actually resolving them against this build, never
+//! synthesized.
 
 use std::path::Path;
 
@@ -183,13 +175,29 @@ pub fn refs_check_source(file: &str, source: &str) -> RefsCheckReport {
         }
     };
 
-    // No `.aicad` source syntax exists yet to declare a persistent stable
-    // reference -- see this module's own doc comment. A real reference
-    // set can only ever be empty today, so `check_reference_health` is
-    // never actually asked to resolve anything and can never itself fail.
-    let references: Vec<AnyRef> = Vec::new();
-    let health = cad_query::check_reference_health(&references, &session)
-        .expect("an empty reference set never calls the resolver");
+    let references: Vec<AnyRef> = session
+        .source_references()
+        .iter()
+        .map(|(_, reference)| reference.clone())
+        .collect();
+    let health = match cad_query::check_reference_health(&references, &session) {
+        Ok(health) => health,
+        Err(err) => {
+            return RefsCheckReport {
+                status: RefsCheckStatus::Failed,
+                diagnostics: vec![environment_diagnostic(
+                    "EXPORT",
+                    901,
+                    "export",
+                    "REFERENCE_HEALTH_CHECK_FAILED",
+                    file,
+                    source,
+                    &format!("failed to check reference health: {err}"),
+                )],
+                health: None,
+            };
+        }
+    };
 
     RefsCheckReport {
         status: RefsCheckStatus::Ok,
@@ -243,6 +251,77 @@ mod tests {
         let report = run_refs_check(&path);
         assert_eq!(report.status, RefsCheckStatus::Ok);
         assert_eq!(report.health.unwrap().total, 0);
+    }
+
+    /// `AICAD-100A` end-to-end proof: a real `.aicad` program that
+    /// declares a persistent reference via `query { ... }` -- mirroring
+    /// `project/benchmarks/stage4_semantic_reference/public/
+    /// 01_topology_split_merge/baseline.aicad`'s own real two-hole part
+    /// shape (not edited here; that corpus fixture is frozen) -- makes
+    /// `cad refs check` observe a genuinely **non-empty** reference set,
+    /// closing the gap this module's own previous doc comment described
+    /// ("a real build's own reference set is, honestly, always empty
+    /// today"). `generated_by(bored_a); cylindrical(); unique();` scoped
+    /// to `Wall.bored_a` is real production evidence (`crate::
+    /// reference_replay`'s captured feature lineage), not a test-only
+    /// injection -- this is exactly the same query shape (and the same
+    /// real fixture geometry) `crate::query_lowering`'s own doc comment
+    /// documents as supported, run through the full source ->
+    /// `cad refs check` pipeline rather than constructed directly in Rust.
+    #[test]
+    fn a_source_declared_query_makes_refs_check_see_a_non_empty_reference_set() {
+        let source = "\
+param plate_x: Length = 60mm;
+param plate_y: Length = 30mm;
+param plate_z: Length = 10mm;
+param hole_diameter: Length = 6mm;
+
+part Wall {
+    let base: Geometry = box(plate_x, plate_y, plate_z);
+
+    let bored_a: Geometry = hole(
+        base,
+        Axis3(
+            origin = Point3(x = 15mm, y = plate_y / 2, z = 0mm - 1mm),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        hole_diameter,
+        plate_z + 2mm,
+    );
+
+    query hole_wall : Face in Wall.bored_a {
+        generated_by(bored_a);
+        cylindrical();
+        unique();
+    }
+}
+";
+        let report = refs_check_source("test.aicad", source);
+        assert_eq!(
+            report.status,
+            RefsCheckStatus::Ok,
+            "{:?}",
+            report.diagnostics
+        );
+        let health = report.health.as_ref().unwrap();
+        assert_eq!(
+            health.total, 1,
+            "the query{{...}} declaration above must produce exactly one real, \
+             source-declared reference, not an empty placeholder set"
+        );
+        assert_eq!(
+            health.resolved + health.ambiguous + health.broken,
+            1,
+            "every declared reference must land in exactly one real, mutually exclusive \
+             fail-closed outcome bucket"
+        );
+        assert_eq!(
+            (health.resolved, health.ambiguous, health.broken),
+            (1, 0, 0),
+            "real measured production outcome: this hole's own cylindrical wall face is \
+             genuinely unique (one hole, one part), so the resolver reports Resolved(1), not \
+             Ambiguous/Broken"
+        );
     }
 
     #[test]

@@ -66,6 +66,7 @@ pub mod cli;
 pub mod metrics;
 pub mod parametric_build;
 pub mod perturbation;
+pub mod query_lowering;
 pub mod reference_replay;
 pub mod refs_check;
 

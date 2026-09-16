@@ -394,6 +394,14 @@ pub struct ParametricBuildSession<'ctx> {
     /// lands, the real lowering path too) registers something — never
     /// pre-seeded with a guess.
     queries: HashMap<cad_references::QueryHandle, cad_query::Query>,
+    /// Every real persistent reference this program's own source
+    /// declared (`AICAD-100A`, `crate::query_lowering::lower_hir_queries`)
+    /// — `(D31`-qualified name, the `AnyRef` that name now denotes`)`,
+    /// populated once at construction time (a program's own `query {
+    /// ... }` declarations do not change across a session's `rebuild`
+    /// rounds, only their resolution results do). Empty for a program
+    /// with no `query { ... }` declarations at all — never a guess.
+    source_references: Vec<(String, AnyRef)>,
 }
 
 impl<'ctx> ParametricBuildSession<'ctx> {
@@ -425,6 +433,13 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             return Err(diagnostics);
         }
 
+        let (source_queries, query_diagnostics) =
+            crate::query_lowering::lower_hir_queries(file, source, &lowered.program.items);
+        diagnostics.extend(query_diagnostics);
+        if has_error(&diagnostics) {
+            return Err(diagnostics);
+        }
+
         let mut session = ParametricBuildSession {
             file: file.to_string(),
             source: source.to_string(),
@@ -438,9 +453,28 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             epoch: EpochCounter::new(),
             feature_lineage: FeatureLineageIndex::new(),
             queries: HashMap::new(),
+            source_references: Vec::new(),
         };
+        let mut source_references = Vec::with_capacity(source_queries.len());
+        for source_query in source_queries {
+            session.register_query(source_query.handle, source_query.query);
+            source_references.push((source_query.name, source_query.reference));
+        }
+        session.source_references = source_references;
+
         session.rebuild().map_err(|(_, diagnostics)| diagnostics)?;
         Ok(session)
+    }
+
+    /// Every real persistent reference this program's own `.aicad` source
+    /// declared via `query { ... }` (`AICAD-100A`) — `(D31`-qualified
+    /// name, the `AnyRef` it denotes`)`, in declaration order. This is the
+    /// production evidence source `crate::refs_check::refs_check_source`
+    /// consumes instead of the previously-always-empty placeholder set
+    /// (`crate::refs_check`'s own module doc comment, now stale — see this
+    /// method for the real one).
+    pub fn source_references(&self) -> &[(String, AnyRef)] {
+        &self.source_references
     }
 
     /// Resolves `name` against this program's own `let`/`const`/`param`

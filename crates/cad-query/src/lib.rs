@@ -39,12 +39,15 @@
 //! fail-closed three-outcome result — see [`resolve`]'s own module doc
 //! comment for the exact contract:
 //!
-//! - **No new `.aicad` source syntax.** Same boundary
-//!   `cad-references` states: `query { ... }` blocks remain reserved,
-//!   unimplemented syntax at the language level
-//!   (`rfcs/0003-semantic-references.md` §7). [`resolve`] is a Rust-level
-//!   resolution engine callable directly; nothing wires it to `.aicad`
-//!   source yet.
+//! - **No `.aicad` source syntax at this layer.** This crate's own types
+//!   remain plain Rust-level representation/evaluation/resolution —
+//!   [`resolve`] is callable directly and never itself parses source.
+//!   `query { ... }` blocks *are* now real, promoted `.aicad` grammar
+//!   (`AICAD-100A`, `cad_ast::item::Item::Query`), but the lowering from
+//!   that syntax into this crate's own [`query::Query`]/[`predicate`]
+//!   types lives one layer up, in `cad-cli` (`crate::query_lowering`,
+//!   which is the only crate depending on both `cad-hir` and this one) —
+//!   not here.
 //! - **Deterministic ranking is not permission to hide ambiguity.** See
 //!   `crate::ranking`'s own module doc comment. [`resolve`] guarantees
 //!   candidates still tied after every ranking directive is applied are
