@@ -1330,6 +1330,90 @@ manifest format.
 
 ---
 
+## D31. `part { ... }` scoping in the Stage-3/4 feature-dependency graph and semantic-reference lineage
+
+**Status: RESOLVED (`AICAD-100A`).** Owner ruling: **`part { ... }` is an
+abstraction/scope boundary, not a feature-visibility barrier.**
+`cad_feature_graph::FeatureGraph::build` now recurses into every
+`HirItem::Part` body (one level, matching the grammar's own current
+single-level `part` nesting) and builds a feature node for each
+part-nested `let`/`const` exactly as it would for a top-level one, using
+AICAD-owned scoped identity/provenance (`FeatureNode::scope`, a plain
+`Vec<String>` part-name path) — never OCCT/kernel identity. A part-nested
+feature's own bare leaf name resolves only when unambiguous program-wide
+(collision-safe `crate::parametric_build::resolve_scoped_name`/
+`qualified_feature_name`, `crate cad-cli`); a genuine same-leaf-name
+collision across two different `part` bodies fails closed
+(`None`/`ScopeNotFound`), never an arbitrary pick. `generated_by`/
+`modified_by`/`descended_from` resolver execution now works against a
+real, idiomatic (`part`-wrapped) `.aicad` program — `crates/cad-cli/
+tests/stage4_resolver_execution.rs`'s `case01`/`02`/`07`/`09` real
+production-path tests are the evidence. See `crates/cad-feature-graph/
+src/graph.rs`'s own module doc comment ("`part` bodies — `D31`") for the
+full implementation account.
+
+**Status before this resolution (kept for record):** Open — found during
+`AICAD-096` (Stage 4, Batch S4-06), blocked lineage-based
+(`generated_by`/`modified_by`) semantic-reference resolver execution
+against any `part`-wrapped program.
+
+**Question:** `cad_feature_graph::FeatureGraph::build` only scans
+`HirProgram::items` directly and its own module doc comment already names
+`part` bodies as deliberately out of scope ("Only `program.items`-level
+(module top-level) `let`/`const` are scanned... `part` instantiation
+semantics are `AICAD-072`'s job, not yet decided"). `AICAD-096` found the
+concrete consequence this produces one layer up: `cad_cli::
+ParametricBuildSession::rebuild`'s own `named_feature_ranges` (and
+therefore every `Face`/`Edge` lineage entry `AICAD-094`'s `capture_named_
+feature_lineage` can ever produce) is sourced from `feature_graph.nodes()`,
+so **no named feature declared inside a `part { ... }` block is ever
+tracked as a feature-graph node, is ever dirty-set-eligible, or ever gets
+real captured lineage evidence** — meaning `cad_query::resolve`'s
+`generated_by`/`modified_by` predicates always report
+`Broken(InsufficientEvidence)` for such a feature, regardless of whether
+the underlying reference is actually fine, ambiguous, or genuinely broken.
+This is not a silent-wrong outcome (it fails closed, matching D7's
+required direction) but it does make real resolver execution against the
+frozen `AICAD-079A` benchmark corpus's own worked-example queries
+(`generated_by(hole_a)`, etc.) impossible today, since every one of that
+corpus's fixtures wraps its geometry in `part { ... }` — the idiomatic,
+recommended style (`skills/cad-core.skill.md`'s own worked examples).
+`AICAD-096` worked around this for its own two in-scope resolver-execution
+cases by using pure geometry predicates (no lineage) instead, and left the
+frozen cases that need lineage (`01`, `02`, `04`, `07`) as documented
+follow-up rather than forcing a result — see `project/reports/
+AICAD-096.md` and `crates/cad-cli/tests/stage4_resolver_execution.rs`'s
+own module doc comment for the full account and reproduction.
+
+Two related defects one layer *below* this (the parametric interpreter
+entry point never evaluating a `part` body's own geometry at all, and
+`ParametricBuildSession`'s own candidate/global-binding enumeration never
+looking inside a part once it did) were real, previously-undiscovered
+completeness bugs with an unambiguous, already-established-elsewhere
+correct behavior to mirror — `AICAD-096` fixed both at the root rather
+than escalating them. This `part`/`FeatureGraph` scoping question is
+different in kind: it requires deciding how `part` instantiation composes
+with feature identity/dependency-graph modeling, which
+`cad_feature_graph`'s own author already flagged as a real, unresolved
+design question (not an oversight), so `AICAD-096` did not invent an
+answer.
+
+**Plan references:** `crates/cad-feature-graph/src/graph.rs` module doc
+comment ("`part` bodies"); `crates/cad-runtime/src/params.rs` (`ParamModel`'s
+own identical, already-documented "top-level only" scope boundary);
+`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §3/§8/§9 (feature-DAG/
+lineage semantics); `project/reports/AICAD-094.md`, `AICAD-096.md`.
+AGENTS.md escalation trigger: "an unresolved architecture alternative must
+be selected."
+
+**Blocking impact (resolved):** Every consumer this entry previously
+named as blocked — further frozen-corpus coverage, lineage-based
+perturbation/benchmark queries, adversarial bug-hunt cases — is now
+unblocked as of `AICAD-100A`; see `crates/cad-cli/tests/
+stage4_resolver_execution.rs` and `project/reports/AICAD-100A.md`.
+
+---
+
 ## Non-decision items carried forward for awareness (not owner rulings needed yet)
 
 These are plan-acknowledged gaps/research items that do not currently block
@@ -1362,3 +1446,35 @@ Stage 0 work but should stay visible:
   solver, cloud PLM, real-time multi-user editing, certified standards
   database, native mobile CAD UI, domain-specific aerospace/medical
   validation (`docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md` §5).
+- **`part`-in-`part` nesting is grammatically legal but silently inert**
+  (found during `AICAD-100A`'s own limitation sweep, not introduced by
+  it — pre-existing since `AICAD-071`). `specs/language/grammar.ebnf`'s
+  `part_decl` production is recursive (`item` includes `part_decl`), and
+  `cad_ast`/`cad_hir`'s own `Item::Part`/`HirItem::Part` types place no
+  depth limit on `items: Vec<Item>`/`Vec<HirItem>` — a second-level
+  `part Inner { ... }` written directly inside another `part`'s body
+  parses and lowers without any diagnostic. But every consumer that
+  walks a `part` body's own items recurses exactly **one** level and
+  then silently stops treating a nested `part` as ordinary content
+  (`cad_runtime::interp::Interpreter::eval_part_body` skips a nested
+  `HirItem::Part` outright — no geometry inside it is ever evaluated,
+  no error is raised; `cad_feature_graph::FeatureGraph::build`,
+  `cad-cli`'s own `collect_scoped_bindings`/`collect_geometry_globals`,
+  and `crate::query_lowering::lower_hir_queries` all recurse to the same
+  single level "matching the grammar's own current single-level `part`
+  nesting," each citing the others as precedent). The net effect: a
+  binding declared inside a doubly-nested `part` is never computed and
+  never resolvable by name — not wrong, just silently unreachable,
+  which is still worth an explicit decision rather than staying an
+  unstated assumption four call sites independently repeat. This is a
+  general Stage-2/3 execution-completeness gap, not a Stage-4 semantic-
+  reference defect (it would affect a program using no Stage-4 feature
+  at all), so `AICAD-100A` documents it here rather than fixing it —
+  fixing it well would mean deciding, once, whether `part` nesting
+  should recurse to unbounded depth (and updating every one of the
+  four call sites above consistently) or whether a second-level `part`
+  should instead be a structured diagnostic at parse/lowering time
+  rather than silently accepted grammar with no execution semantics;
+  either is a real (if small) design choice this sweep should surface,
+  not quietly re-decide by leaving the current silent-truncation
+  behavior as an unexamined default.

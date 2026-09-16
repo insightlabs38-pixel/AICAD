@@ -87,10 +87,43 @@
 //!   deciding; a top-level binding shaped this way is simply not modeled
 //!   as a feature (not an error — see [`FeatureGraph::build`]'s own doc
 //!   comment on when an unmodeled binding is/is not an error).
-//! - **`part` bodies.** Only `program.items`-level (module top-level)
-//!   `let`/`const` are scanned, matching `cad_runtime::params::ParamModel`'s
-//!   own identical, explicitly documented scope boundary — `part`
-//!   instantiation semantics are `AICAD-072`'s job, not yet decided.
+//! - **Interprocedural construction, still.** A call to an ordinary
+//!   user-defined `fn` (including one declared inside a `part` body) is
+//!   still never inlined/flattened into a feature node — see above.
+//!
+//! ## `part` bodies — `D31` (`project/OWNER_DECISIONS.md#D31`, resolved)
+//!
+//! Earlier revisions of this module scanned only `program.items`-level
+//! (module top-level) `let`/`const` declarations, deliberately leaving
+//! `part { ... }` bodies unscanned pending an owner ruling on how `part`
+//! instantiation composes with feature identity. `D31`'s owner ruling
+//! (`AICAD-100A`) is: **`part { ... }` is an abstraction/scope boundary,
+//! not a feature-visibility barrier.** [`FeatureGraph::build`] therefore
+//! recurses into every [`HirItem::Part`] body (one level, matching the
+//! grammar's own current single-level `part` nesting — `cad_ast`/`cad_hir`
+//! do not yet support `part`-in-`part`) and builds a feature node for each
+//! part-nested `let`/`const` exactly as it would for a top-level one.
+//!
+//! A part-nested node's own [`FeatureNode::scope`] records the enclosing
+//! part-name path (`["Wall"]` for a feature declared directly inside `part
+//! Wall { ... }`; empty for an ordinary top-level feature, unchanged) —
+//! this is the "AICAD-owned scoped identity/provenance" `D31`'s ruling
+//! calls for: [`FeatureNode::id`] (a plain, flat `FeatureId`, reused
+//! unchanged) is never itself scope-qualified (SSA-style numbering has no
+//! notion of "inside a part" to begin with, and stays a purely internal,
+//! per-build detail — see module doc comment "Node identity"), and
+//! [`FeatureGraph::find_by_binding`] needs no change at all: `BindingId` is
+//! already process-unique regardless of lexical scope (`cad_hir::ids::
+//! BindingId`'s own doc comment), so a part-nested feature's binding-keyed
+//! lookup was already collision-free before this change. The collision
+//! risk `D31`'s ruling specifically calls out — two different parts (or a
+//! part and the top level) each declaring a feature with the same plain
+//! name — only ever arises for a *name-string*-keyed lookup
+//! ([`FeatureAnchor::Named`], `cad-references`'s own reference-anchor
+//! type); resolving that collision-safely is `cad-cli`'s job (`crate::
+//! parametric_build`'s own qualified/bare-name registration, `AICAD-100A`),
+//! not this crate's — this crate only ever exposes the raw `scope` path,
+//! never invents a canonical joined-string spelling of its own.
 
 use crate::cache::{CacheKey, node_cache_key};
 use crate::provenance::{Declaration, Provenance};
@@ -177,6 +210,12 @@ pub struct FeatureNode<'a> {
     /// dependency closure. See `crate::provenance`'s own module doc
     /// comment for the full contract and explicit scope boundary.
     pub provenance: Provenance,
+    /// The enclosing `part` name path this node was declared under
+    /// (`D31`, `project/OWNER_DECISIONS.md#D31`) — empty for an ordinary
+    /// top-level feature (unchanged pre-`D31` identity/behavior); `["Wall"]`
+    /// for a feature declared directly inside `part Wall { ... }`. See this
+    /// module's own doc comment, "`part` bodies — `D31`".
+    pub scope: Vec<String>,
 }
 
 /// Every way [`FeatureGraph::build`] can fail — both are purely
@@ -329,7 +368,26 @@ impl<'a> FeatureGraph<'a> {
             named: HashMap::new(),
         };
 
-        for item in &program.items {
+        Self::build_items(&mut builder, &program.items, &[])?;
+
+        Ok(FeatureGraph {
+            nodes: builder.nodes,
+            named: builder.named,
+        })
+    }
+
+    /// Builds every feature node directly declared in `items`, at scope
+    /// path `scope` (empty for the module top level), then recurses into
+    /// each nested [`HirItem::Part`] body one level deeper (`D31`, this
+    /// module's own doc comment "`part` bodies") — the same
+    /// `let`/`const`-only recognition [`FeatureGraph::build`] always used,
+    /// applied uniformly regardless of nesting depth.
+    fn build_items(
+        builder: &mut Builder<'a>,
+        items: &'a [HirItem],
+        scope: &[String],
+    ) -> Result<(), FeatureGraphError> {
+        for item in items {
             let (binding, name, value, declared_as) = match item {
                 HirItem::Let {
                     binding,
@@ -343,9 +401,19 @@ impl<'a> FeatureGraph<'a> {
                     value,
                     ..
                 } => (binding, name, value, Declaration::Const),
+                HirItem::Part {
+                    name: part_name,
+                    items: part_items,
+                    ..
+                } => {
+                    let mut child_scope = scope.to_vec();
+                    child_scope.push(part_name.clone());
+                    Self::build_items(builder, part_items, &child_scope)?;
+                    continue;
+                }
                 _ => continue,
             };
-            if let Some(id) = builder.resolve_geometry_expr(value)? {
+            if let Some(id) = builder.resolve_geometry_expr(value, scope)? {
                 let node = &mut builder.nodes[id.0 as usize];
                 if node.name.is_none() {
                     node.name = Some(name.as_str());
@@ -356,11 +424,7 @@ impl<'a> FeatureGraph<'a> {
                 builder.named.insert(*binding, id);
             }
         }
-
-        Ok(FeatureGraph {
-            nodes: builder.nodes,
-            named: builder.named,
-        })
+        Ok(())
     }
 
     /// Every feature node, in build (dependency-respecting, since a node
@@ -473,6 +537,7 @@ impl<'a> Builder<'a> {
     fn resolve_geometry_expr(
         &mut self,
         expr: &'a HirExpr,
+        scope: &[String],
     ) -> Result<Option<FeatureId>, FeatureGraphError> {
         match expr {
             HirExpr::Ident {
@@ -514,12 +579,12 @@ impl<'a> Builder<'a> {
                 let mut parameters = Vec::with_capacity(param_flags.len());
                 for ((pname, is_geometry), arg_expr) in param_flags.iter().zip(slots.iter()) {
                     if *is_geometry {
-                        let child = self.resolve_geometry_expr(arg_expr)?.ok_or_else(|| {
-                            FeatureGraphError::UnresolvedGeometryInput {
-                                context: format!("{fn_name}.{pname}"),
-                                span: arg_expr.span(),
-                            }
-                        })?;
+                        let child =
+                            self.resolve_geometry_expr(arg_expr, scope)?
+                                .ok_or_else(|| FeatureGraphError::UnresolvedGeometryInput {
+                                    context: format!("{fn_name}.{pname}"),
+                                    span: arg_expr.span(),
+                                })?;
                         geometry_inputs.push(child);
                     } else {
                         parameters.push((*pname, *arg_expr));
@@ -555,6 +620,7 @@ impl<'a> Builder<'a> {
                     cache_key,
                     binding_refs,
                     provenance,
+                    scope: scope.to_vec(),
                 });
                 Ok(Some(id))
             }
@@ -1156,5 +1222,156 @@ mod tests {
         let lowered = lowered("let base = box(10mm, 10mm, 10mm);\n");
         let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
         assert_eq!(graph.feature_at(u32::MAX), None);
+    }
+
+    // --- D31 (AICAD-100A): part-scoped feature discovery ---
+
+    #[test]
+    fn a_feature_declared_inside_a_part_body_is_discovered_as_a_node() {
+        let lowered = lowered(
+            "part Wall {\n\
+             \tlet base = box(10mm, 10mm, 10mm);\n\
+             \tlet bored = cylinder(1mm, 10mm);\n\
+             }\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        assert_eq!(
+            graph.nodes().len(),
+            2,
+            "both part-nested features must be discovered, matching D31's ruling that part is \
+             a scope boundary, not a visibility barrier"
+        );
+        let base = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("base"))
+            .expect("base is discovered");
+        assert_eq!(base.scope, vec!["Wall".to_string()]);
+        let bored = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("bored"))
+            .expect("bored is discovered");
+        assert_eq!(bored.scope, vec!["Wall".to_string()]);
+    }
+
+    #[test]
+    fn a_top_level_feature_keeps_an_empty_scope() {
+        let lowered = lowered("let base = box(10mm, 10mm, 10mm);\n");
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        assert_eq!(graph.nodes()[0].scope, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_dependency_edge_between_two_part_nested_features_is_still_found() {
+        let lowered = lowered(
+            "part Wall {\n\
+             \tlet base = box(10mm, 10mm, 10mm);\n\
+             \tlet hole = cylinder(1mm, 10mm);\n\
+             \tlet drilled = cut(base, hole);\n\
+             }\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        assert_eq!(graph.nodes().len(), 3);
+        let base = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("base"))
+            .unwrap();
+        let hole = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("hole"))
+            .unwrap();
+        let drilled = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("drilled"))
+            .unwrap();
+        assert_eq!(drilled.geometry_inputs, vec![base.id, hole.id]);
+    }
+
+    #[test]
+    fn find_by_binding_resolves_a_part_nested_feature_by_its_own_binding_id() {
+        let lowered = lowered(
+            "part Wall {\n\
+             \tlet base = box(10mm, 10mm, 10mm);\n\
+             }\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let HirItem::Part { items, .. } = &lowered.program.items[0] else {
+            panic!("expected a part item");
+        };
+        let HirItem::Let { binding, .. } = &items[0] else {
+            panic!("expected a let item");
+        };
+        // `BindingId` is process-unique regardless of lexical scope
+        // (`cad_hir::ids::BindingId`'s own doc comment), so this lookup was
+        // already collision-free before D31 -- see this module's own doc
+        // comment, "`part` bodies -- D31".
+        assert_eq!(graph.find_by_binding(*binding), Some(graph.nodes()[0].id));
+    }
+
+    #[test]
+    fn dirty_set_propagates_through_a_part_nested_feature() {
+        let lowered = lowered(
+            "param radius: Length = 4mm;\n\
+             part Wall {\n\
+             \tlet boss = cylinder(radius, 12mm);\n\
+             }\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let radius = param_binding(&lowered, "radius");
+        let boss = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("boss"))
+            .unwrap();
+        let mut changed = std::collections::HashSet::new();
+        changed.insert(radius);
+        let dirty = graph.dirty_set(&changed);
+        assert!(
+            dirty.contains(&boss.id),
+            "a part-nested feature referencing a changed param must be marked dirty too, not \
+             invisible to dirty-set propagation"
+        );
+    }
+
+    #[test]
+    fn two_different_parts_may_declare_the_same_feature_name_as_distinct_nodes() {
+        let lowered = lowered(
+            "part A {\n\
+             \tlet hole = cylinder(1mm, 10mm);\n\
+             }\n\
+             part B {\n\
+             \tlet hole = cylinder(2mm, 10mm);\n\
+             }\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        assert_eq!(
+            graph.nodes().len(),
+            2,
+            "two different parts each declaring a feature named 'hole' must produce two \
+             distinct nodes, never be collapsed/confused with each other"
+        );
+        let scopes: std::collections::HashSet<Vec<String>> =
+            graph.nodes().iter().map(|n| n.scope.clone()).collect();
+        assert_eq!(
+            scopes,
+            std::collections::HashSet::from([vec!["A".to_string()], vec!["B".to_string()]]),
+            "each node's own scope path must disambiguate which part it came from"
+        );
+    }
+
+    #[test]
+    fn feature_at_resolves_inside_a_part_body_too() {
+        let source = "part Wall {\n\tlet base = box(10mm, 10mm, 10mm);\n}\n";
+        let lowered = lowered(source);
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let offset = source.find("box").unwrap() as u32 + 1;
+        let id = graph
+            .feature_at(offset)
+            .expect("a position inside a part-nested feature's own call resolves to it");
+        assert_eq!(graph.get(id).unwrap().name, Some("base"));
     }
 }

@@ -381,6 +381,32 @@ impl<'ctx> Shape<'ctx> {
         Ok(is_valid != 0)
     }
 
+    /// A second, independently-releasable handle onto the exact same
+    /// underlying shape (`AICAD-100A`) — a cheap map re-insertion on the
+    /// native side, never a real geometry copy (`Shape` itself has no
+    /// `Clone` impl, matching every other `RAII`-owned-resource wrapper in
+    /// this crate — this is the one deliberate, explicit exception, needed
+    /// by `cad_query::Candidate::with_root` to give a candidate its own
+    /// independently-owned handle onto the whole shape it was enumerated
+    /// from, without borrowing the original).
+    pub fn duplicate(&self) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_duplicate(self.context.raw, self.raw_handle(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     /// This shape's volume, per OCCT's `BRepGProp::VolumeProperties`, in
     /// the kernel's internal linear unit (unit semantics belong to
     /// `cad-units` above this crate, not here).
@@ -687,6 +713,90 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Like [`Shape::union`], but also captures Generated/Modified/
+    /// IsDeleted lineage for every unique face/edge of `self`/`other`
+    /// (`AICAD-086`) -- needed to give `generated_by`/`modified_by`
+    /// (`docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §6/§8) real
+    /// evidence. The returned [`Lineage`] answers "what became of this
+    /// specific face/edge of one of my two original operands?" -- see
+    /// that type's own doc comment.
+    pub fn union_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        self.boolean_with_lineage(other, ffi::aicad_occt_boolean_union_lineage)
+    }
+
+    /// Like [`Shape::cut`], but also captures lineage -- see
+    /// [`Shape::union_with_lineage`].
+    pub fn cut_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        self.boolean_with_lineage(other, ffi::aicad_occt_boolean_cut_lineage)
+    }
+
+    /// Like [`Shape::intersect`], but also captures lineage -- see
+    /// [`Shape::union_with_lineage`].
+    pub fn intersect_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        self.boolean_with_lineage(other, ffi::aicad_occt_boolean_intersect_lineage)
+    }
+
+    /// Shared implementation for `union_with_lineage`/`cut_with_lineage`/
+    /// `intersect_with_lineage`: each ABI function has an identical
+    /// signature (`context, a, b, out_handle, out_lineage`), differing
+    /// only in which underlying Boolean operation runs.
+    fn boolean_with_lineage(
+        &self,
+        other: &Shape<'ctx>,
+        raw_fn: unsafe extern "C" fn(
+            *mut ffi::aicad_occt_context_t,
+            ffi::aicad_shape_handle_t,
+            ffi::aicad_shape_handle_t,
+            *mut ffi::aicad_shape_handle_t,
+            *mut ffi::aicad_lineage_handle_t,
+        ) -> c_int,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`other.raw_handle()`
+        // as in `union`; `&mut handle`/`&mut lineage_handle` are valid
+        // out-params per the header's contract for every `*_lineage`
+        // variant (identical shape to the non-lineage function, plus one
+        // more out-param).
+        let status = unsafe {
+            raw_fn(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut handle,
+                &mut lineage_handle,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self.context,
+                handle: lineage_handle,
+            },
+        ))
+    }
+
     /// The number of unique edges in this shape (AICAD-027), via OCCT's
     /// own de-duplicated `TopExp::MapShapes` (a raw `TopExp_Explorer`
     /// traversal instead revisits each edge once per adjacent face,
@@ -789,6 +899,97 @@ impl<'ctx> Shape<'ctx> {
         })
     }
 
+    /// Like [`Shape::fillet`], but also captures Generated/Modified/
+    /// IsDeleted lineage for every unique face/edge of `self`
+    /// (`AICAD-086`) -- see [`Shape::union_with_lineage`].
+    pub fn fillet_with_lineage(
+        &self,
+        edges: &[&Shape<'ctx>],
+        radius: f64,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `fillet`'s own SAFETY comment; `&mut lineage_handle`
+        // is a valid out-param, matching `aicad_occt_fillet_lineage`'s
+        // own contract.
+        let status = unsafe {
+            ffi::aicad_occt_fillet_lineage(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                radius,
+                &mut handle,
+                &mut lineage_handle,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self.context,
+                handle: lineage_handle,
+            },
+        ))
+    }
+
+    /// Like [`Shape::chamfer`], but also captures lineage -- see
+    /// [`Shape::fillet_with_lineage`].
+    pub fn chamfer_with_lineage(
+        &self,
+        edges: &[&Shape<'ctx>],
+        distance: f64,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>)> {
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            edges.iter().map(|edge| id_to_handle(edge.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `fillet_with_lineage` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_chamfer_lineage(
+                self.context.raw,
+                self.raw_handle(),
+                handles.as_ptr(),
+                handles.len(),
+                distance,
+                &mut handle,
+                &mut lineage_handle,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self.context,
+                handle: lineage_handle,
+            },
+        ))
+    }
+
     /// The number of unique faces in this shape (AICAD-028), via OCCT's
     /// own de-duplicated `TopExp::MapShapes`.
     pub fn face_count(&self) -> KernelResult<usize> {
@@ -818,6 +1019,83 @@ impl<'ctx> Shape<'ctx> {
         // in `is_valid`/`create_box`.
         let status = unsafe {
             ffi::aicad_occt_shape_get_face(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// The number of unique shells in this shape (`AICAD-100A`), via
+    /// OCCT's own de-duplicated `TopExp::MapShapes` over `TopAbs_SHELL` --
+    /// same pattern as [`Shape::face_count`], applied to the next topology
+    /// kind up. Closes the Stage-4 gap `crate::reference_replay::
+    /// candidates_of_kind`'s own prior doc comment named: no bridge
+    /// accessor existed to enumerate a shape's own sub-shells, so a
+    /// `ShellRef` query against real geometry could never find a
+    /// candidate at all.
+    pub fn shell_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_shell_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the shell at `index` (0-based, `< self.shell_count()`) in
+    /// this shape's own current raw enumeration order (`AICAD-100A`) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_face`].
+    pub fn get_shell(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_shell(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// The number of unique solids in this shape (`AICAD-100A`), via
+    /// OCCT's own de-duplicated `TopExp::MapShapes` over `TopAbs_SOLID` --
+    /// same pattern as [`Shape::shell_count`].
+    pub fn solid_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `&mut count` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_solid_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the solid at `index` (0-based, `< self.solid_count()`) in
+    /// this shape's own current raw enumeration order (`AICAD-100A`) --
+    /// ephemeral and epoch-bound, never a durable semantic reference, per
+    /// the same contract as [`Shape::get_face`].
+    pub fn get_solid(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_solid(self.context.raw, self.raw_handle(), index, &mut handle)
         };
         status_result(status)?;
         Ok(Shape {
@@ -1145,8 +1423,512 @@ impl<'ctx> Shape<'ctx> {
         status_result(status)
     }
 
+    /// This face's underlying surface family (`AICAD-082`), via OCCT's own
+    /// `BRepAdaptor_Surface::GetType()`. `self` must address a shape of
+    /// exactly kind Face -- [`KernelError::InvalidArgument`] otherwise.
+    pub fn surface_type(&self) -> KernelResult<SurfaceKind> {
+        let mut kind: c_int = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; identical argument;
+        // `&mut kind` is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_surface_type(self.context.raw, self.raw_handle(), &mut kind)
+        };
+        status_result(status)?;
+        Ok(SurfaceKind::from_raw(kind))
+    }
+
+    /// This face's single characteristic radius (`AICAD-082`) -- defined
+    /// only for [`SurfaceKind::Cylinder`]/[`SurfaceKind::Sphere`] (their
+    /// one radius) and [`SurfaceKind::Torus`] (its major/tube-path
+    /// radius; the torus's own minor radius is not exposed here). Any
+    /// other surface kind (including [`SurfaceKind::Cone`], whose radius
+    /// varies continuously along its axis) fails with
+    /// [`KernelError::InvalidArgument`] rather than guessing which value
+    /// to report.
+    pub fn face_radius(&self) -> KernelResult<f64> {
+        let mut radius: f64 = 0.0;
+        // SAFETY: see `is_valid`'s SAFETY comment; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_shape_face_radius(self.context.raw, self.raw_handle(), &mut radius)
+        };
+        status_result(status)?;
+        Ok(radius)
+    }
+
+    /// This face's rotational axis (`AICAD-082`) -- defined only for
+    /// [`SurfaceKind::Cylinder`]/[`SurfaceKind::Cone`]/[`SurfaceKind::Torus`];
+    /// any other surface kind fails with [`KernelError::InvalidArgument`].
+    pub fn face_axis(&self) -> KernelResult<Axis3> {
+        let mut origin = [0.0; 3];
+        let mut direction = [0.0; 3];
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut origin`/`&mut
+        // direction` are each a valid 3-element out-param per the
+        // header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_face_axis(
+                self.context.raw,
+                self.raw_handle(),
+                origin.as_mut_ptr(),
+                direction.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        let direction = cad_kernel_api::Vector3::new(direction[0], direction[1], direction[2])
+            .normalize()
+            .ok_or(KernelError::Internal)?;
+        Ok(Axis3::new(
+            Point3::new(origin[0], origin[1], origin[2]),
+            direction,
+        ))
+    }
+
+    /// A representative point on this face (its own parametric-domain
+    /// midpoint, not an area centroid) and the face's own outward unit
+    /// normal there, already corrected for this face's orientation
+    /// (`AICAD-082`). Fails with [`KernelError::OperationFailed`] if the
+    /// surface is singular at that exact parameter (e.g. a cone apex).
+    pub fn face_normal(&self) -> KernelResult<(Point3, Direction3)> {
+        let mut point = [0.0; 3];
+        let mut normal = [0.0; 3];
+        // SAFETY: see `face_axis` above; identical argument shape.
+        let status = unsafe {
+            ffi::aicad_occt_shape_face_normal(
+                self.context.raw,
+                self.raw_handle(),
+                point.as_mut_ptr(),
+                normal.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        let normal = cad_kernel_api::Vector3::new(normal[0], normal[1], normal[2])
+            .normalize()
+            .ok_or(KernelError::Internal)?;
+        Ok((Point3::new(point[0], point[1], point[2]), normal))
+    }
+
+    /// This edge's underlying curve family (`AICAD-082`), via OCCT's own
+    /// `BRepAdaptor_Curve::GetType()`. `self` must address a shape of
+    /// exactly kind Edge -- [`KernelError::InvalidArgument`] otherwise.
+    pub fn curve_type(&self) -> KernelResult<CurveKind> {
+        let mut kind: c_int = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_shape_curve_type(self.context.raw, self.raw_handle(), &mut kind)
+        };
+        status_result(status)?;
+        Ok(CurveKind::from_raw(kind))
+    }
+
+    /// This edge's radius (`AICAD-082`) -- defined only for
+    /// [`CurveKind::Circle`]; an ellipse has two distinct radii with no
+    /// single "the" radius, so every other curve kind fails with
+    /// [`KernelError::InvalidArgument`].
+    pub fn edge_radius(&self) -> KernelResult<f64> {
+        let mut radius: f64 = 0.0;
+        // SAFETY: see `is_valid`'s SAFETY comment; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_radius(self.context.raw, self.raw_handle(), &mut radius)
+        };
+        status_result(status)?;
+        Ok(radius)
+    }
+
+    /// This edge's axis (`AICAD-082`) -- the normal to the circle's own
+    /// plane through its center. Defined only for [`CurveKind::Circle`].
+    pub fn edge_axis(&self) -> KernelResult<Axis3> {
+        let mut origin = [0.0; 3];
+        let mut direction = [0.0; 3];
+        // SAFETY: see `face_axis` above; identical argument shape.
+        let status = unsafe {
+            ffi::aicad_occt_shape_edge_axis(
+                self.context.raw,
+                self.raw_handle(),
+                origin.as_mut_ptr(),
+                direction.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        let direction = cad_kernel_api::Vector3::new(direction[0], direction[1], direction[2])
+            .normalize()
+            .ok_or(KernelError::Internal)?;
+        Ok(Axis3::new(
+            Point3::new(origin[0], origin[1], origin[2]),
+            direction,
+        ))
+    }
+
+    /// Whether `self` and `other` denote the same underlying topological
+    /// entity (`AICAD-083`), via OCCT's own `TopoDS_Shape::IsSame`
+    /// (TShape + Location, ignoring Orientation) -- needed because two
+    /// independently obtained handles (e.g. from [`Shape::get_face`] vs.
+    /// [`Shape::edge_adjacent_face`]) can address the same face with
+    /// different raw slots. `self`/`other` need not share a context to
+    /// call this safely, but always report `false` when they don't (an
+    /// entity from a different context/build can never be "the same"
+    /// entity, matching Stage-1 kernel policy #10's epoch-bound handles).
+    pub fn is_same(&self, other: &Shape<'_>) -> KernelResult<bool> {
+        // SAFETY: `self.context.raw`/`self.raw_handle()` as in `is_valid`;
+        // `other.raw_handle()` addresses a slot `other` owns in its own
+        // (possibly different) context -- `aicad_occt_shape_is_same`
+        // looks each handle up against `context` independently and
+        // reports INVALID_HANDLE/FOREIGN_CONTEXT rather than crossing
+        // contexts unsafely, so passing a foreign-context handle here is
+        // memory-safe even though it is rejected below.
+        let mut is_same: c_int = 0;
+        let status = unsafe {
+            ffi::aicad_occt_shape_is_same(
+                self.context.raw,
+                self.raw_handle(),
+                other.raw_handle(),
+                &mut is_same,
+            )
+        };
+        match status_result(status) {
+            Ok(()) => Ok(is_same != 0),
+            // A handle from a different context is never "the same"
+            // entity -- reported as `Ok(false)`, not an error, matching
+            // this method's own doc comment.
+            Err(KernelError::ForeignContext) => Ok(false),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Number of unique wires in this shape (`AICAD-083`), matching
+    /// [`Shape::face_count`]'s own "any shape kind" scope.
+    pub fn wire_count(&self) -> KernelResult<usize> {
+        let mut count: usize = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_shape_wire_count(self.context.raw, self.raw_handle(), &mut count)
+        };
+        status_result(status)?;
+        Ok(count)
+    }
+
+    /// Returns the wire at `index` (0-based, `< self.wire_count()`) in
+    /// this shape's own current raw enumeration order (`AICAD-083`) --
+    /// ephemeral and epoch-bound, matching [`Shape::get_face`]'s own
+    /// contract.
+    pub fn get_wire(&self, index: usize) -> KernelResult<Shape<'ctx>> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut handle` as in
+        // `create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_get_wire(self.context.raw, self.raw_handle(), index, &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Whether `wire` is `self`'s own designated OUTER wire (`AICAD-083`)
+    /// -- false for any inner (hole) wire, and false if `wire` does not
+    /// bound `self` at all. `self` must address a shape of exactly kind
+    /// Face; `wire` must address a shape of exactly kind Wire.
+    pub fn is_outer_wire(&self, wire: &Shape<'ctx>) -> KernelResult<bool> {
+        let mut is_outer: c_int = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; `wire.raw_handle()`
+        // addresses a slot `wire` owns in the same context (enforced by
+        // `'ctx`).
+        let status = unsafe {
+            ffi::aicad_occt_shape_is_outer_wire(
+                self.context.raw,
+                self.raw_handle(),
+                wire.raw_handle(),
+                &mut is_outer,
+            )
+        };
+        status_result(status)?;
+        Ok(is_outer != 0)
+    }
+
+    /// This vertex's own coordinate (`AICAD-084`) -- unlike
+    /// [`Shape::center_of_mass`] (which fails for a bare Vertex), this is
+    /// defined exactly because a vertex's "center" is just its own point.
+    /// `self` must address a shape of exactly kind Vertex.
+    pub fn vertex_point(&self) -> KernelResult<Point3> {
+        let mut point = [0.0; 3];
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut point` is a
+        // valid 3-element out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_vertex_point(
+                self.context.raw,
+                self.raw_handle(),
+                point.as_mut_ptr(),
+            )
+        };
+        status_result(status)?;
+        Ok(Point3::new(point[0], point[1], point[2]))
+    }
+
+    /// Exact point-vs-solid classification (`AICAD-084`), via OCCT's own
+    /// `BRepClass3d_SolidClassifier` -- never a mesh/bounding-box
+    /// approximation. `self` must address a shape containing at least one
+    /// Solid; `tolerance` must be finite and `> 0.0`.
+    pub fn classify_point(
+        &self,
+        point: Point3,
+        tolerance: f64,
+    ) -> KernelResult<PointClassification> {
+        let point = [point.x, point.y, point.z];
+        let mut classification: c_int = 0;
+        // SAFETY: `point` is a valid, live `[f64; 3]` for the duration of
+        // this call; `self.context.raw`/`self.raw_handle()` as in
+        // `is_valid`; `&mut classification` is a valid out-param.
+        let status = unsafe {
+            ffi::aicad_occt_shape_classify_point(
+                self.context.raw,
+                self.raw_handle(),
+                point.as_ptr(),
+                tolerance,
+                &mut classification,
+            )
+        };
+        status_result(status)?;
+        Ok(PointClassification::from_raw(classification))
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
+    }
+}
+
+/// One operation's own captured Generated/Modified/IsDeleted lineage
+/// (`AICAD-086`), returned alongside the result [`Shape`] by
+/// [`Shape::union_with_lineage`]/`cut_with_lineage`/`intersect_with_lineage`/
+/// `fillet_with_lineage`/`chamfer_with_lineage`. Answers, for a specific
+/// face/edge of one of that operation's own *original input* shapes
+/// (never the result shape): was it deleted, what did it generate, and
+/// what did it get modified into?
+///
+/// This is deliberately a snapshot, not a live query against the OCCT
+/// builder that performed the operation -- that builder is a C++ local
+/// variable inside the native function that produced this `Lineage` and
+/// no longer exists by the time this type's methods run (see `native/
+/// occt_bridge/src/aicad_occt_bridge.cpp`'s own `LineageEntry` doc
+/// comment). Automatically released (`aicad_occt_release_lineage`) when
+/// dropped, exactly like [`Shape`].
+#[derive(Debug)]
+pub struct Lineage<'ctx> {
+    context: &'ctx OcctContext,
+    handle: ffi::aicad_lineage_handle_t,
+}
+
+impl<'ctx> Lineage<'ctx> {
+    /// Whether `input` (a face/edge [`Shape`] obtained from one of this
+    /// lineage's own two original operands, via a handle obtained
+    /// *before* the operation ran) has no surviving generated/modified
+    /// counterpart in the operation's result -- e.g. a face entirely
+    /// consumed by a boolean cut. `input` must belong to the same
+    /// operation this lineage was captured from; a face/edge from an
+    /// unrelated shape returns [`KernelError::InvalidArgument`], never a
+    /// guessed `false` -- see `ResolveLineageEntry`'s own native doc
+    /// comment for why "no evidence" and "evidenced not-deleted" are kept
+    /// distinct.
+    pub fn is_deleted(&self, input: &Shape<'ctx>) -> KernelResult<bool> {
+        let mut is_deleted: c_int = 0;
+        // SAFETY: `self.context.raw` is valid for `'ctx`; `self.handle`
+        // addresses a lineage slot this `Lineage` owns and has not yet
+        // released; `input.raw_handle()` addresses a slot `input` owns in
+        // the same context; `&mut is_deleted` is a valid out-param.
+        let status = unsafe {
+            ffi::aicad_occt_lineage_is_deleted(
+                self.context.raw,
+                self.handle,
+                input.raw_handle(),
+                &mut is_deleted,
+            )
+        };
+        status_result(status)?;
+        Ok(is_deleted != 0)
+    }
+
+    /// Every shape `input` was generated into by this operation (OCCT's
+    /// own `Generated(input)`) -- e.g. a new face created where a hole
+    /// broke through an existing face. Empty (not an error) if `input`
+    /// has no generated counterpart, including when it was deleted. See
+    /// [`Lineage::is_deleted`] for `input`'s own membership requirement.
+    pub fn generated(&self, input: &Shape<'ctx>) -> KernelResult<Vec<Shape<'ctx>>> {
+        self.shape_list(
+            input,
+            ffi::aicad_occt_lineage_generated_count,
+            ffi::aicad_occt_lineage_generated_get,
+        )
+    }
+
+    /// Every shape `input` was modified into by this operation (OCCT's
+    /// own `Modified(input)`) -- `input` carried forward as a
+    /// geometrically changed (but not newly created) counterpart, e.g. a
+    /// face re-trimmed by a boolean cut. See [`Lineage::generated`].
+    pub fn modified(&self, input: &Shape<'ctx>) -> KernelResult<Vec<Shape<'ctx>>> {
+        self.shape_list(
+            input,
+            ffi::aicad_occt_lineage_modified_count,
+            ffi::aicad_occt_lineage_modified_get,
+        )
+    }
+
+    /// Shared count-then-index-each implementation for
+    /// [`Lineage::generated`]/[`Lineage::modified`] -- both native query
+    /// pairs share an identical count/get shape.
+    fn shape_list(
+        &self,
+        input: &Shape<'ctx>,
+        count_fn: unsafe extern "C" fn(
+            *mut ffi::aicad_occt_context_t,
+            ffi::aicad_lineage_handle_t,
+            ffi::aicad_shape_handle_t,
+            *mut usize,
+        ) -> c_int,
+        get_fn: unsafe extern "C" fn(
+            *mut ffi::aicad_occt_context_t,
+            ffi::aicad_lineage_handle_t,
+            ffi::aicad_shape_handle_t,
+            usize,
+            *mut ffi::aicad_shape_handle_t,
+        ) -> c_int,
+    ) -> KernelResult<Vec<Shape<'ctx>>> {
+        let mut count: usize = 0;
+        // SAFETY: see `is_deleted`'s SAFETY comment; `&mut count` is a
+        // valid out-param.
+        let status = unsafe {
+            count_fn(
+                self.context.raw,
+                self.handle,
+                input.raw_handle(),
+                &mut count,
+            )
+        };
+        status_result(status)?;
+        let mut out = Vec::with_capacity(count);
+        for index in 0..count {
+            let mut handle = ffi::aicad_shape_handle_t {
+                context_id: 0,
+                slot: 0,
+                generation: 0,
+            };
+            // SAFETY: see `is_deleted`'s SAFETY comment; `index < count`
+            // from the successful `count_fn` call above; `&mut handle` is
+            // a valid out-param.
+            let status = unsafe {
+                get_fn(
+                    self.context.raw,
+                    self.handle,
+                    input.raw_handle(),
+                    index,
+                    &mut handle,
+                )
+            };
+            status_result(status)?;
+            out.push(Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            });
+        }
+        Ok(out)
+    }
+}
+
+impl<'ctx> Drop for Lineage<'ctx> {
+    fn drop(&mut self) {
+        // SAFETY: see `Shape`'s own `Drop` impl -- identical argument, a
+        // different table on the same context.
+        let _ = unsafe { ffi::aicad_occt_release_lineage(self.context.raw, self.handle) };
+    }
+}
+
+/// Exact point-vs-solid classification (`AICAD-084`), as reported by
+/// [`Shape::classify_point`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointClassification {
+    Outside,
+    Inside,
+    OnBoundary,
+}
+
+impl PointClassification {
+    fn from_raw(raw: c_int) -> Self {
+        match raw {
+            1 => PointClassification::Inside,
+            2 => PointClassification::OnBoundary,
+            // 0 (AICAD_CLASSIFY_OUT), or anything unrecognized -- matching
+            // `SurfaceKind::from_raw`'s own defensive-default rationale.
+            _ => PointClassification::Outside,
+        }
+    }
+}
+
+/// A face's underlying surface family (`AICAD-082`), via
+/// [`Shape::surface_type`]. Kernel-neutral: never an OCCT `GeomAbs_*`
+/// value re-exported directly (`native/occt_bridge/include/
+/// aicad_occt_bridge.h`'s own kernel-neutral-at-the-ABI contract, which
+/// this Rust-level type preserves one layer up).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceKind {
+    Plane,
+    Cylinder,
+    Cone,
+    Sphere,
+    Torus,
+    Bezier,
+    Bspline,
+    /// Any analytic/procedural surface family this enum does not name
+    /// (e.g. a swept, offset, or surface-of-revolution/-extrusion face)
+    /// -- never guessed into one of the named kinds.
+    Other,
+}
+
+impl SurfaceKind {
+    fn from_raw(raw: c_int) -> Self {
+        match raw {
+            0 => SurfaceKind::Plane,
+            1 => SurfaceKind::Cylinder,
+            2 => SurfaceKind::Cone,
+            3 => SurfaceKind::Sphere,
+            4 => SurfaceKind::Torus,
+            5 => SurfaceKind::Bezier,
+            6 => SurfaceKind::Bspline,
+            // The native side is entirely under this workspace's control
+            // (matching `status_result`'s own rationale for its `_ =>`
+            // arm): any value this match does not recognize is treated
+            // as `Other` rather than panicking.
+            _ => SurfaceKind::Other,
+        }
+    }
+}
+
+/// An edge's underlying curve family (`AICAD-082`), via
+/// [`Shape::curve_type`]. Kernel-neutral, matching [`SurfaceKind`]'s own
+/// rationale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurveKind {
+    Line,
+    Circle,
+    Ellipse,
+    Bezier,
+    Bspline,
+    /// Any curve family this enum does not name (e.g. a hyperbola,
+    /// parabola, or offset curve) -- never guessed into one of the named
+    /// kinds, matching [`SurfaceKind::Other`]'s own rationale.
+    Other,
+}
+
+impl CurveKind {
+    fn from_raw(raw: c_int) -> Self {
+        match raw {
+            0 => CurveKind::Line,
+            1 => CurveKind::Circle,
+            2 => CurveKind::Ellipse,
+            3 => CurveKind::Bezier,
+            4 => CurveKind::Bspline,
+            _ => CurveKind::Other,
+        }
     }
 }
 
@@ -2119,6 +2901,73 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_is_independently_releasable_and_addresses_the_same_shape() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let dup = box_shape.duplicate().unwrap();
+        assert!(box_shape.is_same(&dup).unwrap());
+        assert_eq!(dup.face_count().unwrap(), box_shape.face_count().unwrap());
+        // Releasing one handle must not invalidate the other -- confirmed
+        // by both still answering queries cleanly afterward.
+        drop(dup);
+        assert!(box_shape.is_valid().unwrap());
+    }
+
+    // --- AICAD-100A: shell/solid candidate enumeration ---
+
+    #[test]
+    fn a_box_solid_has_exactly_one_unique_solid_and_one_unique_shell() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        assert_eq!(box_shape.solid_count().unwrap(), 1);
+        assert_eq!(box_shape.shell_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn get_solid_and_get_shell_return_a_shape_with_the_same_face_count_as_the_box() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let solid = box_shape.get_solid(0).unwrap();
+        assert_eq!(solid.face_count().unwrap(), box_shape.face_count().unwrap());
+        let shell = box_shape.get_shell(0).unwrap();
+        assert_eq!(shell.face_count().unwrap(), box_shape.face_count().unwrap());
+    }
+
+    #[test]
+    fn get_solid_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_solid(1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn get_shell_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.get_shell(1).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn a_bare_face_has_zero_shells_and_zero_solids() {
+        // A Face-kind shape contains no TopAbs_SHELL/TopAbs_SOLID
+        // sub-shapes at all -- matching `face_radius`'s own "not
+        // applicable to this kind -> Ok(0)/Ok(false)" precedent rather
+        // than an error, so a `ShellRef`/`SolidRef` query against a Face
+        // candidate correctly finds zero candidates instead of failing.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        assert_eq!(face.solid_count().unwrap(), 0);
+        assert_eq!(face.shell_count().unwrap(), 0);
+    }
+
+    #[test]
     fn shell_hollowed_box_matches_analytic_volume() {
         // Hollowing a box with its top face removed and wall thickness t
         // (built inward) leaves a cavity spanning x in [t,dx-t], y in
@@ -2750,5 +3599,590 @@ mod tests {
             KernelError::OperationFailed
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    // --- AICAD-082: face/edge geometric classification ---
+
+    fn faces<'ctx>(shape: &Shape<'ctx>) -> Vec<Shape<'ctx>> {
+        (0..shape.face_count().unwrap())
+            .map(|i| shape.get_face(i).unwrap())
+            .collect()
+    }
+
+    fn edges<'ctx>(shape: &Shape<'ctx>) -> Vec<Shape<'ctx>> {
+        (0..shape.edge_count().unwrap())
+            .map(|i| shape.get_edge(i).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn surface_type_reports_plane_for_every_box_face() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 3.0, 4.0).unwrap();
+        for face in faces(&cube) {
+            assert_eq!(face.surface_type().unwrap(), SurfaceKind::Plane);
+        }
+    }
+
+    #[test]
+    fn surface_type_reports_cylinder_for_exactly_one_capped_cylinder_face() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(2.0, 5.0).unwrap();
+        let kinds: Vec<SurfaceKind> = faces(&cylinder)
+            .iter()
+            .map(|f| f.surface_type().unwrap())
+            .collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|k| **k == SurfaceKind::Cylinder)
+                .count(),
+            1
+        );
+        assert!(
+            kinds
+                .iter()
+                .all(|k| matches!(k, SurfaceKind::Plane | SurfaceKind::Cylinder))
+        );
+    }
+
+    #[test]
+    fn surface_type_rejects_a_non_face_handle() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge = cube.get_edge(0).unwrap();
+        assert_eq!(
+            edge.surface_type().unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    fn cylindrical_face<'ctx>(shape: &Shape<'ctx>) -> Shape<'ctx> {
+        faces(shape)
+            .into_iter()
+            .find(|f| f.surface_type().unwrap() == SurfaceKind::Cylinder)
+            .expect("shape must have a cylindrical face")
+    }
+
+    #[test]
+    fn face_radius_matches_the_constructed_cylinder_radius() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(2.5, 5.0).unwrap();
+        let lateral = cylindrical_face(&cylinder);
+        assert!((lateral.face_radius().unwrap() - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn face_radius_rejects_a_planar_face() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = cube.get_face(0).unwrap();
+        assert_eq!(face.surface_type().unwrap(), SurfaceKind::Plane);
+        assert_eq!(
+            face.face_radius().unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn face_axis_is_parallel_to_plus_z_for_an_origin_cylinder() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(2.0, 5.0).unwrap();
+        let lateral = cylindrical_face(&cylinder);
+        let axis = lateral.face_axis().unwrap();
+        assert!((axis.direction.dot(Direction3::Z).abs() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn face_axis_rejects_a_planar_face() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = cube.get_face(0).unwrap();
+        assert_eq!(face.face_axis().unwrap_err(), KernelError::InvalidArgument);
+    }
+
+    #[test]
+    fn face_normal_is_a_unit_vector_and_lies_on_the_bounding_box() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let bbox = cube.bounding_box().unwrap();
+        for face in faces(&cube) {
+            let (point, normal) = face.face_normal().unwrap();
+            let length = (normal.as_vector3().x.powi(2)
+                + normal.as_vector3().y.powi(2)
+                + normal.as_vector3().z.powi(2))
+            .sqrt();
+            assert!((length - 1.0).abs() < 1e-9);
+            let on_boundary = (point.x - bbox.min.x).abs() < 1e-6
+                || (point.x - bbox.max.x).abs() < 1e-6
+                || (point.y - bbox.min.y).abs() < 1e-6
+                || (point.y - bbox.max.y).abs() < 1e-6
+                || (point.z - bbox.min.z).abs() < 1e-6
+                || (point.z - bbox.max.z).abs() < 1e-6;
+            assert!(on_boundary, "face midpoint {point:?} not on box boundary");
+        }
+    }
+
+    #[test]
+    fn face_normal_points_outward_from_the_box_center() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let center = cube.center_of_mass().unwrap();
+        for face in faces(&cube) {
+            let (point, normal) = face.face_normal().unwrap();
+            let outward = cad_kernel_api::Vector3::new(
+                point.x - center.x,
+                point.y - center.y,
+                point.z - center.z,
+            );
+            assert!(
+                outward.dot(normal.as_vector3()) > 0.0,
+                "normal at {point:?} should point away from the box center"
+            );
+        }
+    }
+
+    #[test]
+    fn curve_type_reports_line_for_every_box_edge() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        for edge in edges(&cube) {
+            assert_eq!(edge.curve_type().unwrap(), CurveKind::Line);
+        }
+    }
+
+    #[test]
+    fn curve_type_reports_circle_for_cylinder_rim_edges() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(2.0, 5.0).unwrap();
+        let circle_count = edges(&cylinder)
+            .iter()
+            .filter(|e| e.curve_type().unwrap() == CurveKind::Circle)
+            .count();
+        assert_eq!(
+            circle_count, 2,
+            "a capped cylinder has exactly 2 circular rim edges"
+        );
+    }
+
+    #[test]
+    fn curve_type_rejects_a_non_edge_handle() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = cube.get_face(0).unwrap();
+        assert_eq!(face.curve_type().unwrap_err(), KernelError::InvalidArgument);
+    }
+
+    fn a_circular_edge<'ctx>(shape: &Shape<'ctx>) -> Shape<'ctx> {
+        edges(shape)
+            .into_iter()
+            .find(|e| e.curve_type().unwrap() == CurveKind::Circle)
+            .expect("shape must have a circular edge")
+    }
+
+    #[test]
+    fn edge_radius_matches_the_constructed_cylinder_radius() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(2.5, 5.0).unwrap();
+        let rim = a_circular_edge(&cylinder);
+        assert!((rim.edge_radius().unwrap() - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn edge_radius_rejects_a_line_edge() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge = cube.get_edge(0).unwrap();
+        assert_eq!(
+            edge.edge_radius().unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn edge_axis_is_parallel_to_the_cylinder_axis() {
+        let context = OcctContext::new().unwrap();
+        let cylinder = context.create_cylinder(2.0, 5.0).unwrap();
+        let rim = a_circular_edge(&cylinder);
+        let axis = rim.edge_axis().unwrap();
+        assert!((axis.direction.dot(Direction3::Z).abs() - 1.0).abs() < 1e-9);
+    }
+
+    // --- AICAD-083: shape identity ---
+
+    #[test]
+    fn is_same_reports_true_for_two_handles_of_the_same_face() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let a = cube.get_face(0).unwrap();
+        let b = cube.get_face(0).unwrap();
+        assert!(a.is_same(&b).unwrap());
+    }
+
+    #[test]
+    fn is_same_reports_false_for_two_different_faces() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let a = cube.get_face(0).unwrap();
+        let b = cube.get_face(1).unwrap();
+        assert!(!a.is_same(&b).unwrap());
+    }
+
+    #[test]
+    fn is_same_reports_true_across_two_independent_adjacency_lookups() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        // Every unique edge of a manifold solid box is adjacent to
+        // exactly 2 faces; fetching the same adjacent face a second time
+        // via a fresh lookup must report `is_same` against the first.
+        let first = cube.edge_adjacent_face(0, 0).unwrap();
+        let first_again = cube.edge_adjacent_face(0, 0).unwrap();
+        assert!(first.is_same(&first_again).unwrap());
+    }
+
+    #[test]
+    fn is_same_reports_false_across_independent_contexts() {
+        let context_a = OcctContext::new().unwrap();
+        let context_b = OcctContext::new().unwrap();
+        let cube_a = context_a.create_box(1.0, 1.0, 1.0).unwrap();
+        let cube_b = context_b.create_box(1.0, 1.0, 1.0).unwrap();
+        let face_a = cube_a.get_face(0).unwrap();
+        let face_b = cube_b.get_face(0).unwrap();
+        assert!(!face_a.is_same(&face_b).unwrap());
+    }
+
+    // --- AICAD-083: wire enumeration / outer-boundary ---
+
+    #[test]
+    fn a_box_face_has_exactly_one_wire_and_it_is_the_outer_wire() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = cube.get_face(0).unwrap();
+        assert_eq!(face.wire_count().unwrap(), 1);
+        let wire = face.get_wire(0).unwrap();
+        assert!(face.is_outer_wire(&wire).unwrap());
+    }
+
+    #[test]
+    fn is_outer_wire_rejects_a_wire_from_an_unrelated_face() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face0 = cube.get_face(0).unwrap();
+        let face1 = cube.get_face(1).unwrap();
+        let unrelated_wire = face1.get_wire(0).unwrap();
+        // A face's own outer wire is never `is_same` as a wire that
+        // actually bounds an entirely different face.
+        assert!(!face0.is_outer_wire(&unrelated_wire).unwrap());
+    }
+
+    #[test]
+    fn get_wire_rejects_an_out_of_range_index() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = cube.get_face(0).unwrap();
+        assert_eq!(
+            face.get_wire(face.wire_count().unwrap()).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    // --- AICAD-084: vertex point / point-solid classification ---
+
+    #[test]
+    fn vertex_point_matches_a_box_corner() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 3.0, 4.0).unwrap();
+        let bbox = cube.bounding_box().unwrap();
+        // `Bnd_Box` enlarges by a small internal gap tolerance, so
+        // `bounding_box()`'s own min/max are not bit-exact with any
+        // vertex's true coordinate -- compare within a tolerance well
+        // above that gap instead of exact equality.
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        for i in 0..cube.vertex_count().unwrap() {
+            let vertex = cube.get_vertex(i).unwrap();
+            let point = vertex.vertex_point().unwrap();
+            assert!(close(point.x, bbox.min.x) || close(point.x, bbox.max.x));
+            assert!(close(point.y, bbox.min.y) || close(point.y, bbox.max.y));
+            assert!(close(point.z, bbox.min.z) || close(point.z, bbox.max.z));
+        }
+    }
+
+    #[test]
+    fn vertex_point_rejects_a_non_vertex_handle() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let edge = cube.get_edge(0).unwrap();
+        assert_eq!(
+            edge.vertex_point().unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn classify_point_reports_inside_for_the_box_center() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let center = cube.center_of_mass().unwrap();
+        assert_eq!(
+            cube.classify_point(center, 1e-7).unwrap(),
+            PointClassification::Inside
+        );
+    }
+
+    #[test]
+    fn classify_point_reports_outside_for_a_far_point() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let far = Point3::new(1000.0, 1000.0, 1000.0);
+        assert_eq!(
+            cube.classify_point(far, 1e-7).unwrap(),
+            PointClassification::Outside
+        );
+    }
+
+    #[test]
+    fn classify_point_reports_on_boundary_for_a_face_point() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(2.0, 2.0, 2.0).unwrap();
+        // An exact vertex coordinate (unlike `bounding_box()`'s own
+        // min/max, which `Bnd_Box` enlarges by a small internal gap) lies
+        // exactly on the solid's own boundary.
+        let corner = cube.get_vertex(0).unwrap().vertex_point().unwrap();
+        assert_eq!(
+            cube.classify_point(corner, 1e-7).unwrap(),
+            PointClassification::OnBoundary
+        );
+    }
+
+    #[test]
+    fn classify_point_rejects_a_non_finite_point() {
+        let context = OcctContext::new().unwrap();
+        let cube = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let bad = Point3::new(f64::NAN, 0.0, 0.0);
+        assert_eq!(
+            cube.classify_point(bad, 1e-7).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    /// Classifies one of a 10x10x10 origin box's own axis-aligned faces by
+    /// which coordinate plane it lies flat against, for the `_lineage`
+    /// tests below (a plain, geometry-based classification independent of
+    /// `get_face`'s own raw enumeration order, matching this crate's own
+    /// "never assume kernel enumeration order" convention).
+    fn classify_axis_aligned_box_face(bbox: &BoundingBox) -> &'static str {
+        let flat_x = (bbox.max.x - bbox.min.x).abs() < 1e-6;
+        let flat_y = (bbox.max.y - bbox.min.y).abs() < 1e-6;
+        let flat_z = (bbox.max.z - bbox.min.z).abs() < 1e-6;
+        if flat_z && bbox.min.z < 1.0 {
+            "bottom"
+        } else if flat_z {
+            "top"
+        } else if flat_x || flat_y {
+            "side"
+        } else {
+            panic!("face is not axis-aligned-flat: {bbox:?}")
+        }
+    }
+
+    /// `AICAD-086`: a straight-through cylindrical hole only ever touches
+    /// the two faces it actually pierces (top/bottom); the four side
+    /// faces it never reaches must report no lineage evidence at all
+    /// (`deleted == false`, `generated`/`modified` both empty) -- not a
+    /// guessed `false`, a real evidenced absence.
+    #[test]
+    fn cut_with_lineage_marks_pierced_faces_and_leaves_untouched_faces_evidence_free() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let cyl_raw = context.create_cylinder(2.0, 20.0).unwrap();
+        // A radius-2 cylinder centered at box XY-center (5, 5), spanning
+        // z -5..15 -- comfortably inside the box's own x/y=0..10 footprint
+        // (never touching the four side faces) while fully piercing
+        // through the box's own z=0..10 extent (touching top and bottom).
+        let cyl = cyl_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                5.0, 5.0, -5.0,
+            )))
+            .unwrap();
+        let faces: Vec<Shape> = (0..a.face_count().unwrap())
+            .map(|i| a.get_face(i).unwrap())
+            .collect();
+        let (result, lineage) = a.cut_with_lineage(&cyl).expect("cut should succeed");
+        assert!(result.is_valid().unwrap());
+        for f in &faces {
+            let bbox = f.bounding_box().unwrap();
+            let kind = classify_axis_aligned_box_face(&bbox);
+            let deleted = lineage.is_deleted(f).unwrap();
+            let generated = lineage.generated(f).unwrap();
+            let modified = lineage.modified(f).unwrap();
+            assert!(
+                !deleted,
+                "a pierced-but-not-fully-removed face is never deleted"
+            );
+            match kind {
+                "top" | "bottom" => assert!(
+                    !generated.is_empty() || !modified.is_empty(),
+                    "a face the hole actually pierces must carry generated/modified evidence"
+                ),
+                "side" => assert!(
+                    generated.is_empty() && modified.is_empty(),
+                    "a face the hole never reaches must carry no lineage evidence at all"
+                ),
+                other => panic!("unexpected face classification {other}"),
+            }
+        }
+    }
+
+    /// `AICAD-086`: a cutting tool that entirely swallows one whole face
+    /// (rather than merely trimming it) must report that face `deleted`
+    /// -- with no generated/modified counterpart of its own, since it
+    /// does not survive into the result at all. The opposite (untouched)
+    /// face and the four trimmed side faces must each report their own,
+    /// different, correctly evidenced state.
+    #[test]
+    fn cut_with_lineage_marks_a_wholly_removed_face_as_deleted() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let tool_raw = context.create_box(20.0, 20.0, 10.0).unwrap();
+        // A 20x20x10 tool centered over the box's own top half (z 5..15,
+        // x/y -5..15) entirely contains the box's own top face (z=10,
+        // x/y 0..10) while leaving the bottom face (z=0) untouched.
+        let tool = tool_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                -5.0, -5.0, 5.0,
+            )))
+            .unwrap();
+        let faces: Vec<Shape> = (0..a.face_count().unwrap())
+            .map(|i| a.get_face(i).unwrap())
+            .collect();
+        let (result, lineage) = a.cut_with_lineage(&tool).expect("cut should succeed");
+        assert!(result.is_valid().unwrap());
+        for f in &faces {
+            let bbox = f.bounding_box().unwrap();
+            let kind = classify_axis_aligned_box_face(&bbox);
+            let deleted = lineage.is_deleted(f).unwrap();
+            let generated = lineage.generated(f).unwrap();
+            let modified = lineage.modified(f).unwrap();
+            match kind {
+                "top" => {
+                    assert!(
+                        deleted,
+                        "the wholly-swallowed top face must be reported deleted"
+                    );
+                    assert!(generated.is_empty() && modified.is_empty());
+                }
+                "bottom" => {
+                    assert!(!deleted);
+                    assert!(
+                        generated.is_empty() && modified.is_empty(),
+                        "the untouched bottom face must carry no lineage evidence"
+                    );
+                }
+                "side" => {
+                    assert!(!deleted, "a merely-trimmed side face is not deleted");
+                    assert!(
+                        !generated.is_empty() || !modified.is_empty(),
+                        "a side face trimmed by the tool must carry evidence"
+                    );
+                }
+                other => panic!("unexpected face classification {other}"),
+            }
+        }
+    }
+
+    /// `AICAD-086`: filleting one edge of a box must leave real,
+    /// differentiated lineage evidence -- some faces touched (adjacent to
+    /// the filleted edge or its endpoints), some left with no evidence at
+    /// all, and none ever wholly deleted by a single-edge fillet. Exactly
+    /// which faces land in which group is real OCCT behavior this test
+    /// observes rather than assumes (the box's own face-enumeration order
+    /// is not itself semantic, matching this crate's other tests), but
+    /// the differentiation itself -- not "every face identically
+    /// touched," not "every face identically untouched" -- is the
+    /// property this task actually needs.
+    #[test]
+    fn fillet_with_lineage_differentiates_touched_from_untouched_faces() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let faces: Vec<Shape> = (0..a.face_count().unwrap())
+            .map(|i| a.get_face(i).unwrap())
+            .collect();
+        let edge0 = a.get_edge(0).unwrap();
+        let (result, lineage) = a
+            .fillet_with_lineage(&[&edge0], 1.0)
+            .expect("fillet should succeed");
+        assert!(result.is_valid().unwrap());
+        assert!(
+            result.volume().unwrap() < a.volume().unwrap(),
+            "rounding an edge must remove material"
+        );
+        let mut touched = 0;
+        let mut untouched = 0;
+        for f in &faces {
+            assert!(
+                !lineage.is_deleted(f).unwrap(),
+                "a single-edge fillet never wholly deletes one of the box's own six faces"
+            );
+            let generated = lineage.generated(f).unwrap();
+            let modified = lineage.modified(f).unwrap();
+            if generated.is_empty() && modified.is_empty() {
+                untouched += 1;
+            } else {
+                touched += 1;
+            }
+        }
+        assert!(
+            touched >= 2,
+            "at least the two faces adjacent to the filleted edge must carry evidence"
+        );
+        assert!(
+            untouched >= 1,
+            "a face far from the filleted edge must carry no evidence"
+        );
+    }
+
+    /// `AICAD-086`: `union_with_lineage`/`intersect_with_lineage` produce
+    /// the same result geometry as their non-lineage counterparts
+    /// (`Shape::union`/`Shape::intersect`) -- capturing lineage must never
+    /// change the operation's own outcome.
+    #[test]
+    fn union_and_intersect_with_lineage_match_their_plain_counterparts() {
+        let context = OcctContext::new().unwrap();
+        let (a, b) = overlapping_boxes(&context);
+        let (fused, _) = a.union_with_lineage(&b).expect("union should succeed");
+        assert!((fused.volume().unwrap() - 15.0).abs() < 1e-6);
+        let (a2, b2) = overlapping_boxes(&context);
+        let (common, _) = a2
+            .intersect_with_lineage(&b2)
+            .expect("intersect should succeed");
+        assert!((common.volume().unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    /// `AICAD-086`: querying lineage with a face from a shape that was
+    /// never one of the operation's own two original operands at all is a
+    /// distinct, explicit error -- never silently answered as
+    /// "unchanged," which would be indistinguishable from real evidence.
+    /// (A face of the operation's own *result* is deliberately not used
+    /// here: cut/union/intersect can carry an untouched or even
+    /// unmodified operand face through into the result unchanged, so it
+    /// would not reliably exercise the "truly unrelated" case this test
+    /// targets -- an entirely separate, never-passed-in shape does.)
+    #[test]
+    fn lineage_query_for_an_unrelated_shape_is_an_explicit_error_not_a_silent_unchanged() {
+        let context = OcctContext::new().unwrap();
+        let a = context.create_box(10.0, 10.0, 10.0).unwrap();
+        let cyl_raw = context.create_cylinder(2.0, 20.0).unwrap();
+        let cyl = cyl_raw
+            .transform(&Transform::translation(cad_kernel_api::Vector3::new(
+                5.0, 5.0, -5.0,
+            )))
+            .unwrap();
+        let (_result, lineage) = a.cut_with_lineage(&cyl).expect("cut should succeed");
+        let unrelated = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let unrelated_face = unrelated.get_face(0).unwrap();
+        assert_eq!(
+            lineage.is_deleted(&unrelated_face).unwrap_err(),
+            KernelError::InvalidArgument
+        );
     }
 }

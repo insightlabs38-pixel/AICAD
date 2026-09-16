@@ -32,16 +32,26 @@
    tuple/record destructuring patterns, and record literals under D17.
 
    Stage-3 cleanup note: the current item set is deliberately limited to
-   let/const/param/fn/struct/enum/part/import. `interface`, `assembly`,
-   `requirement`, and `test` may remain reserved/planned vocabulary, but
-   they are not current declaration productions. There is likewise no
-   public `sketch { ... }` production and no Stage-4 semantic-reference
-   syntax in the current grammar. *)
+   let/const/param/fn/struct/enum/part/import (plus, as of AICAD-100A,
+   query -- see query_decl below). `interface`, `assembly`, `requirement`,
+   and `test` may remain reserved/planned vocabulary, but they are not
+   current declaration productions. There is likewise no public
+   `sketch { ... }` production.
+
+   Patched again (`AICAD-100A`) to promote `query_decl`, RFC-0003 §7's own
+   reserved persistent-semantic-reference surface, into a real grammar
+   production -- the smallest completion consistent with that section's
+   own "unless promoted into specs/language/grammar.ebnf by an authorized
+   Stage-4 task" clause. `query_decl` spells its own scope as an explicit
+   `in scope` clause (not an implicit `body.faces`-shaped target), and its
+   clause bodies reuse the ordinary call-argument grammar verbatim -- no
+   new expression syntax (comparison operators, a `within` modifier,
+   direction literals) is introduced by this patch. *)
 
 program        = { item } ;
 item           = let_decl | const_decl | param_decl
                | fn_decl | struct_decl | enum_decl | part_decl
-               | import_decl ;
+               | import_decl | query_decl ;
 
 (* Current declaration forms. *)
 let_decl       = "let" , identifier , [ ":" , type ] , "=" , expression , ";" ;
@@ -60,6 +70,28 @@ relative_path  = ( "../" )* , "./" , identifier , { "/" , identifier }
                | ( "../" )+ , identifier , { "/" , identifier } ;
 package_path   = identifier , { "." , identifier } ;
 field          = identifier , ":" , type ;
+
+query_decl     = "query" , identifier , ":" , identifier , "in" , dotted_name ,
+                 "{" , { query_clause } , "}" ;
+                 (* AICAD-100A: the second identifier is the six-closed-
+                    variant entity kind (Vertex/Edge/Wire/Face/Shell/
+                    Solid); dotted_name is the scope this reference's own
+                    candidate universe is explicitly restricted to (never
+                    optional -- a source-declared persistent reference
+                    never defaults to the whole-session unscoped
+                    universe). Neither is validated by this grammar --
+                    both are checked at HIR-lowering/cad-cli time, per
+                    cad_ast::item::Item::Query's own doc comment. *)
+dotted_name    = identifier , { "." , identifier } ;
+query_clause   = identifier , "(" , [ args ] , ")" , ";" ;
+                 (* One predicate/ranking/cardinality clause, reusing the
+                    ordinary call-argument grammar (`args`, below) as-is.
+                    Which clause names exist and which argument shapes
+                    each accepts is a closed vocabulary enforced beyond
+                    this grammar (cad-cli's own query_lowering module),
+                    not a syntactic restriction -- an unrecognized or
+                    malformed clause is a structured diagnostic, never a
+                    parse error. *)
 
 type           = identifier , [ "<" , type , { "," , type } , [","] , ">" ] ;
 

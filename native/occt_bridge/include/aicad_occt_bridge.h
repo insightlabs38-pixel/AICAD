@@ -74,6 +74,21 @@ typedef struct aicad_shape_handle {
 #define AICAD_NULL_SHAPE_HANDLE \
   { 0, 0, 0 }
 
+/* Opaque, context-scoped handle to one operation's own captured
+ * Generated/Modified/IsDeleted lineage (AICAD-086) -- see
+ * aicad_occt_boolean_union_lineage's own doc comment. Same field layout
+ * and validation contract as aicad_shape_handle_t, but a distinct type so
+ * a lineage handle can never be passed where a shape handle is expected
+ * (or vice versa) without a compiler error. */
+typedef struct aicad_lineage_handle {
+  uint64_t context_id;
+  uint32_t slot;
+  uint32_t generation;
+} aicad_lineage_handle_t;
+
+#define AICAD_NULL_LINEAGE_HANDLE \
+  { 0, 0, 0 }
+
 /* Opaque kernel context. Owns a shape table and is conservatively
  * single-thread-affine (Stage-1 kernel policy #9): every function that
  * takes a context must be called from the thread that created it, or
@@ -114,6 +129,13 @@ aicad_occt_status_t aicad_occt_context_destroy(aicad_occt_context_t* context);
  * shape inserted into the same slot (Stage-1 kernel policy #5). */
 aicad_occt_status_t aicad_occt_release_shape(aicad_occt_context_t* context,
                                               aicad_shape_handle_t handle);
+
+/* Returns a second, independently-releasable handle onto the exact same
+ * underlying shape as `handle` (a cheap map re-insertion, never a real
+ * geometry copy). */
+aicad_occt_status_t aicad_occt_shape_duplicate(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                aicad_shape_handle_t* out_handle);
 
 /* --- Stage-1 starting operation set (native/occt_bridge/README.md) ---
  * Only create_box is implemented by AICAD-016; the remaining operations
@@ -402,6 +424,107 @@ aicad_occt_status_t aicad_occt_chamfer(aicad_occt_context_t* context,
                                         double distance,
                                         aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-086: lineage-capturing operation variants, needed for
+ * generated_by/modified_by feature-lineage evidence
+ * (docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md §8). OCCT's own
+ * Generated/Modified/IsDeleted history is only answerable while the
+ * builder object that performed the operation is still alive; this
+ * bridge therefore captures it at the moment of the operation itself
+ * (one face/edge entry per unique face/edge of the operation's own input
+ * shape(s)) and returns a second, independent handle a caller queries
+ * afterward via aicad_occt_lineage_is_deleted, aicad_occt_lineage_
+ * generated_count/_get, and aicad_occt_lineage_modified_count/_get.
+ * Every other respect (arguments, failure modes, output shape) is
+ * identical to the corresponding non-lineage function; only box/
+ * cylinder/transform have no lineage variant (a primitive has no
+ * consumed input shape for Generated/Modified/IsDeleted to describe
+ * against). `out_lineage` must eventually be released via
+ * aicad_occt_release_lineage, exactly like a shape handle. --- */
+
+aicad_occt_status_t aicad_occt_boolean_union_lineage(aicad_occt_context_t* context,
+                                                       aicad_shape_handle_t a,
+                                                       aicad_shape_handle_t b,
+                                                       aicad_shape_handle_t* out_handle,
+                                                       aicad_lineage_handle_t* out_lineage);
+
+aicad_occt_status_t aicad_occt_boolean_cut_lineage(aicad_occt_context_t* context,
+                                                     aicad_shape_handle_t a,
+                                                     aicad_shape_handle_t b,
+                                                     aicad_shape_handle_t* out_handle,
+                                                     aicad_lineage_handle_t* out_lineage);
+
+aicad_occt_status_t aicad_occt_boolean_intersect_lineage(aicad_occt_context_t* context,
+                                                           aicad_shape_handle_t a,
+                                                           aicad_shape_handle_t b,
+                                                           aicad_shape_handle_t* out_handle,
+                                                           aicad_lineage_handle_t* out_lineage);
+
+/* See aicad_occt_fillet for the edges/edge_count contract. */
+aicad_occt_status_t aicad_occt_fillet_lineage(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t shape_handle,
+                                               const aicad_shape_handle_t* edges,
+                                               size_t edge_count,
+                                               double radius,
+                                               aicad_shape_handle_t* out_handle,
+                                               aicad_lineage_handle_t* out_lineage);
+
+/* See aicad_occt_chamfer for the edges/edge_count contract. */
+aicad_occt_status_t aicad_occt_chamfer_lineage(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t shape_handle,
+                                                const aicad_shape_handle_t* edges,
+                                                size_t edge_count,
+                                                double distance,
+                                                aicad_shape_handle_t* out_handle,
+                                                aicad_lineage_handle_t* out_lineage);
+
+/* Releases a lineage handle -- mirrors aicad_occt_release_shape. */
+aicad_occt_status_t aicad_occt_release_lineage(aicad_occt_context_t* context,
+                                                aicad_lineage_handle_t handle);
+
+/* Whether `input` (a face or edge handle belonging to one of the
+ * lineage-capturing operation's own original input shapes, obtained from
+ * a call made BEFORE that operation) has no surviving generated/modified
+ * counterpart in the operation's result. AICAD_ERR_INVALID_ARGUMENT means
+ * `input` was never one of the shapes this lineage was captured for
+ * (e.g. it names an output shape instead) -- deliberately distinct from
+ * "not deleted," which would silently conflate "no evidence" with a real
+ * evidenced answer. */
+aicad_occt_status_t aicad_occt_lineage_is_deleted(aicad_occt_context_t* context,
+                                                   aicad_lineage_handle_t lineage,
+                                                   aicad_shape_handle_t input,
+                                                   int* out_is_deleted);
+
+/* Number of shapes `input` was generated into by the operation this
+ * `lineage` was captured from (OCCT's own Generated(input) -- e.g. a new
+ * face created where a hole broke through an existing face). 0 if
+ * `input` has no generated counterpart (including when it was deleted). */
+aicad_occt_status_t aicad_occt_lineage_generated_count(aicad_occt_context_t* context,
+                                                        aicad_lineage_handle_t lineage,
+                                                        aicad_shape_handle_t input,
+                                                        size_t* out_count);
+
+/* Returns a fresh handle to the generated shape at `index` (0-based, <
+ * aicad_occt_lineage_generated_count against the same lineage/input). */
+aicad_occt_status_t aicad_occt_lineage_generated_get(aicad_occt_context_t* context,
+                                                      aicad_lineage_handle_t lineage,
+                                                      aicad_shape_handle_t input,
+                                                      size_t index,
+                                                      aicad_shape_handle_t* out_handle);
+
+/* Same as generated_count/_get, for OCCT's own Modified(input) -- `input`
+ * carried forward as a geometrically changed (but not newly created)
+ * counterpart, e.g. a face re-trimmed by a boolean cut. */
+aicad_occt_status_t aicad_occt_lineage_modified_count(aicad_occt_context_t* context,
+                                                       aicad_lineage_handle_t lineage,
+                                                       aicad_shape_handle_t input,
+                                                       size_t* out_count);
+
+aicad_occt_status_t aicad_occt_lineage_modified_get(aicad_occt_context_t* context,
+                                                     aicad_lineage_handle_t lineage,
+                                                     aicad_shape_handle_t input,
+                                                     size_t index,
+                                                     aicad_shape_handle_t* out_handle);
+
 /* --- AICAD-028: shell and offset (spike).
  *
  * These are the most failure-prone operations in this bridge (OCCT's own
@@ -429,6 +552,36 @@ aicad_occt_status_t aicad_occt_shape_get_face(aicad_occt_context_t* context,
                                                aicad_shape_handle_t handle,
                                                size_t index,
                                                aicad_shape_handle_t* out_face_handle);
+
+/* Number of unique shells in `handle`'s shape (any shape kind, matching
+ * aicad_occt_shape_face_count's own "any shape kind" scope). */
+aicad_occt_status_t aicad_occt_shape_shell_count(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t handle,
+                                                  size_t* out_count);
+
+/* Returns a handle to the shell at `index` (0-based, `< shell_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_face's own
+ * contract. */
+aicad_occt_status_t aicad_occt_shape_get_shell(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                size_t index,
+                                                aicad_shape_handle_t* out_shell_handle);
+
+/* Number of unique solids in `handle`'s shape (any shape kind, matching
+ * aicad_occt_shape_face_count's own "any shape kind" scope). */
+aicad_occt_status_t aicad_occt_shape_solid_count(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t handle,
+                                                  size_t* out_count);
+
+/* Returns a handle to the solid at `index` (0-based, `< solid_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_face's own
+ * contract. */
+aicad_occt_status_t aicad_occt_shape_get_solid(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t handle,
+                                                size_t index,
+                                                aicad_shape_handle_t* out_solid_handle);
 
 /* Hollows `shape_handle` into a shell of constant wall `thickness`,
  * removing (opening) the given `faces_to_remove` (>= 1, each obtained
@@ -722,6 +875,192 @@ aicad_occt_status_t aicad_occt_export_step(aicad_occt_context_t* context,
 aicad_occt_status_t aicad_occt_import_step(aicad_occt_context_t* context,
                                             const char* file_path,
                                             aicad_shape_handle_t* out_handle);
+
+/* --- AICAD-082: face/edge geometric classification.
+ *
+ * Stage-4 query geometry predicates (docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+ * §6 "Geometry predicates": `planar`/`cylindrical`/`conical`/`spherical`/
+ * `toroidal`/`bspline`/`radius`/`normal`/`axis`) need each face/edge's own
+ * analytic surface/curve family, not just the aggregate area/length this
+ * bridge already exposes. These functions stay kernel-neutral at the type
+ * level (per this header's own top-of-file contract): `aicad_surface_kind_t`/
+ * `aicad_curve_kind_t` are AICAD-owned enums, not re-exported OCCT
+ * `GeomAbs_*` values -- their numeric order is this bridge's own and is
+ * covered by native/occt_bridge's own test suite, not merely assumed
+ * stable across an OCCT upgrade. --- */
+
+/* A face's underlying surface family. `AICAD_SURFACE_OTHER` covers every
+ * analytic/procedural surface kind this enum does not name (e.g. a swept,
+ * offset, or surface-of-revolution/-extrusion face) -- never guessed into
+ * one of the named kinds. */
+typedef enum aicad_surface_kind {
+  AICAD_SURFACE_PLANE = 0,
+  AICAD_SURFACE_CYLINDER = 1,
+  AICAD_SURFACE_CONE = 2,
+  AICAD_SURFACE_SPHERE = 3,
+  AICAD_SURFACE_TORUS = 4,
+  AICAD_SURFACE_BEZIER = 5,
+  AICAD_SURFACE_BSPLINE = 6,
+  AICAD_SURFACE_OTHER = 7,
+} aicad_surface_kind_t;
+
+/* An edge's underlying curve family. `AICAD_CURVE_OTHER` covers every
+ * curve kind this enum does not name (e.g. a hyperbola/parabola/offset
+ * curve), matching `aicad_surface_kind_t::AICAD_SURFACE_OTHER`'s own
+ * never-guess rule. */
+typedef enum aicad_curve_kind {
+  AICAD_CURVE_LINE = 0,
+  AICAD_CURVE_CIRCLE = 1,
+  AICAD_CURVE_ELLIPSE = 2,
+  AICAD_CURVE_BEZIER = 3,
+  AICAD_CURVE_BSPLINE = 4,
+  AICAD_CURVE_OTHER = 5,
+} aicad_curve_kind_t;
+
+/* `face_handle` must address a shape of exactly kind Face (caller-contract
+ * violation otherwise, matching aicad_occt_edge_vertices' own edge-typed
+ * rejection), rejected with AICAD_OCCT_ERR_INVALID_ARGUMENT. */
+aicad_occt_status_t aicad_occt_shape_surface_type(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t face_handle,
+                                                   int* out_kind);
+
+/* The face's single characteristic radius. Defined only for
+ * AICAD_SURFACE_CYLINDER/_SPHERE (their one radius) and AICAD_SURFACE_TORUS
+ * (its major/tube-path radius -- the torus's own minor radius is not
+ * returned by this function; a future task may add it if a predicate
+ * needs it). Any other surface kind (including AICAD_SURFACE_CONE, whose
+ * radius varies continuously along its axis with no single well-defined
+ * value) fails with AICAD_OCCT_ERR_INVALID_ARGUMENT rather than guessing
+ * which parameter to report. */
+aicad_occt_status_t aicad_occt_shape_face_radius(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t face_handle,
+                                                  double* out_radius);
+
+/* The face's rotational axis (origin + unit direction). Defined only for
+ * AICAD_SURFACE_CYLINDER/_CONE/_TORUS; any other surface kind fails with
+ * AICAD_OCCT_ERR_INVALID_ARGUMENT. */
+aicad_occt_status_t aicad_occt_shape_face_axis(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t face_handle,
+                                                double out_origin[3],
+                                                double out_direction[3]);
+
+/* A representative point on the face (its own parametric-domain midpoint,
+ * NOT an area centroid) and the face's own outward unit normal there,
+ * already corrected for the face's TopoDS orientation (a REVERSED face
+ * reports the flipped-sign normal its actual material boundary has, not
+ * its underlying surface's raw parametrization sense). Fails with
+ * AICAD_OCCT_ERR_OPERATION_FAILED if the surface is singular at that exact
+ * parameter (e.g. a cone apex) and no normal can be evaluated there. */
+aicad_occt_status_t aicad_occt_shape_face_normal(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t face_handle,
+                                                  double out_point[3],
+                                                  double out_normal[3]);
+
+/* `edge_handle` must address a shape of exactly kind Edge, matching
+ * aicad_occt_edge_vertices' own contract. */
+aicad_occt_status_t aicad_occt_shape_curve_type(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t edge_handle,
+                                                 int* out_kind);
+
+/* The edge's radius. Defined only for AICAD_CURVE_CIRCLE; an ellipse has
+ * two distinct radii (major/minor) with no single "the" radius, so
+ * AICAD_CURVE_ELLIPSE (and every other curve kind) fails with
+ * AICAD_OCCT_ERR_INVALID_ARGUMENT rather than guessing which one to
+ * report. */
+aicad_occt_status_t aicad_occt_shape_edge_radius(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t edge_handle,
+                                                  double* out_radius);
+
+/* The edge's axis (origin + unit direction), i.e. the normal to the
+ * circle's own plane through its center. Defined only for
+ * AICAD_CURVE_CIRCLE, matching aicad_occt_shape_edge_radius' own scope. */
+aicad_occt_status_t aicad_occt_shape_edge_axis(aicad_occt_context_t* context,
+                                                aicad_shape_handle_t edge_handle,
+                                                double out_origin[3],
+                                                double out_direction[3]);
+
+/* --- AICAD-083: shape identity, needed to test topological adjacency
+ * (e.g. "is this face, obtained via one enumeration path, the SAME face
+ * as that one, obtained via another") without comparing raw handle slots,
+ * which differ across independent aicad_occt_shape_get_face/
+ * _edge_adjacent_face_get calls even when both name the same underlying
+ * TopoDS_Shape. Uses OCCT's own TopoDS_Shape::IsSame (TShape + Location,
+ * ignoring Orientation) -- deliberately not IsEqual (which also compares
+ * Orientation): two differently-oriented handles onto the same underlying
+ * face/edge are still "the same topological entity" for adjacency
+ * purposes. `a`/`b` may address any shape kind and need not be the same
+ * kind as each other (a mismatched kind simply reports not-same, not an
+ * error). --- */
+aicad_occt_status_t aicad_occt_shape_is_same(aicad_occt_context_t* context,
+                                              aicad_shape_handle_t a,
+                                              aicad_shape_handle_t b,
+                                              int* out_is_same);
+
+/* --- AICAD-083: wire enumeration/outer-boundary support, needed for the
+ * `boundary(outer|inner)` topology predicate
+ * (docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md §6). Mirrors
+ * aicad_occt_shape_face_count/_get_face's own raw/indexed, ephemeral,
+ * epoch-bound enumeration pattern applied to TopAbs_WIRE. --- */
+
+/* Number of unique wires in `handle`'s shape (any shape kind, matching
+ * aicad_occt_shape_face_count's own "any shape kind" scope). */
+aicad_occt_status_t aicad_occt_shape_wire_count(aicad_occt_context_t* context,
+                                                 aicad_shape_handle_t handle,
+                                                 size_t* out_count);
+
+/* Returns a handle to the wire at `index` (0-based, `< wire_count`) in
+ * `handle`'s shape, per its own current raw enumeration order --
+ * ephemeral and epoch-bound, matching aicad_occt_shape_get_face's own
+ * contract. */
+aicad_occt_status_t aicad_occt_shape_get_wire(aicad_occt_context_t* context,
+                                               aicad_shape_handle_t handle,
+                                               size_t index,
+                                               aicad_shape_handle_t* out_wire_handle);
+
+/* Whether `wire_handle` is `face_handle`'s own designated OUTER wire
+ * (OCCT's own `BRepTools::OuterWire`, chosen by parametric area -- the
+ * largest, in the face's own 2D parameter space) -- false for any of the
+ * face's inner (hole) wires, and false if `wire_handle` does not bound
+ * `face_handle` at all. `face_handle` must address a shape of exactly
+ * kind Face; `wire_handle` must address a shape of exactly kind Wire. */
+aicad_occt_status_t aicad_occt_shape_is_outer_wire(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t face_handle,
+                                                    aicad_shape_handle_t wire_handle,
+                                                    int* out_is_outer);
+
+/* --- AICAD-084: point extraction/classification support for baseline
+ * spatial predicates. --- */
+
+/* The vertex's own coordinate (`BRep_Tool::Pnt`), needed because
+ * aicad_occt_shape_center_of_mass explicitly fails for a bare Vertex
+ * shape (see that function's own doc comment) -- a vertex's "center of
+ * mass" is just its own point, but this is its own function rather than
+ * folding a 5th dispatch case into center_of_mass, since a point and a
+ * mass-weighted centroid are conceptually different queries that happen
+ * to coincide only for this one topological kind. `vertex_handle` must
+ * address a shape of exactly kind Vertex. */
+aicad_occt_status_t aicad_occt_shape_vertex_point(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t vertex_handle,
+                                                   double out_point[3]);
+
+/* Exact point-vs-solid classification (`AICAD_CLASSIFY_OUT`/`_IN`/
+ * `_ON_BOUNDARY`), via OCCT's own `BRepClass3d_SolidClassifier` -- an
+ * exact B-rep test, never a mesh/bounding-box approximation (AGENTS.md's
+ * "Exact B-rep is canonical compiled geometry" non-negotiable applies to
+ * query predicates exactly as it does to modeling operations).
+ * `solid_handle` must address a shape containing at least one Solid;
+ * `tolerance` (> 0, finite) is the classifier's own boundary tolerance. */
+typedef enum aicad_point_classification {
+  AICAD_CLASSIFY_OUT = 0,
+  AICAD_CLASSIFY_IN = 1,
+  AICAD_CLASSIFY_ON_BOUNDARY = 2,
+} aicad_point_classification_t;
+
+aicad_occt_status_t aicad_occt_shape_classify_point(aicad_occt_context_t* context,
+                                                     aicad_shape_handle_t solid_handle,
+                                                     const double point[3],
+                                                     double tolerance,
+                                                     int* out_classification);
 
 #ifdef __cplusplus
 }

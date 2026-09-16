@@ -94,6 +94,9 @@ pub enum SymbolKind {
     /// see module doc comment for why this task does not verify it
     /// against the target module's actual exports.
     Import,
+    /// A `query name : EntityKind in scope { ... }` declaration
+    /// (`AICAD-100A`, `cad_ast::item::Item::Query`).
+    Query,
     ForLoopVar,
     /// A fresh name introduced by a non-variant `Pattern::Ident` in a
     /// `match` arm.
@@ -119,6 +122,7 @@ impl SymbolKind {
             SymbolKind::Import => "imported name",
             SymbolKind::ForLoopVar => "for-loop variable",
             SymbolKind::MatchBinding => "match binding",
+            SymbolKind::Query => "query",
         }
     }
 }
@@ -268,6 +272,7 @@ impl<'a> Binder<'a> {
                     self.declare(name, SymbolKind::Import);
                 }
             }
+            Item::Query { name, .. } => self.declare(name, SymbolKind::Query),
         }
     }
 
@@ -297,6 +302,18 @@ impl<'a> Binder<'a> {
                 self.pop_scope();
             }
             Item::Import { .. } => {}
+            // A query's clause names are a closed predicate/ranking/
+            // cardinality vocabulary this crate does not own (`cad-cli`
+            // resolves it — see `cad_ast::item::Item::Query`'s own doc
+            // comment), and a clause's own args are deliberately left
+            // unresolved at this layer too (`crate::hir`'s independent
+            // `cad-hir` binder makes the identical choice for the same
+            // reason — see `cad_hir::hir::HirItem::Query`'s own doc
+            // comment): reusing `check_expr` here would incorrectly flag
+            // every clause name (`generated_by`, `planar`, ...) as an
+            // `UNDEFINED_NAME`, since none of them is ever a declared
+            // binding.
+            Item::Query { .. } => {}
         }
     }
 

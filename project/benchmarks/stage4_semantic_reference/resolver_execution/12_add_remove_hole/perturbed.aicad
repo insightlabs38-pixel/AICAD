@@ -1,0 +1,12 @@
+// AICAD-096 resolver-execution corpus extension.
+// Category: add/remove hole. See ./case.md for the intended query
+// target, expected classification, and measured evidence.
+
+param plate_x: Length = 30mm;
+param plate_y: Length = 20mm;
+param plate_z: Length = 10mm;
+
+part Tab {
+    // hole removed entirely
+    let body: Geometry = box(plate_x, plate_y, plate_z);
+}

@@ -168,3 +168,14 @@ measure. Where a category has no direct source-level equivalent yet (case
 source-level type, `skills/cad-core.skill.md` §10), the case's own
 `case.md` says so explicitly and documents the proxy used, rather than
 inventing sketch syntax to make the category "real" early.
+
+## Resolver-execution extension (`AICAD-096`)
+
+`resolver_execution/` (a sibling of `public/`/`held_out/`, never scanned
+by `scripts/ci/semantic_ref_harness.py`'s own `REQUIRED_CATEGORIES`) is
+`AICAD-096`'s own corpus-extension directory: two new cases (extrusion
+resize, add/remove hole — perturbation classes the frozen ten above do
+not name) plus the real `cad_query::resolve` resolver-execution results
+for those and two of the frozen ten whose intended query target is
+expressible without lineage evidence. See that directory's own `README.md`
+and `project/reports/AICAD-096.md` for the full account.

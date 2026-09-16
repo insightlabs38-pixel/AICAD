@@ -1,0 +1,22 @@
+// AICAD-096 resolver-execution corpus extension.
+// Category: add/remove hole. See ./case.md for the intended query
+// target, expected classification, and measured evidence.
+
+param plate_x: Length = 30mm;
+param plate_y: Length = 20mm;
+param plate_z: Length = 10mm;
+param hole_diameter: Length = 5mm;
+
+const HOLE_OVERSHOOT: Length = 1mm;
+
+part Tab {
+    let body: Geometry = hole(
+        box(plate_x, plate_y, plate_z),
+        Axis3(
+            origin = Point3(x = plate_x / 2, y = plate_y / 2, z = 0mm - HOLE_OVERSHOOT),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        hole_diameter,
+        plate_z + HOLE_OVERSHOOT * 2,
+    );
+}

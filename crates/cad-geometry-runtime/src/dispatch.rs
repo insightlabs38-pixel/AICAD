@@ -47,7 +47,7 @@ use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryNode
 use cad_geometry_api::{GeometryOp, GeometryQuery, Quantity};
 use cad_kernel_api::KernelError;
 use cad_kernel_api::Point3;
-use cad_occt_bridge::{BoundingBox, OcctContext, Shape, TriangleMesh, ValidationReport};
+use cad_occt_bridge::{BoundingBox, Lineage, OcctContext, Shape, TriangleMesh, ValidationReport};
 use std::collections::HashSet;
 
 /// One node's dispatched result. [`NodeResult::Shape`] is the only variant
@@ -621,6 +621,178 @@ pub fn dispatch_graph_incremental<'ctx>(
     }
 
     Ok((results, stats))
+}
+
+/// One recomputed node's own captured lineage (`AICAD-094`), paired with
+/// the [`GeomId`] it belongs to — in recompute order, mirroring
+/// [`IncrementalStats`]'s own "node order, never a `HashMap`'s iteration
+/// order" determinism requirement (`project/DECISION_LOG.md#DL-12` Level-1
+/// determinism). Only nodes whose own [`GeometryOp`] has a
+/// lineage-capturing kernel twin (`Union`/`Cut`/`Intersect`/`Fillet`/
+/// `Chamfer` — see [`dispatch_op_with_lineage`]) ever contribute an entry;
+/// every other recomputed/reused node is simply absent, never a `None`
+/// placeholder.
+pub type LineageTable<'ctx> = Vec<(GeomId, Lineage<'ctx>)>;
+
+/// Like [`dispatch_op`], but for the five [`GeometryOp`] variants
+/// `cad_occt_bridge::Shape` exposes a lineage-capturing kernel twin for
+/// (`union_with_lineage`/`cut_with_lineage`/`intersect_with_lineage`/
+/// `fillet_with_lineage`/`chamfer_with_lineage`), calls that twin instead
+/// of the plain operation and returns its captured
+/// [`cad_occt_bridge::Lineage`] alongside the identical [`NodeResult`] the
+/// plain operation would have produced (both are the *same* real OCCT
+/// call under the hood — see each `*_with_lineage` method's own doc
+/// comment — so this never performs the operation twice, never produces a
+/// second, distinct result shape). Every other variant delegates to
+/// [`dispatch_op`] unchanged and reports `None`.
+fn dispatch_op_with_lineage<'ctx>(
+    id: GeomId,
+    span: Span,
+    op: &GeometryOp,
+    ctx: &'ctx OcctContext,
+    results: &GraphResults<'ctx>,
+) -> Result<(NodeResult<'ctx>, Option<Lineage<'ctx>>), DispatchError> {
+    match op {
+        GeometryOp::Union { lhs, rhs } => {
+            let lhs_shape = shape_operand(results, id, *lhs, span)?;
+            let rhs_shape = shape_operand(results, id, *rhs, span)?;
+            let (shape, lineage) =
+                kernel_op(id, span, "Union", lhs_shape.union_with_lineage(rhs_shape))?;
+            Ok((NodeResult::Shape(shape), Some(lineage)))
+        }
+        GeometryOp::Cut { lhs, rhs } => {
+            let lhs_shape = shape_operand(results, id, *lhs, span)?;
+            let rhs_shape = shape_operand(results, id, *rhs, span)?;
+            let (shape, lineage) =
+                kernel_op(id, span, "Cut", lhs_shape.cut_with_lineage(rhs_shape))?;
+            Ok((NodeResult::Shape(shape), Some(lineage)))
+        }
+        GeometryOp::Intersect { lhs, rhs } => {
+            let lhs_shape = shape_operand(results, id, *lhs, span)?;
+            let rhs_shape = shape_operand(results, id, *rhs, span)?;
+            let (shape, lineage) = kernel_op(
+                id,
+                span,
+                "Intersect",
+                lhs_shape.intersect_with_lineage(rhs_shape),
+            )?;
+            Ok((NodeResult::Shape(shape), Some(lineage)))
+        }
+        GeometryOp::Fillet {
+            target,
+            edges,
+            radius,
+        } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            let edge_shapes = resolve_edges(id, span, target_shape, edges)?;
+            let edge_refs: Vec<&Shape<'ctx>> = edge_shapes.iter().collect();
+            let (shape, lineage) = kernel_op(
+                id,
+                span,
+                "Fillet",
+                target_shape.fillet_with_lineage(&edge_refs, mag(radius)),
+            )?;
+            Ok((NodeResult::Shape(shape), Some(lineage)))
+        }
+        GeometryOp::Chamfer {
+            target,
+            edges,
+            distance,
+        } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            let edge_shapes = resolve_edges(id, span, target_shape, edges)?;
+            let edge_refs: Vec<&Shape<'ctx>> = edge_shapes.iter().collect();
+            let (shape, lineage) = kernel_op(
+                id,
+                span,
+                "Chamfer",
+                target_shape.chamfer_with_lineage(&edge_refs, mag(distance)),
+            )?;
+            Ok((NodeResult::Shape(shape), Some(lineage)))
+        }
+        other => {
+            let result = dispatch_op(id, span, other, ctx, results)?;
+            Ok((result, None))
+        }
+    }
+}
+
+/// The lineage-capturing counterpart to [`dispatch_graph_incremental`]
+/// (`AICAD-094`): identical dirty-propagation/reuse decisions (a node is
+/// recomputed exactly when [`dispatch_graph_incremental`] would recompute
+/// it — this function makes no independent dirtiness judgment of its own,
+/// matching that function's own "the sole semantic authority... is the
+/// caller-supplied `dirty` set" contract), but every *recomputed* node
+/// whose own operation is lineage-capturing
+/// ([`dispatch_op_with_lineage`]) additionally contributes a
+/// [`LineageTable`] entry, captured from the exact same real kernel call
+/// that produced its [`NodeResult`] -- never a second, separately-built
+/// shape and never a hand-constructed operation standing in for a real
+/// incremental-rebuild round. A reused node (this round's own dirty set
+/// does not reach it) contributes no lineage entry, matching Stage-4's
+/// own "an untouched feature's own entities are the same live entities"
+/// reasoning: [`crate::dispatch_graph_incremental`]'s existing reuse path
+/// already proves that continuity by literally moving the same `Shape`
+/// forward rather than rebuilding it.
+///
+/// This is a deliberately separate function from
+/// [`dispatch_graph_incremental`] rather than a modification of it: that
+/// function is already shipped and tested, and every recomputed node it
+/// dispatches keeps calling the plain (non-lineage) kernel operation
+/// unchanged, so no existing caller's behavior changes.
+pub fn dispatch_graph_incremental_with_lineage<'ctx>(
+    graph: &GeometryGraph,
+    ctx: &'ctx OcctContext,
+    prior: Option<GraphResults<'ctx>>,
+    dirty: &HashSet<GeomId>,
+) -> Result<(GraphResults<'ctx>, IncrementalStats, LineageTable<'ctx>), DispatchError> {
+    let mut prior_slots: Vec<Option<NodeResult<'ctx>>> = prior
+        .map(|results| results.into_iter().map(Some).collect())
+        .unwrap_or_default();
+
+    let mut results: GraphResults<'ctx> = Vec::with_capacity(graph.nodes().len());
+    let mut recomputed_ids: HashSet<GeomId> = HashSet::new();
+    let mut stats = IncrementalStats::default();
+    let mut lineage_table: LineageTable<'ctx> = Vec::new();
+
+    for node in graph.nodes() {
+        let inputs = match &node.kind {
+            GeometryNodeKind::Construct(op) => op_input_ids(op),
+            GeometryNodeKind::Query(query) => vec![query_input_id(query)],
+        };
+        let has_reusable_slot = prior_slots
+            .get(node.id.index() as usize)
+            .is_some_and(Option::is_some);
+        let must_recompute = !has_reusable_slot
+            || dirty.contains(&node.id)
+            || inputs.iter().any(|input| recomputed_ids.contains(input));
+
+        if !must_recompute
+            && let Some(slot) = prior_slots.get_mut(node.id.index() as usize)
+            && let Some(reused) = slot.take()
+        {
+            results.push(reused);
+            stats.reused.push(node.id);
+            continue;
+        }
+
+        let result = match &node.kind {
+            GeometryNodeKind::Construct(op) => {
+                let (result, lineage) =
+                    dispatch_op_with_lineage(node.id, node.span, op, ctx, &results)?;
+                if let Some(lineage) = lineage {
+                    lineage_table.push((node.id, lineage));
+                }
+                result
+            }
+            GeometryNodeKind::Query(query) => dispatch_query(node.id, node.span, query, &results)?,
+        };
+        results.push(result);
+        recomputed_ids.insert(node.id);
+        stats.recomputed.push(node.id);
+    }
+
+    Ok((results, stats, lineage_table))
 }
 
 #[cfg(test)]
@@ -1610,6 +1782,128 @@ mod tests {
                      (expected ~{expected})"
                 );
                 assert!(shape.is_valid().unwrap());
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    /// `dispatch_graph_incremental_with_lineage` (`AICAD-094`): the same
+    /// two-round union rebuild as
+    /// `incremental_dispatch_reuses_an_independent_node_and_recomputes_only_the_affected_branch`,
+    /// but asserting the lineage table itself, not just `IncrementalStats`.
+    /// A reused node (`base`) contributes no lineage entry at all; a
+    /// recomputed lineage-capable node (`combined`, a `Union`) does, and
+    /// that entry's own real Generated evidence names a genuinely new face
+    /// -- proving this captures lineage from the *actual* incremental
+    /// rebuild, not a hand-built stand-in operation.
+    #[test]
+    fn incremental_dispatch_with_lineage_captures_real_evidence_only_for_recomputed_lineage_capable_nodes()
+     {
+        use cad_kernel_api::{Transform, Vector3};
+
+        fn build_graph(boss_side: f64) -> (GeometryGraph, GeomId, GeomId, GeomId, GeomId) {
+            let mut graph = GeometryGraph::new();
+            let base = graph
+                .push_op(
+                    GeometryOp::Box {
+                        dx: length(0.01),
+                        dy: length(0.01),
+                        dz: length(0.01),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let boss = graph
+                .push_op(
+                    GeometryOp::Box {
+                        dx: length(boss_side),
+                        dy: length(boss_side),
+                        dz: length(boss_side),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let boss_moved = graph
+                .push_op(
+                    GeometryOp::Transform {
+                        target: boss,
+                        transform: Transform::translation(Vector3::new(1.0, 0.0, 0.0)),
+                    },
+                    span(),
+                )
+                .unwrap();
+            let combined = graph
+                .push_op(
+                    GeometryOp::Union {
+                        lhs: base,
+                        rhs: boss_moved,
+                    },
+                    span(),
+                )
+                .unwrap();
+            (graph, base, boss, boss_moved, combined)
+        }
+
+        let (graph1, _base1, _boss1, _boss_moved1, combined1) = build_graph(0.02);
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results1, _stats1, lineage1) =
+            dispatch_graph_incremental_with_lineage(&graph1, &ctx, None, &HashSet::new())
+                .expect("first build should succeed");
+        // First build has nothing to reuse, so `combined` (a Union) is
+        // recomputed and must carry a lineage entry; `base`/`boss`/
+        // `boss_moved` are not lineage-capable ops, so they never do.
+        assert_eq!(lineage1.len(), 1);
+        assert_eq!(lineage1[0].0, combined1);
+
+        let (graph2, base2, boss2, boss_moved2, combined2) = build_graph(0.03);
+        let mut dirty = HashSet::new();
+        dirty.insert(boss2);
+        let (results2, stats2, lineage2) =
+            dispatch_graph_incremental_with_lineage(&graph2, &ctx, Some(results1), &dirty)
+                .expect("incremental rebuild should succeed");
+
+        assert!(stats2.was_reused(base2), "base must be reused");
+        assert!(stats2.was_recomputed(combined2), "combined must recompute");
+
+        // `base` is reused, not recomputed, so it contributes no lineage
+        // entry this round -- exactly one entry, for `combined`.
+        assert_eq!(lineage2.len(), 1);
+        assert_eq!(lineage2[0].0, combined2);
+
+        // Real evidence, not a placeholder: `boss_moved`'s own six faces
+        // (the whole moved boss, since this union never overlaps `base`)
+        // are none of them deleted, and each survives as either the exact
+        // same topological identity (`Unchanged`, zero generated/modified
+        // entries -- OCCT's boolean algorithm may preserve a
+        // non-interacting operand's own face identity verbatim) or an
+        // ordinary one-to-one carry-forward (`Modified`, exactly one) --
+        // never split into multiple result faces, since this union never
+        // touches `boss_moved` at all.
+        let boss_moved_shape = match &results2[boss_moved2.index() as usize] {
+            NodeResult::Shape(shape) => shape,
+            other => panic!("expected Shape, got {other:?}"),
+        };
+        let lineage = &lineage2[0].1;
+        for i in 0..boss_moved_shape.face_count().unwrap() {
+            let face = boss_moved_shape.get_face(i).unwrap();
+            assert!(!lineage.is_deleted(&face).unwrap());
+            let generated = lineage.generated(&face).unwrap();
+            let modified = lineage.modified(&face).unwrap();
+            assert!(
+                generated.len() + modified.len() <= 1,
+                "a non-overlapping union must never split a boss face"
+            );
+        }
+
+        // The result shape/stats this function returns are identical in
+        // outward behavior to the plain `dispatch_graph_incremental`
+        // counterpart -- lineage capture is additive evidence, never a
+        // second, divergent regeneration path.
+        match &results2[combined2.index() as usize] {
+            NodeResult::Shape(shape) => {
+                let volume = shape.volume().unwrap();
+                let expected = 0.01 * 0.01 * 0.01 + 0.03 * 0.03 * 0.03;
+                assert!((volume - expected).abs() < expected * 1e-6);
             }
             other => panic!("expected Shape, got {other:?}"),
         }

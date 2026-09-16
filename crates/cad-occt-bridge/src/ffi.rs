@@ -34,12 +34,28 @@ pub struct aicad_shape_handle_t {
     pub generation: u32,
 }
 
+/// Mirrors `aicad_lineage_handle_t` field-for-field (`AICAD-086`) -- same
+/// layout as `aicad_shape_handle_t`, but a distinct Rust type so the two
+/// can never be passed to the wrong parameter by accident.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct aicad_lineage_handle_t {
+    pub context_id: u64,
+    pub slot: u32,
+    pub generation: u32,
+}
+
 unsafe extern "C" {
     pub fn aicad_occt_context_create(out_context: *mut *mut aicad_occt_context_t) -> c_int;
     pub fn aicad_occt_context_destroy(context: *mut aicad_occt_context_t) -> c_int;
     pub fn aicad_occt_release_shape(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_duplicate(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
     pub fn aicad_occt_create_box(
         context: *mut aicad_occt_context_t,
@@ -180,6 +196,81 @@ unsafe extern "C" {
         distance: f64,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_boolean_union_lineage(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+        out_lineage: *mut aicad_lineage_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_boolean_cut_lineage(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+        out_lineage: *mut aicad_lineage_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_boolean_intersect_lineage(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+        out_lineage: *mut aicad_lineage_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_fillet_lineage(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edges: *const aicad_shape_handle_t,
+        edge_count: usize,
+        radius: f64,
+        out_handle: *mut aicad_shape_handle_t,
+        out_lineage: *mut aicad_lineage_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_chamfer_lineage(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        edges: *const aicad_shape_handle_t,
+        edge_count: usize,
+        distance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+        out_lineage: *mut aicad_lineage_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_release_lineage(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_lineage_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_lineage_is_deleted(
+        context: *mut aicad_occt_context_t,
+        lineage: aicad_lineage_handle_t,
+        input: aicad_shape_handle_t,
+        out_is_deleted: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_lineage_generated_count(
+        context: *mut aicad_occt_context_t,
+        lineage: aicad_lineage_handle_t,
+        input: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_lineage_generated_get(
+        context: *mut aicad_occt_context_t,
+        lineage: aicad_lineage_handle_t,
+        input: aicad_shape_handle_t,
+        index: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_lineage_modified_count(
+        context: *mut aicad_occt_context_t,
+        lineage: aicad_lineage_handle_t,
+        input: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_lineage_modified_get(
+        context: *mut aicad_occt_context_t,
+        lineage: aicad_lineage_handle_t,
+        input: aicad_shape_handle_t,
+        index: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_shape_face_count(
         context: *mut aicad_occt_context_t,
         handle: aicad_shape_handle_t,
@@ -190,6 +281,28 @@ unsafe extern "C" {
         handle: aicad_shape_handle_t,
         index: usize,
         out_face_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_shell_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_shell(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_shell_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_solid_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_solid(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_solid_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
     pub fn aicad_occt_shell(
         context: *mut aicad_occt_context_t,
@@ -283,6 +396,79 @@ unsafe extern "C" {
         context: *mut aicad_occt_context_t,
         file_path: *const std::os::raw::c_char,
         out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_surface_type(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_kind: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_face_radius(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_radius: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_shape_face_axis(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_origin: *mut f64,    // [f64; 3]
+        out_direction: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_face_normal(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        out_point: *mut f64,  // [f64; 3]
+        out_normal: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_curve_type(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_kind: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_radius(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_radius: *mut f64,
+    ) -> c_int;
+    pub fn aicad_occt_shape_edge_axis(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        out_origin: *mut f64,    // [f64; 3]
+        out_direction: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_is_same(
+        context: *mut aicad_occt_context_t,
+        a: aicad_shape_handle_t,
+        b: aicad_shape_handle_t,
+        out_is_same: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_wire_count(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_shape_get_wire(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        index: usize,
+        out_wire_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_shape_is_outer_wire(
+        context: *mut aicad_occt_context_t,
+        face_handle: aicad_shape_handle_t,
+        wire_handle: aicad_shape_handle_t,
+        out_is_outer: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_vertex_point(
+        context: *mut aicad_occt_context_t,
+        vertex_handle: aicad_shape_handle_t,
+        out_point: *mut f64, // [f64; 3]
+    ) -> c_int;
+    pub fn aicad_occt_shape_classify_point(
+        context: *mut aicad_occt_context_t,
+        solid_handle: aicad_shape_handle_t,
+        point: *const f64, // [f64; 3]
+        tolerance: f64,
+        out_classification: *mut c_int,
     ) -> c_int;
 }
 

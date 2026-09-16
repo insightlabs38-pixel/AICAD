@@ -19,9 +19,11 @@
 //!   not named by any task's title yet, and several use keywords
 //!   `crates/cad-lexer` deliberately has not reserved yet
 //!   (`configuration`, `component`, `assembly`, `instance`, `mate`,
-//!   `joint`, `requirement`, `test`, `constraint`, `expose`, `query`,
-//!   `unsafe` are all still unreserved identifiers — see
-//!   `crates/cad-lexer/src/token.rs`'s own doc comment).
+//!   `joint`, `requirement`, `test`, `constraint`, `expose`, `unsafe` are
+//!   all still unreserved identifiers — see `crates/cad-lexer/src/
+//!   token.rs`'s own doc comment). `query` **is** now reserved and has a
+//!   real production (`Item::Query`, `AICAD-100A`) — see that variant's
+//!   own doc comment.
 //! - enum variants carrying data (tuple/record variants) — the only
 //!   evidence for enum syntax anywhere in frozen material
 //!   (`examples/assemblies/stage0_paper_example.aicad`:
@@ -331,6 +333,46 @@ pub enum Item {
         names: Option<Vec<Spanned<String>>>,
         span: Span,
     },
+    /// `query name : EntityKind in scope { clause* }` — a persistent
+    /// semantic-reference declaration (`AICAD-100A`, RFC-0003 §7's own
+    /// reserved surface, promoted to a real grammar production by this
+    /// task; `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md` §5's own
+    /// bare `query body.faces { ... }` worked example is the design
+    /// precedent this syntax completes minimally, spelling the scope as
+    /// an explicit `in scope` clause rather than a `body.faces`-shaped
+    /// target so the entity kind and the scope are each their own token,
+    /// never combined into one implicit plural-name convention this
+    /// grammar would otherwise have to invent).
+    ///
+    /// - `entity_kind` names one of the six closed semantic-reference
+    ///   entity kinds (`Vertex`/`Edge`/`Wire`/`Face`/`Shell`/`Solid`,
+    ///   `cad_references::EntityKind`) — validated by `cad-hir` lowering,
+    ///   not the parser (a structural node only, matching `Item::Import`'s
+    ///   own "resolving `names` ... is not this task's job" precedent).
+    /// - `scope` names an existing binding this reference's own candidate
+    ///   universe is explicitly restricted to. A source-declared
+    ///   persistent reference never defaults to the whole-session unscoped
+    ///   universe (`AICAD-100A`'s own "make candidate scope explicit"
+    ///   requirement) — `scope` is mandatory here, not optional.
+    /// - Each element of `clauses` is always `Expr::Call { callee, args,
+    ///   .. }` by construction (the parser rejects any other expression
+    ///   shape in clause position as a structured diagnostic) — one
+    ///   predicate/ranking/cardinality clause from a closed vocabulary
+    ///   `cad-hir` lowering resolves (`generated_by(base)`, `planar()`,
+    ///   `largest(area)`, `unique()`, ...), reusing the exact same
+    ///   call-argument grammar (`parse_call_args`) an ordinary function
+    ///   call already uses — no new expression syntax (comparison
+    ///   operators, a `within` modifier, direction literals) is
+    ///   introduced; a clause needing one of those is written with plain
+    ///   numeric/identifier arguments instead (e.g. `radius(gte, 2mm)`,
+    ///   `normal(0, 0, 1, 0.1deg)`).
+    Query {
+        name: Spanned<String>,
+        entity_kind: Spanned<String>,
+        scope: Spanned<String>,
+        clauses: Vec<Expr>,
+        span: Span,
+    },
 }
 
 impl Item {
@@ -343,7 +385,8 @@ impl Item {
             | Item::Struct { span, .. }
             | Item::Enum { span, .. }
             | Item::Part { span, .. }
-            | Item::Import { span, .. } => *span,
+            | Item::Import { span, .. }
+            | Item::Query { span, .. } => *span,
         }
     }
 }

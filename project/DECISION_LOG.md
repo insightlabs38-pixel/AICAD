@@ -1692,6 +1692,66 @@ them; do not add entries here unilaterally.
 
 ---
 
+## DL-33: D31 — `part { ... }` is an abstraction/scope boundary, not a feature-visibility barrier
+
+- Date: 2026-09-16
+- Resolves: `OWNER_DECISIONS.md#D31`.
+- Context: `AICAD-096` found that `cad_feature_graph::FeatureGraph::build`
+  scanned only `HirProgram::items` directly, so no feature declared
+  inside a `part { ... }` block was ever tracked as a feature-graph node
+  or given real captured lineage evidence — `generated_by`/`modified_by`/
+  `descended_from` resolver execution against any `part`-wrapped program
+  (the idiomatic style every real `.aicad` example, and the entire
+  frozen `AICAD-079A` corpus, uses) always reported
+  `Broken(InsufficientEvidence)`, fail-closed but blocking real resolver
+  execution against the frozen corpus's own worked-example queries.
+- Decision: `part { ... }` is an abstraction/scope boundary, not a
+  feature-visibility barrier. A geometry-producing feature declared
+  inside a `part` body is exactly as real, named, and dirty-set/lineage-
+  eligible as one declared at the top level; `part` nesting changes only
+  how that feature's identity is *qualified* (a `Vec<String>` scope path
+  on `FeatureNode`/an equivalent dotted-qualified-name convention on the
+  `cad-cli` side), never whether it exists. A part-nested feature's
+  identity must remain AICAD-owned (source-level scope path plus name),
+  never OCCT/kernel identity. A bare (unqualified) name reference
+  resolves only when it is unambiguous program-wide; a genuine collision
+  between two different `part` bodies declaring the same leaf name fails
+  closed (no evidence/`ScopeNotFound`), never an arbitrary pick between
+  the two.
+- Rationale: `part` already reads, and is documented, as ordinary
+  lexical/organizational scoping (`crates/cad-hir/src/lower.rs`'s own
+  `push_scope`/`pop_scope` treatment of a part body is identical to a
+  function body's), not a semantic partition that should hide a
+  feature's own real identity from the reference/lineage system one
+  layer up. Treating it as a visibility barrier would have made the
+  idiomatic, recommended `.aicad` authoring style (wrapping geometry in
+  `part { ... }`) permanently incompatible with lineage-based semantic
+  references — an unacceptable, silently-crippling default for the
+  common case, not a narrow edge case.
+- Consequences: `cad_feature_graph::FeatureGraph::build` recurses into
+  every `HirItem::Part` body (one level, matching the grammar's own
+  current single-level `part` nesting); `crate::parametric_build`'s own
+  `qualified_feature_name`/`resolve_scoped_name` (`cad-cli`) give a
+  collision-safe way to name a part-nested feature; `generated_by`/
+  `modified_by`/`descended_from` resolver execution now works against a
+  real, idiomatic `part`-wrapped `.aicad` program.
+- Explicitly deferred: `part`-in-`part` (deeper than one level) nesting
+  remains a separate, pre-existing, non-blocking completeness gap —
+  see `OWNER_DECISIONS.md`'s "Non-decision items carried forward for
+  awareness" list, added by `AICAD-100A`'s own limitation sweep, for the
+  full account (it is grammatically legal but silently inert at
+  execution/feature-graph/query-lowering time across several call
+  sites — not something this decision resolves).
+- Affected RFCs/tasks/stages: Stage 4 semantic-reference resolver
+  execution (`cad-feature-graph`, `cad-cli`'s `parametric_build`/
+  `reference_replay`/`query_lowering`); `crates/cad-cli/tests/
+  stage4_resolver_execution.rs`'s `case01`/`02`/`07`/`09` real
+  production-path tests are the evidence this decision's consequences
+  actually hold.
+- Supersedes: the open status of `OWNER_DECISIONS.md#D31`.
+
+---
+
 ## General constraint on D21-D30 during Stage 4
 
 D21-D30 are owner-approved semantic baselines. Stage-4 semantic-reference

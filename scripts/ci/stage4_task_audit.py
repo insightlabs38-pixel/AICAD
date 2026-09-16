@@ -2,8 +2,10 @@
 """Audit/fix the narrow AICAD-079C -> Stage-4 queue transition metadata.
 
 This intentionally does not redesign AICAD-080..100. It enforces only the
-transition dependency and two stale D7/AICAD-079A metadata corrections found
-by the AICAD-079C audit.
+transition dependency, two stale D7/AICAD-079A metadata corrections found
+by the AICAD-079C audit, and the AICAD-099A remediation task inserted
+between AICAD-099 and AICAD-100 (mirroring AICAD-064A's own precedent
+between AICAD-064 and AICAD-065).
 """
 from __future__ import annotations
 
@@ -142,7 +144,11 @@ def fix(text: str) -> str:
 
 
 def check(text: str) -> None:
-    for task_id in ("AICAD-079C", *[f"AICAD-{n:03d}" for n in range(80, 101)]):
+    for task_id in (
+        "AICAD-079C",
+        *[f"AICAD-{n:03d}" for n in range(80, 101)],
+        "AICAD-099A",
+    ):
         count = text.count(f"- id: {task_id}\n")
         if count != 1:
             raise AssertionError(f"{task_id}: expected exactly one task entry, found {count}")
@@ -166,8 +172,12 @@ def check(text: str) -> None:
     assert "Extend the frozen AICAD-079A" in s096
     assert "without\n    rewriting held-out ground truth" in s096
 
+    _, _, s099a = task_section(text, "AICAD-099A")
+    assert "  - AICAD-099\n" in s099a
+    assert "Scoped candidate-universe resolution" in s099a
+
     _, _, s100 = task_section(text, "AICAD-100")
-    assert "  - AICAD-099\n" in s100
+    assert "  - AICAD-099A\n" in s100
     assert "Stage-4 hard-gate packet for owner review" in s100
 
 

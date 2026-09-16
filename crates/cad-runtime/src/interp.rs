@@ -522,7 +522,8 @@ impl<'a> Interpreter<'a> {
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
-                | HirItem::Import { .. } => {}
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => {}
             }
         }
         Ok(())
@@ -541,7 +542,10 @@ impl<'a> Interpreter<'a> {
     /// time — previously `HirItem::Part` was silently skipped by both
     /// [`Interpreter::run_top_level`]/[`Interpreter::
     /// run_top_level_parametric`] (a pure declaration with no runtime
-    /// effect at all). It deliberately does **not** implement:
+    /// effect at all); `AICAD-096` wired this same method into the second
+    /// call site too (see that method's own doc comment), so both now
+    /// give a `part` body identical execution semantics. It deliberately
+    /// does **not** implement:
     /// - parameterized part *instantiation* (`Bracket()`-style
     ///   construction call syntax) — no such syntax exists in the grammar
     ///   today (`part` is a plain item-scope declaration, never callable,
@@ -595,7 +599,8 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
                 | HirItem::Part { .. }
-                | HirItem::Import { .. } => continue,
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => continue,
             };
             let Some(value) = value else { continue };
             match self.eval_expr(&mut frame, value) {
@@ -632,14 +637,11 @@ impl<'a> Interpreter<'a> {
     }
 
     /// The current value of a top-level `let`/`const`/`param` binding, or
-    /// (`AICAD-071`) a top-level `part`'s own [`Value::Part`], if
-    /// [`Interpreter::run_top_level`] has already populated it — `None`
-    /// beforehand, or for a `param` with no default (`AICAD-065`'s own
-    /// documented "left unpopulated" convention). Note
-    /// [`Interpreter::run_top_level_parametric`] does **not** execute
-    /// `part` bodies (still silently skips `HirItem::Part`, unchanged by
-    /// this task — see [`Interpreter::eval_part_body`]'s own doc comment
-    /// for why `part` execution is `run_top_level`-only so far). Added for
+    /// (`AICAD-071`) a top-level `part`'s own [`Value::Part`], if either
+    /// [`Interpreter::run_top_level`] or (`AICAD-096`)
+    /// [`Interpreter::run_top_level_parametric`] has already populated it
+    /// — `None` beforehand, or for a `param` with no default (`AICAD-065`'s
+    /// own documented "left unpopulated" convention). Added for
     /// `AICAD-071`'s `part` execution: a test/future `cad-cli` caller's
     /// only way to observe a part's own named outputs today, since no
     /// `.`-syntax source access exists yet.
@@ -735,18 +737,40 @@ impl<'a> Interpreter<'a> {
         }
 
         for item in &program.items {
-            let (binding, value) = match item {
+            match item {
                 HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
-                    (*binding, value)
+                    self.eval_top_level_value(*binding, value)?;
+                }
+                HirItem::Part { binding, items, .. } => {
+                    // `AICAD-096`: this method used to silently skip every
+                    // `part { ... }` item (a pure declaration with no
+                    // runtime effect, per this method's own prior doc
+                    // comment) — meaning `ParametricBuildSession` (the
+                    // production parametric-rebuild/resolver-execution
+                    // path `AICAD-079B`/`094` built) never actually
+                    // evaluated a part-wrapped program's own geometry at
+                    // all, silently succeeding on an empty graph. Every
+                    // real `.aicad` example and the entire frozen
+                    // `AICAD-079A` corpus wraps its geometry in `part {
+                    // ... }` (`skills/cad-core.skill.md`'s own idiom), so
+                    // this was previously untested and undiscovered —
+                    // found while wiring real resolver execution against
+                    // that corpus (`AICAD-096`). Mirrors
+                    // [`Interpreter::run_top_level`]'s own already-correct,
+                    // already-tested handling exactly (`AICAD-071`'s
+                    // [`Interpreter::eval_part_body`]) — not a new
+                    // execution semantics, just wiring an existing one
+                    // into this method's own second entry point.
+                    let value = self.eval_part_body(*binding, items)?;
+                    self.globals.insert(*binding, value);
                 }
                 HirItem::Param { .. }
                 | HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
-                | HirItem::Part { .. }
-                | HirItem::Import { .. } => continue,
-            };
-            self.eval_top_level_value(binding, value)?;
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => continue,
+            }
         }
         Ok(())
     }

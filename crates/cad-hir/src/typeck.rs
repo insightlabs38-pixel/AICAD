@@ -896,7 +896,8 @@ impl<'a> Checker<'a> {
                 | HirItem::Const { .. }
                 | HirItem::Param { .. }
                 | HirItem::Fn { .. }
-                | HirItem::Import { .. } => {}
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => {}
             }
         }
     }
@@ -1027,7 +1028,8 @@ impl<'a> Checker<'a> {
                 | HirItem::Const { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
-                | HirItem::Import { .. } => {}
+                | HirItem::Import { .. }
+                | HirItem::Query { .. } => {}
             }
         }
     }
@@ -1124,7 +1126,14 @@ impl<'a> Checker<'a> {
             // of their own to type-check).
             HirItem::Struct { .. } | HirItem::Enum { .. } => {}
             HirItem::Part { items, .. } => self.check_items(items),
-            HirItem::Import { .. } => {}
+            // A query clause's own arguments are never `HirExpr` (see
+            // `HirQueryArg`'s own doc comment) -- there is no expression
+            // here for this pass to type-check. Resolving `entity_kind`/
+            // `scope`/clause semantics against the closed Stage-4
+            // vocabulary is `cad-cli`'s job (this crate takes no
+            // dependency on `cad-references`/`cad-query`), matching
+            // `HirItem::Import`'s own identical division of labor.
+            HirItem::Import { .. } | HirItem::Query { .. } => {}
         }
     }
 

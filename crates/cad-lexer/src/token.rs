@@ -5,16 +5,22 @@
 //! sketch (RFC-0001 §7): declarations (`let`/`var`/`const`/`param`/`fn`/
 //! `struct`/`enum`/`interface`/`part`/`assembly`/`requirement`/`test`/
 //! `import`) and control flow (`if`/`else`/`for`/`in`/`while`/`loop`/
-//! `match`/`return`/`break`/`continue`/`pure`). Other words used only in
-//! prose examples elsewhere in `docs/plan/` (`expose`, `query`, `unsafe`,
-//! `comptime`, `yield`, `drawing`, `simulation`, `configuration`, ...)
-//! are deliberately **not** reserved yet — they are not part of the
-//! grammar artifact this task's own plan references point at, and
-//! reserving a word commits to it being a keyword everywhere (shadowing
-//! it as an identifier becomes an error) before an actual grammar
-//! production needs it. A later task that adds real syntax for one of
-//! them should add the keyword in that same change, not here ahead of
-//! time (`AGENTS.md` "No speculative future work").
+//! `match`/`return`/`break`/`continue`/`pure`), plus `query`
+//! (`AICAD-100A`: RFC-0003 §7's own reserved persistent-semantic-
+//! reference surface, promoted to a real grammar production by this task
+//! per that section's own "unless promoted into `specs/language/
+//! grammar.ebnf` by an authorized Stage-4 task" clause — see
+//! `crates/cad-ast/src/item.rs`'s own `Item::Query` doc comment for the
+//! exact syntax this keyword now heads). Other words used only in prose
+//! examples elsewhere in `docs/plan/` (`expose`, `unsafe`, `comptime`,
+//! `yield`, `drawing`, `simulation`, `configuration`, ...) remain
+//! deliberately **not** reserved — they are not part of the grammar
+//! artifact this task's own plan references point at, and reserving a
+//! word commits to it being a keyword everywhere (shadowing it as an
+//! identifier becomes an error) before an actual grammar production needs
+//! it. A later task that adds real syntax for one of them should add the
+//! keyword in that same change, not here ahead of time (`AGENTS.md` "No
+//! speculative future work").
 
 use cad_ast::Span;
 
@@ -33,6 +39,7 @@ pub enum Keyword {
     Requirement,
     Test,
     Import,
+    Query,
     If,
     Else,
     For,
@@ -62,6 +69,7 @@ impl Keyword {
             Keyword::Requirement => "requirement",
             Keyword::Test => "test",
             Keyword::Import => "import",
+            Keyword::Query => "query",
             Keyword::If => "if",
             Keyword::Else => "else",
             Keyword::For => "for",
@@ -91,6 +99,7 @@ impl Keyword {
             "requirement" => Keyword::Requirement,
             "test" => Keyword::Test,
             "import" => Keyword::Import,
+            "query" => Keyword::Query,
             "if" => Keyword::If,
             "else" => Keyword::Else,
             "for" => Keyword::For,

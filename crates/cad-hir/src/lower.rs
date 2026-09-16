@@ -90,14 +90,14 @@ use crate::builtins::{BuiltinFnSpec, catalogue as builtin_catalogue};
 use crate::hir::{
     FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr,
     HirField, HirImportPath, HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam,
-    HirPattern, HirProgram, HirRecordField, HirRecordPatternField, HirStmt, HirTypeParam,
-    HirVariantPayload,
+    HirPattern, HirProgram, HirQueryArg, HirQueryClause, HirRecordField, HirRecordPatternField,
+    HirStmt, HirTypeParam, HirVariantPayload,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
 use cad_ast::{
     Arg, Block, BlockExpr, ElseBranch, ElseClause, EnumVariant, Expr, FnParam, Item, Literal,
-    MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type,
+    MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type, UnaryOp,
 };
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
 use cad_types::{AffineKind, PrimitiveType};
@@ -466,6 +466,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Item::Part { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Part)),
+            Item::Query { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Query)),
             Item::Import { names, .. } => DeclaredItem::Import {
                 names: names
                     .iter()
@@ -617,6 +618,36 @@ impl<'a> Lowerer<'a> {
                     span: *span,
                 }
             }
+            (
+                Item::Query {
+                    name,
+                    entity_kind,
+                    scope,
+                    clauses,
+                    span,
+                },
+                DeclaredItem::Simple(binding),
+            ) => {
+                if !is_closed_entity_kind_spelling(&entity_kind.node) {
+                    self.diagnostics.push(invalid_entity_kind_diagnostic(
+                        self.file,
+                        self.source,
+                        entity_kind,
+                    ));
+                }
+                let clauses = clauses
+                    .iter()
+                    .map(|clause| self.lower_query_clause(clause))
+                    .collect();
+                HirItem::Query {
+                    binding,
+                    name: name.node.clone(),
+                    entity_kind: entity_kind.node.clone(),
+                    scope: scope.node.clone(),
+                    clauses,
+                    span: *span,
+                }
+            }
             (Item::Import { path, names, span }, DeclaredItem::Import { names: ids }) => {
                 let imported = match names {
                     Some(ns) => ns
@@ -661,6 +692,116 @@ impl<'a> Lowerer<'a> {
                 }
             })
             .collect()
+    }
+
+    /// Lowers one [`Item::Query`] body clause (`AICAD-100A`) — always
+    /// `Expr::Call { callee, args, .. }` by parser construction (see that
+    /// variant's own doc comment), so this never needs the general
+    /// `lower_expr` machinery.
+    fn lower_query_clause(&mut self, clause: &Expr) -> HirQueryClause {
+        match clause {
+            Expr::Call { callee, args, span } => HirQueryClause {
+                name: callee.node.clone(),
+                args: args
+                    .iter()
+                    .filter_map(|arg| self.lower_query_arg(arg))
+                    .collect(),
+                span: *span,
+            },
+            _ => unreachable!(
+                "cad-parser's parse_query_clause only ever produces Expr::Call clauses"
+            ),
+        }
+    }
+
+    /// Lowers one query-clause argument, recording an `INVALID_QUERY_ARG`
+    /// diagnostic and dropping the argument (`None`) for any shape other
+    /// than a bare/dotted name or a (possibly negated) numeric literal —
+    /// see [`HirQueryArg`]'s own doc comment for exactly which two shapes
+    /// are accepted and why nothing else is.
+    fn lower_query_arg(&mut self, arg: &Arg) -> Option<HirQueryArg> {
+        let expr = match arg {
+            Arg::Positional(expr) => expr,
+            Arg::Named { name, .. } => {
+                self.diagnostics.push(invalid_query_arg_diagnostic(
+                    self.file,
+                    self.source,
+                    name.span,
+                    "a named argument ('name: value')",
+                ));
+                return None;
+            }
+        };
+        match expr {
+            Expr::Ident(name) => Some(HirQueryArg::Name(name.node.clone())),
+            Expr::Field { .. } => match dotted_name_of(expr) {
+                Some(name) => Some(HirQueryArg::Name(name)),
+                None => {
+                    self.diagnostics.push(invalid_query_arg_diagnostic(
+                        self.file,
+                        self.source,
+                        expr.span(),
+                        "a dotted expression whose root or a segment is not a plain name",
+                    ));
+                    None
+                }
+            },
+            Expr::Literal(lit) => match &lit.node {
+                Literal::Number { text, unit } => Some(HirQueryArg::Number {
+                    text: text.clone(),
+                    unit: unit.clone(),
+                }),
+                _ => {
+                    self.diagnostics.push(invalid_query_arg_diagnostic(
+                        self.file,
+                        self.source,
+                        lit.span,
+                        "a non-numeric literal",
+                    ));
+                    None
+                }
+            },
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                operand,
+                span,
+                ..
+            } => match operand.as_ref() {
+                Expr::Literal(lit) => match &lit.node {
+                    Literal::Number { text, unit } => Some(HirQueryArg::Number {
+                        text: format!("-{text}"),
+                        unit: unit.clone(),
+                    }),
+                    _ => {
+                        self.diagnostics.push(invalid_query_arg_diagnostic(
+                            self.file,
+                            self.source,
+                            *span,
+                            "a negated non-numeric literal",
+                        ));
+                        None
+                    }
+                },
+                _ => {
+                    self.diagnostics.push(invalid_query_arg_diagnostic(
+                        self.file,
+                        self.source,
+                        *span,
+                        "a negated expression other than a numeric literal",
+                    ));
+                    None
+                }
+            },
+            other => {
+                self.diagnostics.push(invalid_query_arg_diagnostic(
+                    self.file,
+                    self.source,
+                    other.span(),
+                    "an expression shape other than a name or a numeric literal",
+                ));
+                None
+            }
+        }
     }
 
     // --- Blocks / statements ---
@@ -1198,6 +1339,78 @@ fn diagnostic(
             start: Position::new(start.line, start.column),
             end: Position::new(end.line, end.column),
         })
+}
+
+/// The six closed `cad_references::EntityKind` spellings a `query name :
+/// EntityKind in scope { ... }` declaration's `entity_kind` must be one of
+/// (`AICAD-100A`) — see `HirItem::Query::entity_kind`'s own doc comment for
+/// why this crate checks only the spelling, not the real enum.
+fn is_closed_entity_kind_spelling(spelling: &str) -> bool {
+    matches!(
+        spelling,
+        "Vertex" | "Edge" | "Wire" | "Face" | "Shell" | "Solid"
+    )
+}
+
+/// Joins an `Expr::Ident`-rooted chain of `Expr::Field` accesses into one
+/// dotted name (`"a.b.c"`), matching `cad_ast::Parser::parse_dotted_name`'s
+/// own textual shape — `None` if the root is not `Expr::Ident` or any
+/// segment access is a method call rather than a plain field (impossible
+/// from `parse_dotted_name` itself, but a query clause argument is parsed
+/// as an ordinary expression, which can build a `Field` chain over any
+/// receiver).
+fn dotted_name_of(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(name.node.clone()),
+        Expr::Field {
+            receiver, field, ..
+        } => {
+            let mut base = dotted_name_of(receiver)?;
+            base.push('.');
+            base.push_str(&field.node);
+            Some(base)
+        }
+        _ => None,
+    }
+}
+
+/// `AICAD-100A`: a `query`'s `entity_kind` is not one of the six closed
+/// `cad_references::EntityKind` spellings.
+fn invalid_entity_kind_diagnostic(
+    file: &str,
+    source: &str,
+    entity_kind: &Spanned<String>,
+) -> Diagnostic {
+    diagnostic(
+        460,
+        Severity::Error,
+        "INVALID_QUERY_ENTITY_KIND",
+        format!(
+            "'{}' is not a valid query entity kind -- expected one of Vertex, Edge, Wire, \
+             Face, Shell, Solid.",
+            entity_kind.node
+        ),
+        file,
+        source,
+        entity_kind.span,
+    )
+}
+
+/// `AICAD-100A`: a `query { ... }` clause argument used an expression shape
+/// this task's minimal grammar does not accept (see `HirQueryArg`'s own doc
+/// comment for exactly which two shapes are accepted).
+fn invalid_query_arg_diagnostic(file: &str, source: &str, span: Span, found: &str) -> Diagnostic {
+    diagnostic(
+        461,
+        Severity::Error,
+        "INVALID_QUERY_CLAUSE_ARG",
+        format!(
+            "Query clause arguments must be a bare/dotted name or a numeric literal, found {found}."
+        ),
+        file,
+        source,
+        span,
+    )
 }
 
 fn unresolved_binding_diagnostic(file: &str, source: &str, name: &Spanned<String>) -> Diagnostic {
@@ -1932,5 +2145,176 @@ mod tests {
         // type parameter `T` never leaks into value-identifier
         // resolution.
         assert_eq!(codes(&result.diagnostics), vec!["TYPE-E410"]);
+    }
+
+    // --- `query { ... }` persistent-reference declarations (AICAD-100A) ---
+
+    #[test]
+    fn a_well_formed_query_lowers_its_entity_kind_scope_and_clauses() {
+        let result = lower(
+            "let body = 1;\n\
+             query top_face : Face in body { generated_by(base); planar(); unique(); }",
+        );
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let HirItem::Query {
+            name,
+            entity_kind,
+            scope,
+            clauses,
+            ..
+        } = &result.program.items[1]
+        else {
+            panic!("expected Query item, got {:?}", result.program.items[1]);
+        };
+        assert_eq!(name, "top_face");
+        assert_eq!(entity_kind, "Face");
+        assert_eq!(scope, "body");
+        assert_eq!(
+            *clauses,
+            vec![
+                HirQueryClause {
+                    name: "generated_by".to_string(),
+                    args: vec![HirQueryArg::Name("base".to_string())],
+                    span: clauses[0].span,
+                },
+                HirQueryClause {
+                    name: "planar".to_string(),
+                    args: vec![],
+                    span: clauses[1].span,
+                },
+                HirQueryClause {
+                    name: "unique".to_string(),
+                    args: vec![],
+                    span: clauses[2].span,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn query_mints_its_own_binding_with_binding_kind_query() {
+        let result = lower("let body = 1;\nquery top_face : Face in body { planar(); }");
+        let HirItem::Query { binding, .. } = &result.program.items[1] else {
+            panic!("expected Query item");
+        };
+        assert_eq!(result.bindings[binding.index()].kind, BindingKind::Query);
+    }
+
+    #[test]
+    fn a_dotted_scope_name_is_carried_verbatim_unresolved() {
+        // `scope` names a D31 feature-graph-scoped binding, not an
+        // ordinary lexical one -- lowering must not try (and fail) to
+        // resolve it against this module's own binder scope stack.
+        let result = lower("query hole_wall : Face in sub.body { planar(); }");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let HirItem::Query { scope, .. } = &result.program.items[0] else {
+            panic!("expected Query item");
+        };
+        assert_eq!(scope, "sub.body");
+    }
+
+    #[test]
+    fn a_dotted_name_argument_is_joined_with_dots() {
+        let result = lower("query q : Face in body { generated_by(sub.base); }");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let HirItem::Query { clauses, .. } = &result.program.items[0] else {
+            panic!("expected Query item");
+        };
+        assert_eq!(
+            clauses[0].args,
+            vec![HirQueryArg::Name("sub.base".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_negative_numeric_argument_folds_its_sign_into_the_literal_text() {
+        let result = lower("query q : Face in body { normal(0, 0, -1); }");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let HirItem::Query { clauses, .. } = &result.program.items[0] else {
+            panic!("expected Query item");
+        };
+        assert_eq!(
+            clauses[0].args,
+            vec![
+                HirQueryArg::Number {
+                    text: "0".to_string(),
+                    unit: None
+                },
+                HirQueryArg::Number {
+                    text: "0".to_string(),
+                    unit: None
+                },
+                HirQueryArg::Number {
+                    text: "-1".to_string(),
+                    unit: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_numeric_argument_with_a_unit_suffix_keeps_its_unit() {
+        let result = lower("query q : Face in body { area(gte, 500mm); }");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let HirItem::Query { clauses, .. } = &result.program.items[0] else {
+            panic!("expected Query item");
+        };
+        assert_eq!(
+            clauses[0].args,
+            vec![
+                HirQueryArg::Name("gte".to_string()),
+                HirQueryArg::Number {
+                    text: "500".to_string(),
+                    unit: Some("mm".to_string())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_entity_kind_spelling_is_a_structured_diagnostic() {
+        let result = lower("query q : Blob in body { planar(); }");
+        assert_eq!(codes(&result.diagnostics), vec!["TYPE-E460"]);
+        // Lowering still recovers and carries the (invalid) spelling
+        // through, rather than panicking or discarding the item.
+        let HirItem::Query { entity_kind, .. } = &result.program.items[0] else {
+            panic!("expected Query item");
+        };
+        assert_eq!(entity_kind, "Blob");
+    }
+
+    #[test]
+    fn a_named_clause_argument_is_rejected_and_dropped() {
+        let result = lower("query q : Face in body { radius(cmp = gte); }");
+        assert_eq!(codes(&result.diagnostics), vec!["TYPE-E461"]);
+        let HirItem::Query { clauses, .. } = &result.program.items[0] else {
+            panic!("expected Query item");
+        };
+        assert!(clauses[0].args.is_empty());
+    }
+
+    #[test]
+    fn a_string_literal_clause_argument_is_rejected_and_dropped() {
+        let result = lower("query q : Face in body { role(\"datum\"); }");
+        assert_eq!(codes(&result.diagnostics), vec!["TYPE-E461"]);
+        let HirItem::Query { clauses, .. } = &result.program.items[0] else {
+            panic!("expected Query item");
+        };
+        assert!(clauses[0].args.is_empty());
+    }
+
+    #[test]
+    fn a_query_declared_inside_a_part_body_lowers_like_any_other_part_item() {
+        let result = lower(
+            "part Bracket {\n\
+                 let body = 1;\n\
+                 query top_face : Face in body { planar(); unique(); }\n\
+             }",
+        );
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let HirItem::Part { items, .. } = &result.program.items[0] else {
+            panic!("expected Part item");
+        };
+        assert!(matches!(items[1], HirItem::Query { .. }));
     }
 }
