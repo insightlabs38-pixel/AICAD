@@ -2,13 +2,18 @@
 //! strategies that previously had no evidence source in
 //! [`ParametricBuildSession`] at all (`ExplicitExport`/`StructuralRole`/
 //! `UserConfirmed`/`SemanticQuery`) — each now resolves from real session
-//! state, never test-only injection.
+//! state, never test-only injection. Also covers `Ancestry`'s own
+//! `resolve_reference` code path (`feature_scope_of`/
+//! `resolve_query_with_cardinality`), which had a real negative (fail-
+//! closed) test but no positive one anywhere in the workspace until this
+//! task's own limitation sweep found the gap.
 
 use cad_cli::ParametricBuildSession;
 use cad_occt_bridge::OcctContext;
 use cad_query::{Query, ResolutionOutcome};
 use cad_references::{
-    AnyRef, ConstructionStrategy, DurabilityLevel, EntityKind, FeatureAnchor, QueryHandle, SolidRef,
+    AnyRef, ConstructionStrategy, DurabilityLevel, EntityKind, FaceRef, FeatureAnchor, LineageRole,
+    QueryHandle, SolidRef,
 };
 
 const SOURCE: &str = "\
@@ -206,4 +211,60 @@ fn ancestry_with_a_non_derivable_scope_fails_closed_in_a_real_session() {
         .resolve_reference(&reference)
         .expect("resolution should not error");
     assert!(resolution.outcome.is_broken());
+}
+
+/// `ConstructionStrategy::Ancestry`'s own real positive path against a real
+/// session -- previously untested anywhere (the negative test above is the
+/// only prior `Ancestry`-strategy coverage; `resolve_reference`'s own
+/// `Ancestry` arm -- `feature_scope_of`/`resolve_query_with_cardinality` --
+/// had zero positive-path proof before this task's own limitation sweep
+/// found the gap). `reference_replay::descended_from_closure`'s own
+/// reflexive base case (a feature's own directly-generated results count as
+/// trivially "descended from" themselves, then the closure extends
+/// transitively through any later successor) means an `Ancestry` reference
+/// anchored to `bored`'s own `FeatureLineage` evidence, scoped by
+/// `feature_scope_of` back to `bored` itself, finds `bored`'s own real
+/// cylindrical hole-wall face -- the real, unmodified production code path,
+/// not a hand-built stand-in.
+#[test]
+fn ancestry_resolves_a_real_feature_lineage_anchored_ancestor_in_a_real_session() {
+    let ctx = OcctContext::new().expect("context creation should succeed");
+    let source = "\
+part Wall {\n\
+\tlet base: Geometry = box(30mm, 30mm, 10mm);\n\
+\tlet bored: Geometry = hole(\n\
+\t\tbase,\n\
+\t\tAxis3(\n\
+\t\t\torigin = Point3(x = 15mm, y = 15mm, z = 0mm - 1mm),\n\
+\t\t\tdirection = Vector3(x = 0.0, y = 0.0, z = 1.0),\n\
+\t\t),\n\
+\t\t6mm,\n\
+\t\t12mm,\n\
+\t);\n\
+}\n\
+";
+    let session = ParametricBuildSession::new("test.aicad", source, &ctx)
+        .expect("the fixture should build cleanly");
+
+    let ancestor = AnyRef::Face(FaceRef::from_strategy(
+        ConstructionStrategy::FeatureLineage {
+            feature: FeatureAnchor::named("bored"),
+            role: LineageRole::Generated,
+        },
+    ));
+    let reference = AnyRef::Face(FaceRef::from_strategy(ConstructionStrategy::Ancestry(
+        Box::new(ancestor),
+    )));
+    let resolution = session
+        .resolve_reference(&reference)
+        .expect("resolution should not error");
+    assert_eq!(resolution.durability, DurabilityLevel::Lineage);
+    match resolution.outcome {
+        ResolutionOutcome::Resolved(candidates) => assert_eq!(candidates.len(), 1),
+        other => panic!(
+            "expected Resolved(1) (bored's own real cylindrical hole-wall face, reflexively \
+             descended from itself), got {}",
+            describe(&other)
+        ),
+    }
 }
