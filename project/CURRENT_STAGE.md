@@ -6,8 +6,8 @@ to_stage: 4
 name: Stage 4 — semantic-topology-reference hard gate
 status: gate-packet-prepared-pending-owner-review
 stage4_readiness: implementation-complete-pending-owner-gate
-last_completed_batch: S4-08
-last_completed_task: AICAD-100
+last_completed_batch: S4-09
+last_completed_task: AICAD-100A
 next_batch: none — roadmap development stopped pending owner Stage-4 approval (see "Stage 4 hard-gate packet" below)
 
 ## Stage 0 — closed
@@ -319,8 +319,18 @@ owner approval recorded in `project/DECISION_LOG.md` (following the same
 pattern as `DL-10`/`DL-11`/`DL-16`). Only the owner may review the gate
 packet, approve Stage 4, and authorize `AICAD-101`+/Stage 5.
 
-Batch S4-08 (`AICAD-100`) is complete. Stage 4 implementation work is
-complete; Stage 4 itself awaits owner review/approval.
+Batch S4-08 (`AICAD-100`) is complete. Batch S4-09 (`AICAD-100A`) is also
+complete: the owner's own review of the `AICAD-100` gate packet disclosed
+several significant Stage-4 capabilities that existed in IR/test form but
+were incomplete or unreachable through the real production path —
+`AICAD-100A` fixed them (most significantly resolving `D31`, `project/
+OWNER_DECISIONS.md#D31`/`project/DECISION_LOG.md#DL-33`, and promoting
+RFC-0003 §7's reserved `query { ... }` surface into real `.aicad` source
+syntax), re-ran the real Stage-4 hard gate (`project/gates/
+stage-4-gate.md` §10 has the full before/after account), and stopped per
+its own brief — no `AICAD-101`/Stage-5 work was begun. Stage 4
+implementation work is complete; Stage 4 itself awaits owner review/
+approval.
 
 The hard gate remains fail-closed:
 

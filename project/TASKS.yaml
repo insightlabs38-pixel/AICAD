@@ -3135,3 +3135,57 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage
+
+- id: AICAD-100A
+  stage: 4
+  title: Complete production semantic-reference integration disclosed by the Stage-4 gate packet
+  status: done
+  depends_on:
+  - AICAD-100
+  plan_references:
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - docs/plan/20_REVIEW_PASS_GAPS_AND_DECISIONS.md
+  - rfcs/0003-semantic-references.md
+  - specs/language/grammar.ebnf
+  - project/OWNER_DECISIONS.md#D31
+  acceptance:
+  - 'D31 resolved by explicit owner ruling ("part { ... } is an abstraction/scope boundary, not a feature-visibility
+    barrier") and cad_feature_graph::FeatureGraph discovers geometry-producing features inside part bodies with
+    AICAD-owned scoped identity/provenance, never OCCT identity.'
+  - Persistent-reference candidate scope is explicit in production -- whole-session unscoped resolution is no longer the
+    implicit default for a query/reference, geometrically-distinct candidates are never deduplicated, and an invalid or
+    missing required scope fails closed.
+  - All Stage-4 predicate variants (Convex/Concave/Manifold/NonManifold/ConnectedTo/Contains/Intersects plus ancestry/
+    adjacent_to/inside/within) have real, kernel-neutral production semantics with positive/negative/invalid-kind test
+    coverage.
+  - Every ConstructionStrategy (ExplicitExport/FeatureLineage/SemanticQuery/StructuralRole/Ancestry/UserConfirmed) has a
+    real production evidence source backed by at least one real ParametricBuildSession test; GeometricFingerprint remains
+    D7-fail-closed (Broken), never an automatic resolution basis.
+  - Face and Edge lineage coverage is complete across unchanged/generated/modified/split/merged/deleted states; Shell/
+    Solid candidate enumeration is wired through kernel-neutral bridge accessors.
+  - RFC-0003 section 7's reserved query { ... } surface is promoted into specs/language/grammar.ebnf as the smallest
+    syntax completion consistent with that surface and existing AICAD binding/value semantics; a source-declared
+    persistent reference lowers into real cad_query::Query/cad_references::AnyRef values (never a test-only injection)
+    and cad refs check observes a non-empty, really-resolved reference set from a real .aicad program.
+  - The frozen AICAD-079A corpus's own official intended queries are executed directly through the real production path
+    where the underlying operation actually supplies lineage evidence, never synthesized from geometric coincidence, with
+    expected targets left unmodified to fit implementation results; the silent-wrong count is zero.
+  - A limitation sweep across cad-references/cad-query/cad-feature-graph/reference replay/ParametricBuildSession/
+    perturbation runner/cad refs check/HIR and runtime reference lowering/kernel topology enumeration found no remaining
+    hidden Stage-4 gap; the one real completeness gap found (part-in-part nesting silently inert) is a pre-existing,
+    non-Stage-4-specific limitation, explicitly recorded rather than buried.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - python scripts/ci/semantic_ref_harness.py validate
+  - python scripts/ci/semantic_ref_harness.py self-test
+  report: project/reports/AICAD-100A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types would leak above the adapter
+  - semantic-reference ambiguity would require arbitrary fallback
+  - an unresolved architecture alternative must be selected
+  - work would expand into a later roadmap stage (Stage 5/AICAD-101+)

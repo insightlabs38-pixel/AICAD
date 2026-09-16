@@ -1,5 +1,18 @@
 # Stage-4 Owner Gate Packet
 
+**Updated by `AICAD-100A`** (see §10 for the full account): the owner's own
+gate-packet review disclosed several significant Stage-4 capabilities that
+existed in IR/test form but were incomplete or unreachable through the real
+production path. `AICAD-100A` completed them — most significantly resolving
+`D31` (§5.3, §6, now RESOLVED) and promoting RFC-0003 §7's reserved
+`query { ... }` surface into real, executable `.aicad` source syntax (§5.4,
+now RESOLVED) — re-ran the real Stage-4 hard gate, and stopped, per its own
+brief. Sections below are updated in place where a disclosed limitation was
+actually closed (marked "RESOLVED (`AICAD-100A`)", with the original text
+kept for record) and left untouched where a limitation remains genuinely
+open or is a later-stage/non-blocking item — nothing is hidden by this
+update; §10 is the single place to read the complete before/after account.
+
 Prepared by `AICAD-100`, per `project/gates/README.md` and `AGENTS.md`
 ("Stage gates": "The agent may prepare gate evidence and recommend
 pass/do-not-pass. The agent may not approve a roadmap stage. Stage
@@ -33,6 +46,13 @@ packet adds no roadmap feature code, only this gate file, `project/
 TASKS.yaml` status, and `project/SESSION_HANDOFF.md`/`project/
 CURRENT_STAGE.md`.
 
+**`AICAD-100A` update:** base commit `3078846` (above, this packet's own
+original HEAD). This update's own final commit is the branch tip at the
+time `project/reports/AICAD-100A.md` and `project/SESSION_HANDOFF.md` were
+last pushed — see `git log --oneline 3078846..HEAD` on
+`origin/claude/aicad-stage4-dev` for the exact commit sequence (§8 has the
+full diff-scope accounting).
+
 ## 2. Stage-4 exit gate and evidence
 
 **Exit gate** (`project/CURRENT_STAGE.md`, `AGENTS.md`'s "Stage 4 is the
@@ -57,9 +77,10 @@ and an adversarial bug hunt with zero surviving `SILENT_WRONG` outcomes.
 | S4-07 | `AICAD-099` | The adversarial bug-hunt campaign: real corpus wired end-to-end into `metrics::aggregate` (`silent_wrong == 0`); the three held-out cases run as a deliberate checkpoint (manifest checksum re-verified); new adversarial probes (N-way pattern ties, position-tracking across a pattern-count change, coincidental-geometry/negative controls). Zero `SILENT_WRONG`. One real, honest, fail-closed (not silent-wrong) finding recorded. | `AICAD-099.md` |
 | S4-07 (remediation) | `AICAD-099A` | Fixes the `AICAD-099` finding: `Query::scoped_to(FeatureAnchor)` / `ResolverContext::candidates_in_scope` give a query an explicit, AICAD-owned way to restrict its candidate universe to one named feature/binding; unresolvable scope reports `Broken(ScopeNotFound)`, never a silent fallback; unscoped semantics unchanged. `case03`'s own critical test now proven through the real production path. | `AICAD-099A.md` |
 | S4-08 | `AICAD-100` | This packet. | `AICAD-100.md` (this file is the actual gate; a short task report cross-references it) |
+| S4-09 | `AICAD-100A` | Resolved `D31` (`part { ... }` is a scope boundary, not a visibility barrier); made persistent-reference candidate scope explicit in production; completed the remaining `Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`/`Contains`/`Intersects` predicates; wired real production evidence for every `ConstructionStrategy` (`ExplicitExport`/`StructuralRole`/`UserConfirmed`/`SemanticQuery`/`Ancestry`); completed `Edge` lineage and `Shell`/`Solid` candidate enumeration; promoted RFC-0003 §7's reserved `query { ... }` surface into real `.aicad` source syntax, lowered by `cad-cli` into real `cad_query`/`cad_references` values (`cad refs check` now observes a real, non-empty reference set); re-ran the frozen corpus's own official intended queries through the real production path where lineage evidence exists. See §10. | `AICAD-100A.md` |
 
 No batch was skipped, reordered, or combined; every task's own
-`project/TASKS.yaml` entry carries `status: done` (verified §2.7).
+`project/TASKS.yaml` entry carries `status: done` (verified §8).
 
 ### 2.2 The fail-closed contract, independently re-verified this audit
 
@@ -164,8 +185,19 @@ Run as this campaign's own deliberate held-out evaluation point
 (`held_out/HELD_OUT_README.md`'s own named trigger: "the eventual Stage-4
 gate, or a milestone the owner specifically calls for held-out
 evaluation"), each via a documented pure-geometry proxy for its own
-lineage-based intended query (D31, §5.3 below, blocks lineage execution
-against `part`-wrapped fixtures — every corpus fixture is `part`-wrapped):
+lineage-based intended query. At the time these ran (`AICAD-099`/`099A`),
+`D31` blocked lineage execution against every `part`-wrapped fixture
+(every corpus fixture is `part`-wrapped) — **`D31` is now resolved
+(`AICAD-100A`, §5.3, §10)**, but these three held-out results are
+deliberately left as they are rather than re-derived: `held_out/
+HELD_OUT_README.md`'s own milestone-only discipline means a held-out case
+is touched at an owner-designated checkpoint, not opportunistically
+whenever a new capability lands (`AICAD-100A`'s own `stage4_adversarial_
+bug_hunt.rs` doc comment records this reasoning directly). The seven
+*public* corpus cases are a different matter — see §10.2: all seven now
+execute their own real, official intended query (lineage- or position-
+based, as each case's own evidence actually supports) through the real
+production path.
 
 | Case | Baseline outcome | Perturbed outcome | Silent-wrong? |
 |---|---|---|---|
@@ -225,14 +257,32 @@ geometric`/`..._reports_explicit_for_explicit_export`, both re-run this
 audit, `ok`). `cad_query::health::check_reference_health` aggregates
 resolved/ambiguous/broken counts by durability level across a reference
 set. Every benchmark case in §3.2-3.4 above used `DurabilityLevel::
-QueryGeometric` (pure-geometry predicates, the D31-forced workaround, §5.3)
-— no case in this campaign exercised `Lineage`/`Explicit` durability
-end-to-end against a real corpus fixture, since `generated_by`/
-`modified_by` resolver execution against a `part`-wrapped program remains
-blocked on D31; `Lineage` durability *is* proven end-to-end against a real
-edit-and-rebuild round outside `part` bodies
-(`stage4_reference_replay.rs::resolving_a_generated_by_reference_reflects_
-the_real_regenerated_hole_radius`, re-run this audit, `ok`).
+QueryGeometric` (pure-geometry predicates, the D31-forced workaround at the
+time, §5.3) — no case in *this* campaign (`AICAD-099`/`099A`) exercised
+`Lineage`/`Explicit` durability end-to-end against a real corpus fixture,
+since `generated_by`/`modified_by` resolver execution against a
+`part`-wrapped program was blocked on D31 at the time; `Lineage` durability
+*was* already proven end-to-end against a real edit-and-rebuild round
+outside `part` bodies (`stage4_reference_replay.rs::resolving_a_generated_
+by_reference_reflects_the_real_regenerated_hole_radius`, re-run this audit,
+`ok`).
+
+**RESOLVED (`AICAD-100A`, §10):** `D31` no longer blocks this. `Lineage`
+durability is now also proven end-to-end against real, idiomatic
+`part`-wrapped corpus fixtures — `stage4_resolver_execution.rs`'s
+`case01`/`02`/`07`/`09` real production-path tests, all `Ok` this audit —
+and `Explicit`/`Lineage` durability are separately proven against a real
+`ParametricBuildSession` via `stage4_evidence_sources.rs`'s
+`explicit_export_resolves_a_real_part_nested_binding` and `ancestry_
+resolves_a_real_feature_lineage_anchored_ancestor_in_a_real_session` (the
+latter closing a real gap this task's own limitation sweep found:
+`ConstructionStrategy::Ancestry`'s positive resolution path had zero test
+coverage anywhere before this). `QueryStrong` durability is proven
+end-to-end through a real `.aicad` `query { ... }` declaration
+(`crate::query_lowering`'s own doc comment: every source-declared query is
+registered `QueryStrong`, never `QueryGeometric`, since none of its
+supported predicates is fingerprint-based) via `refs_check.rs`'s
+`a_source_declared_query_makes_refs_check_see_a_non_empty_reference_set`.
 
 ## 4. Test/CI status (re-run this audit)
 
@@ -245,9 +295,9 @@ Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.37s
 (zero warnings)
 
 $ cargo test --workspace
-1251 passed; 0 failed; 0 ignored (net of one deliberately-ignored
-exploratory test, see below), 0 measured, across 81 test binaries
-(unit + integration + doc tests)
+1323 passed; 0 failed; 0 ignored, 0 measured, across 77 test binaries
+(unit + integration + doc tests) [re-run `AICAD-100A`, superseding the
+1251-passed/one-ignored figure this packet originally reported]
 
 $ python3 scripts/ci/semantic_ref_harness.py validate
 {"cases": 10, "splits": {"held_out": 3, "public": 7}, "status": "ok"}
@@ -259,16 +309,18 @@ $ python3 scripts/ci/stage4_task_audit.py --check
 Stage-4 task metadata audit OK
 ```
 
-`crates/cad-cli/tests/stage4_resolver_execution.rs::
-case01_topology_split_merge_anchored_on_the_final_feature_exploratory` is
-the one `ignored` test in the workspace — explicitly and honestly labeled
-exploratory evidence only (D31-blocked lineage query against a
-`part`-wrapped fixture), not a disabled/skipped required test; re-inspected
-this audit, its own doc comment states exactly why it is ignored and what
-would need to change (D31 resolution) to un-ignore it. No test anywhere in
-the workspace was skipped, disabled, or weakened to reach this packet's
-own conclusion (independently confirmed by `git log`/diff inspection
-across the whole Stage-4 lineage, §2.7).
+**RESOLVED (`AICAD-100A`):** the one previously-`ignored` exploratory test
+this section described
+(`case01_topology_split_merge_anchored_on_the_final_feature_exploratory`,
+D31-blocked) no longer exists — `D31` is resolved (§5.3, §10), and
+`stage4_resolver_execution.rs`'s real `case01_topology_split_merge_
+generated_by_bored_a_real_production_path` replaced it (along with real
+tests for `case02`/`04`/`07`/`09`). `grep -rl "#\[ignore\]"` across every
+`crates/*/tests/*.rs`/`crates/*/src/*.rs` in the workspace returns zero
+matches, re-verified this audit — no test anywhere is ignored, skipped,
+disabled, or weakened to reach this packet's own conclusion (independently
+confirmed by `git log`/diff inspection across the whole Stage-4 lineage,
+§8).
 
 No native OCCT CMake/CTest re-run was required for this packet: no
 `native/occt_bridge` source changed since `AICAD-079C`'s own last
@@ -293,56 +345,94 @@ default is kept for compatibility, per this remediation's own explicit
 scope boundary. Never silently wrong — always `Ambiguous`, never an
 arbitrary pick.
 
-### 5.2 Predicate/strategy coverage gaps (fail closed, not silent-wrong)
+### 5.2 Predicate/strategy coverage gaps (fail closed, not silent-wrong) — **RESOLVED (`AICAD-100A`, §10)**
 
-- `TopologyPredicate`/`SpatialPredicate` variants `Convex`/`Concave`/
-  `Manifold`/`NonManifold`/`ConnectedTo`/`Contains`/`Intersects`/
-  `NearestTo`/`FarthestFrom` return `EvalError::NotYetSpecified` (`AICAD-082`
-  -`084`, unchanged) — never a guessed evaluation.
-- `ExplicitExport`/`StructuralRole`/`UserConfirmed`/`SemanticQuery`-by-handle
-  construction strategies have no production evidence source
-  (`ResolverContext::resolve_export`/`resolve_structural_role`/
-  `resolve_user_confirmed`/`lookup_query` all default to `None` in
-  `ParametricBuildSession`, unchanged since `AICAD-088`) — every reference
-  built with one of these strategies reports `Broken(InsufficientEvidence)`
-  against real production sessions today.
-- `Ancestry`/`adjacent_to`/`inside`/`within` resolution and `Edge` lineage
-  capture (only `Face` lineage is wired) remain without a production
-  evidence source (`AICAD-085`-`095`'s own established boundary, unchanged).
-- `Shell`/`Solid` candidate enumeration has no `cad_occt_bridge::Shape`
-  accessor yet (`reference_replay::candidates_of_kind` covers `Vertex`/
-  `Edge`/`Wire`/`Face` only) — a `Shell`/`Solid`-kind query against a real
-  session finds zero candidates, reported `Broken(NoMatch)`, not silently
-  treated as "not applicable."
+Original text (kept for record): "`TopologyPredicate`/`SpatialPredicate`
+variants `Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`/
+`Contains`/`Intersects`/`NearestTo`/`FarthestFrom` return `EvalError::
+NotYetSpecified`... `ExplicitExport`/`StructuralRole`/`UserConfirmed`/
+`SemanticQuery`-by-handle construction strategies have no production
+evidence source... `Ancestry`/`adjacent_to`/`inside`/`within` resolution
+and `Edge` lineage capture... remain without a production evidence
+source... `Shell`/`Solid` candidate enumeration has no `cad_occt_bridge::
+Shape` accessor yet."
 
-### 5.3 D31: `part { ... }` scoping blocks lineage-based resolver execution
+All four bullets are now closed:
 
-Open (`project/OWNER_DECISIONS.md#D31`, found during `AICAD-096`): every
-idiomatic `.aicad` program — including the entire frozen `AICAD-079A`
-corpus — wraps its geometry in `part { ... }`, and `cad_feature_graph::
-FeatureGraph::build` deliberately does not scan inside a `part` body
-(a real, previously-flagged, unresolved design question, not an
-oversight). This means `generated_by`/`modified_by` resolver execution
-against any `part`-nested named feature is unavailable today: every such
-query reports `Broken(InsufficientEvidence)`, fail-closed, never wrong —
-but it is the reason every benchmark result in §3 above uses a pure-geometry
-proxy rather than the corpus's own official lineage-based "intended query
-target." This is the single largest disclosed gap between "the resolver is
-provably fail-closed" (true, §2.2/§3.6) and "the resolver executes the
-corpus's own official queries as originally written" (not yet true, blocked
-on this decision). Resolving D31 does not require weakening or rewriting
-any existing test/gate — it is additive scope, not a correction.
+- `Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`/`Contains`/
+  `Intersects` all have real production semantics (`crates/cad-query/src/
+  eval.rs`'s `evaluate_topology` matches every variant exhaustively, no
+  wildcard arm, re-verified this audit). `NearestTo`/`FarthestFrom` are
+  correctly routed to `resolve.rs`'s own `filter_and_rank` ranking rewrite
+  (`QueryClause::Spatial(NearestTo/FarthestFrom)` → `RankingDirective::
+  Nearest/Farthest`) rather than evaluated as a per-candidate boolean —
+  `evaluate_spatial`'s own `NotYetSpecified` for those two variants is the
+  *correct*, deliberately-routed answer for a *direct* call bypassing the
+  resolver, not an unimplemented predicate (`crates/cad-query/src/eval.rs`
+  lines 693-698, re-inspected this audit).
+- Every `ConstructionStrategy` — `ExplicitExport`/`StructuralRole`/
+  `UserConfirmed`/`SemanticQuery`/`Ancestry` — now has a real
+  `ParametricBuildSession` override (`fn resolve_export`/
+  `resolve_structural_role`/`resolve_user_confirmed`/`lookup_query`,
+  `crates/cad-cli/src/parametric_build.rs`, re-verified this audit: all 11
+  `ResolverContext`/`EvaluationEvidence` methods are overridden with real
+  implementations, no trait default relied on in production). At least one
+  real `ParametricBuildSession` test exists per strategy
+  (`stage4_evidence_sources.rs`, 9 tests; `Ancestry`'s own positive path
+  was the one real gap this task's own limitation sweep found and closed —
+  see the durability update in §3.7).
+- `Edge` lineage is now captured alongside `Face` lineage
+  (`reference_replay::FeatureLineageIndex` keyed by `(FeatureAnchor,
+  EntityKind)`; `stage4_reference_replay.rs`'s Edge-lineage tests, `ok`
+  this audit).
+- `Shell`/`Solid` candidate enumeration is wired through real
+  `cad_occt_bridge::Shape::shell_count`/`get_shell`/`solid_count`/
+  `get_solid` accessors (native bridge additions,
+  `reference_replay::candidates_of_kind` now covers all six `EntityKind`
+  variants, re-verified this audit).
 
-### 5.4 No `.aicad` source syntax to declare a persistent stable reference
+### 5.3 D31: `part { ... }` scoping blocks lineage-based resolver execution — **RESOLVED (`AICAD-100A`, §10)**
 
-Unchanged since `AICAD-080`: `query { ... }` blocks remain reserved,
-unimplemented syntax (`rfcs/0003-semantic-references.md` §7). Every
-resolver/query proof in this campaign is a Rust-level API call
-(`cad_query::resolve_query`, `ParametricBuildSession::resolve`), never
-`.aicad` source. `cad refs check`'s own real reference set is therefore
-always empty for any real program today (`AICAD-095`, unchanged) — its
-aggregation logic is separately proven against a real, non-empty,
-mixed-outcome reference set in `cad_query::health`'s own test suite.
+Original text (kept for record): "Open (`project/OWNER_DECISIONS.md#D31`,
+found during `AICAD-096`): every idiomatic `.aicad` program — including the
+entire frozen `AICAD-079A` corpus — wraps its geometry in `part { ... }`,
+and `cad_feature_graph::FeatureGraph::build` deliberately does not scan
+inside a `part` body... `generated_by`/`modified_by` resolver execution
+against any `part`-nested named feature is unavailable today... the reason
+every benchmark result in §3 above uses a pure-geometry proxy rather than
+the corpus's own official lineage-based 'intended query target.'"
+
+Owner ruling implemented by `AICAD-100A`: **`part { ... }` is an
+abstraction/scope boundary, not a feature-visibility barrier**
+(`project/OWNER_DECISIONS.md#D31`, `project/DECISION_LOG.md#DL-33`).
+`cad_feature_graph::FeatureGraph::build` now recurses into every `part`
+body with AICAD-owned scoped identity (never OCCT/kernel identity);
+`generated_by`/`modified_by`/`descended_from` resolver execution now works
+against a real, idiomatic `part`-wrapped `.aicad` program —
+`stage4_resolver_execution.rs`'s `case01`/`02`/`07`/`09` real
+production-path tests are the evidence (re-run this audit, `ok`). This was
+the single largest gap the original packet disclosed; it is now closed.
+
+### 5.4 No `.aicad` source syntax to declare a persistent stable reference — **RESOLVED (`AICAD-100A`, §10)**
+
+Original text (kept for record): "Unchanged since `AICAD-080`: `query
+{ ... }` blocks remain reserved, unimplemented syntax... Every resolver/
+query proof in this campaign is a Rust-level API call... never `.aicad`
+source. `cad refs check`'s own real reference set is therefore always
+empty for any real program today."
+
+RFC-0003 §7's own reserved `query { ... }` surface is now promoted into a
+real grammar production (`specs/language/grammar.ebnf`'s `query_decl`),
+lexed/parsed/lowered through HIR (`cad-lexer`/`cad-ast`/`cad-parser`/
+`cad-hir`), and interpreted by `cad-cli`'s new `crate::query_lowering`
+module into real `cad_query::Query`/`cad_references::AnyRef` values —
+never a test-only injection. `cad refs check` now consumes
+`ParametricBuildSession::source_references()` (real, source-derived) in
+place of the previous hardcoded empty `Vec::new()`; `refs_check.rs`'s
+`a_source_declared_query_makes_refs_check_see_a_non_empty_reference_set`
+proves a real `.aicad` program's `query { ... }` declaration resolves
+through the full pipeline to `Resolved(1)` (re-run this audit, `ok`) — not
+merely constructed in Rust.
 
 ### 5.5 Fingerprint automatic recovery remains disabled
 
@@ -360,7 +450,44 @@ Confirmed by this audit's own fresh `cargo fmt`/`clippy`/`test` run (§4)
 and by inspection of every Stage-4 batch's own report: no batch reduced an
 existing assertion's strength, deleted a passing test, widened a tolerance,
 or relabeled a `SILENT_WRONG` finding as `Ambiguous`/`Broken` to reach a
-passing result anywhere in `AICAD-080`..`099A`.
+passing result anywhere in `AICAD-080`..`100A`.
+
+### 5.7 `part`-in-`part` nesting is grammatically legal but silently inert (new disclosure, `AICAD-100A`, non-blocking)
+
+Found during `AICAD-100A`'s own limitation sweep — pre-existing since
+`AICAD-071`, not introduced or worsened by this task. `specs/language/
+grammar.ebnf`'s `part_decl` production is recursive and `cad_ast`/
+`cad_hir`'s own `Item::Part`/`HirItem::Part` types place no depth limit on
+nesting, but four independent call sites (`cad_runtime::interp::
+Interpreter::eval_part_body`, `cad_feature_graph::FeatureGraph::build`,
+`cad-cli`'s `collect_scoped_bindings`/`collect_geometry_globals`, and this
+task's own `crate::query_lowering::lower_hir_queries`) each recurse
+exactly one level and silently stop — a binding declared inside a
+doubly-nested `part` is never computed and never resolvable, with no
+diagnostic. This is a general Stage-2/3 execution-completeness gap, not a
+Stage-4 semantic-reference defect (it would affect a program using no
+Stage-4 feature at all), so it is disclosed here and recorded as a
+non-decision item in `project/OWNER_DECISIONS.md` rather than fixed under
+this task's own narrower charter. Does not affect any result in this
+packet: no fixture anywhere in the frozen corpus or this campaign's own
+test suites uses `part`-in-`part` nesting.
+
+### 5.8 `AICAD-100A` itself: no new regressions
+
+This task's own fresh `cargo fmt`/`clippy`/`cargo test --workspace` run
+(§4) is clean at 1323 passed/0 failed, up from the 1251-passed baseline
+this packet originally reported — every added test is a net-new positive
+proof (real production-path resolver execution, real evidence-source
+coverage, real source-syntax lowering), never a replacement that narrowed
+an existing assertion. No fixture under `project/benchmarks/
+stage4_semantic_reference/` (public or held-out) was edited — the
+held-out `MANIFEST.sha256` checksums re-verify clean (§3.1). No
+frozen corpus case's own expected classification was edited to fit a
+measured result (`case01`'s own real measured outcome, `Resolved(1)`
+rather than the `explicit_ambiguity` `case.md` speculatively predicted
+before any resolver existed, is left as an honestly-documented divergence
+in `stage4_resolver_execution.rs`'s own test doc comment, never forced to
+match by editing either the fixture or the implementation).
 
 ## 6. Unresolved owner decisions (enumerated)
 
@@ -379,23 +506,27 @@ Carried into Stage 4 from earlier stages, or opened during Stage 4 itself:
   exact internal-persistence-aid role (if any) remains prototype-driven,
   untouched by any Stage-4 task. Not blocking.
 - **`D31`** (`part { ... }` scoping in the feature-dependency graph) —
-  **open**, found during `AICAD-096` (§5.3 above). The single most
-  significant open architecture question this gate packet surfaces:
-  resolving it (flatten `part` items into the top-level feature-graph
-  scan; give a part its own nested sub-graph; or another design) would let
-  future resolver-execution work run the frozen corpus's own official
-  lineage-based queries directly, rather than pure-geometry proxies. Does
-  not block this packet's own PASS recommendation (§7): every fail-closed
-  guarantee (§2.2, §3.6) holds independent of D31, and D31 was disclosed,
-  not hidden, the moment it was found.
+  **RESOLVED (`AICAD-100A`, `DL-33`, §5.3 above).** Owner ruling: `part
+  { ... }` is an abstraction/scope boundary, not a feature-visibility
+  barrier. `FeatureGraph::build` now recurses into every `part` body with
+  AICAD-owned scoped identity; `generated_by`/`modified_by`/
+  `descended_from` resolver execution works against a real, idiomatic
+  `part`-wrapped `.aicad` program. This was the single most significant
+  open architecture question the original packet surfaced; it is now
+  closed.
 - **`D12`** (trusted native plugin boundary), **`D15`** (package plugin
   runtime) — both open, low urgency, relevant starting at a much later
   stage (plugin/package system). Not touched or blocked by Stage 4.
 
-No Stage-4 task opened a new owner-decision item beyond `D31` (already
-recorded in `project/OWNER_DECISIONS.md` at the time it was found, not
-newly opened by this packet). No Stage-4 task silently resolved an open
-decision.
+`AICAD-100A` resolved `D31` (the one open item the original packet
+recorded) and opened no new owner-decision item of its own — the one real
+gap its own limitation sweep found (`part`-in-`part` nesting, §5.7) is a
+general execution-completeness question, not an architecture alternative
+requiring an owner ruling, so it is recorded as a non-decision item in
+`project/OWNER_DECISIONS.md` rather than a new D-numbered entry. No
+Stage-4 task silently resolved an open decision — `D31`'s resolution is
+recorded with its own `DL-33` entry, following the same discipline as
+every other resolved D-numbered question.
 
 ## 7. Representative artifacts
 
@@ -422,6 +553,23 @@ decision.
   suites this packet's own §3 cites directly.
 - `tests/semantic_refs/regressions/` — the (currently empty, `README.md`
   only) permanent silent-wrong regression record contract.
+- **(`AICAD-100A`)** `crates/cad-feature-graph/src/graph.rs` — `D31`
+  resolution: part-scoped feature discovery.
+- **(`AICAD-100A`)** `crates/cad-lexer`/`cad-ast`/`cad-parser`/`cad-hir` —
+  `query { ... }` promoted from reserved word to a real grammar
+  production, parsed and lowered through HIR (`HirItem::Query`,
+  `HirQueryClause`/`HirQueryArg`).
+- **(`AICAD-100A`)** `crates/cad-cli/src/query_lowering.rs` — lowers
+  `HirItem::Query` into real `cad_query::Query`/`cad_references::AnyRef`
+  values; the closed clause-name vocabulary this task's minimal grammar
+  supports.
+- **(`AICAD-100A`)** `crates/cad-cli/tests/stage4_evidence_sources.rs` —
+  now also covers `ConstructionStrategy::Ancestry`'s own positive
+  resolution path (the one real evidence-source gap this task's
+  limitation sweep found).
+- **(`AICAD-100A`)** `specs/language/grammar.ebnf`, `rfcs/
+  0003-semantic-references.md` §7/§8 — updated to document the promoted
+  `query_decl` grammar and the now-real `cad refs check` command.
 
 ## 8. Scope-creep audit (whole Stage-4 diff, this audit)
 
@@ -451,60 +599,106 @@ production orchestration crate `cad-cli`; a narrow `cad-runtime` fix
 project-level reports/benchmarks/CI scripts). No Stage-5+ crate
 (`cad-assemblies`, `cad-configurations`, `cad-interchange`, `cad-lsp`,
 `cad-packages`, `cad-provenance`, `cad-requirements`, `cad-artifact`,
-`cad-agent-tools`) was touched anywhere in Stage 4. No new `.aicad` source
-syntax was added (§5.4). No assemblies/configurations/interfaces/plugin
-system/verification framework/general AI tooling was implemented,
-consistent with `AGENTS.md`'s "No speculative future work" list.
+`cad-agent-tools`) was touched anywhere in Stage 4 through `AICAD-100`
+(commit `f587251..3078846`, the original scope-creep audit's own range).
+
+**(`AICAD-100A` update, this audit, `3078846..HEAD`):**
+
+```
+$ git diff --stat 3078846..HEAD | tail -1
+40 files changed, 5526 insertions(+), 353 deletions(-)
+
+$ git diff --name-only 3078846..HEAD | sed -E 's#/[^/]+$##' | sort -u
+crates/cad-ast/src
+crates/cad-cli(/src|/tests)
+crates/cad-compiler/src
+crates/cad-feature-graph/src
+crates/cad-hir/src
+crates/cad-lexer/src
+crates/cad-occt-bridge/src
+crates/cad-parser/src
+crates/cad-query/src
+crates/cad-runtime/src
+native/occt_bridge/(include|src)
+project(/gates|/reports)
+rfcs
+specs/language
+```
+
+`AICAD-100A` additionally touches the language-frontend crates
+(`cad-lexer`/`cad-ast`/`cad-parser`/`cad-hir`/`cad-compiler`) and
+`specs/language`/`rfcs` — all required by, and scoped to, promoting
+RFC-0003 §7's own reserved `query { ... }` surface into real grammar per
+that section's own explicit authorization ("unless promoted into `specs/
+language/grammar.ebnf` by an authorized Stage-4 task"), not a broader
+language redesign (no other reserved word was promoted; no comparison
+operator/`within` modifier/direction literal was added to the grammar).
+Still no Stage-5+ crate touched anywhere. No assemblies/configurations/
+interfaces/plugin system/verification framework/general AI tooling was
+implemented, consistent with `AGENTS.md`'s "No speculative future work"
+list.
 
 ## 9. Recommendation
 
-**PASS.**
+**PASS.** (Reaffirmed and strengthened by `AICAD-100A` — see §10.)
 
 Every acceptance criterion `project/TASKS.yaml`'s `AICAD-100` entry names
-is met with direct, checkable, independently re-verified evidence in this
-audit:
+was met with direct, checkable, independently re-verified evidence at the
+time of the original packet; `AICAD-100A` closed the one significant gap
+the original packet itself flagged for the owner's attention (`D31`) and
+several smaller ones, strictly strengthening the picture below, never
+weakening it:
 
 - **Full semantic-reference benchmark results** — §3 (frozen corpus,
   wired end-to-end benchmark, held-out checkpoint, adversarial probes,
-  `AICAD-099A` scoped-resolution proofs).
-- **Silent-wrong count** — **0**, across every batch, re-confirmed by a
-  fresh, real end-to-end benchmark run this audit (§3.2, §3.6) and an
-  empty `tests/semantic_refs/regressions/` directory.
+  `AICAD-099A` scoped-resolution proofs, **plus `AICAD-100A`'s real
+  production-path execution of all seven public corpus cases' own
+  official intended queries, §10.2**).
+- **Silent-wrong count** — **0**, across every batch including
+  `AICAD-100A`, re-confirmed by a fresh, real end-to-end benchmark run
+  this audit (§3.2, §3.6) and an empty `tests/semantic_refs/regressions/`
+  directory.
 - **Ambiguity/broken behavior** — proven fail-closed by construction
   (§2.2), not merely by convention, and exercised against real N-way ties,
   genuine symmetric ties, coincidental-geometry collisions, and an
   unresolvable-scope negative control (§3.3-§3.5).
 - **Durability results** — §3.7 (durability paired with every outcome;
-  `Lineage`-durability proven end-to-end outside the D31 boundary;
-  `QueryGeometric` used throughout the D31-blocked benchmark cases,
-  honestly labeled as such, never upgraded).
+  `Lineage`/`Explicit`/`QueryStrong` durability now all proven end-to-end
+  against real `part`-wrapped corpus fixtures and real `.aicad`
+  `query { ... }` source, `AICAD-100A`).
 - **Regression corpus** — empty, correctly (§3.6): no `SILENT_WRONG` case
   exists to preserve.
-- **Known limitations** — §5, six items, each disclosed with its own exact
-  mechanism and boundary, none hidden.
+- **Known limitations** — §5: four of the original six items are now
+  marked RESOLVED (`AICAD-100A`) with their evidence; two remain
+  genuinely open/deferred by design (§5.1 unscoped-API behavior, §5.5
+  fingerprint policy); one new, non-blocking, pre-existing gap was
+  disclosed by this task's own limitation sweep (§5.7) rather than left
+  hidden.
 - **Unresolved architecture issues** — §6 (`D7`/`D8` partial-but-not-
-  blocking; `D31` open and the single most significant one; `D12`/`D15`
+  blocking, unchanged; `D31` **now RESOLVED**; `D12`/`D15`
   open/low-urgency/untouched).
-- **Exact test/CI status** — §4 (`cargo fmt`/`clippy`/`test`: clean, 1251
-  passed, 0 failed; both harness scripts and the task-metadata audit:
+- **Exact test/CI status** — §4 (`cargo fmt`/`clippy`/`test`: clean, 1323
+  passed, 0 failed, 0 ignored (down from one, now-resolved, ignored
+  exploratory test); both harness scripts and the task-metadata audit:
   `ok`).
 - **Kernel failures separated from semantic resolver failures** — §3.2
   (`06_fillet_viability`'s `KernelFailure` kept structurally distinct from
   `Broken`/`Ambiguous` throughout `crate::metrics`'s own six-class
   taxonomy, never conflated).
 - **Held-out/adversarial evidence** — §3.3, §3.4 (all three held-out cases
-  plus four new adversarial probes, zero silent-wrong).
+  plus four new adversarial probes, zero silent-wrong; held-out fixtures
+  deliberately left untouched by `AICAD-100A`, §3.3).
 
 `cargo fmt`/`clippy`/the full workspace test suite are clean with zero
 failures at this exact HEAD (§4); no batch weakened an existing test/gate
-anywhere in Stage 4 (§5.6); a whole-Stage-4-diff scope-creep audit (§8)
-found no drift into Stage-5+ territory. The one real, disclosed limitation
-worth the owner's specific attention is `D31` (§5.3, §6): it does not
-undermine any fail-closed guarantee this packet documents, but it is the
-reason the benchmark evidence in §3 uses pure-geometry proxies rather than
-the frozen corpus's own official lineage-based queries for most cases, and
-resolving it is real, additive follow-up work for whichever stage/task the
-owner assigns it to next.
+anywhere in Stage 4 through `AICAD-100A` (§5.6, §5.8); a whole-Stage-4-diff
+scope-creep audit (§8) found no drift into Stage-5+ territory at either
+`AICAD-100` or `AICAD-100A`. `D31` — the one limitation the original packet
+called out as worth the owner's specific attention — is now resolved
+(§5.3, §6, §10); the one new item this update discloses (§5.7,
+`part`-in-`part` nesting) is a pre-existing, non-blocking, general
+execution-completeness gap, not a Stage-4 semantic-reference defect, and
+does not affect any result in this packet.
 
 **This recommendation is not an approval.** Per `AGENTS.md` and
 `project/CURRENT_STAGE.md`, Stage-5 work (`AICAD-101` onward, and any
@@ -515,4 +709,81 @@ rule: **STOP ROADMAP DEVELOPMENT** after this packet is pushed. No future
 invocation may begin `AICAD-101`, finalize or activate a provisional
 Stage-5 task queue as executable roadmap work, or otherwise expand into
 Stage-5 scope without a separate, later, explicit owner approval recorded
-in `project/DECISION_LOG.md`.
+in `project/DECISION_LOG.md`. `AICAD-100A` itself did not begin
+`AICAD-101` or any Stage-5 work, consistent with this rule.
+
+## 10. `AICAD-100A` update: production semantic-reference integration completion
+
+### 10.1 Why this update exists
+
+The owner's own review of this gate packet disclosed several significant
+Stage-4 capabilities that existed in IR/test form but were incomplete or
+unreachable through the real production path. The owner did not want
+these deferred into Stage 5. `AICAD-100A`'s own brief: fix them now, rerun
+the real Stage-4 hard gate, then stop. This section is that rerun's own
+account, additive to §1-§9 above (which remain as originally written,
+each now cross-referenced to the specific subsection here that updates
+it) rather than a replacement.
+
+### 10.2 What changed, in one table
+
+| Area | Before `AICAD-100A` | After `AICAD-100A` |
+|---|---|---|
+| `D31` (`part { ... }` scoping) | Open; blocked `generated_by`/`modified_by`/`descended_from` against any `part`-wrapped program | **Resolved** — owner ruling implemented, real lineage resolver execution works (§5.3) |
+| Candidate scope | Implicit whole-session default available | Explicit scope required for a persistent reference; whole-session remains an explicit opt-in, never a silent default (§5.1, unchanged by design) |
+| `Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`/`Contains`/`Intersects` | `NotYetSpecified` | Real, kernel-neutral production semantics (§5.2) |
+| `ExplicitExport`/`StructuralRole`/`UserConfirmed`/`SemanticQuery`/`Ancestry` evidence | `None` (trait defaults) for most strategies | Real `ParametricBuildSession` evidence for all five, each with a real test (§5.2, §3.7) |
+| `Edge` lineage | Not captured (`Face` only) | Captured alongside `Face` (§5.2) |
+| `Shell`/`Solid` candidates | No bridge accessor; zero candidates always | Real `cad_occt_bridge::Shape` accessors wired (§5.2) |
+| `.aicad` source syntax for persistent references | None (`query { ... }` reserved, unimplemented) | Real `query_decl` grammar, lowered into real `cad_query`/`cad_references` values (§5.4) |
+| `cad refs check`'s own reference set | Always empty (no source syntax to populate it) | Real, non-empty, really-resolved for a program that declares a `query { ... }` (§5.4) |
+| Frozen corpus's own official intended queries | Pure-geometry proxies for most public cases (D31-blocked) | All seven public cases execute their own real intended query (lineage- or position-based, per each case's own real evidence) through the real production path (§10.3) |
+| Silent-wrong count | 0 | **0** (unchanged — strengthened by more real coverage, never at risk) |
+
+### 10.3 Public corpus: real production-path execution, all seven cases
+
+`stage4_resolver_execution.rs`, re-run this audit:
+
+| Case | Query strategy | Real measured result |
+|---|---|---|
+| `01_topology_split_merge` | `DescendedFrom(bored_a)` + `Cylindrical`, scoped to `body` | `Resolved(1)` in both baseline and perturbed — an honest divergence from `case.md`'s own untested pre-resolver prose prediction (`explicit_ambiguity`), documented as a real finding, never force-matched by editing the fixture or the implementation (§5.8) |
+| `02_disappearing_entity` | `DescendedFrom(chamfered)` + `Cylindrical`/`Planar`, scoped | Real production result, see test's own doc comment |
+| `04_pattern_count_change` | `Cylindrical` + `nearest()`-ranked position tracking, scoped to `body` (lineage has no real evidence source here — `radial_pattern` is not one of the five lineage-capable ops — so the case's own `Reasoning` section's real alternative, position tracking, is used honestly rather than inventing pattern-instance lineage) | `Resolved(1)` in both the 5-hole baseline and 6-hole perturbed build |
+| `06_fillet_viability` | `Cylindrical` + `Radius(8mm)`, unique | `Resolved(1)` baseline; `KernelFailure` perturbed (unchanged since `AICAD-096`) |
+| `07_operation_reordering` | Position-tracked `nearest()` (real, reordering-robust) vs. name-anchored `DescendedFrom` (real, honest `Broken` counter-proof) | Both real, both correctly classified |
+| `08_upstream_suppression` | `Cylindrical` + `Radius(3mm)`, unique | `Resolved(1)` baseline; `Broken` perturbed (unchanged since `AICAD-096`) |
+| `09_changing_region` | `GeneratedBy(body)`, scoped | Real production result, see test's own doc comment |
+
+No case's own expected target was edited to fit an implementation result
+(§5.8); every divergence from a case's own pre-resolver prose prediction is
+recorded as a real, measured finding in that test's own doc comment.
+
+### 10.4 Limitation sweep
+
+A systematic sweep (grep for `NotYetSpecified`/`unimplemented!`/`todo!`/
+default-`None` evidence hooks/placeholder branches/unsupported topology
+kinds/test-only registries/proxy-only paths/`TODO`/`FIXME`, concentrated
+on `cad-references`, `cad-query`, `cad-feature-graph`, reference replay,
+`ParametricBuildSession`, the perturbation/benchmark runner, `cad refs
+check`, HIR/runtime reference lowering, and kernel topology enumeration)
+found the codebase's own Stage-4 evidence machinery already exhaustive and
+honestly documented — see §5.2's own re-verification detail. One genuine,
+pre-existing, non-blocking gap was found and disclosed rather than buried
+(§5.7, `part`-in-`part` nesting) and recorded in `project/
+OWNER_DECISIONS.md`'s non-decision items list. One real test-coverage gap
+was found and closed during the sweep itself: `ConstructionStrategy::
+Ancestry`'s positive resolution path had zero coverage anywhere in the
+workspace before this task (§3.7, §5.2) — closed with a real
+`ParametricBuildSession` test, not merely noted.
+
+### 10.5 Stop rule compliance
+
+Per the campaign brief's own explicit instruction and `AGENTS.md`'s "FINAL
+STOP RULE": `AICAD-100A` did not begin `AICAD-101`, did not draft or
+activate a provisional Stage-5 task queue as executable roadmap work, and
+touched no Stage-5+ crate (§8). `project/TASKS.yaml` carries a new
+`AICAD-100A` entry (`status: done`) immediately after `AICAD-100`, with no
+renumbering of any existing entry. `project/OWNER_DECISIONS.md`/`project/
+DECISION_LOG.md` carry `D31`'s resolution and `DL-33`. This gate file was
+updated in place, not replaced. `project/SESSION_HANDOFF.md` records the
+stop point for the next invocation.
