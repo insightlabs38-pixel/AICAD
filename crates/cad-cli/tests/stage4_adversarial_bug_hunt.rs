@@ -7,23 +7,41 @@
 //!
 //! # Scope this campaign actually covers, and why
 //!
-//! `project/OWNER_DECISIONS.md` D31 remains open and blocks
+//! At the time this campaign (`AICAD-099`/`099A`) originally ran,
+//! `project/OWNER_DECISIONS.md` D31 was still open and blocked
 //! `generated_by`/`modified_by`/`descended_from` resolver execution
 //! against any `part`-nested named feature — i.e. every idiomatic
-//! `.aicad` program, including the entire frozen `AICAD-079A` corpus.
-//! `AICAD-096`'s own report already established the workaround this
-//! campaign continues: every case below is expressed with **pure
-//! geometry predicates and/or ranking directives only** (`Cylindrical`/
-//! `Planar`/`Radius`/`Normal`, `largest`/`smallest`/`nearest`) — never
-//! `generated_by`/`modified_by`, and never a `TopologyPredicate`/
-//! `SpatialPredicate` variant `crate::eval`'s own module doc comment
-//! already documents as `EvalError::NotYetSpecified`
-//! (`Convex`/`Concave`/`Manifold`/`NonManifold`/`ConnectedTo`/`Contains`/
-//! `Intersects`/`NearestTo`/`FarthestFrom`). This is a real, narrower
-//! surface than the corpus's own "intended query target" prose describes
-//! for most cases — recorded honestly per-case below, never silently
-//! substituted as if it reproduced the corpus's own official ground
-//! truth.
+//! `.aicad` program, including the entire frozen `AICAD-079A` corpus. Every
+//! case below was therefore expressed with **pure geometry predicates
+//! and/or ranking directives only** (`Cylindrical`/`Planar`/`Radius`/
+//! `Normal`, `largest`/`smallest`/`nearest`) — never `generated_by`/
+//! `modified_by` — a real, narrower surface than the corpus's own
+//! "intended query target" prose describes for most cases, recorded
+//! honestly per-case below rather than silently substituted as if it
+//! reproduced the corpus's own official ground truth.
+//!
+//! **`D31` is now resolved** (`AICAD-100A`, `crates/cad-feature-graph/
+//! src/graph.rs`'s own module doc comment): the D31-specific blocker
+//! above no longer applies, and `stage4_resolver_execution.rs`'s own
+//! `case01`/`02`/`04`/`07`/`09` tests now execute the corpus's own real
+//! `generated_by`/`descended_from`/lineage-tracked-by-position queries
+//! through the real production path. This file's own cases below are
+//! left as they were, not because D31 still blocks them (each one's own
+//! pure-geometry query was already independently correct for its own
+//! documented reason — see each test's own doc comment — never a D31
+//! workaround masquerading as the real answer) and not out of neglect,
+//! but because re-deriving a held-out case's own query from `case.md`'s
+//! prose after the implementation that would resolve it already exists
+//! is exactly the kind of "tune against held-out data" pattern
+//! `held_out/HELD_OUT_README.md` exists to prevent — held-out cases
+//! `03`/`05`/`10` are touched only at an owner-designated milestone
+//! (already exercised once, at `AICAD-099A`), not opportunistically
+//! whenever a new capability lands. `crate::eval`'s own module doc
+//! comment's `EvalError::NotYetSpecified` predicate list this paragraph
+//! used to cite is likewise stale — every `TopologyPredicate`/
+//! `SpatialPredicate` variant now has real production semantics
+//! (`AICAD-100A`, tasks 3-4) — but is left unreferenced here rather than
+//! re-litigated, for the same reason.
 //!
 //! # What this file actually does
 //!
