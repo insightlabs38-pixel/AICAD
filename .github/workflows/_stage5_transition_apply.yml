@@ -12,7 +12,6 @@ permissions:
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,122 +19,19 @@ jobs:
           ref: claude/aicad-stage5-transition
           fetch-depth: 0
 
-      - name: Apply and validate planning-only transition changes
-        shell: bash
+      - name: Apply and validate planning-only changes
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import base64
-          import gzip
-          import re
-
-          root = Path('.')
-          tasks_path = root / 'project/TASKS.yaml'
-          decisions_path = root / 'project/DECISION_LOG.md'
-          report_path = root / 'project/planning/transitions/stage4-to-stage5/TRANSITION_REPORT.md'
-
-          suffix_b64 = '''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'''
-          suffix = gzip.decompress(base64.b64decode(suffix_b64)).decode('utf-8').rstrip() + '\n'
-
-          tasks = tasks_path.read_text(encoding='utf-8')
-          if '- id: AICAD-101\n' not in tasks:
-              assert '- id: AICAD-100A\n' in tasks, 'AICAD-100A missing from canonical queue'
-              tasks = tasks.rstrip() + '\n' + suffix
-              tasks_path.write_text(tasks, encoding='utf-8')
-
-          decisions = decisions_path.read_text(encoding='utf-8')
-          if '## DL-34:' not in decisions:
-              marker = '## General constraint on D21-D30 during Stage 4'
-              assert marker in decisions, 'decision-log insertion marker missing'
-              dl34 = '''## DL-34: Stage 4 passed — owner approval of the final AICAD-100A gate state
-
-- Date: 2026-09-16
-- Resolves: the Stage-4 owner hard gate after AICAD-100A; this is a stage-gate approval record, not a new D-numbered semantic decision.
-- Decision: **Stage 4 passed.** The owner accepts the completed Stage-4 implementation through `AICAD-100A` and the final updated `project/gates/stage-4-gate.md`. The accepted implementation merge is `564e6790b67bf2a5b489bca2003a5084a959e937`; the durable owner-approval record and planning base on `main` is `35547025bbe32f350bcdaf2c1556ed2482a2cada` (`project/approvals/STAGE4_OWNER_APPROVAL.md`). This approval authorizes the bounded Stage-4 -> Stage-5 transition/roadmap-freeze pass only. It does **not** authorize `AICAD-101` or any Stage-5 implementation. Stage-5 implementation begins only after the owner reviews and merges the finalized transition queue and `claude/aicad-stage5-dev` is created from that exact approved merged HEAD.
-- Rationale: the owner explicitly accepted the final AICAD-100A gate state after the production semantic-reference completion pass. Recording the approval in the canonical decision log keeps `CURRENT_STAGE.md`, `SESSION_HANDOFF.md`, the gate evidence, and future zero-context worker instructions consistent.
-- Alternatives considered: leave the approval only in `project/approvals/STAGE4_OWNER_APPROVAL.md` (rejected because transition governance explicitly requires a decision-log record); treat Stage-4 approval as automatic Stage-5 implementation authorization (rejected because the transition queue itself still requires owner review/merge).
-- Affected tasks: closes the Stage-4 gate through `AICAD-100A`; permits planning-only finalization of `AICAD-101..AICAD-130`; preserves all resolved owner decisions D1-D31, including D7 fail-closed reference behavior and disabled automatic fingerprint recovery.
-- Supersedes: stale text that described Stage 4 as awaiting owner approval; it does not supersede a semantic owner decision.
-
----
-
-'''
-              decisions = decisions.replace(marker, dl34 + marker, 1)
-              decisions_path.write_text(decisions, encoding='utf-8')
-
-          report = report_path.read_text(encoding='utf-8')
-          quality_header = '## Task-list quality comparison\n'
-          if quality_header not in report:
-              marker = '## Stage promotion policy\n'
-              assert marker in report, 'transition-report insertion marker missing'
-              quality = '''## Task-list quality comparison
-
-The canonical historical queue begins at **AICAD-001**; there is no `AICAD-000` entry. The final Stage-5 range therefore continues the repository's existing numbering/suffix convention after `AICAD-100A` by using `AICAD-101..AICAD-130`, without renumbering historical work.
-
-The final entries were compared against the complete historical `AICAD-001..AICAD-100A` queue and, in particular, the more exact remediation/gate precedents (`AICAD-057B..057F`, `AICAD-064A`, `AICAD-075A`, `AICAD-076A`, `AICAD-079A..079C`, `AICAD-099A`, and `AICAD-100A`). Stage 5 deliberately uses the stronger later-task style rather than the older generic “focused implementation” placeholder style: every `AICAD-101..130` entry has explicit dependency edges, current normative/evidence references, observable acceptance criteria, concrete verification commands, a dedicated report path, and task-specific escalation conditions.
-
-Queue-integrity checks performed in this transition pass verify that the Stage-5 IDs are unique and contiguous, every Stage-5 dependency points only to an earlier existing task, every Stage-5 task remains `todo`/non-authorized pending the owner transition gate, checkpoints terminate their intended capability slices, and no Stage-6/7 local task was inserted into the active executable queue. The fixed batch view and canonical task entries agree on the 30-task range and final owner gate.
-
-The Stage-6/7 provisional files were also rechecked after this comparison: they retain local IDs only, preserve owner-decision/evidence-sensitive annotations, and do not pull in distributed execution, universal multi-representation geometry, giant provenance ontology work, multiple production assembly solvers, a full conventional GUI, native plugin ABI, or arbitrary external-CAD intent reconstruction.
-
-'''
-              report = report.replace(marker, quality + marker, 1)
-              report_path.write_text(report, encoding='utf-8')
-
-          # Planning/task-list quality audit, intentionally independent of Stage-5 implementation.
-          tasks = tasks_path.read_text(encoding='utf-8')
-          ids = re.findall(r'^- id: (AICAD-[0-9]+[A-Z]?)$', tasks, re.M)
-          assert ids and ids[0] == 'AICAD-001'
-          assert 'AICAD-000' not in ids
-          assert len(ids) == len(set(ids)), 'duplicate AICAD task ID'
-          stage5_ids = [f'AICAD-{n}' for n in range(101, 131)]
-          assert [x for x in ids if re.fullmatch(r'AICAD-1(?:0[1-9]|[12][0-9]|30)', x)] == stage5_ids
-          order = {task_id: i for i, task_id in enumerate(ids)}
-
-          for task_id in stage5_ids:
-              start = tasks.index(f'- id: {task_id}\n')
-              next_start = tasks.find('\n- id: ', start + 1)
-              section = tasks[start:] if next_start < 0 else tasks[start:next_start + 1]
-              for field in ('  stage: 5\n', '  status: todo\n', '  depends_on:\n', '  plan_references:\n', '  acceptance:\n', '  required_checks:\n', f'  report: project/reports/{task_id}.md\n', '  escalate_if:\n'):
-                  assert field in section, f'{task_id}: missing {field.strip()}'
-              assert 'Focused implementation plus task-specific tests/benchmarks' not in section, f'{task_id}: generic placeholder acceptance'
-              acc = section.split('  acceptance:\n', 1)[1].split('  required_checks:\n', 1)[0]
-              assert len(re.findall(r'^  - ', acc, re.M)) >= 3, f'{task_id}: acceptance too thin'
-              checks = section.split('  required_checks:\n', 1)[1].split('  report:', 1)[0]
-              assert len(re.findall(r'^  - ', checks, re.M)) >= 3, f'{task_id}: verification too thin'
-              dep_block = section.split('  depends_on:\n', 1)[1].split('  plan_references:\n', 1)[0]
-              deps = re.findall(r'^  - (AICAD-[0-9]+[A-Z]?)$', dep_block, re.M)
-              assert deps, f'{task_id}: no dependency edge'
-              for dep in deps:
-                  assert dep in order, f'{task_id}: missing dependency {dep}'
-                  assert order[dep] < order[task_id], f'{task_id}: forward/self dependency {dep}'
-
-          assert tasks.count('- id: AICAD-101\n') == 1
-          assert tasks.count('- id: AICAD-130\n') == 1
-          assert 'GeometricFingerprint remains automatic-recovery-disabled' in tasks or 'fingerprint auto-recovery' in tasks
-
-          s6 = (root / 'project/planning/transitions/stage4-to-stage5/STAGE6_PROVISIONAL.yaml').read_text(encoding='utf-8')
-          s7 = (root / 'project/planning/transitions/stage4-to-stage5/STAGE7_PROVISIONAL.yaml').read_text(encoding='utf-8')
-          s6_ids = re.findall(r'^- id: (S6-[0-9]{3})$', s6, re.M)
-          s7_ids = re.findall(r'^- id: (S7-[0-9]{3})$', s7, re.M)
-          assert s6_ids == [f'S6-{n:03d}' for n in range(1, 31)]
-          assert s7_ids == [f'S7-{n:03d}' for n in range(1, 31)]
-
-          batches = (root / 'project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md').read_text(encoding='utf-8')
-          assert 'AICAD-101` through `AICAD-130' in batches
-          assert 'S5-00' in batches and 'S5-10' in batches
-          assert 'Automatic fingerprint recovery is intentionally' in report_path.read_text(encoding='utf-8')
-          assert '## DL-34:' in decisions_path.read_text(encoding='utf-8')
-          print('Stage-5 transition planning audit OK')
-          PY
-
+          python3 project/planning/transitions/stage4-to-stage5/.apply_transition.py
           python3 scripts/ci/stage4_task_audit.py --check
           git diff --check
 
-          git config user.name 'insightlabs38-pixel'
-          git config user.email 'insightlabs38@gmail.com'
+      - name: Commit and push
+        run: |
+          git config user.name "insightlabs38-pixel"
+          git config user.email "insightlabs38@gmail.com"
           rm .github/workflows/_stage5_transition_apply.yml
-          git add project/TASKS.yaml project/DECISION_LOG.md project/planning/transitions/stage4-to-stage5/TRANSITION_REPORT.md .github/workflows/_stage5_transition_apply.yml
+          rm project/planning/transitions/stage4-to-stage5/.apply_transition.py
+          git add -A -- .github/workflows/_stage5_transition_apply.yml project/planning/transitions/stage4-to-stage5/.apply_transition.py project/TASKS.yaml project/DECISION_LOG.md project/planning/transitions/stage4-to-stage5/TRANSITION_REPORT.md
           git diff --cached --check
-          git commit -m 'Stage5 transition: finalize executable roadmap queue'
+          git commit -m "Stage5 transition: finalize executable roadmap queue"
           git push origin HEAD:claude/aicad-stage5-transition
