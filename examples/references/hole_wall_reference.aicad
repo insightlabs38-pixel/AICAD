@@ -1,0 +1,24 @@
+param plate_x: Length = 60mm;
+param plate_y: Length = 30mm;
+param plate_z: Length = 10mm;
+param hole_diameter: Length = 6mm;
+
+part Wall {
+    let base: Geometry = box(plate_x, plate_y, plate_z);
+
+    let bored_a: Geometry = hole(
+        base,
+        Axis3(
+            origin = Point3(x = 15mm, y = plate_y / 2, z = 0mm - 1mm),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        hole_diameter,
+        plate_z + 2mm,
+    );
+
+    query hole_wall : Face in Wall.bored_a {
+        generated_by(bored_a);
+        cylindrical();
+        unique();
+    }
+}

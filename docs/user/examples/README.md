@@ -1,57 +1,19 @@
 # Examples
 
-Use examples that are explicitly backed by the current compiler/runtime rather than assuming every category directory represents an implemented source feature.
+The user-facing `examples/` tree is a maintained product surface. Its ACTIVE examples use current supported syntax and are registered with the automated active-example integration test.
 
-## Recommended current examples
+See the repository-level [`examples/README.md`](../../../examples/README.md) for the complete ACTIVE inventory and expected reference-health outcomes.
 
-### Stage-3 L bracket
+Recommended learning path:
 
-`examples/brackets/stage3_l_bracket.aicad`
+1. `examples/getting_started/simple_box.aicad` — smallest part and named output.
+2. `examples/parametric/derived_plate.aicad` — typed parameters and derived values.
+3. `examples/brackets/stage2_mounting_plate.aicad` — control flow plus parametric modeling.
+4. `examples/brackets/stage3_l_bracket.aicad` — multi-feature part and mirror.
+5. `examples/plates/stage3_bearing_mount.aicad` — pocket, transform, radial pattern, realistic mechanical part.
+6. `examples/enclosures/stage3_enclosure.aicad` — shell and hole.
+7. `examples/references/` — persistent, ambiguous, and broken semantic-reference cases.
 
-Demonstrates:
+Historical filenames such as `stage2_*` and `stage3_*` are retained because tests and evidence reference them; ACTIVE status means the syntax is still current and automatically validated.
 
-- typed parameters;
-- `part` execution;
-- `box`, `fillet`, `union`, and `hole`;
-- `Axis3` / `Point3` / `Vector3`;
-- `mirror` with `Plane`;
-- multiple named geometry outputs;
-- export selection with `--name LBracket.body` or `--name LBracket.mirrored`.
-
-### Stage-3 bearing mount
-
-`examples/plates/stage3_bearing_mount.aicad`
-
-Demonstrates:
-
-- a parametric plate and raised boss;
-- `pocket`;
-- central `hole`;
-- `radial_pattern` for a bolt circle;
-- raw-index filleting on a deliberately simple pre-boolean box;
-- a named final part output.
-
-### Stage-2 mounting plate
-
-`examples/brackets/stage2_mounting_plate.aicad`
-
-Still useful as a language/control-flow example. It demonstrates:
-
-- helper functions;
-- derived engineering-unit expressions;
-- `if`, `while`, `for`, and `match`;
-- `var` rebinding;
-- primitives, translation, booleans, fillet, and chamfer.
-
-## Run an example
-
-```sh
-cargo run -p cad-cli -- build \
-  examples/brackets/stage3_l_bracket.aicad \
-  --output l-bracket.step \
-  --name LBracket.body
-```
-
-## About other example directories
-
-The repository reserves directories for later roadmap areas such as assemblies, verification, and freeform work. Their presence does not mean those user-facing capabilities are implemented. The current guide treats Stage-2/Stage-3 tested `.aicad` examples as the authoritative examples of source syntax available today.
+Stage-0 paper examples and future freeform/verification placeholders are archived under `project/archive/examples/` rather than presented as current usage.

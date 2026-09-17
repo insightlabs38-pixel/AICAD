@@ -1,0 +1,258 @@
+status: PROVISIONAL_NON_EXECUTABLE
+stage: 6
+name: Assemblies, configurations, and kinematics
+id_policy: Local S6-* identifiers only. Assign global AICAD IDs at the Stage-5 owner gate after a short evidence reconciliation.
+basis:
+  - D26 assembly identity domains is resolved and authoritative.
+  - D27 general interfaces/protocols plus bounded generics is resolved and authoritative.
+  - D28 solver-neutral deterministic assembly semantics is resolved and authoritative.
+  - D29 immutable configuration overlays is resolved and authoritative.
+  - D30 external-asset identity is resolved and authoritative.
+  - D11 solver independence remains authoritative.
+promotion_rule: See STAGE_PROMOTION_POLICY.md. Do not rerun a broad architecture audit unless Stage-5 evidence invalidates a material assumption.
+entry_conditions:
+  - Stage-5 owner gate approved.
+  - Stage-5 spatial, query, reference-lineage, and exact-geometry behavior reconciled against the assumptions below.
+  - No unresolved Stage-6 owner decision blocks the first promoted task.
+
+batches:
+  - id: S6-00
+    tasks: [S6-001]
+  - id: S6-01
+    tasks: [S6-002, S6-003]
+  - id: S6-02
+    tasks: [S6-004, S6-005, S6-006]
+  - id: S6-03
+    tasks: [S6-007, S6-008]
+  - id: S6-04
+    tasks: [S6-009, S6-010, S6-011]
+  - id: S6-05
+    tasks: [S6-012, S6-013, S6-014]
+  - id: S6-06
+    tasks: [S6-015, S6-016, S6-017, S6-018]
+  - id: S6-07
+    tasks: [S6-019, S6-020, S6-021]
+  - id: S6-08
+    tasks: [S6-022, S6-023]
+  - id: S6-09
+    tasks: [S6-024, S6-025, S6-026]
+  - id: S6-10
+    tasks: [S6-027]
+  - id: S6-11
+    tasks: [S6-028, S6-029]
+  - id: S6-12
+    tasks: [S6-030]
+
+checkpoints: [S6-011, S6-018, S6-026]
+final_gate: S6-030
+
+tasks:
+  - id: S6-001
+    title: Reconcile Stage-6 prerequisites against actual Stage-5 evidence
+    depends_on: []
+    acceptance_intent: Confirm the existing D26-D30 assembly architecture against the final Stage-5 spatial/query/reference/lineage APIs, changing only affected task details; produce promoted task IDs only after owner approval.
+    owner_dependencies: [D26, D27, D28, D29, D30, D11]
+    evidence_sensitive: [Stage-5 final gate, spatial value conventions, advanced reference/lineage evidence, geometry query cardinality]
+
+  - id: S6-002
+    title: Implement general interfaces/protocols and bounded generics
+    depends_on: [S6-001]
+    acceptance_intent: General language machinery supports the D27 interface/conformance and bounded-generic model; assembly code does not introduce named mechanical-interface compiler special cases.
+    owner_dependencies: [D27]
+    evidence_sensitive: [Stage-5 generic/runtime catalogue experience only if it exposes a concrete compatibility issue]
+
+  - id: S6-003
+    title: Implement assembly semantic identity primitives
+    depends_on: [S6-001]
+    acceptance_intent: Definition identity, logical instance identity, nested instance paths, configuration slots, and related domains are distinct, deterministic, reproducible, type-safe, and never derived from topology or solver variables.
+    owner_dependencies: [D26]
+    evidence_sensitive: []
+
+  - id: S6-004
+    title: Implement component-definition and instance semantic IR
+    depends_on: [S6-002, S6-003]
+    acceptance_intent: Definitions and instances remain distinct semantic entities; definition reuse and parameterization use ordinary language semantics; realized geometry occurrence is never authoritative assembly identity.
+    owner_dependencies: [D26, D27]
+    evidence_sensitive: [Stage-5 source abstraction/provenance model]
+
+  - id: S6-005
+    title: Implement local/world frames and rigid instance poses
+    depends_on: [S6-004]
+    acceptance_intent: Reuse the final Stage-5 frame/transform semantics for deterministic pose composition/inverse; pose changes do not change logical identity or semantic references.
+    owner_dependencies: [D26]
+    evidence_sensitive: [Stage-5 spatial semantics; adjust only if final public frame/transform contracts changed]
+
+  - id: S6-006
+    title: Implement nested-assembly dependency graph and cycle diagnostics
+    depends_on: [S6-004, S6-005]
+    acceptance_intent: Nested definitions/instances resolve deterministically, shared definitions remain shared, illegal cycles produce source-traceable diagnostics, and the dependency graph is separate from solver relation graphs.
+    owner_dependencies: [D26]
+    evidence_sensitive: []
+
+  - id: S6-007
+    title: Implement assembly-level semantic-reference addressing
+    depends_on: [S6-003, S6-006]
+    acceptance_intent: Logical instance paths compose with Stage-4/5 semantic geometry recipes; pose-only changes preserve references; cross-instance ambiguity fails closed; definition/config changes follow durability rules.
+    owner_dependencies: [D26, D7]
+    evidence_sensitive: [Stage-5 reference representation, lineage, split/merge/edit outcomes]
+
+  - id: S6-008
+    title: Implement reusable mechanical-interface semantics
+    depends_on: [S6-002, S6-007]
+    acceptance_intent: Reusable component interfaces use D27 general language interfaces plus typed frames/refs/parameters/compatibility metadata; static conformance and geometry-dependent compatibility remain separate where appropriate.
+    owner_dependencies: [D27]
+    evidence_sensitive: [Stage-5 reference and spatial APIs]
+
+  - id: S6-009
+    title: Implement solver-neutral mate relation IR
+    depends_on: [S6-007, S6-008]
+    acceptance_intent: Mate intent is an AICAD-owned typed relation over semantic subjects with stable IDs/source evidence; no solver IDs, weights, or native expressions become public semantics.
+    owner_dependencies: [D28, D11]
+    evidence_sensitive: []
+
+  - id: S6-010
+    title: Implement solver-neutral joint and coordinate IR
+    depends_on: [S6-009]
+    acceptance_intent: Approved joint families and coordinates are typed, dimensionally correct, inspectable without a solver, and independent of backend parameterization.
+    owner_dependencies: [D28, D11]
+    evidence_sensitive: [Stage-5 units/spatial semantics]
+
+  - id: S6-011
+    title: Checkpoint A — semantic assembly graph, interfaces, references, mates, and joints
+    depends_on: [S6-010]
+    acceptance_intent: A nested multi-instance fixture resolves definitions/paths/frames/semantic refs/interfaces/mates/joints with no numerical solver present; identities and serialized observation are deterministic and topology-index/solver-neutral.
+    owner_dependencies: [D26, D27, D28]
+    evidence_sensitive: []
+
+  - id: S6-012
+    title: Define numerical assembly-solver adapter contract
+    depends_on: [S6-011]
+    acceptance_intent: Semantic relation graphs lower to replaceable numerical adapters and map results deterministically back to poses/residuals/diagnostics; mock/alternate adapter conformance is testable.
+    owner_dependencies: [D28, D11]
+    evidence_sensitive: []
+
+  - id: S6-013
+    title: Implement deterministic grounding, initial-pose, and representative-pose semantics
+    depends_on: [S6-012]
+    acceptance_intent: Gauge/root conventions are explicit; underconstrained assemblies report remaining DOF; relation insertion order and initial guesses do not produce arbitrary source-visible pose semantics.
+    owner_dependencies: [D28]
+    evidence_sensitive: []
+
+  - id: S6-014
+    title: Implement baseline assembly numerical solver
+    depends_on: [S6-012, S6-013]
+    acceptance_intent: One bounded deterministic backend supports the baseline relation set via the adapter, returns structured convergence evidence, and never defines public relation semantics or silently leaves partial authoritative poses.
+    owner_dependencies: [D28, D11]
+    evidence_sensitive: []
+
+  - id: S6-015
+    title: Implement degrees-of-freedom analysis
+    depends_on: [S6-012, S6-014]
+    acceptance_intent: Known mechanisms report expected semantic DOF with explanatory subject/relation evidence; numerical rank thresholds are explicit solver-policy evidence, not semantic identity.
+    owner_dependencies: [D28]
+    evidence_sensitive: []
+
+  - id: S6-016
+    title: Implement redundancy and conflict diagnostics
+    depends_on: [S6-014, S6-015]
+    acceptance_intent: Inconsistent and redundant relation sets are distinguished using stable relation/instance/reference evidence, without exposing native solver variables as the user contract.
+    owner_dependencies: [D28]
+    evidence_sensitive: []
+
+  - id: S6-017
+    title: Implement baseline kinematic evaluation
+    depends_on: [S6-010, S6-014, S6-015]
+    acceptance_intent: Approved mechanisms evaluate over typed bounded joint coordinates/limits while preserving instance/ref identity; no dynamics/time-integration scope is implied.
+    owner_dependencies: [D28]
+    evidence_sensitive: []
+
+  - id: S6-018
+    title: Checkpoint B — solver-neutral pose, DOF, conflict, and kinematic realization
+    depends_on: [S6-016, S6-017]
+    acceptance_intent: Hinge/slider/nested-mechanism fixtures pass pose/DOF/conflict checks; adapter replacement does not change public meaning; relation-order perturbation yields equivalent normalized results.
+    owner_dependencies: [D28, D11]
+    evidence_sensitive: []
+
+  - id: S6-019
+    title: Implement immutable configuration overlays
+    depends_on: [S6-003, S6-018]
+    acceptance_intent: D29 configurations are immutable overlays over a stable base model, with deterministic identity/resolution and no hidden mutable state.
+    owner_dependencies: [D29]
+    evidence_sensitive: []
+
+  - id: S6-020
+    title: Implement configuration validity rules
+    depends_on: [S6-019]
+    acceptance_intent: Typed declarative rules evaluate deterministically, report source evidence, diagnose cycles where applicable, and avoid a bespoke mini-language when ordinary expressions suffice.
+    owner_dependencies: [D29]
+    evidence_sensitive: []
+
+  - id: S6-021
+    title: Implement suppression with stable logical identity
+    depends_on: [S6-019, S6-020]
+    acceptance_intent: Suppressed subjects remain traceable/inactive rather than deleted or identity-recycled; references, mates, and BOM behavior are deterministic and explicit across overlays.
+    owner_dependencies: [D29, D26]
+    evidence_sensitive: [Stage-5/4 reference durability behavior]
+
+  - id: S6-022
+    title: Implement replacement and variant selection
+    depends_on: [S6-002, S6-008, S6-019, S6-021]
+    acceptance_intent: Logical slots bind compatible concrete definitions through D27 conformance while logical/concrete identity remain distinct; unavailable semantic outputs fail closed; provenance/BOM reflect the selected variant.
+    owner_dependencies: [D29, D27, D26]
+    evidence_sensitive: [Stage-5 semantic output/reference behavior]
+
+  - id: S6-023
+    title: Implement external-asset component identity and provenance
+    depends_on: [S6-003, S6-007]
+    acceptance_intent: D30 content-addressed logical asset records include digest/importer/settings/provenance; changed inputs invalidate deterministically; imported topology is not identified by filesystem path or raw STEP/native index.
+    owner_dependencies: [D30, D26]
+    evidence_sensitive: [Stage-5 import/query/reference seam if materially changed]
+
+  - id: S6-024
+    title: Implement deterministic BOM semantics
+    depends_on: [S6-004, S6-021, S6-022, S6-023]
+    acceptance_intent: Nested quantities aggregate from semantic definitions/instances/configurations, not geometry occurrences; suppression/replacement/vendor components affect BOM exactly through explicit identity/provenance rules.
+    owner_dependencies: [D26, D29, D30]
+    evidence_sensitive: []
+
+  - id: S6-025
+    title: Implement static interference/collision query baseline
+    depends_on: [S6-007, S6-018, S6-021, S6-022]
+    acceptance_intent: Results identify logical instances/semantic geometry subjects, distinguish approved contact states under explicit tolerance policy, and have deterministic order independent of native traversal/acceleration structures.
+    owner_dependencies: [D26, D29]
+    evidence_sensitive: [Stage-5 geometry query result/cardinality/tolerance contracts]
+
+  - id: S6-026
+    title: Checkpoint C — configurations, external assets, BOM, and interference
+    depends_on: [S6-020, S6-021, S6-022, S6-023, S6-024, S6-025]
+    acceptance_intent: One nested configurable assembly exercises suppression, replacement, imported component, BOM, and interference while preserving or explicitly breaking logical refs according to documented rules; rebuild depends only on source/config/locked assets.
+    owner_dependencies: [D26, D29, D30]
+    evidence_sensitive: []
+
+  - id: S6-027
+    title: Build canonical realistic assembly corpus
+    depends_on: [S6-026]
+    acceptance_intent: Source-first hinge, slider, gearbox/actuator, nested/robot-arm, vendor-component, and replacement/configuration fixtures have machine-checked pose, DOF, conflicts, interference, BOM, and reference expectations.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S6-028
+    title: Run adversarial identity, solver, configuration, and bounded-scale campaign
+    depends_on: [S6-027]
+    acceptance_intent: Symmetry, singularity, over/underconstraint, nesting, config churn, imported geometry, and larger bounded instance sets never cause arbitrary pose/ref/identity reassignment; resource limits are explicit and semantics-preserving.
+    owner_dependencies: [D28, D29, D26]
+    evidence_sensitive: []
+
+  - id: S6-029
+    title: Expose structured assembly CLI/API inspection and maintain current examples
+    depends_on: [S6-027, S6-028]
+    acceptance_intent: Versioned/machine-stable schemas expose semantic definitions/instances/paths/interfaces/relations/poses/DOF/conflicts/configurations/BOM/interference without private solver/native objects; ACTIVE assembly examples execute automatically and use current source syntax.
+    owner_dependencies: []
+    evidence_sensitive: [Stage-7 consumer needs may adjust nonsemantic schema details during promotion only]
+
+  - id: S6-030
+    title: Prepare Stage-6 owner hard-gate packet
+    depends_on: [S6-029]
+    acceptance_intent: Checkpoints A/B/C, canonical corpus, adversarial campaign, solver replaceability, deterministic identity/pose/configuration behavior, structured tooling, and current examples are evidenced; owner approval is required before Stage 7 is promoted/executed.
+    owner_dependencies: []
+    evidence_sensitive: []

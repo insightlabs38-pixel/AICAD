@@ -4,28 +4,26 @@
 
 ## GeometryGraph and GeomId
 
-A `GeometryGraph` is append-only. Each pushed node receives the next `GeomId` and may reference only earlier nodes. This gives the graph an SSA/value-oriented shape: operations consume existing geometry values and produce a new value; they never mutate a previous node in place.
+A `GeometryGraph` is append-only. Each node receives a `GeomId` and may reference earlier nodes, giving the graph an SSA/value-oriented shape: operations consume values and produce new values rather than mutating prior nodes.
 
-A `GeomId` is meaningful only within its owning graph. It is not a kernel handle and cannot be reconstructed arbitrarily from source as persistent identity.
+`GeomId` is meaningful only within its owning graph. It is not a kernel handle or persistent semantic reference.
 
 ## Typed operation parameters
 
-Dimensioned operation arguments are represented as typed `Quantity` values. Geometry IR validates dimensions before dispatch, preserving the language invariant that engineering quantities do not degrade into untyped floating-point conventions at the geometry boundary.
+Dimensioned arguments use typed quantities. Kernel-neutral spatial values such as `Point3`, `Axis3`, `Plane3`, and rigid `Transform` remain above OCCT.
 
-Pure spatial values such as `Point3`, `Axis3`, `Plane3`, and rigid `Transform` come from the kernel-neutral math vocabulary, not OCCT.
+## Operations and source boundary
 
-## Operations and queries
-
-The IR covers the operation surface needed by the implemented geometry runtime: primitives; lower-level edge/wire/face construction used by internal sketch/profile lowering; extrude/revolve/sweep/loft; booleans; finishing operations; transforms/mirror; STEP import/export support; and geometry property/validation queries.
-
-The public Safe CAD catalogue is intentionally narrower. An internal `GeometryOp` does not become source syntax merely because the dispatcher can execute it. Internal profile construction/lowering likewise does not imply that a public `.aicad` `sketch { ... }` authoring construct exists.
+The IR includes the operations needed by the geometry runtime, including lower-level construction used by internal sketch/profile lowering. The public Safe CAD catalogue is narrower. An internal operation does not become source syntax merely because the dispatcher can execute it.
 
 ## Raw topology selectors
 
-`EdgeIndex` and `FaceIndex` are integer selectors into a target's current realized topology. Current fillet/chamfer/shell and face-selection paths use them because Stage 3 does not yet have persistent semantic topology references.
+`EdgeIndex` and `FaceIndex` are integer selectors into a target's current realized topology. Current fillet/chamfer/shell and face-selection paths may use them.
 
-These selectors are **epoch/topology local**. They must never be serialized or promoted as durable AICAD semantic identity. Stage-3 feature identity/provenance, named outputs, and operation-local lineage do not change that limitation. Stage-4 work is responsible for durable, fail-closed semantic topology-reference resolution above Geometry IR/kernel topology; these integers remain selectors rather than being redefined as identity.
+These selectors are **epoch/topology local** and must never be serialized or promoted as durable identity. Stage-4 persistent references are separate kernel-neutral semantic recipes resolved above Geometry IR/kernel topology. The presence of `FaceRef`/`EdgeRef` does not change the meaning of an IR `FaceIndex`/`EdgeIndex`.
 
-## Dispatch
+## Incremental dispatch and lineage
 
-`cad-geometry-runtime::dispatch_graph` realizes an entire graph. Stage-3 remediation also adds `dispatch_graph_incremental`, which can move/reuse prior realized `Shape` values for unaffected nodes while recomputing a specified dirty set and any downstream nodes whose operands were recomputed. The correctness authority for which features are dirty remains `FeatureGraph`; the geometry dispatcher receives the translated raw `GeomId` set and performs execution/reuse, not semantic dependency inference.
+`dispatch_graph_incremental` can reuse prior realized shapes for unaffected nodes while recomputing a dirty set and downstream dependents. `FeatureGraph` remains the semantic authority for dirtiness.
+
+The lineage-capable incremental dispatch path also returns operation-local kernel evidence used by the reference-replay layer. That evidence helps classify generated/modified/split/merged/deleted/unchanged entities; it is not itself durable identity.

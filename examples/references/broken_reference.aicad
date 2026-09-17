@@ -1,0 +1,8 @@
+part BrokenBlock {
+    let body: Geometry = box(40mm, 30mm, 10mm);
+
+    query cylindrical_face : Face in BrokenBlock.body {
+        cylindrical();
+        unique();
+    }
+}

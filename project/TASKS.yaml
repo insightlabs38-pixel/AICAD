@@ -3189,3 +3189,1094 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback
   - an unresolved architecture alternative must be selected
   - work would expand into a later roadmap stage (Stage 5/AICAD-101+)
+- id: AICAD-101
+  stage: 5
+  title: Make nested part semantics explicit and non-silent
+  status: todo
+  depends_on:
+  - AICAD-100A
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/gates/stage-4-gate.md
+  - project/reports/AICAD-100A.md
+  - specs/language/grammar.ebnf
+  - project/OWNER_DECISIONS.md#D31
+  - project/DECISION_LOG.md#DL-33
+  acceptance:
+  - Every grammatically accepted nested part is either executed recursively with deterministic AICAD-owned scope paths across
+    interpreter, feature graph, binding walkers, and query lowering, or is rejected by a stable diagnostic before execution;
+    silently inert nested parts are impossible.
+  - If nested parts are supported, qualified feature/reference identity extends to arbitrary supported nesting depth without
+    using OCCT/native identity, and bare-name collisions still fail closed.
+  - Feature/provenance discovery and source-declared query lowering observe the same nesting semantics; no call site retains
+    a one-level-only special case.
+  - Focused source-level tests cover at least two nested levels, repeated leaf names in different scopes, and the chosen unsupported-depth/error
+    case if any bound remains.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-parser -p cad-hir -p cad-runtime -p cad-feature-graph -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-101.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - supporting nested parts would require a new public semantic choice not already implied by D31
+- id: AICAD-102
+  stage: 5
+  title: Complete dimensional and spatial source-value construction required by Stage-5 queries
+  status: todo
+  depends_on:
+  - AICAD-100A
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/reports/AICAD-100A.md
+  - rfcs/0004-units-type-system.md
+  - docs/plan/03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  acceptance:
+  - Source programs can construct the typed dimensional/spatial values required by the existing query model, including an
+    Area-dimensioned quantity path and the Point3/Vector3/Direction/Axis3/Frame3 values needed by Stage-5 query arguments.
+  - Area and spatial values preserve typed-unit and frame semantics through AST/HIR/runtime lowering; no bare-f64 or display-unit-dependent
+    shortcut is introduced.
+  - The always-seeded standard type environment remains type-closed and deterministic; construction uses ordinary language/library/runtime
+    mechanisms rather than a geometry-specific compiler intrinsic.
+  - Positive, type-error, dimension-mismatch, and round-trip/source-to-runtime tests cover every newly source-constructible
+    value family.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-units -p cad-types -p cad-hir -p cad-runtime -p cad-query -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-102.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - the Area/spatial source form requires semantics that RFC-0004 and existing spatial rulings do not determine
+- id: AICAD-103
+  stage: 5
+  title: Complete .aicad lowering for the remaining Stage-4 query vocabulary
+  status: todo
+  depends_on:
+  - AICAD-101
+  - AICAD-102
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/gates/stage-4-gate.md
+  - project/reports/AICAD-100A.md
+  - rfcs/0003-semantic-references.md
+  - specs/language/grammar.ebnf
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - project/DECISION_LOG.md#DL-8
+  acceptance:
+  - Every Stage-4 predicate/ranking operation that already has production Rust semantics and is required by the approved query
+    surface has a real .aicad source form and lowers into the same cad_query/cad_references values; no test-only injection
+    path is needed.
+  - Nested reference/query arguments and Point3/Frame3-dependent predicates are represented explicitly and type checked; malformed
+    or unsupported forms produce stable diagnostics rather than being ignored.
+  - Cardinality, scope, durability, and ranking semantics remain fail-closed and identical to the Stage-4 resolver contract;
+    this task does not enable automatic fingerprint recovery.
+  - A source-vocabulary conformance table/test proves source spelling -> HIR/lowering -> production predicate coverage and
+    flags any intentionally deferred Rust-level predicate explicitly.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-lexer -p cad-parser -p cad-hir -p cad-query -p cad-references -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-103.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - completing the source form would require changing Stage-4 resolver semantics rather than only exposing already-approved
+    semantics
+- id: AICAD-104
+  stage: 5
+  title: Prove the complete source query vocabulary through the production path
+  status: todo
+  depends_on:
+  - AICAD-103
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/gates/stage-4-gate.md
+  - project/reports/AICAD-100A.md
+  - project/benchmarks/stage4_semantic_reference/README.md
+  - tests/semantic_refs/README.md
+  - project/DECISION_LOG.md#DL-8
+  acceptance:
+  - Representative .aicad programs exercise every source-visible query family through the real parser/HIR/runtime/ParametricBuildSession/resolver
+    path, not direct Rust construction.
+  - Positive, no-match, ambiguous, invalid-scope, wrong-cardinality, nested-reference, and spatial-value cases prove Resolved/Ambiguous/Broken
+    behavior without arbitrary selection.
+  - The frozen Stage-4 corpus remains unchanged and the official semantic-reference harness still validates with zero silent-wrong
+    regressions; fingerprint automatic recovery remains disabled.
+  - Any source-visible query limitation remaining after this task is named explicitly in the report rather than hidden behind
+    a lower-level API.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-cli --test stage4_resolver_execution -- --test-threads=1
+  - python3 scripts/ci/semantic_ref_harness.py validate
+  - python3 scripts/ci/semantic_ref_harness.py self-test
+  - cargo test --workspace
+  report: project/reports/AICAD-104.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-105
+  stage: 5
+  title: Scale the closed RuntimeBuiltin catalogue and implement tracked kernel-backed query evaluation
+  status: todo
+  depends_on:
+  - AICAD-104
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/DECISION_LOG.md#DL-23
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-15
+  - project/DECISION_LOG.md#DL-21
+  - docs/API/safe-cad-api.md
+  - docs/plan/02_LANGUAGE_AND_COMPILER.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  acceptance:
+  - The first-party RuntimeBuiltin catalogue has one deterministic authoritative declaration source for identity, signatures,
+    required standard types, category/effect metadata, runtime dispatch, and conformance metadata where practical; stable
+    builtin identity does not depend accidentally on source ordering.
+  - The catalogue remains closed and type-closed with eager signature validation; no plugin/native registration ABI, arbitrary
+    host callback, compiler geometry intrinsic, or OCCT type enters source/HIR signatures.
+  - Kernel-backed query calls execute as ordinary typed RuntimeBuiltin calls using D23 demand materialization, with dependency
+    tracking, determinism, resource accounting, diagnostics, and cache invalidation/provenance hooks sufficient for later
+    Stage-5 query families.
+  - A catalogue-wide conformance test proves every declaration has exactly one typed runtime implementation path, and source-control-flow
+    tests prove query results can drive ordinary program evaluation without bypassing Geometry IR/kernel-neutral boundaries.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-hir -p cad-runtime -p cad-geometry-runtime -p cad-query -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-105.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - catalogue scaling appears to require open runtime registration or a compiler-intrinsic geometry path
+  - query realization cannot be made dependency/resource-visible under D23
+- id: AICAD-106
+  stage: 5
+  title: Establish typed Stage-5 modeling/construction and approximation tolerance primitives
+  status: todo
+  depends_on:
+  - AICAD-104
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/DECISION_LOG.md#DL-26
+  - project/DECISION_LOG.md#DL-12
+  - rfcs/0004-units-type-system.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  acceptance:
+  - Stage-5 APIs can carry explicit typed modeling/construction and approximation tolerance policy without reusing the D5
+    equivalence profile, sketch solver tolerance, or a private validity epsilon as one global value.
+  - Policy values have dimensional semantics, ownership, deterministic defaults only where evidence/specification supports
+    them, bounded explicit overrides, and inspectable provenance/evidence where behavior changes materially.
+  - No tolerance is silently widened after a failed operation or test; invalid dimensions/ranges/unsupported overrides fail
+    with stable diagnostics.
+  - Tests prove domain separation, scale/unit invariance, deterministic serialization/equality where policy values enter AICAD-owned
+    state, and rejection of accidental cross-domain reuse.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-units -p cad-validation -p cad-geometry-api -p cad-query
+  - cargo test --workspace
+  report: project/reports/AICAD-106.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - a numeric default would have to be guessed without evidence
+  - one tolerance domain would have to inherit another domain's values implicitly
+- id: AICAD-107
+  stage: 5
+  title: Preserve feature identity, dependencies, and provenance through ordinary language abstractions
+  status: todo
+  depends_on:
+  - AICAD-105
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/DECISION_LOG.md#DL-27
+  - docs/plan/04_HIGH_LEVEL_MODELING_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - project/reports/AICAD-100A.md
+  acceptance:
+  - Geometry-producing/effectful operations remain represented in the feature/dependency/provenance system when executed through
+    user functions, reusable helpers/parts, supported branches/loops, repeated calls, and first-party library abstractions.
+  - Call-instance identity is deterministic and AICAD-owned; repeated calls and same-named helpers do not collapse distinct
+    semantic features, and abstraction never falls back to OCCT/native identity.
+  - Parameter dependencies and dirty propagation cross abstraction boundaries so a localized edit invalidates the correct
+    dynamic feature instances without rebuilding unrelated work.
+  - Source-to-feature navigation and Stage-4 semantic-reference evidence remain available through abstraction, with adversarial
+    tests for nested helpers, branches, loops/repeated calls, and name collisions.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-feature-graph -p cad-runtime -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-107.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - a chosen graph encoding would narrow D25's required behavior or erase identity/provenance in a supported abstraction
+- id: AICAD-108
+  stage: 5
+  title: Add kernel-neutral advanced geometry value, result, report, and execution-IR families
+  status: todo
+  depends_on:
+  - AICAD-105
+  - AICAD-106
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-24
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-26
+  - rfcs/0002-geometry-runtime-kernel-abstraction.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  acceptance:
+  - Kernel-neutral AICAD value/IR families exist for the Stage-5 curve, surface, multi-result query, topology, raw-handle,
+    adoption, and operation-report concepts needed by later tasks without exposing OCCT classes or native pointers.
+  - Safe semantic values, persistent references, raw/unsafe handles, and kernel-native objects remain distinct types/identity
+    domains; serialization/caching never persists a native handle as semantic identity.
+  - Multi-solution result structures can represent zero/one/many results plus ordered deterministic evidence/status without
+    forcing an arbitrary single result.
+  - Architecture/dependency tests keep native/kernel-specific code below the adapter and prove public/HIR/Geometry IR representations
+    are deterministic and inspectable.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-types -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api
+  - cargo test --workspace
+  report: project/reports/AICAD-108.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - a required Stage-5 value can only be represented by leaking a kernel-native object or raw pointer
+- id: AICAD-109
+  stage: 5
+  title: Implement analytic curve families end to end
+  status: todo
+  depends_on:
+  - AICAD-108
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - rfcs/0002-geometry-runtime-kernel-abstraction.md
+  - project/DECISION_LOG.md#DL-2
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - The approved analytic curve families needed by Stage 5 are constructible/evaluable as safe kernel-neutral values through
+    ordinary source/runtime calls and the kernel adapter, with explicit parameter domains and typed spatial inputs.
+  - Evaluation and derivative/tangent results use deterministic typed values and report invalid/degenerate inputs structurally;
+    no native curve object escapes the adapter.
+  - Exact/analytic fixtures verify endpoints, continuity/domain behavior, transformed curves, and independently checkable
+    geometry rather than relying on renders.
+  - Topology or provenance produced from curves carries the semantic operation/source context needed by later lineage/reference
+    tasks.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-109.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-110
+  stage: 5
+  title: Implement Bezier, B-spline, and NURBS curve families
+  status: todo
+  depends_on:
+  - AICAD-109
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - Bezier/B-spline/NURBS curves support the bounded Stage-5 construction/evaluation surface with explicit degree, knot/multiplicity,
+    control-point, weight, parameter-domain, and validation semantics.
+  - Invalid knot vectors, multiplicities, degree/control-point relationships, non-finite data, invalid weights, and degenerate
+    inputs fail deterministically with structured diagnostics/reports.
+  - Tests include analytically known low-degree cases, endpoint/interpolation invariants where applicable, transformed/trimmed
+    parameter domains, and independent sampled/reference checks within the approved approximation policy.
+  - The public representation remains kernel-neutral and does not serialize or expose OCCT-native curve identity.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-110.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-111
+  stage: 5
+  title: Implement curve operations with explicit result and tolerance semantics
+  status: todo
+  depends_on:
+  - AICAD-109
+  - AICAD-110
+  - AICAD-106
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - Stage-5 curve-local operations include the approved bounded set of trimming, interpolation/fitting where specified, offset,
+    evaluation/derivative, closest/projection/distance helpers needed by later surfaces/queries, each with typed inputs and
+    explicit tolerance ownership.
+  - Operations that can yield multiple or no mathematical solutions return explicit deterministic result collections/status;
+    they never choose an arbitrary candidate to satisfy a single-result convenience API.
+  - Approximation/fitting operations report achieved error/evidence against the approximation tolerance rather than silently
+    widening it.
+  - Regression/property fixtures cover endpoint/domain preservation, transformed inputs, near-degenerate cases, zero/multiple-result
+    cases, and deterministic repeated execution.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge
+  - cargo test --workspace
+  report: project/reports/AICAD-111.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-112
+  stage: 5
+  title: 'Checkpoint A: curves, runtime/query foundations, abstraction provenance, and examples'
+  status: todo
+  depends_on:
+  - AICAD-107
+  - AICAD-111
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/DECISION_LOG.md#DL-23
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-26
+  - project/DECISION_LOG.md#DL-27
+  acceptance:
+  - A source-level vertical slice constructs analytic and freeform curves, evaluates/operates on them through the real RuntimeBuiltin/kernel-neutral
+    path, and verifies exact/analytic properties with no OCCT leakage or compiler-intrinsic shortcut.
+  - 'D21-D25 invariants are re-audited against actual implementation: closed catalogue, tracked query realization, separated
+    tolerance domains, and feature/provenance visibility through abstraction all have direct tests.'
+  - At least one ACTIVE teaching example and one realistic example for the new curve capability execute in the automated example
+    suite/CI; no stale example is presented as current supported usage.
+  - The checkpoint report records full-workspace results, known limitations, and any architecture conflict; Stage-5 surface
+    work does not continue past a failed checkpoint.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - native OCCT bridge CMake build plus CTest
+  - run the automated ACTIVE example suite and record exact commands/results
+  report: project/reports/AICAD-112.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - Checkpoint A evidence contradicts any D21-D25 invariant
+- id: AICAD-113
+  stage: 5
+  title: Implement analytic surface families end to end
+  status: todo
+  depends_on:
+  - AICAD-112
+  - AICAD-108
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - The approved analytic surface families needed by Stage 5 are constructible/evaluable through kernel-neutral safe values
+    with explicit parameter domains, orientation/frame semantics, and typed source/runtime calls.
+  - Point/normal/derivative evaluation is deterministic and dimensionally correct; singular/degenerate parameter locations
+    are reported structurally.
+  - Independent analytic fixtures verify geometry/properties/domain behavior and transformations without render-only evidence.
+  - No native surface identity escapes the adapter and any produced topology retains operation/source context for later lineage.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-113.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-114
+  stage: 5
+  title: Implement Bezier, B-spline, and NURBS surface families
+  status: todo
+  depends_on:
+  - AICAD-113
+  - AICAD-110
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - Bezier/B-spline/NURBS surfaces expose a bounded kernel-neutral construction/evaluation model with explicit U/V degrees,
+    knots/multiplicities, control net, weights, and parameter domains.
+  - Invalid degrees/control nets/knot vectors/multiplicities/weights/non-finite data fail deterministically; periodic/rational
+    behavior is represented only where explicitly supported.
+  - Known planar/bilinear/low-degree cases and sampled independent reference checks verify evaluation/derivatives within the
+    approved approximation policy.
+  - Public/HIR/IR data contains no native surface pointer or OCCT-specific class and is deterministic under repeated construction.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge
+  - cargo test --workspace
+  report: project/reports/AICAD-114.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-115
+  stage: 5
+  title: Implement trimmed-surface semantic model and bounded construction
+  status: todo
+  depends_on:
+  - AICAD-114
+  - AICAD-111
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - project/DECISION_LOG.md#DL-2
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - Trimmed surfaces explicitly represent an underlying surface plus bounded trimming loops/curves and orientation/domain
+    semantics; trim identity is AICAD-owned and kernel-neutral.
+  - Construction validates loop closure/orientation/domain consistency and reports invalid/self-inconsistent trim data rather
+    than accepting silent kernel repair as semantic truth.
+  - Tests cover holes/multiple loops where supported, reversed orientation, near-boundary cases, transformed surfaces, and
+    exact/independent topology/property checks.
+  - Any healing used during trim construction is explicit in operation evidence and uses the modeling/construction tolerance
+    domain.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge
+  - cargo test --workspace
+  report: project/reports/AICAD-115.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-116
+  stage: 5
+  title: Implement surface evaluation, derivatives, normals, and offsets
+  status: todo
+  depends_on:
+  - AICAD-113
+  - AICAD-114
+  - AICAD-115
+  - AICAD-106
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - Surface evaluation/derivative/normal APIs and bounded offset operations run through ordinary typed calls with explicit
+    parameter-domain and tolerance semantics.
+  - Singularities, invalid offsets, self-intersection/degeneracy when detectable, and kernel failures produce structured reports/diagnostics
+    rather than fabricated values.
+  - Offset/approximation work reports the policy/evidence used and never borrows D5 equivalence tolerance or silently widens
+    modeling tolerance.
+  - Analytic and freeform fixtures verify derivatives/normals/offset distances with independent checks and deterministic repeated
+    results.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge -p cad-query
+  - cargo test --workspace
+  report: project/reports/AICAD-116.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-117
+  stage: 5
+  title: Implement multi-solution geometry intersections, projections, and distance queries
+  status: todo
+  depends_on:
+  - AICAD-111
+  - AICAD-116
+  - AICAD-105
+  - AICAD-106
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-26
+  - project/DECISION_LOG.md#DL-8
+  acceptance:
+  - Approved curve/curve, curve/surface, and surface/surface intersection plus projection/closest/distance families execute
+    as ordinary tracked kernel-backed queries and return explicit zero/one/many result structures.
+  - Result cardinality and ambiguity are semantic, inspectable, and deterministic; coincident/overlapping/infinite-family
+    or unsupported cases have explicit status rather than an arbitrary representative masquerading as a unique answer.
+  - Ordering of finite result collections is defined by AICAD-owned deterministic keys/evidence, not kernel enumeration order;
+    tolerances are operation-domain specific and explicit.
+  - Source-level tests cover unique, zero, multiple, tangent/near-tangent, coincident/overlap, invalid-domain, and transformed
+    cases with independent geometric checks.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-query -p cad-geometry-api -p cad-geometry-runtime -p cad-kernel-api -p cad-occt-bridge -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-117.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - a query family can only expose an arbitrary kernel-selected solution as unique
+- id: AICAD-118
+  stage: 5
+  title: 'Checkpoint B: surfaces and multi-solution geometry-query gate'
+  status: todo
+  depends_on:
+  - AICAD-117
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-26
+  - project/DECISION_LOG.md#DL-8
+  acceptance:
+  - Source-level vertical slices construct analytic/freeform/trimmed surfaces and exercise intersection/projection/distance
+    through the real tracked runtime/kernel-neutral path with exact/independent verification.
+  - A dedicated ambiguity/cardinality campaign proves no multi-solution operation silently selects one result and no query
+    bypasses dependency/resource/provenance accounting.
+  - At least one ACTIVE teaching example and one realistic surface/query example execute automatically; examples use actual
+    supported .aicad syntax and current public APIs.
+  - Full workspace/native verification passes and the report records explicit known numerical/coverage limits before topology
+    work proceeds.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - native OCCT bridge CMake build plus CTest
+  - run the automated ACTIVE example suite and record exact commands/results
+  report: project/reports/AICAD-118.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-119
+  stage: 5
+  title: Implement general topology construction and exact validity evidence
+  status: todo
+  depends_on:
+  - AICAD-118
+  - AICAD-115
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-24
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - Kernel-neutral topology construction covers the bounded Stage-5 vertex/edge/wire/face/shell/solid creation paths from
+    approved curves/surfaces with explicit orientation/connectivity semantics.
+  - Construction returns validation/operation evidence and never treats a successful native call or render as proof of a valid
+    exact B-rep.
+  - Invalid/open/non-manifold/orientation-inconsistent inputs are distinguished structurally and do not become safe semantic
+    solids by accident.
+  - Exact topology/property/import-round-trip checks verify representative constructions and preserve source/provenance context
+    for lineage.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-kernel-api -p cad-occt-bridge -p cad-geometry-runtime -p cad-validation -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-119.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-120
+  stage: 5
+  title: Implement topology sewing and healing with explicit bounded policy
+  status: todo
+  depends_on:
+  - AICAD-119
+  - AICAD-106
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - project/DECISION_LOG.md#DL-26
+  - project/DECISION_LOG.md#DL-24
+  acceptance:
+  - Sewing/healing operations use explicit modeling/construction tolerance policy and return a structured report of requested
+    work, changes, residual defects, validity, and any topology-changing consequences.
+  - Healing is never an invisible fallback that changes geometry after an operation fails; safe outputs are produced only
+    when post-operation validity/adoption requirements are satisfied.
+  - Tests cover successful sewing, gaps inside/outside tolerance, orientation issues, non-manifold/invalid inputs, and deterministic
+    repeated behavior.
+  - Every topology-changing sewing/healing path exposes lineage/change evidence sufficient for AICAD-125 rather than discarding
+    entity ancestry.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-kernel-api -p cad-occt-bridge -p cad-geometry-runtime -p cad-validation
+  - cargo test --workspace
+  report: project/reports/AICAD-120.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-121
+  stage: 5
+  title: Implement deterministic topology traversal and inspection
+  status: todo
+  depends_on:
+  - AICAD-119
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-24
+  - project/DECISION_LOG.md#DL-25
+  acceptance:
+  - Safe topology inspection exposes kernel-neutral entity kinds, adjacency/incidence, orientation, geometry classification,
+    properties, and traversal needed by Stage-5 algorithms without exposing native handles as semantic identity.
+  - Observable traversal ordering is deterministic where an ordered result is promised; otherwise the API makes unordered/set
+    semantics explicit and tests do not rely on kernel enumeration order.
+  - Inspection can feed ordinary query/control-flow code through D23 without creating an untracked native side channel.
+  - Fixtures cover shells/solids with multiple faces/edges, holes, non-manifold/open cases where representable, and transformed
+    topology.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-kernel-api -p cad-occt-bridge -p cad-query -p cad-runtime
+  - cargo test --workspace
+  report: project/reports/AICAD-121.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-122
+  stage: 5
+  title: Implement the controlled raw/unsafe geometry tier with epoch-bound handles
+  status: todo
+  depends_on:
+  - AICAD-121
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/DECISION_LOG.md#DL-24
+  - rfcs/0002-geometry-runtime-kernel-abstraction.md
+  - project/reports/AICAD-093.md
+  acceptance:
+  - Raw/unsafe geometry values are opaque, AICAD-owned, kernel-neutral in public semantics, and bound to an explicit owning
+    context/epoch; stale/wrong-context handles fail deterministically.
+  - Raw handles are never serialized or reused as durable semantic topology identity, persistent references, feature identity,
+    cache keys, or cross-build equality.
+  - The source/API boundary makes entry into the raw tier explicit and auditable without exposing OCCT classes/pointers or
+    creating an arbitrary native/plugin callback facility.
+  - Adversarial tests cover stale epochs, wrong contexts, dropped/rebuilt owners, handle reuse attempts, and attempts to pass
+    raw values where safe/persistent identity is required.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-references -p cad-kernel-api -p cad-occt-bridge -p cad-runtime -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-122.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-123
+  stage: 5
+  title: Implement functional raw topology editing with lineage/change evidence
+  status: todo
+  depends_on:
+  - AICAD-120
+  - AICAD-122
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/DECISION_LOG.md#DL-2
+  - project/DECISION_LOG.md#DL-24
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  acceptance:
+  - 'The bounded Stage-5 raw editing surface follows D2 functional/value semantics: operations produce a new raw result/version
+    rather than source-visible in-place mutation/aliasing semantics.'
+  - Topology-changing edits return structured change/lineage evidence, validation state, diagnostics, and epoch/lifetime consequences;
+    native mutation remains an implementation detail only.
+  - Unsupported/invalid edits fail explicitly and cannot silently coerce a raw result into safe semantic geometry.
+  - Tests cover entity deletion/replacement/split/merge edits, stale pre-edit handles, repeated deterministic edits, and preservation
+    of AICAD-owned provenance.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-kernel-api -p cad-occt-bridge -p cad-geometry-runtime -p cad-references
+  - cargo test --workspace
+  report: project/reports/AICAD-123.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-124
+  stage: 5
+  title: Implement explicit raw-to-safe validation and adoption
+  status: todo
+  depends_on:
+  - AICAD-123
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - project/DECISION_LOG.md#DL-24
+  - project/DECISION_LOG.md#DL-5
+  - docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  acceptance:
+  - Promotion from raw/unsafe geometry to normal safe semantic geometry exists only through explicit validation/adoption that
+    produces a new safe value plus inspectable validation/provenance evidence.
+  - Adoption rejects invalid, stale, wrong-context, or policy-violating raw inputs and never converts the raw handle itself
+    into safe/persistent identity.
+  - Adopted values re-enter ordinary feature/provenance/reference machinery with new AICAD-owned semantic identity and deterministic
+    source/operation attribution.
+  - Tests prove valid adoption, each rejection class, post-adoption independence from the raw handle lifetime, and exact B-rep
+    validity/property evidence.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-validation -p cad-kernel-api -p cad-occt-bridge -p cad-feature-graph -p cad-references -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-124.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-125
+  stage: 5
+  title: Integrate lineage and Stage-4 persistent-reference integrity across every Stage-5 topology change
+  status: todo
+  depends_on:
+  - AICAD-120
+  - AICAD-123
+  - AICAD-124
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md
+  - project/DECISION_LOG.md#DL-8
+  - project/DECISION_LOG.md#DL-24
+  - project/DECISION_LOG.md#DL-27
+  - project/gates/stage-4-gate.md
+  acceptance:
+  - Every topology-changing Stage-5 operation implemented through AICAD-124 emits/propagates lineage or an explicit insufficiency
+    reason for affected supported entity kinds; no operation silently drops change evidence.
+  - Stage-4 persistent references replay correctly across representative Stage-5 edits using the same fail-closed Resolved/Ambiguous/Broken
+    contract, deliberate scopes, durability classes, and disabled fingerprint auto-recovery.
+  - Adversarial split/merge/delete/recreate/coincident-geometry/reorder/raw-edit/adopt cases prove no native handle or geometric
+    coincidence becomes persistent identity and every discovered silent-wrong result becomes a minimized permanent regression.
+  - Feature/provenance identity from D25 remains traceable through curve/surface/topology abstractions and adopted raw outputs.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-references -p cad-query -p cad-feature-graph -p cad-cli
+  - python3 scripts/ci/semantic_ref_harness.py validate
+  - python3 scripts/ci/semantic_ref_harness.py self-test
+  - cargo test --workspace
+  report: project/reports/AICAD-125.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - any Stage-5 topology change cannot provide lineage and would therefore weaken Stage-4 reference safety
+- id: AICAD-126
+  stage: 5
+  title: 'Checkpoint C: topology, raw tier, adoption, lineage, and reference-integrity gate'
+  status: todo
+  depends_on:
+  - AICAD-125
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/DECISION_LOG.md#DL-8
+  - project/DECISION_LOG.md#DL-24
+  - project/DECISION_LOG.md#DL-27
+  - project/gates/stage-4-gate.md
+  acceptance:
+  - A source/runtime vertical slice constructs, sews/heals, inspects, raw-edits, explicitly adopts, and persistently references
+    Stage-5 topology while preserving safe/raw/reference identity separation.
+  - The semantic-reference adversarial campaign reports zero surviving SILENT_WRONG outcomes; split/merge/edit cases are permanent
+    regressions and fingerprint automatic recovery remains disabled.
+  - Kernel-neutrality and raw-handle epoch tests prove no OCCT/native identity leaks above the adapter or becomes durable
+    identity.
+  - At least one ACTIVE teaching example and one realistic topology/raw-adoption example execute automatically; full workspace/native
+    verification passes before hardening work proceeds.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - python3 scripts/ci/semantic_ref_harness.py validate
+  - python3 scripts/ci/semantic_ref_harness.py self-test
+  - native OCCT bridge CMake build plus CTest
+  - run the automated ACTIVE example suite and record exact commands/results
+  report: project/reports/AICAD-126.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-127
+  stage: 5
+  title: Build and freeze a difficult freeform exact-geometry corpus
+  status: todo
+  depends_on:
+  - AICAD-126
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/planning/roadmap/post100/STAGE5_TASK_DRAFT.yaml
+  acceptance:
+  - A versioned Stage-5 corpus exercises difficult but realistic freeform/exact geometry, including representative spline/NURBS
+    hooks or bends, variable-section sweep/twisted loft, blade/impeller-like geometry, trimmed surfaces/open shells where
+    applicable, and other nontrivial cases justified by the supported API.
+  - Each fixture declares exact validity/topology/property/reference expectations and the tolerance domain used; render appearance
+    is never its acceptance oracle.
+  - The corpus separates tuning/public fixtures from any held-out/adversarial subset used as a checkpoint and records checksums/ground
+    truth where appropriate.
+  - Fixtures are executable through current .aicad/public APIs or explicitly classified as lower-level stress fixtures; no
+    aspirational syntax is presented as current usage.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - run the Stage-5 corpus validation harness/fixtures and record exact commands/results
+  report: project/reports/AICAD-127.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-128
+  stage: 5
+  title: Run Stage-5 numerical, robustness, determinism, and resource adversarial campaign
+  status: todo
+  depends_on:
+  - AICAD-127
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/DECISION_LOG.md#DL-12
+  - project/DECISION_LOG.md#DL-26
+  acceptance:
+  - The difficult corpus plus targeted generated/adversarial cases exercise near-degenerate curves/surfaces, trim boundaries,
+    tangent/overlap queries, sewing/healing limits, topology edits, and repeated rebuilds across relevant scale ranges.
+  - Failures are classified into invalid input, explicit ambiguity/no-solution, kernel failure, numerical/robustness defect,
+    reference defect, resource-limit failure, and unrelated failure; expected behavior is never weakened to make a case pass.
+  - Every reproducible correctness/reference crash/hang/silent-wrong defect is minimized and preserved as a permanent regression;
+    tolerance policies are not silently widened.
+  - Performance/resource measurements are collected only where useful to expose pathological scaling or budget violations;
+    no unsupported benchmark target is invented, and D5 deterministic-equivalence evidence is recorded separately from modeling
+    tolerance.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - run the Stage-5 adversarial/freeform corpus campaign and record exact commands/results
+  - rerun deterministic/repeat-build checks for minimized reproducers
+  report: project/reports/AICAD-128.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-129
+  stage: 5
+  title: Prove core-vs-library boundary, learnability/inspectability, and maintained examples
+  status: todo
+  depends_on:
+  - AICAD-127
+  - AICAD-128
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/00_PRINCIPLES_AND_SCOPE.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/DECISION_LOG.md#DL-23
+  - project/DECISION_LOG.md#DL-27
+  - AGENTS.md
+  acceptance:
+  - A Stage-5 surface audit proves geometry capabilities use ordinary language/RuntimeBuiltin/library mechanisms where appropriate
+    and that no convenience-only compiler intrinsic, open native-registration boundary, or OCCT-specific public API has crept
+    in.
+  - Representative source can be inspected from source -> typed call/value -> feature/provenance/dependency -> Geometry IR/query
+    -> kernel result/reference evidence with stable structured diagnostics, supporting human and tool/AI reasoning without
+    private implementation knowledge.
+  - ACTIVE examples are classified as teaching or realistic, execute automatically, cover each major Stage-5 checkpoint capability,
+    and use actual current .aicad syntax; stale historical examples are archived rather than left as supported usage.
+  - A bounded fresh-tool/client or AI-assisted fixture may measure whether structured public surfaces are usable, but compiler/runtime
+    validation remains authoritative and no Stage-10 AI architecture is pulled forward.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - run the automated ACTIVE example suite and record exact commands/results
+  - run the bounded inspectability/tool-client fixture and record exact commands/results
+  report: project/reports/AICAD-129.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - the audit finds a Stage-5 capability only reachable through a compiler-intrinsic or kernel-specific shortcut
+- id: AICAD-130
+  stage: 5
+  title: Prepare the final Stage-5 owner gate packet
+  status: todo
+  depends_on:
+  - AICAD-129
+  plan_references:
+  - project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md
+  - docs/plan/16_TESTING_BENCHMARKS_ACCEPTANCE.md
+  - project/gates/stage-4-gate.md
+  - project/DECISION_LOG.md#DL-12
+  - project/DECISION_LOG.md#DL-5
+  - project/DECISION_LOG.md#DL-8
+  - project/DECISION_LOG.md#DL-23
+  - project/DECISION_LOG.md#DL-24
+  - project/DECISION_LOG.md#DL-25
+  - project/DECISION_LOG.md#DL-26
+  - project/DECISION_LOG.md#DL-27
+  - project/planning/transitions/stage4-to-stage5/STAGE_PROMOTION_POLICY.md
+  acceptance:
+  - The gate independently re-audits current implementation and re-runs required evidence rather than merely citing task-report
+    claims; it covers every AICAD-101..129 acceptance item and the Stage-4 carry-forward prelude.
+  - The packet explicitly proves D21-D25 compatibility, D7 fail-closed references with zero surviving silent-wrong regressions,
+    kernel-neutral public semantics, separate tolerance domains, raw-handle epoch/non-identity rules, lineage for topology
+    changes, realistic exact-geometry evidence, and maintained executable examples.
+  - The packet records the difficult/freeform and adversarial campaign results, known limitations, performance/resource evidence
+    where justified, unresolved owner decisions, and any evidence-sensitive assumptions relevant to provisional Stage 6.
+  - Exactly one advisory PASS / PASS WITH CONDITIONS / DO NOT PASS recommendation is produced; the agent does not approve
+    Stage 5, promote Stage 6, assign Stage-6 global AICAD IDs, or begin Stage-6 implementation.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test --workspace
+  - python3 scripts/ci/semantic_ref_harness.py validate
+  - python3 scripts/ci/semantic_ref_harness.py self-test
+  - native OCCT bridge CMake build plus CTest
+  - run the Stage-5 corpus/adversarial campaign
+  - run the automated ACTIVE example suite and record exact commands/results
+  report: project/reports/AICAD-130.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - the Stage-5 gate would need to waive a failed invariant or conceal a known limitation
+  - Stage-5 evidence materially invalidates a provisional Stage-6 architecture/semantic assumption; record it for owner reconciliation
+    instead of silently promoting Stage 6

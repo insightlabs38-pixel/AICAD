@@ -1,5 +1,5 @@
-// Stage-3 ordinary-part example (AICAD-079): an L-shaped mounting
-// bracket, built entirely from the Stage-3 Safe CAD builtin catalogue
+// ACTIVE ordinary-part example (origin: AICAD-079 / Stage 3): an L-shaped
+// bracket built from the current Safe CAD builtin catalogue
 // (`box`/`union`/`fillet`/`hole`/`mirror`) with no raw kernel handle ever
 // touched from source (`docs/API/safe-cad-api.md`, `project/
 // DECISION_LOG.md#DL-15`).
@@ -20,7 +20,8 @@
 // stage2_mounting_plate.aicad`'s own established precedent and caveat:
 // stable for any positive box dimensions (`BRepPrimAPI_MakeBox`'s own
 // enumeration order depends only on its construction algorithm), not a
-// claim of persistent semantic identity — that is Stage 4's job.
+// claim of persistent semantic identity. Stage-4 persistent references are a
+// separate semantic layer; this raw-index-taking fillet call remains intentionally raw.
 
 param leg_x: Length = 60mm;
 param leg_z: Length = 50mm;

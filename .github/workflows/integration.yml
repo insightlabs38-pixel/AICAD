@@ -6,6 +6,7 @@ on:
       - main
       - claude/aicad-stage4-transition
       - claude/aicad-stage4-dev
+      - claude/aicad-stage5-transition
   pull_request:
   workflow_dispatch:
 
@@ -49,6 +50,8 @@ jobs:
         run: cargo test -p cad-validation --locked 2>&1 | tee artifacts/cad-validation.log
       - name: Frozen Stage-4 corpus exact-geometry validation
         run: cargo test -p cad-cli --test stage4_reference_benchmark_fixtures --locked -- --test-threads=1 2>&1 | tee artifacts/stage4-corpus.log
+      - name: Maintained ACTIVE examples
+        run: cargo test -p cad-cli --test active_examples --locked -- --test-threads=1 2>&1 | tee artifacts/active-examples.log
       - name: Build representative STEP artifact
         run: |
           cargo run -p cad-cli --locked -- build examples/brackets/stage3_l_bracket.aicad \

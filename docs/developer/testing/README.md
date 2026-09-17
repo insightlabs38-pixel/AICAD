@@ -1,10 +1,8 @@
 # Testing and evidence
 
-AICAD's correctness policy is evidence-first: a geometry operation is not considered correct because a render looks plausible.
+AICAD's correctness policy is evidence-first: plausible rendering is not proof.
 
 ## Standard workspace checks
-
-From the repository root:
 
 ```sh
 cargo fmt --all -- --check
@@ -12,54 +10,42 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```
 
-The workspace build invokes the native OCCT bridge through `cad-occt-bridge/build.rs`, so an appropriate OCCT development installation is required.
+The workspace build requires the OCCT development environment used by `cad-occt-bridge`.
 
-## Native bridge checks
+## Geometry and reference evidence
 
-The bridge also supports direct CMake/CTest execution:
+Use the strongest practical evidence:
 
-```sh
-cmake -S native/occt_bridge -B native/occt_bridge/build
-cmake --build native/occt_bridge/build
-ctest --test-dir native/occt_bridge/build --output-on-failure
-```
-
-Native lifecycle/ABI tests cover context/handle safety in addition to geometric operations.
-
-## Geometry evidence
-
-Tests should use the strongest practical evidence for the operation under test:
-
-- validity plus analytically known dimensions/volume/area/center of mass;
-- topology counts/classes only when they are semantically meaningful;
-- independent STEP file-structure/re-import checks where interchange is the feature;
+- exact validity and analytically known dimensions/volume/area/center of mass;
+- semantically meaningful topology properties;
+- STEP export/re-import where interchange is under test;
 - source/provenance assertions for compiler/feature behavior;
-- explicit dirty/reused/recomputed evidence for incremental rebuilds.
+- dirty/reused/recomputed evidence for incremental rebuilds;
+- explicit `Resolved`/`Ambiguous`/`Broken` assertions for persistent references;
+- stale raw-handle rejection across rebuild epochs.
 
-Do not turn kernel edge/face enumeration order into an identity assertion unless the test is deliberately characterizing that raw selector behavior.
+Do not promote raw topology enumeration order into identity.
+
+## Stage-4 semantic-reference gate
+
+The frozen Stage-4 corpus remains under `project/benchmarks/stage4_semantic_reference/`. The production Stage-4 resolver is now implemented and the final gate demonstrated zero surviving `SILENT_WRONG` outcomes. `Resolved`, explicit `Ambiguous`, explicit `Broken`, kernel failure, and unrelated failure remain distinct result classes.
+
+Fingerprint evidence/ranking is not automatic recovery. Every discovered silent-wrong result remains a critical regression.
+
+## ACTIVE example invariant
+
+Beginning with the Stage-5 transition, every ACTIVE user-facing example is an executable product surface.
+
+`crates/cad-cli/tests/active_examples.rs` is the maintained baseline. It must at minimum parse/typecheck/build each ACTIVE example. Reference examples additionally assert their intended health outcome, and the canonical persistent-reference example is replayed through a real parameter edit/rebuild.
+
+When a public language/modeling change lands, update affected ACTIVE examples in the same task/batch. At each major stage checkpoint, add or refresh representative examples. A stale example must be updated or explicitly archived; it must not silently remain as historical syntax in the current learning path.
+
+Stress/benchmark fixtures belong under test/benchmark infrastructure rather than the primary user-learning tree.
 
 ## Determinism
 
-AICAD-owned compiler/semantic output should be deterministic for identical inputs. B-rep bytes, STEP text bytes, and raw topology enumeration order are not the cross-platform determinism criterion; exact geometry is compared under D5/D19's accepted semantic/numerical equivalence policy.
+AICAD-owned semantic/compiler output is deterministic where defined. B-rep/STEP bytes and raw topology order are not the cross-platform determinism criterion; exact geometry is checked under the accepted D5/D19 equivalence profile.
 
-`crates/cad-cli/tests/stage4_determinism_foundation.rs` provides the Stage-4-ready baseline: canonical AICAD-owned build/diagnostic report serialization is repeated exactly, while repeated exact geometry is compared through the D5 v1 engineering profile instead of byte equality.
+## CI and historical evidence
 
-## Stage-4 semantic-reference hard gate
-
-The AICAD-079A corpus remains frozen under `project/benchmarks/stage4_semantic_reference/`. AICAD-079C adds resolver-independent plumbing at `tests/semantic_refs/` and `scripts/ci/semantic_ref_harness.py`; it does **not** implement a semantic reference or resolver.
-
-The harness recognizes `RESOLVED_CORRECT`, `AMBIGUOUS`, `BROKEN`, `SILENT_WRONG`, `KERNEL_FAILURE`, and `UNRELATED_FAILURE`. D7 remains fail-closed: one intended entity resolving correctly is good; explicit ambiguity is good; explicit breakage is acceptable where necessary; silent wrong selection is catastrophic. Fingerprints are evidence/ranking/benchmark data only in the first Stage-4 implementation unless a later owner decision authorizes automatic recovery.
-
-Every discovered `SILENT_WRONG` result must become a minimized permanent regression under `tests/semantic_refs/regressions/`.
-
-## Property/adversarial testing
-
-Prefer bounded invariant sweeps over large volumes of low-value random cases. The Stage-4 readiness foundation includes deterministic spatial direction/frame property sweeps in `cad-kernel-api`; future reference cardinality/identity properties are added only after real Stage-4 interfaces exist.
-
-## CI layers
-
-See [`ci-and-branch-protection.md`](ci-and-branch-protection.md) for required PR checks, scheduled/manual hardening, the current Linux support tier, failure artifacts, and the branch-protection check names the owner should configure after merge.
-
-## Stage gates and historical evidence
-
-Completed Stage-0..3 task reports and checkpoint/gate packets are archived under `project/reports/archive/` and `project/gates/archive/`. Use them when validating a historical implementation claim, but keep current tests/source as the primary source of truth.
+See [`ci-and-branch-protection.md`](ci-and-branch-protection.md) for CI layers. Historical reports/gates remain evidence from their time; current tests/source are the primary implementation truth.

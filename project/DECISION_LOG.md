@@ -1752,6 +1752,18 @@ them; do not add entries here unilaterally.
 
 ---
 
+## DL-34: Stage 4 passed — owner approval of the final AICAD-100A gate state
+
+- Date: 2026-09-16
+- Resolves: the Stage-4 owner hard gate after AICAD-100A; this is a stage-gate approval record, not a new D-numbered semantic decision.
+- Decision: **Stage 4 passed.** The owner accepts the completed Stage-4 implementation through `AICAD-100A` and the final updated `project/gates/stage-4-gate.md`. The accepted implementation merge is `564e6790b67bf2a5b489bca2003a5084a959e937`; the durable owner-approval record and planning base on `main` is `35547025bbe32f350bcdaf2c1556ed2482a2cada` (`project/approvals/STAGE4_OWNER_APPROVAL.md`). This approval authorizes the bounded Stage-4 -> Stage-5 transition/roadmap-freeze pass only. It does **not** authorize `AICAD-101` or any Stage-5 implementation. Stage-5 implementation begins only after the owner reviews and merges the finalized transition queue and `claude/aicad-stage5-dev` is created from that exact approved merged HEAD.
+- Rationale: the owner explicitly accepted the final AICAD-100A gate state after the production semantic-reference completion pass. Recording the approval in the canonical decision log keeps `CURRENT_STAGE.md`, `SESSION_HANDOFF.md`, the gate evidence, and future zero-context worker instructions consistent.
+- Alternatives considered: leave the approval only in `project/approvals/STAGE4_OWNER_APPROVAL.md` (rejected because transition governance explicitly requires a decision-log record); treat Stage-4 approval as automatic Stage-5 implementation authorization (rejected because the transition queue itself still requires owner review/merge).
+- Affected tasks: closes the Stage-4 gate through `AICAD-100A`; permits planning-only finalization of `AICAD-101..AICAD-130`; preserves all resolved owner decisions D1-D31, including D7 fail-closed reference behavior and disabled automatic fingerprint recovery.
+- Supersedes: stale text that described Stage 4 as awaiting owner approval; it does not supersede a semantic owner decision.
+
+---
+
 ## General constraint on D21-D30 during Stage 4
 
 D21-D30 are owner-approved semantic baselines. Stage-4 semantic-reference

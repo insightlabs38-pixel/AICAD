@@ -1,0 +1,275 @@
+status: PROVISIONAL_NON_EXECUTABLE
+stage: 7
+name: Verification-first CAD
+id_policy: Local S7-* identifiers only. Assign global AICAD IDs at the Stage-6 owner gate after a short evidence reconciliation.
+promotion_rule: See STAGE_PROMOTION_POLICY.md. Do not reopen settled Stage-4/5/6 architecture unless actual preceding-stage evidence creates a material conflict.
+entry_conditions:
+  - Stage-6 owner gate approved.
+  - Stage-5 geometry query/tolerance/reference contracts and Stage-6 assembly/configuration structured APIs reconciled against this queue.
+  - OD-S7-01 through OD-S7-05 resolved as required by the tasks they govern.
+
+unresolved_owner_decisions:
+  - id: OD-S7-01
+    question: normalized verification/obligation model
+    required_before: [S7-001, S7-002]
+    current_safe_direction: small common obligation/evidence envelope with typed domain payload/evaluator models, not one universal numerical constraint enum
+  - id: OD-S7-02
+    question: privileged verification language constructs
+    required_before: [S7-001, S7-003, S7-005]
+    current_safe_direction: minimal privileged discovery/identity declarations; ordinary predicates remain ordinary language/library mechanisms
+  - id: OD-S7-03
+    question: stable requirement/test/generated-case identity
+    required_before: [S7-004]
+    current_safe_direction: deterministic semantic identity plus explicit stable pin/label where needed; never runtime-random authoritative IDs
+  - id: OD-S7-04
+    question: verification evidence schema compatibility/versioning policy
+    required_before: [S7-009]
+    current_safe_direction: dedicated versioned evidence schema referencing diagnostics, with deterministic canonical serialization
+  - id: OD-S7-05
+    question: whether requires/ensures contracts and invariants are Stage-7 gate-critical
+    required_before: [S7-001, S7-020, S7-021, S7-025, S7-030]
+    current_safe_direction: optional-within-stage or deferred unless a concrete Stage-7 fixture proves them gate-critical
+
+batches:
+  - id: S7-00
+    tasks: [S7-001, S7-002]
+  - id: S7-01
+    tasks: [S7-003, S7-004, S7-005]
+  - id: S7-02
+    tasks: [S7-006, S7-007, S7-008, S7-009]
+  - id: S7-03
+    tasks: [S7-010]
+  - id: S7-04
+    tasks: [S7-011, S7-012]
+  - id: S7-05
+    tasks: [S7-013, S7-014, S7-015]
+  - id: S7-06
+    tasks: [S7-016, S7-017, S7-018]
+  - id: S7-07
+    tasks: [S7-019]
+  - id: S7-08
+    tasks: [S7-020, S7-021]
+  - id: S7-09
+    tasks: [S7-022, S7-023, S7-024]
+  - id: S7-10
+    tasks: [S7-025]
+  - id: S7-11
+    tasks: [S7-026, S7-027]
+  - id: S7-12
+    tasks: [S7-028, S7-029]
+  - id: S7-13
+    tasks: [S7-030]
+
+checkpoints: [S7-010, S7-019, S7-025]
+final_gate: S7-030
+
+tasks:
+  - id: S7-001
+    title: Reconcile and freeze the Stage-7 verification architecture/language boundary
+    depends_on: []
+    acceptance_intent: Resolve the required Stage-7 owner questions and assign each capability to language, runtime, library/evaluator, orchestration, or schema layers without forcing all domains through one numerical solver or turning convenience predicates into compiler syntax.
+    owner_dependencies: [OD-S7-01, OD-S7-02, OD-S7-05, D11]
+    evidence_sensitive: [Stage-6 structured relation/evidence APIs; Stage-5 query/tolerance behavior]
+
+  - id: S7-002
+    title: Implement normalized obligation/relation/evidence core
+    depends_on: [S7-001]
+    acceptance_intent: Stable obligation identity/scope/subjects/status/evidence share a small cross-domain envelope while sketch, assembly, geometry, and value semantics retain typed domain payload/evaluator distinctions; solver-native objects never become public obligation semantics.
+    owner_dependencies: [OD-S7-01, D11]
+    evidence_sensitive: [Stage-6 relation/evidence model]
+
+  - id: S7-003
+    title: Implement approved test and requirement declarations
+    depends_on: [S7-001, S7-002]
+    acceptance_intent: Only OD-S7-02-approved privileged declarations are added to grammar/AST/HIR/type checking; ordinary predicate expressions/functions remain ordinary language; discovery/stable source identity is first-class rather than interpreter-only registration.
+    owner_dependencies: [OD-S7-02]
+    evidence_sensitive: []
+
+  - id: S7-004
+    title: Implement stable requirement, test, and generated-case identity
+    depends_on: [S7-003]
+    acceptance_intent: IDs are deterministic/reproducible under the approved rename/move/pinning rules; parameter/configuration cases derive stable IDs from normalized parent+case identity; duplicates/collisions fail deterministically.
+    owner_dependencies: [OD-S7-03]
+    evidence_sensitive: [Stage-6 identity conventions where cross-domain consistency is useful]
+
+  - id: S7-005
+    title: Implement minimal assertion/evidence capture primitive
+    depends_on: [S7-002, S7-003]
+    acceptance_intent: Pass/fail/evaluation-error are distinct with source/subject/expected/observed evidence; geometry/assembly assertions may be ordinary typed predicates/evaluators; normal resource accounting applies.
+    owner_dependencies: [OD-S7-02]
+    evidence_sensitive: []
+
+  - id: S7-006
+    title: Implement approximate and dimensional verification semantics
+    depends_on: [S7-005]
+    acceptance_intent: Approximate comparisons are dimensionally valid, evidence records effective verification tolerance/profile, and verification tolerance remains distinct from D5, geometry-operation, approximation, and solver tolerances.
+    owner_dependencies: []
+    evidence_sensitive: [Stage-5 tolerance taxonomy; promote exact API details only after Stage-5 gate]
+
+  - id: S7-007
+    title: Implement geometry verification predicate/evaluator library
+    depends_on: [S7-005, S7-006]
+    acceptance_intent: First-party typed geometry measurements/validity/distance/containment/reference checks consume Stage-5 query services and Stage-4/5 semantic refs; broken/ambiguous refs become verification errors/broken-subject states, never candidate auto-selection.
+    owner_dependencies: [D7]
+    evidence_sensitive: [Stage-5 query result/cardinality, tolerance, exact-geometry, and reference APIs]
+
+  - id: S7-008
+    title: Implement deterministic test discovery, selection, and runner orchestration
+    depends_on: [S7-003, S7-004, S7-005]
+    acceptance_intent: Project/package discovery and case order are deterministic; filtering does not alter semantic IDs; runner owns orchestration while runtime executes normal compiled/HIR semantics; resource limits produce structured outcomes.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S7-009
+    title: Implement versioned structured verification result/evidence schema
+    depends_on: [S7-002, S7-004, S7-008]
+    acceptance_intent: Versioned deterministic schema covers result/case/subject/source IDs, expected/observed values, effective tolerance/profile, configuration/build identity and diagnostic links; passing evidence is representable without abusing error diagnostics.
+    owner_dependencies: [OD-S7-04]
+    evidence_sensitive: [Stage-6 structured API/schema conventions]
+
+  - id: S7-010
+    title: Checkpoint A — declarations, assertions, runner, geometry predicates, and evidence
+    depends_on: [S7-006, S7-007, S7-008, S7-009]
+    acceptance_intent: One source project declares requirements/tests, runs deterministic value+geometry checks, and emits stable human/machine evidence without ad hoc interpreter magic; current representative examples execute automatically.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S7-011
+    title: Implement hard/soft requirement, priority, and status semantics
+    depends_on: [S7-010]
+    acceptance_intent: Requirement status/strength is semantic and inspectable, not a raw solver penalty; hard failure/build policy is profile-defined; unresolved/invalid subject is distinct from unsatisfied requirement.
+    owner_dependencies: [OD-S7-01]
+    evidence_sensitive: []
+
+  - id: S7-012
+    title: Implement bidirectional source/geometry/assembly requirement traceability
+    depends_on: [S7-004, S7-009, S7-011]
+    acceptance_intent: Requirements/tests/results link through stable semantic source, feature, reference, instance, configuration, and build identities; rebuild preserves links or records explicit breakage; no raw topology/solver handles are traceability authority.
+    owner_dependencies: []
+    evidence_sensitive: [Stage-5 provenance/reference model, Stage-6 assembly/configuration identity]
+
+  - id: S7-013
+    title: Implement parameterized tests with stable case identity
+    depends_on: [S7-008, S7-009]
+    acceptance_intent: Typed case data uses ordinary data/iterators or runner models; normalized case IDs are stable; duplicate/nonrepresentable identities fail explicitly.
+    owner_dependencies: [OD-S7-03]
+    evidence_sensitive: []
+
+  - id: S7-014
+    title: Implement deterministic bounded parameter sweeps
+    depends_on: [S7-013]
+    acceptance_intent: Sweep enumeration/order is deterministic and bounded; exact assignments are evidence; limits fail structurally rather than truncate; failing cases are independently replayable.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S7-015
+    title: Implement configuration-matrix verification
+    depends_on: [S7-013, S7-014]
+    acceptance_intent: Reuse Stage-6 immutable configuration identities/resolution directly; invalid configurations remain configuration-invalid rather than misleading assertion failures; cross-products are deterministic/bounded and configuration identity is evidence.
+    owner_dependencies: [D29]
+    evidence_sensitive: [Stage-6 final configuration API and identity behavior]
+
+  - id: S7-016
+    title: Implement assembly verification predicate/evaluator library
+    depends_on: [S7-007, S7-012, S7-015]
+    acceptance_intent: Pose/DOF/relation/interface/clearance/interference/BOM/configuration checks use Stage-6 semantic IDs/APIs; solver residuals may be evidence but native solver objects are never assertion subjects; verification tolerance is explicit.
+    owner_dependencies: [D28, D29]
+    evidence_sensitive: [Stage-6 structured assembly API, solver evidence, interference and BOM contracts]
+
+  - id: S7-017
+    title: Implement versioned verification profiles
+    depends_on: [S7-009, S7-011, S7-015]
+    acceptance_intent: Effective profile identity/version/content is recorded; profiles select bounded resource/tolerance/test/config policies without silently redefining source semantics or smuggling other tolerance domains into verification.
+    owner_dependencies: [OD-S7-04]
+    evidence_sensitive: []
+
+  - id: S7-018
+    title: Implement verification CLI and machine interfaces
+    depends_on: [S7-008, S7-009, S7-017]
+    acceptance_intent: Human and machine output derive from the same structured results; exit-status semantics and deterministic filtering/listing are tested; machine output is explicitly versioned and contains no unstable debug-only fields.
+    owner_dependencies: [OD-S7-04]
+    evidence_sensitive: [Stage-6 structured CLI/API conventions]
+
+  - id: S7-019
+    title: Checkpoint B — requirements, traceability, matrices, and assembly verification
+    depends_on: [S7-011, S7-012, S7-014, S7-015, S7-016, S7-017, S7-018]
+    acceptance_intent: One cross-domain project runs hard/soft requirements over parameter/configuration cases with assembly assertions; trace queries link failures to semantic subjects; locked reruns preserve case/result identities and equivalent evidence; current examples execute automatically.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S7-020
+    title: Implement requires/ensures contracts only if promoted by OD-S7-05
+    depends_on: [S7-019]
+    acceptance_intent: If promoted, call-boundary/scoping/generic/failure/evidence semantics are canonical and integrate with ordinary expressions and normalized obligations; if deferred, record explicit deferral and do not claim contract support.
+    owner_dependencies: [OD-S7-05]
+    evidence_sensitive: []
+
+  - id: S7-021
+    title: Implement invariants only if promoted by OD-S7-05
+    depends_on: [S7-020]
+    acceptance_intent: If promoted, subject/lifecycle/evaluation boundaries are explicit and compatible with D2 functional/value semantics; if deferred, no placeholder syntax is treated as implemented and the extension point remains truthful.
+    owner_dependencies: [OD-S7-05, D2]
+    evidence_sensitive: []
+
+  - id: S7-022
+    title: Implement semantic verification coverage
+    depends_on: [S7-012, S7-019]
+    acceptance_intent: Coverage categories and stable denominators are explicit/reproducible over semantic subjects/configurations/relationships; uncovered, broken-trace, and intentionally excluded subjects are distinct; line coverage remains separate.
+    owner_dependencies: []
+    evidence_sensitive: [Stage-6/5 semantic subject identity surfaces]
+
+  - id: S7-023
+    title: Implement bounded semantic mutation testing
+    depends_on: [S7-014, S7-015, S7-022]
+    acceptance_intent: Explicit deterministic mutation operators use isolated source transactions/artifacts, preserve original source, generate stable mutant IDs, and never mutate expected verification truth together with the model unless that scenario is explicit.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S7-024
+    title: Bind verification evidence to reproducible build/environment identity
+    depends_on: [S7-009, S7-017]
+    acceptance_intent: Evidence identifies source/lock/compiler/kernel/profile/config/external-asset inputs needed by accepted reproducibility policy while generated B-rep/native pointer identity remains non-authoritative; Stage 8 can package this without redesigning IDs.
+    owner_dependencies: [D30, OD-S7-04]
+    evidence_sensitive: [Stage-6 external-asset identity, build identity available before Stage 8]
+
+  - id: S7-025
+    title: Checkpoint C — evidence strength, coverage, mutation, and reproducibility
+    depends_on: [S7-020, S7-021, S7-022, S7-023, S7-024]
+    acceptance_intent: Coverage/mutation/evidence are stable across locked reruns; contracts/invariants status is truthful under OD-S7-05; build identity distinguishes changed inputs/policies; no result depends on unsaved interpreter/UI state.
+    owner_dependencies: [OD-S7-05]
+    evidence_sensitive: []
+
+  - id: S7-026
+    title: Build realistic verification-first engineering fixture
+    depends_on: [S7-025]
+    acceptance_intent: Source-first configurable multi-part assembly composes Stage-4 refs, Stage-5 geometry, Stage-6 assemblies/configurations, and Stage-7 requirements/tests/tolerances/traceability/matrices with intentional failure and corrected affirmative-evidence scenarios.
+    owner_dependencies: []
+    evidence_sensitive: [actual Stage-5/6 final public surfaces]
+
+  - id: S7-027
+    title: Run adversarial false-pass and evidence-semantics campaign
+    depends_on: [S7-026]
+    acceptance_intent: Ambiguous/broken refs, tolerance boundaries, invalid/NaN measurements, config failures, duplicate IDs, evaluation errors, ordering perturbations, and resource exhaustion never become false passes or arbitrary selections; status classes remain distinct and canonical output deterministic.
+    owner_dependencies: [D7]
+    evidence_sensitive: []
+
+  - id: S7-028
+    title: Benchmark verification performance and bounded scale
+    depends_on: [S7-026, S7-027]
+    acceptance_intent: Stable methodology reports model/case/rebuild/cache/evidence scale; optimizations preserve IDs/evidence/semantics; resource limits are explicit and actionable rather than silently weakening traceability.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S7-029
+    title: Build structured AI repair benchmark, prove core-vs-library boundary, and maintain examples
+    depends_on: [S7-026, S7-027]
+    acceptance_intent: Tool clients consume structured failures/semantic subjects, propose source transactions, and succeed only after normal verification rerun; evidence cannot be forged as authority; domain predicates remain library/extensible where privilege is unnecessary; every ACTIVE Stage-7 example executes automatically and stale examples are archived.
+    owner_dependencies: []
+    evidence_sensitive: []
+
+  - id: S7-030
+    title: Prepare Stage-7 owner hard-gate packet
+    depends_on: [S7-028, S7-029]
+    acceptance_intent: Checkpoints A/B/C, realistic fixture, false-pass campaign, bounded performance, reproducible versioned evidence, semantic coverage/mutation strength, structured tooling, and current examples are evidenced; optional/deferred contracts/invariants are represented truthfully; owner approval is required before Stage-8 execution planning.
+    owner_dependencies: [OD-S7-05]
+    evidence_sensitive: []

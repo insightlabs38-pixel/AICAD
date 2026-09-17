@@ -1,73 +1,42 @@
-# Incremental rebuild
+# Incremental rebuild and reference replay
 
-The final Stage-3 remediation connected previously separate parameter and feature-graph mechanisms into one production `cad-cli` library path: `cad_cli::parametric_build::ParametricBuildSession`.
+`cad_cli::parametric_build::ParametricBuildSession` is the production in-process orchestration path connecting parameter dependencies, feature dependencies, exact geometry regeneration/reuse, and Stage-4 reference replay.
 
 ## Production path
 
-One session owns a single real `OcctContext` across its initial build and subsequent parameter edits/rebuilds:
-
 ```text
-ParamModel
-   │
-   ├─ parameter override diff
-   └─ transitive parameter dependencies
-                 │
-                 ▼
-        changed BindingIds
-                 │
-                 ▼
-          FeatureGraph
-                 │
-             dirty_set
-                 │
-                 ▼
- dirty feature call source spans
-                 │
-                 ▼
- Interpreter::geom_range_for_call
-                 │
-                 ▼
-       dirty raw GeomIds
-                 │
-                 ▼
- dispatch_graph_incremental
-        │                 │
-      reuse           recompute
-        └────────┬────────┘
-                 ▼
-        updated exact geometry
+ParamModel -> changed BindingIds -> FeatureGraph dirty_set
+  -> dirty RuntimeBuiltin call ranges -> dirty GeomIds
+  -> dispatch_graph_incremental_with_lineage
+       -> reuse unaffected shapes
+       -> recompute dirty/dependent shapes
+       -> capture operation-local lineage
+  -> refreshed current candidates/evidence
+  -> persistent-reference replay
 ```
 
-### 1. Detect actual parameter edits
+### Parameter and feature responsibilities
 
-The session compares current overrides with the last successfully applied override set. A parameter that remains overridden to the same value is not marked changed again. Dependent parameters are expanded using `ParamModel`'s own dependency edges; the orchestration does not maintain a second parameter graph.
+`ParamModel` is the sole parameter-dependency authority. `FeatureGraph` is the semantic authority for recognized feature dirtiness, identity, dependencies, scope, and provenance. They remain separate models joined by the build session.
 
-### 2. Re-evaluate source
+### Geometry reuse
 
-`Interpreter::run_top_level_parametric` executes the program with the current overrides. The remediation fixed its ordering so parameters are evaluated first in `ParamModel` dependency order before top-level `let`/`const` values consume them.
+A RuntimeBuiltin can map to one or several Geometry IR nodes. The interpreter records the call's exact `GeomId` range; the incremental dispatcher recomputes explicitly dirty nodes and downstream operands while moving/reusing prior shapes for unaffected nodes.
 
-This produces a fresh `GeometryGraph` with structurally stable node positions for the same source/call sequence.
+Reuse is real resource reuse, not a rebuild followed by equality comparison.
 
-### 3. Compute dirty features
+### Reference replay
 
-`FeatureGraph::dirty_set` receives the changed parameter bindings and is the sole semantic authority for which recognized features are dirty, including transitive dependents.
+Every rebuild advances the session raw-handle epoch. Any previously minted raw topology handle is stale after regeneration even if its underlying shape happened to be reused.
 
-### 4. Map features to geometry nodes
+Persistent semantic references are different: callers re-resolve the stable recipe through `ParametricBuildSession::resolve_reference` against the current candidate/provenance/lineage state. Source `query` declarations are registered once as kernel-neutral recipes and can be replayed after parameter edits.
 
-A RuntimeBuiltin call can push one or several Geometry IR nodes. The interpreter records the exact contiguous `GeomId` range associated with each successfully dispatched call, keyed by the same call-expression source span used by the feature graph. This avoids guessing based on positions and works for compound builtins such as `hole`, `pocket`, `extrude`, and `revolve`.
+Resolver outcomes remain fail-closed. Regeneration never turns a genuine ambiguity into an arbitrary selection.
 
-### 5. Reuse unaffected realized shapes
+## Scope
 
-`dispatch_graph_incremental` receives the new graph, prior graph results, and dirty `GeomId`s. A node is recomputed if it is explicitly dirty or if one of its operands was recomputed this round; otherwise its prior `Shape` is **moved/reused** into the new result set. `Shape` is intentionally non-`Clone`, so this is real resource reuse rather than a fresh kernel build followed by value comparison.
+This is an in-process session capability, not a disk cache, daemon, remote cache, watch server, or cross-process persistence contract. A future persistent execution/cache architecture requires separate identity/version/environment semantics.
 
-The dispatcher emits deterministic `IncrementalStats { recomputed, reused }` in node order for evidence/tests.
+## Evidence
 
-## Scope: in-process session, not persistent cache
-
-This design reuses kernel shapes only while the `ParametricBuildSession` and its kernel context remain alive. It is **not** a disk cache, build daemon, content-addressed remote cache, watch server, or cross-process persistence layer.
-
-A future persistent evaluation/cache architecture would need separate identity/version/environment semantics. Do not infer those semantics from the Stage-3 session implementation.
-
-## Verification
-
-The Stage-3 remediation integration tests exercise the actual session API with real geometry: initial exact properties, a no-op rebuild that reuses everything, a parameter edit that rebuilds only the dependent chain, literal kernel-handle reuse for an independent feature, another unchanged rebuild with complete reuse, an irrelevant-parameter edit that rebuilds nothing, and successful STEP export/re-import after rebuilding.
+Current integration coverage includes no-op rebuild reuse, selective dirty rebuilding, independent-shape reuse, successful STEP export/re-import after rebuilding, raw-handle epoch invalidation, and semantic-reference resolution before/after a real parameter edit.

@@ -1,0 +1,8 @@
+part AmbiguousBlock {
+    let body: Geometry = box(40mm, 30mm, 10mm);
+
+    query planar_face : Face in AmbiguousBlock.body {
+        planar();
+        unique();
+    }
+}
