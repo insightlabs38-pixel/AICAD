@@ -110,6 +110,16 @@ The final Stage-5 queue was checked against the transition brief for:
 
 Stage-6/7 queues were checked for capability-erasing simplifications. They do not speculate distributed execution, universal multi-representation geometry, giant provenance ontologies, multiple production assembly solvers, a full conventional GUI, native plugin ABI, or arbitrary external-CAD intent reconstruction.
 
+## Task-list quality comparison
+
+The canonical historical queue begins at **AICAD-001**; there is no `AICAD-000` entry. The final Stage-5 range therefore continues the repository's existing numbering/suffix convention after `AICAD-100A` by using `AICAD-101..AICAD-130`, without renumbering historical work.
+
+The final entries were compared against the complete historical `AICAD-001..AICAD-100A` queue and, in particular, the more exact remediation/gate precedents (`AICAD-057B..057F`, `AICAD-064A`, `AICAD-075A`, `AICAD-076A`, `AICAD-079A..079C`, `AICAD-099A`, and `AICAD-100A`). Stage 5 deliberately uses the stronger later-task style rather than the older generic “focused implementation” placeholder style: every `AICAD-101..130` entry has explicit dependency edges, current normative/evidence references, observable acceptance criteria, concrete verification commands, a dedicated report path, and task-specific escalation conditions.
+
+Queue-integrity checks performed in this transition pass verify that the Stage-5 IDs are unique and contiguous, every Stage-5 dependency points only to an earlier existing task, every Stage-5 task remains `todo`/non-authorized pending the owner transition gate, checkpoints terminate their intended capability slices, and no Stage-6/7 local task was inserted into the active executable queue. The fixed batch view and canonical task entries agree on the 30-task range and final owner gate.
+
+The Stage-6/7 provisional files were also rechecked after this comparison: they retain local IDs only, preserve owner-decision/evidence-sensitive annotations, and do not pull in distributed execution, universal multi-representation geometry, giant provenance ontology work, multiple production assembly solvers, a full conventional GUI, native plugin ABI, or arbitrary external-CAD intent reconstruction.
+
 ## Stage promotion policy
 
 `STAGE_PROMOTION_POLICY.md` makes future promotion lightweight: compare actual preceding-stage evidence to provisional assumptions; if no material architecture/semantic assumption is invalidated, do a short reconciliation, assign global IDs, update only affected acceptance details, obtain owner approval, and proceed. If a material conflict exists, replan only the affected tasks/dependencies/specs.
