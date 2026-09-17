@@ -1,28 +1,21 @@
 # Command-line interface
 
-The current CLI intentionally implements one command family:
+The current CLI has two supported command families:
 
 ```text
 cad build <path.aicad> [--json] [--output <path>] [--name <binding>[.<field>]]
+cad refs check <path.aicad> [--json]
 ```
 
-From the repository, run it through Cargo:
+From the repository, invoke them through Cargo.
+
+## Build and type-check a model
 
 ```sh
 cargo run -p cad-cli -- build model.aicad
 ```
 
-## Build without an artifact
-
-```sh
-cargo run -p cad-cli -- build model.aicad
-```
-
-This runs the source through parsing, lowering, type checking, and top-level execution. A successful human-readable invocation ends with:
-
-```text
-build succeeded
-```
+This runs parsing, lowering, type checking, and execution. A successful human-readable invocation ends with `build succeeded`.
 
 ## Export STEP
 
@@ -30,9 +23,7 @@ build succeeded
 cargo run -p cad-cli -- build model.aicad --output model.step
 ```
 
-When an output path is requested, geometry is dispatched to the OCCT-backed runtime and the chosen result is exported as STEP. Without `--name`, the original default is to export the last geometry-producing node.
-
-For models with explicit named outputs, prefer selecting one:
+For a part with explicit outputs, select one:
 
 ```sh
 cargo run -p cad-cli -- build \
@@ -41,37 +32,40 @@ cargo run -p cad-cli -- build \
   --name LBracket.body
 ```
 
-## Named output selection
+`--name` accepts `<binding>` or `<part-binding>.<field>`. If a part has several geometry fields and the requested name is ambiguous, AICAD reports the candidates instead of guessing.
 
-`--name` accepts:
+`--name` is source-output selection. It is separate from persistent topology references declared with `query`.
 
-```text
-<binding>
-<part-binding>.<field>
+## Check persistent references
+
+```sh
+cargo run -p cad-cli -- refs check model.aicad
 ```
 
-A top-level `Geometry` binding can be selected directly. A `part` field can be selected as `PartName.field`. If a part has several geometry fields and no field is specified, AICAD reports an ambiguity with the candidate names instead of guessing.
+`cad refs check` builds the model through the production `ParametricBuildSession`, collects the program's actual source-declared references, resolves them against the current build, and reports reference health. Outcomes are fail-closed: each reference is `Resolved`, `Ambiguous`, or `Broken`.
 
-This mechanism does not query faces/edges and does not provide persistent topology identity.
+A file with no `query` declarations honestly reports a zero-reference set. AICAD does not fabricate implicit references from ordinary source bindings.
 
-## JSON output
+Use JSON when consuming the report programmatically:
 
-Add `--json` for machine-readable build output:
+```sh
+cargo run -p cad-cli -- refs check model.aicad --json
+```
+
+See [persistent references](../modeling/persistent-references.md) for current query syntax and supported clauses.
+
+## JSON build output
 
 ```sh
 cargo run -p cad-cli -- build model.aicad --json
 ```
 
-The current JSON report contains build status, diagnostics, and artifacts actually written. Later-roadmap fields are not emitted as empty placeholders.
+The report contains build status, diagnostics, and artifacts actually written.
 
 ## Exit codes
 
-The current binary uses:
+Both command families use `0` for success and `1` for a completed operation with error diagnostics. CLI argument/usage errors use `2`.
 
-- `0` for a successful build;
-- `1` for a build that completed with error diagnostics;
-- `2` for command-line argument parsing/usage errors.
+## Not current CLI surface
 
-## Commands that do not exist yet
-
-Long-term planning describes a broader CLI, but commands such as `cad test`, `cad inspect`, `cad package`, `cad diff`, and interactive parameter-edit/watch workflows are not part of the current CLI. Use only the command forms documented above unless the executable's source has changed.
+Planning material describes additional commands such as `cad test`, `cad inspect`, `cad package`, `cad diff`, and interactive watch/parameter-edit workflows. Those are not implemented CLI contracts today.

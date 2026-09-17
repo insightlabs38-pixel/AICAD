@@ -6,6 +6,7 @@ on:
       - main
       - claude/aicad-stage4-transition
       - claude/aicad-stage4-dev
+      - claude/aicad-stage5-transition
   pull_request:
   workflow_dispatch:
 
@@ -115,3 +116,5 @@ jobs:
         run: cargo test -p cad-cli --test stage3_parametric_incremental_rebuild --locked -- --test-threads=1
       - name: Frozen Stage-4 corpus buildability smoke
         run: cargo test -p cad-cli --test stage4_reference_benchmark_fixtures --locked -- --test-threads=1
+      - name: Maintained ACTIVE examples
+        run: cargo test -p cad-cli --test active_examples --locked -- --test-threads=1

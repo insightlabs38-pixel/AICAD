@@ -2,50 +2,48 @@
 
 ## CMake cannot find OpenCASCADE
 
-AICAD's native bridge uses `find_package(OpenCASCADE REQUIRED CONFIG)`. Install your distribution's OCCT development packages or point `OpenCASCADE_DIR` at the directory containing `OpenCASCADEConfig.cmake`.
-
-If CMake finds OCCT but reports a specific missing library/module, install the development package containing that module. The bridge intentionally fails with the missing module name rather than silently disabling the operation.
+Install the OCCT development packages required by `native/occt_bridge/CMakeLists.txt` or point `OpenCASCADE_DIR` at `OpenCASCADEConfig.cmake`. Missing modules are reported explicitly.
 
 ## A value has the wrong physical dimension
 
-Geometry signatures require types such as `Length` and `Angle`. A bare dimensionless number is not accepted merely because a kernel operation eventually consumes a floating-point magnitude.
-
-Prefer:
+AICAD requires typed engineering quantities:
 
 ```aicad
 let r: Length = 5mm;
 ```
 
-rather than relying on an implicit unit convention.
+A dimensionless number is not accepted merely because a kernel operation eventually consumes a floating-point magnitude.
 
 ## A spatial argument is rejected
 
-`Axis3`, `Frame3`, and `Plane` values are validated when converted to the kernel-neutral spatial representation. Degenerate directions and invalid/non-orthonormal frames are errors; choose valid direction vectors and frame axes.
+`Axis3`, `Frame3`, and `Plane` values are validated when converted to kernel-neutral spatial values. Degenerate directions and invalid/non-orthonormal frames are errors.
 
-## `linear_pattern` or `radial_pattern` fails
+## A raw index selects the wrong topology
 
-The runtime rejects a pattern count below 1. Pattern count is an `Int`, so the numeric range check happens at runtime.
+`fillet`, `chamfer`, `shell`, `extrude`, and `revolve` still have APIs that use raw integer edge/face indices. These are topology-local selectors and can change meaning after shape-changing edits.
 
-## Fillet/chamfer/shell/extrude/revolve selects the wrong topology
+Use [persistent semantic references](../modeling/persistent-references.md) when you need a durable reference recipe. Persistent references do not change a raw-index-taking modeling function into a reference-taking function.
 
-Current selection for these operations uses raw integer edge/face indices. Those indices are not stable semantic references and can become invalid or refer to different topology after shape-changing edits.
+## `cad refs check` reports Ambiguous
 
-Keep raw-index operations on simple, controlled target topology where possible. Do not assume Stage-4 topology naming is already available.
+Ambiguity is intentional fail-closed behavior. Narrow the source query with a more meaningful scoped recipe or predicates/cardinality; do not rely on candidate order.
+
+## `cad refs check` reports Broken
+
+Check that the declared scope still exists and that the predicates still match the intended topology. A missing required scope and a no-match query fail closed. Automatic geometric-fingerprint repair is intentionally disabled.
+
+## A query clause is rejected
+
+Only the current closed source vocabulary documented in [persistent references](../modeling/persistent-references.md) is accepted. Several Rust-level predicates require source-language work planned for the Stage-5 prelude; plan-only syntax is not current grammar.
 
 ## `--name` cannot resolve an output
 
-`--name` uses exact source names. For a part with several geometry outputs, specify the field explicitly:
-
-```sh
---name LBracket.body
-```
-
-Naming only `LBracket` is intentionally ambiguous when both `body` and `mirrored` are geometry fields; AICAD reports candidates instead of choosing one.
+`--name` uses exact source output names. For a part with several geometry outputs, specify the field explicitly, for example `--name LBracket.body`. This is separate from semantic topology-reference resolution.
 
 ## I tried `sketch { ... }` and it does not compile
 
-The Stage-3 engine contains sketch entities, constraint semantics, a solver, and exact solved-profile lowering, but source-level sketch construction syntax has not been integrated. Use the current Safe CAD solid/feature functions from `.aicad` source. Do not use aspirational sketch syntax from the frozen planning documents as current syntax.
+The engine contains sketch entities, constraint semantics, a solver, and solved-profile lowering, but direct source-level sketch construction is not integrated. Use the current Safe CAD source functions.
 
-## I expected a `cad` subcommand from the planning docs
+## I expected another `cad` subcommand
 
-The implemented CLI is currently limited to `cad build`. Planning material describes future commands but is not the current CLI contract. See the [CLI reference](../cli/) for the exact supported arguments.
+The implemented CLI currently supports `cad build` and `cad refs check`. Planning material describes additional future commands but is not the current CLI contract.

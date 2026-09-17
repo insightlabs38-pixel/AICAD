@@ -1,0 +1,10 @@
+param width: Length = 80mm;
+param depth: Length = 50mm;
+param margin: Length = 5mm;
+param thickness: Length = 6mm;
+
+part DerivedPlate {
+    let usable_width: Length = width - margin * 2;
+    let usable_depth: Length = depth - margin * 2;
+    let body: Geometry = box(usable_width, usable_depth, thickness);
+}

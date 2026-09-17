@@ -1,0 +1,7 @@
+param width: Length = 40mm;
+param depth: Length = 30mm;
+param height: Length = 10mm;
+
+part SimpleBox {
+    let body: Geometry = box(width, depth, height);
+}

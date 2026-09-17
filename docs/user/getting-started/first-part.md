@@ -1,6 +1,6 @@
 # Your first part
 
-Create a file named `plate.aicad`:
+Create `plate.aicad`:
 
 ```aicad
 param width: Length = 60mm;
@@ -26,41 +26,44 @@ part MountingPlate {
         hole_diameter,
         thickness + OVERSHOOT * 2,
     );
+
+    query hole_wall : Face in MountingPlate.body {
+        generated_by(body);
+        cylindrical();
+        unique();
+    }
 }
 ```
 
-This uses only the current Stage-3 source surface. `param` values carry engineering types and units, `box` produces a `Geometry`, and `hole` returns a new geometry value rather than mutating `base` in place.
+This uses current supported source syntax. Geometry operations are functional: `hole` creates a new geometry value rather than mutating `base`.
 
-## Check the source
-
-Run the build pipeline without requesting an artifact:
+## Check and export
 
 ```sh
 cargo run -p cad-cli -- build plate.aicad
-```
-
-A successful run ends with `build succeeded`. Parse, lowering, type, and runtime failures are emitted as structured AICAD diagnostics.
-
-## Export the named part output
-
-`MountingPlate` contains two geometry values, `base` and `body`, so select the intended final result explicitly:
-
-```sh
 cargo run -p cad-cli -- build plate.aicad \
   --output plate.step \
   --name MountingPlate.body
 ```
 
-`--name` performs exact source-name selection. If a part has more than one `Geometry` field and you name only the part, AICAD reports the ambiguity rather than choosing one arbitrarily.
+`--name` performs exact source-output selection. It is separate from the semantic `FaceRef` created by `hole_wall`.
 
-## Add another feature
+## Inspect reference health
 
-Safe CAD geometry operations are functional: bind the result to a new name.
+```sh
+cargo run -p cad-cli -- refs check plate.aicad
+```
+
+For this one-hole model, the scoped `generated_by(body)` + `cylindrical()` + `unique()` recipe resolves the hole wall as one persistent semantic reference. After topology/parameter changes, the recipe is replayed against regenerated evidence; if the contract no longer identifies exactly one entity, AICAD reports `Ambiguous` or `Broken` rather than guessing.
+
+## Raw selectors still exist
+
+Some modeling functions, such as `fillet`, still accept raw integer topology selectors:
 
 ```aicad
 let rounded: Geometry = fillet(body, [5], 2mm);
 ```
 
-The `[5]` selector is a **raw edge index**. It is suitable only when you know the target's current edge enumeration. It is not a persistent face/edge reference; Stage 4 is intended to provide durable semantic references.
+`[5]` is a raw edge index tied to the target's current realized topology. Persistent references do not retroactively make raw indices stable.
 
-Continue with [types and units](../language/types-and-units.md) or the [modeling guide](../modeling/).
+Continue with [types and units](../language/types-and-units.md), the [modeling guide](../modeling/), or [persistent references](../modeling/persistent-references.md).

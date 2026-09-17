@@ -1,21 +1,20 @@
 # AICAD user guide
 
-This guide describes the **implemented post-Stage-3 AICAD surface**: how to write `.aicad` source, build exact geometry, select named outputs, and export STEP files with the current CLI.
+This guide describes the **current Stage-4-complete AICAD surface**: typed `.aicad` source, exact single-part modeling, parametric/incremental rebuilding, persistent semantic references, reference-health inspection, named output selection, and STEP export.
 
-AICAD is still pre-1.0. The guide deliberately distinguishes between source features you can use today and lower-level subsystems that exist in the implementation but do not yet have source syntax.
+AICAD is pre-1.0. The guide distinguishes source features available today from internal subsystems and future roadmap capabilities.
 
 ## Start here
 
-- [Getting started](getting-started/) — install prerequisites, build AICAD, and create a first part.
-- [Language](language/) — types, physical units, functions, control flow, parameters, and derived expressions.
-- [Modeling](modeling/) — current Safe CAD geometry functions, high-level features, transforms, and patterns.
-- [CLI](cli/) — the exact `cad build` command and output-selection behavior.
-- [Examples](examples/) — repository examples that use implemented syntax.
-- [Troubleshooting](troubleshooting/) — common build, OCCT, type, geometry, and output-selection failures.
+- [Getting started](getting-started/) — install prerequisites and build a first part.
+- [Language](language/) — types, units, control flow, parameters, and derived expressions.
+- [Modeling](modeling/) — current Safe CAD features, transforms, patterns, and sketch boundary.
+- [Persistent references](modeling/persistent-references.md) — source `query` syntax, scope, fail-closed outcomes, replay, and health checks.
+- [CLI](cli/) — `cad build` and `cad refs check`.
+- [Examples](examples/) — maintained executable examples.
+- [Troubleshooting](troubleshooting/) — build, kernel, type, geometry, reference, and output-selection failures.
 
 ## What you can author today
-
-Current `.aicad` programs can combine ordinary typed language constructs with runtime-backed Safe CAD functions. A typical source file uses:
 
 ```aicad
 param width: Length = 60mm;
@@ -24,19 +23,23 @@ param thickness: Length = 8mm;
 
 part Plate {
     let body: Geometry = box(width, depth, thickness);
+
+    query top_candidates : Face in Plate.body {
+        planar();
+        unique();
+    }
 }
 ```
 
-The compiler parses and type-checks the source, the runtime evaluates it into backend-neutral geometry operations, and the geometry stack can realize the selected output as exact OCCT-backed B-rep and export STEP.
+The compiler parses and type-checks source, the runtime evaluates ordinary typed Safe CAD calls into backend-neutral geometry operations, OCCT realizes exact B-rep below the kernel boundary, and source-declared queries become persistent semantic references resolved against the current build.
 
-## Important Stage-3 boundaries
+## Important boundaries
 
-Three boundaries prevent common misunderstandings:
+1. **Named outputs and persistent references are different.** `--name Plate.body` selects a source-level `Geometry` output for export. A `query` declaration creates a semantic topology reference such as a `FaceRef`; it resolves through a scoped recipe and can be replayed after regeneration.
+2. **References fail closed.** A reference is `Resolved`, `Ambiguous`, or `Broken`. AICAD does not silently choose one candidate from a genuine tie.
+3. **Raw indices remain raw indices.** Some current modeling functions still accept integer edge/face selectors. They are topology-local and fragile after topology-changing edits even though persistent semantic references now exist as a separate layer.
+4. **Sketch IR is not sketch syntax.** The sketch/entity/constraint/profile subsystem exists internally, but direct `.aicad` `sketch { ... }` authoring is not supported.
+5. **Fingerprint recovery is disabled.** Geometric fingerprints may supply diagnostic/ranking evidence, but they are not an automatic resolver fallback.
+6. **Stage 5 is not implemented.** Advanced freeform curves/surfaces, general topology construction/healing, controlled raw editing/adoption, and related advanced query operations remain planned work.
 
-1. **Named outputs are source names, not persistent topology references.** `--name Plate.body` selects an explicitly declared `Geometry` result. It does not identify a face or edge durably across topology changes; durable semantic topology resolution is Stage-4 work.
-2. **The sketch/constraint/profile subsystem is implemented internal substrate, not a source-language feature.** Stage 3 implements sketch entities, AICAD-owned constraint semantics, a concrete solver, solved-profile validation, and solved-profile-to-face lowering. There is no supported `.aicad` `sketch { ... }` authoring construct yet.
-3. **Raw face/edge indices are current topology selectors, not stable identity.** Current `fillet`, `chamfer`, `shell`, `extrude`, and `revolve` APIs use integer face/edge indices where selection is needed. Those indices are topology-local and can change meaning after topology-changing edits; Stage-3 feature identity/provenance does not turn them into persistent references.
-
-Assemblies, verification-language constructs, advanced freeform/NURBS authoring, packages/plugins, and AI tooling are not part of the current user surface.
-
-For implementation architecture rather than usage, see the [developer documentation](../developer/).
+Assemblies/configurations, verification-language/framework work, a full IDE/GUI, and packages/plugins are later-stage capabilities.
