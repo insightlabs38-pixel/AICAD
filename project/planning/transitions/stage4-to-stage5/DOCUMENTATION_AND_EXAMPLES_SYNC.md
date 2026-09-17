@@ -69,18 +69,43 @@ CI/integration push filters now include the Stage-5 transition branch and run th
 
 ## Validation
 
-Required validation for this change is:
+The substantive documentation/example commit was `a58e7a02a96fd37a8099d9fe428ec9e2d731d202`. Its first CI run exposed only a `cargo fmt --all -- --check` formatting delta in the new active-example test; compilation, clippy, workspace tests, native OCCT tests, and the ACTIVE-example smoke all passed. Commit `76fb5ec8249b35e21e8a958003c98082f3e1d4f8` applied the rustfmt correction and was revalidated from a clean GitHub Actions checkout.
+
+Local pre-push whitespace validation:
 
 ```sh
 git diff --check
+```
+
+Result: **PASS**.
+
+Final CI run `35276318841` on `76fb5ec8249b35e21e8a958003c98082f3e1d4f8`:
+
+```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo build --workspace --all-targets --locked
+cargo test --workspace --locked
 cargo test -p cad-cli --test active_examples --locked -- --test-threads=1
 ```
 
-The transition-branch GitHub Actions runs are the authoritative OCCT-enabled validation environment. Exact run results should be recorded here by the committing invocation if available; a pending external run must not be represented as passed.
+Results: **PASS** for all commands. The same CI run also passed the Stage-2 source-to-kernel smoke, Stage-3 incremental-build smoke, frozen Stage-4 corpus buildability smoke, and native OCCT configure/build/CTest job.
+
+Final integration/determinism run `35276318687` on the same head also passed:
+
+- Stage-2 exact end-to-end proof;
+- Stage-3 ordinary-parts exact-geometry/STEP coverage;
+- Stage-3 incremental rebuild;
+- D5/D19 validation profile;
+- frozen Stage-4 corpus exact-geometry validation;
+- maintained ACTIVE examples;
+- representative `LBracket.body` STEP build;
+- Stage-4 determinism foundation tests;
+- feature/dependency determinism tests;
+- incremental-state determinism proof.
+
+Final validation status: **GREEN**.
 
 ## Deferred documentation gaps
 
-Historical reports/gates and frozen `docs/plan/` material intentionally retain their original stage-era wording. They are evidence/history, not current user documentation.
+Historical reports/gates and frozen `docs/plan/` material intentionally retain their original stage-era wording. They are evidence/history, not current user documentation. Stage-era status wording inside historical or contract traceability material outside the current `README.md`, `docs/user/`, `docs/developer/`, and ACTIVE example surface was not mechanically rewritten by this pass; current-facing documentation now states the superseding implementation status explicitly.
