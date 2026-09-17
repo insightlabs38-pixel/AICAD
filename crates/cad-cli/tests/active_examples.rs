@@ -79,14 +79,8 @@ fn assert_health(relative: &str, expected: (usize, usize, usize)) {
 
 #[test]
 fn reference_examples_have_their_documented_fail_closed_outcomes() {
-    assert_health(
-        "examples/references/hole_wall_reference.aicad",
-        (1, 0, 0),
-    );
-    assert_health(
-        "examples/references/ambiguous_reference.aicad",
-        (0, 1, 0),
-    );
+    assert_health("examples/references/hole_wall_reference.aicad", (1, 0, 0));
+    assert_health("examples/references/ambiguous_reference.aicad", (0, 1, 0));
     assert_health("examples/references/broken_reference.aicad", (0, 0, 1));
 }
 
