@@ -21,6 +21,8 @@ jobs:
 
       - name: Apply and validate planning-only changes
         run: |
+          sed -i 's/r"^- id: (S6-/r"^  - id: (S6-/' project/planning/transitions/stage4-to-stage5/.apply_transition.py
+          sed -i 's/r"^- id: (S7-/r"^  - id: (S7-/' project/planning/transitions/stage4-to-stage5/.apply_transition.py
           python3 project/planning/transitions/stage4-to-stage5/.apply_transition.py
           python3 scripts/ci/stage4_task_audit.py --check
           git diff --check
