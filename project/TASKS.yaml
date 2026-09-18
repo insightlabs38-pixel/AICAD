@@ -3498,7 +3498,7 @@ tasks:
 - id: AICAD-108
   stage: 5
   title: Add kernel-neutral advanced geometry value, result, report, and execution-IR families
-  status: todo
+  status: done
   depends_on:
   - AICAD-105
   - AICAD-106
