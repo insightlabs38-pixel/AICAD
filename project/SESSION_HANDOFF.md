@@ -60,17 +60,31 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-Stage-5 implementation is authorized and in progress on `claude/aicad-stage5-dev`, batch `S5-00`.
-
-Done so far in `S5-00`:
+**Batch `S5-00` is complete** on `claude/aicad-stage5-dev`:
 
 - `AICAD-101` (nested `part`-in-`part` recurses to unbounded depth) — `project/reports/AICAD-101.md`, `DL-36`.
 - `AICAD-104A` (owner-requested narrow remediation: part-body `param`s now modeled by `ParamModel`, found by `AICAD-101`'s own limitation sweep) — `project/reports/AICAD-104A.md`, `DL-37`. Not part of the original four-task S5-00 definition; added to `project/TASKS.yaml` alongside it and completed in the same batch.
+- `AICAD-102` (Area unit-literal spellings; confirmed Point3/Vector3/Axis3/Frame3 source construction was already complete) — `project/reports/AICAD-102.md`.
+- `AICAD-103` (completed the remaining `.aicad` query-clause vocabulary — `area`/`boundary`/`adjacent_to`/`connected_to`/`intersects`/`contains`/`inside`/`within`/`above`/`below`/`left`/`right`/`nearest`/`farthest`/`nearest_to`/`farthest_from` — with no `cad-ast`/`cad-parser`/`cad-hir` grammar change needed) — `project/reports/AICAD-103.md`, plus a same-batch correction commit (`nearest_to`/`farthest_from` turned out to have real semantics via the resolver's ranking rewrite; the original decision to exclude them was a mistake, fixed in place).
+- `AICAD-104` (proved the complete vocabulary — positive/no-match/ambiguous/invalid-scope/wrong-cardinality/nested-reference/spatial-value — through the real `ParametricBuildSession`/resolver production path) — `project/reports/AICAD-104.md`.
 
-Still open in `S5-00`, in dependency order: `AICAD-102` (Area/spatial source-value construction — investigation already done, see below), `AICAD-103` (complete `.aicad` query vocabulary lowering, depends on 101+102), `AICAD-104` (production-path proof, depends on 103).
+All required checks pass: `cargo fmt`, `cargo clippy -D warnings`, the full
+`cargo test --workspace` (81 test-result blocks, 0 failed), the frozen
+`stage4_resolver_execution` corpus (11/11, unchanged), and the semantic-
+reference harness `validate`/`self-test` (both `ok`). Automatic
+geometry-fingerprint recovery remains disabled.
 
-`AICAD-102` investigation findings (not yet implemented): `Dimension::Area` and `Length * Length -> Area` dimensional arithmetic already work today (`crates/cad-units/src/dimension_vector.rs`, `crates/cad-units/src/arithmetic.rs`); what's missing is purely an `Area`-dimensioned unit-literal suffix in `crates/cad-units/src/registry.rs`'s frozen `UNITS` table (no `mm2`/`m2` entries exist — the lexer already fuses arbitrary identifier suffixes with zero validation, so no lexer change is needed). `Point3`/`Vector3`/`Point2`/`Vector2`/`Axis3`/`Frame3`/`Plane` are already real, always-seeded standard source-level `struct` types (`crates/cad-hir/src/geometry_types.rs`'s `GEOMETRY_TYPES_SOURCE`, seeded by `crates/cad-hir/src/lower.rs::seed_standard_types`) with real source construction syntax already exercised by `crates/cad-runtime/src/spatial.rs`'s own tests — the genuine gap is that `crates/cad-cli/src/query_lowering.rs`'s query-clause mini-grammar has no way to spell a nested struct-literal/point argument for `area(...)`/`nearest_to(...)`/`farthest_from(...)` (its own doc comment already discloses this), and `cad_query::predicate::SpatialTarget`/`Frame3` there are a separate, simpler plain-data type from `cad_hir::geometry_types`'s struct, needing a lowering/bridging layer regardless of clause-grammar extension. This is `AICAD-102`'s (unit literal) and `AICAD-103`'s (clause grammar + bridging) work respectively.
+Remaining known, explicitly-disclosed source-visible query limitations
+(see `project/reports/AICAD-103.md`/`AICAD-104.md` for full detail): no
+literal nested `query { ... }`-shaped clause argument; a named
+adjacency/spatial target always takes the querying query's own entity kind
+(except `inside(...)`, always `Solid`); `cad_query::eval::compare_magnitude`
+does not independently re-validate a `Magnitude`'s dimension (real
+source-reachable risk is nil, since every `Magnitude` this vocabulary
+constructs is correctly dimensioned by construction).
 
-Work exactly one fixed batch per invocation; do not reorder tasks, combine batches, or begin later-stage work early. Per explicit owner instruction, do not begin `S5-01` until a future invocation is asked to.
+Per explicit owner instruction, **do not begin `S5-01`** in this
+invocation — work exactly one fixed batch per invocation, in order, and
+the next invocation begins `S5-01` (`AICAD-105..106`).
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

@@ -3305,7 +3305,7 @@ tasks:
 - id: AICAD-104
   stage: 5
   title: Prove the complete source query vocabulary through the production path
-  status: todo
+  status: done
   depends_on:
   - AICAD-103
   plan_references:
