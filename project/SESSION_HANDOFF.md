@@ -60,31 +60,51 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Batch `S5-00` is complete** on `claude/aicad-stage5-dev`:
+**Batch `S5-01` is complete** on `claude/aicad-stage5-dev` (`S5-00` was
+completed and handed off previously — see git history / `project/
+reports/AICAD-101.md` through `AICAD-104.md`/`AICAD-104A.md` for that
+batch's own record; this section now reflects `S5-01`'s completion):
 
-- `AICAD-101` (nested `part`-in-`part` recurses to unbounded depth) — `project/reports/AICAD-101.md`, `DL-36`.
-- `AICAD-104A` (owner-requested narrow remediation: part-body `param`s now modeled by `ParamModel`, found by `AICAD-101`'s own limitation sweep) — `project/reports/AICAD-104A.md`, `DL-37`. Not part of the original four-task S5-00 definition; added to `project/TASKS.yaml` alongside it and completed in the same batch.
-- `AICAD-102` (Area unit-literal spellings; confirmed Point3/Vector3/Axis3/Frame3 source construction was already complete) — `project/reports/AICAD-102.md`.
-- `AICAD-103` (completed the remaining `.aicad` query-clause vocabulary — `area`/`boundary`/`adjacent_to`/`connected_to`/`intersects`/`contains`/`inside`/`within`/`above`/`below`/`left`/`right`/`nearest`/`farthest`/`nearest_to`/`farthest_from` — with no `cad-ast`/`cad-parser`/`cad-hir` grammar change needed) — `project/reports/AICAD-103.md`, plus a same-batch correction commit (`nearest_to`/`farthest_from` turned out to have real semantics via the resolver's ranking rewrite; the original decision to exclude them was a mistake, fixed in place).
-- `AICAD-104` (proved the complete vocabulary — positive/no-match/ambiguous/invalid-scope/wrong-cardinality/nested-reference/spatial-value — through the real `ParametricBuildSession`/resolver production path) — `project/reports/AICAD-104.md`.
+- `AICAD-105` (scaled the closed `RuntimeBuiltin` catalogue with
+  category/effect metadata — `BuiltinCategory::Construction`/`Query` — and
+  implemented the first kernel-backed query family, `is_valid`/`volume`/
+  `area`, as ordinary typed `RuntimeBuiltin` calls using D23 demand
+  materialization; a `cad_runtime::query_exec::KernelQueryExecutor` trait
+  inversion keeps `cad-runtime` kernel-neutral while
+  `cad_geometry_runtime::query_bridge::OcctQueryExecutor` provides the real
+  implementation, wired into `ParametricBuildSession::rebuild`; proved a
+  real query result driving `if` control flow end-to-end through the real
+  production path, checked against the real kernel-computed volume) —
+  `project/reports/AICAD-105.md`.
+- `AICAD-106` (established `cad_units::ConstructionTolerance`/
+  `ApproximationTolerance`, the first two of D24's six numerical-tolerance
+  domains to get a typed primitive — domain 2 modeling/construction,
+  domain 3 approximation — with no invented numeric default beyond the one
+  already-evidenced Stage-1 literal; wired `ConstructionTolerance` into the
+  real `Shape::classify_point` call site in `cad-query`'s `contains`/
+  `inside` predicates with zero behavior change) — `project/
+  reports/AICAD-106.md`.
 
 All required checks pass: `cargo fmt`, `cargo clippy -D warnings`, the full
-`cargo test --workspace` (81 test-result blocks, 0 failed), the frozen
+`cargo test --workspace` (82 test-result blocks, 0 failed), the frozen
 `stage4_resolver_execution` corpus (11/11, unchanged), and the semantic-
 reference harness `validate`/`self-test` (both `ok`). Automatic
 geometry-fingerprint recovery remains disabled.
 
-Remaining known, explicitly-disclosed source-visible query limitations
-(see `project/reports/AICAD-103.md`/`AICAD-104.md` for full detail): no
-literal nested `query { ... }`-shaped clause argument; a named
-adjacency/spatial target always takes the querying query's own entity kind
-(except `inside(...)`, always `Solid`); `cad_query::eval::compare_magnitude`
-does not independently re-validate a `Magnitude`'s dimension (real
-source-reachable risk is nil, since every `Magnitude` this vocabulary
-constructs is correctly dimensioned by construction).
+Known, explicitly-disclosed limitations carried forward (see each task's
+own report for full detail): `AICAD-105`'s `OcctQueryExecutor` dispatches
+the whole accumulated graph per query call, not the tightest "minimum
+required upstream geometry" subset (documented performance limitation, not
+correctness); the simpler non-incremental `cad_cli::build::build_source`
+path is not wired to a real query executor, so no ACTIVE example
+demonstrates `is_valid`/`volume`/`area` yet; only `is_valid`/`volume`/
+`area` are implemented (`bounding_box`/`center_of_mass` need a
+source-visible struct return value `crate::value::Value` does not have
+yet). `AICAD-106`'s `ApproximationTolerance` has no default constructor at
+all (no evidenced default exists) and is not yet wired into a real
+`Tessellate` call site (composability proved by a dedicated test instead).
 
-Per explicit owner instruction, **do not begin `S5-01`** in this
-invocation — work exactly one fixed batch per invocation, in order, and
-the next invocation begins `S5-01` (`AICAD-105..106`).
+Per the fixed batch order, the next invocation begins `S5-02`
+(`AICAD-107..108`).
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

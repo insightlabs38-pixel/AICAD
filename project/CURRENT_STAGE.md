@@ -6,8 +6,8 @@ to_stage: 5
 name: Stage 5 - programmable geometry substrate
 status: implementation-authorized
 last_completed_stage: 4
-last_completed_task: AICAD-104
-next_task: AICAD-105
+last_completed_task: AICAD-106
+next_task: AICAD-107
 implementation_authorized: true
 
 ## Authoritative current state
@@ -50,7 +50,7 @@ not change the AICAD-102..104 queue below.
 | Batch | Tasks | Status |
 |---|---|---|
 | S5-00 | AICAD-101..104, AICAD-104A | **done** |
-| S5-01 | AICAD-105..106 | not started |
+| S5-01 | AICAD-105..106 | **done** |
 | S5-02 | AICAD-107..108 | not started |
 | S5-03 | AICAD-109..112 | not started |
 | S5-04 | AICAD-113..116 | not started |

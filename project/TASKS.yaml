@@ -3385,7 +3385,7 @@ tasks:
 - id: AICAD-105
   stage: 5
   title: Scale the closed RuntimeBuiltin catalogue and implement tracked kernel-backed query evaluation
-  status: todo
+  status: done
   depends_on:
   - AICAD-104
   plan_references:
@@ -3426,7 +3426,7 @@ tasks:
 - id: AICAD-106
   stage: 5
   title: Establish typed Stage-5 modeling/construction and approximation tolerance primitives
-  status: todo
+  status: done
   depends_on:
   - AICAD-104
   plan_references:
