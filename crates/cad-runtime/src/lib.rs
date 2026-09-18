@@ -71,11 +71,13 @@
 pub mod error;
 pub mod interp;
 pub mod params;
+pub mod query_exec;
 pub mod spatial;
 pub mod value;
 
 pub use error::RuntimeError;
 pub use interp::Interpreter;
 pub use params::{ParamDecl, ParamId, ParamModel, ParamModelError, ParamOverrides};
+pub use query_exec::{KernelQueryError, KernelQueryExecutor, QueryOutcome};
 pub use spatial::SpatialValueError;
 pub use value::{NumberValue, RangeValue, Value, VariantPayload};

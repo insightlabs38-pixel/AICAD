@@ -84,7 +84,7 @@ use std::ops::Range;
 use cad_diagnostics::{Diagnostic, Severity};
 use cad_feature_graph::FeatureGraph;
 use cad_geometry_runtime::{
-    GraphResults, IncrementalStats, dispatch_graph_incremental_with_lineage,
+    GraphResults, IncrementalStats, OcctQueryExecutor, dispatch_graph_incremental_with_lineage,
 };
 use cad_hir::ids::BindingId;
 use cad_hir::lower::LowerResult;
@@ -600,12 +600,23 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             directly_changed_params(&self.overrides, &self.last_applied_overrides);
         let changed = changed_param_bindings(&model, directly_changed);
 
+        // `AICAD-105` (`project/DECISION_LOG.md#DL-25`): a real
+        // kernel-backed query builtin (`is_valid`/`volume`/`area`) called
+        // during this round's own evaluation demand-materializes its
+        // result through this exact `self.ctx` -- the same real kernel
+        // context every other node in this round's own `dispatch_graph_
+        // incremental_with_lineage` call below dispatches against, so a
+        // query result and this round's own final build results always
+        // agree. `query_executor` only needs to outlive `interp` (both
+        // local to this call), never stored as a session field.
+        let query_executor = OcctQueryExecutor::new(self.ctx);
         let mut interp = Interpreter::new(
             &self.lowered.program,
             &self.lowered.bindings,
             &self.file,
             &self.source,
-        );
+        )
+        .with_query_executor(&query_executor);
         if let Err(diagnostic) = interp.run_top_level_parametric(
             &self.lowered.program,
             &model,
@@ -742,6 +753,15 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             cad_geometry_runtime::NodeResult::Shape(shape) => Some(shape),
             _ => None,
         }
+    }
+
+    /// The most recent build/rebuild round's own evaluated `Value` for
+    /// `binding`, for any top-level `let`/`const`/`param` (`AICAD-105`) —
+    /// not only a `Geometry` one, unlike [`ParametricBuildSession::
+    /// shape_for_binding`]. `None` if `binding` is unknown or no
+    /// successful build has run yet.
+    pub fn last_global(&self, binding: BindingId) -> Option<&Value> {
+        self.last_globals.get(&binding)
     }
 
     /// This session's own raw-topology-handle epoch (`AICAD-093`),

@@ -421,6 +421,41 @@ pub enum RuntimeError {
         count: i64,
         span: Span,
     },
+    /// A kernel-backed query builtin (`is_valid`/`volume`/`area`,
+    /// `AICAD-105`, `project/DECISION_LOG.md#DL-25`) was called on an
+    /// [`crate::interp::Interpreter`] with no [`crate::query_exec::
+    /// KernelQueryExecutor`] configured (`crate::interp::Interpreter::
+    /// with_query_executor`) — the default for every interpreter that does
+    /// not need real kernel results (most tests, and any evaluation phase
+    /// that runs before a real kernel context exists). Reported as a
+    /// structured diagnostic, never a silent placeholder value or a panic.
+    KernelQueryUnavailable {
+        name: &'static str,
+        span: Span,
+    },
+    /// A configured [`crate::query_exec::KernelQueryExecutor`] genuinely
+    /// failed to produce a result (a real kernel-side error, e.g. an
+    /// invalid/degenerate shape a query cannot meaningfully evaluate) —
+    /// distinct from [`RuntimeError::KernelQueryUnavailable`] (no executor
+    /// configured at all).
+    KernelQueryFailed {
+        name: &'static str,
+        span: Span,
+        message: String,
+    },
+    /// This interpreter's [`crate::interp::ResourceBudget::
+    /// max_kernel_queries`] (`AICAD-105`) was exceeded. A kernel-backed
+    /// query is a real, potentially expensive kernel call (unlike an
+    /// ordinary loop iteration or function call, it is not bounded purely
+    /// by this evaluator's own execution cost) — this budget exists so a
+    /// program cannot drive unbounded kernel work through repeated query
+    /// calls, mirroring [`RuntimeError::IterationBudgetExceeded`]/
+    /// [`RuntimeError::RecursionLimitExceeded`]'s own resource-budget
+    /// rationale. Carries the dedicated `BUDGET` diagnostic family
+    /// (`BUDGET-E003`), not `RUNTIME` — see this module's own doc comment.
+    QueryBudgetExceeded {
+        span: Span,
+    },
 }
 
 impl RuntimeError {
@@ -463,6 +498,9 @@ impl RuntimeError {
             RuntimeError::UnknownField { .. } => "RUNTIME-E127".to_string(),
             RuntimeError::InvalidSpatialArgument { .. } => "RUNTIME-E128".to_string(),
             RuntimeError::InvalidPatternCount { .. } => "RUNTIME-E129".to_string(),
+            RuntimeError::KernelQueryUnavailable { .. } => "RUNTIME-E130".to_string(),
+            RuntimeError::KernelQueryFailed { .. } => "RUNTIME-E131".to_string(),
+            RuntimeError::QueryBudgetExceeded { .. } => "BUDGET-E003".to_string(),
         }
     }
 
@@ -474,7 +512,8 @@ impl RuntimeError {
     fn category(&self) -> &'static str {
         match self {
             RuntimeError::IterationBudgetExceeded { .. }
-            | RuntimeError::RecursionLimitExceeded { .. } => "resource-budget",
+            | RuntimeError::RecursionLimitExceeded { .. }
+            | RuntimeError::QueryBudgetExceeded { .. } => "resource-budget",
             RuntimeError::GeometryConstruction { .. } => "geometry-ir",
             _ => "execution",
         }
@@ -514,7 +553,10 @@ impl RuntimeError {
             | RuntimeError::StructConstructionArgumentShape { span, .. }
             | RuntimeError::UnknownField { span, .. }
             | RuntimeError::InvalidSpatialArgument { span, .. }
-            | RuntimeError::InvalidPatternCount { span, .. } => *span,
+            | RuntimeError::InvalidPatternCount { span, .. }
+            | RuntimeError::KernelQueryUnavailable { span, .. }
+            | RuntimeError::KernelQueryFailed { span, .. }
+            | RuntimeError::QueryBudgetExceeded { span } => *span,
         }
     }
 
@@ -555,6 +597,9 @@ impl RuntimeError {
             RuntimeError::UnknownField { .. } => "UNKNOWN_FIELD",
             RuntimeError::InvalidSpatialArgument { .. } => "INVALID_SPATIAL_ARGUMENT",
             RuntimeError::InvalidPatternCount { .. } => "INVALID_PATTERN_COUNT",
+            RuntimeError::KernelQueryUnavailable { .. } => "KERNEL_QUERY_UNAVAILABLE",
+            RuntimeError::KernelQueryFailed { .. } => "KERNEL_QUERY_FAILED",
+            RuntimeError::QueryBudgetExceeded { .. } => "QUERY_BUDGET_EXCEEDED",
         }
     }
 
@@ -663,6 +708,16 @@ impl RuntimeError {
             }
             RuntimeError::InvalidPatternCount { name, count, .. } => {
                 format!("'{name}' requires a 'count' of at least 1, found {count}")
+            }
+            RuntimeError::KernelQueryUnavailable { name, .. } => format!(
+                "'{name}' requires a real kernel-backed query executor, but this interpreter has \
+                 none configured"
+            ),
+            RuntimeError::KernelQueryFailed { name, message, .. } => {
+                format!("'{name}' failed: {message}")
+            }
+            RuntimeError::QueryBudgetExceeded { .. } => {
+                "exceeded this interpreter's kernel-query budget".to_string()
             }
         }
     }

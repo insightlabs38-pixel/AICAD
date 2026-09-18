@@ -165,9 +165,10 @@
 //! this evaluator's `expected`-type context.
 
 use crate::error::RuntimeError;
+use crate::query_exec::{KernelQueryExecutor, QueryOutcome};
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
-use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryOp, Quantity};
+use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryOp, GeometryQuery, Quantity};
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
     BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
@@ -176,7 +177,7 @@ use cad_hir::hir::{
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::HirType;
 use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Transform, Vector3};
-use cad_types::{AffineKind, PrimitiveType};
+use cad_types::{AffineKind, Dimension, PrimitiveType};
 use cad_units::{
     ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison, check_unary_neg,
 };
@@ -291,6 +292,22 @@ pub struct Interpreter<'a> {
     /// Not populated for a call that fails partway through (irrelevant: the
     /// whole build fails too in that case).
     call_geom_ranges: HashMap<Span, std::ops::Range<u32>>,
+    /// The real kernel-backed query dispatcher (`AICAD-105`,
+    /// `project/DECISION_LOG.md#DL-25`) a `is_valid`/`volume`/`area`
+    /// builtin call demand-materializes its result through — see
+    /// [`crate::query_exec`]'s own module doc comment for why this crate
+    /// takes a trait object here rather than depending on
+    /// `cad-geometry-runtime` directly. `None` (the default, set by
+    /// [`Interpreter::new`]) for every interpreter that does not need real
+    /// kernel results — every existing call site before this task, and
+    /// most tests — in which case a query builtin call fails cleanly with
+    /// `RuntimeError::KernelQueryUnavailable` rather than silently
+    /// returning a placeholder.
+    query_executor: Option<&'a dyn KernelQueryExecutor>,
+    /// The number of kernel-backed query calls this run has performed so
+    /// far, charged against [`ResourceBudget::max_kernel_queries`] — see
+    /// [`Interpreter::consume_query_budget`].
+    queries_consumed: u64,
 }
 
 /// The single coherent configuration surface for every execution resource
@@ -329,17 +346,26 @@ pub struct ResourceBudget {
     /// [`DEFAULT_MAX_CALL_DEPTH`]'s own doc comment for why this exists
     /// and how its default was chosen.
     pub max_call_depth: u64,
+    /// The total number of kernel-backed query calls (`is_valid`/`volume`/
+    /// `area`, `AICAD-105`) this interpreter run may perform before
+    /// `RuntimeError::QueryBudgetExceeded` — see
+    /// [`crate::query_exec`]'s own module doc comment for why a real
+    /// kernel call is a distinct, separately-budgeted resource from an
+    /// ordinary loop iteration or function call.
+    pub max_kernel_queries: u64,
 }
 
 impl Default for ResourceBudget {
-    /// [`DEFAULT_ITERATION_BUDGET`]/[`DEFAULT_MAX_CALL_DEPTH`] — the same
-    /// defaults a fresh [`Interpreter`] already started with before this
-    /// task, preserved exactly (this task generalizes the *contract*, not
-    /// the shipped default values themselves).
+    /// [`DEFAULT_ITERATION_BUDGET`]/[`DEFAULT_MAX_CALL_DEPTH`]/
+    /// [`DEFAULT_QUERY_BUDGET`] — the same defaults a fresh [`Interpreter`]
+    /// already started with before this task, preserved exactly (this task
+    /// generalizes the *contract*, not the shipped default values
+    /// themselves).
     fn default() -> ResourceBudget {
         ResourceBudget {
             max_iterations: DEFAULT_ITERATION_BUDGET,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
+            max_kernel_queries: DEFAULT_QUERY_BUDGET,
         }
     }
 }
@@ -364,6 +390,11 @@ pub struct ResourceUsage {
     pub peak_call_depth: u64,
     /// The configured call-depth limit this run started with.
     pub max_call_depth: u64,
+    /// Total kernel-backed query calls performed so far (see
+    /// [`ResourceBudget::max_kernel_queries`]).
+    pub queries_consumed: u64,
+    /// The configured kernel-query budget this run started with.
+    pub max_kernel_queries: u64,
 }
 
 /// The default `for`/`while`/`loop` iteration budget a fresh [`Interpreter`]
@@ -408,6 +439,15 @@ pub const DEFAULT_ITERATION_BUDGET: u64 = 10_000_000;
 /// thread stack could safely raise this).
 pub const DEFAULT_MAX_CALL_DEPTH: u64 = 64;
 
+/// The default kernel-backed-query budget a fresh [`Interpreter`] starts
+/// with (`AICAD-105`). A real kernel call is far more expensive than an
+/// ordinary loop iteration, so this is deliberately much smaller than
+/// [`DEFAULT_ITERATION_BUDGET`] while still being generous enough that no
+/// realistic test/ordinary program exercises it by accident — mirroring
+/// [`DEFAULT_ITERATION_BUDGET`]'s own "a real, finite bound, not merely
+/// very large" rationale (`AGENTS.md` "Execution safety").
+pub const DEFAULT_QUERY_BUDGET: u64 = 10_000;
+
 impl<'a> Interpreter<'a> {
     pub fn new(
         program: &'a HirProgram,
@@ -432,7 +472,19 @@ impl<'a> Interpreter<'a> {
             budget: ResourceBudget::default(),
             geometry: cad_geometry_api::GeometryGraph::new(),
             call_geom_ranges: HashMap::new(),
+            query_executor: None,
+            queries_consumed: 0,
         }
+    }
+
+    /// Configures the real kernel-backed query dispatcher (`AICAD-105`) a
+    /// `is_valid`/`volume`/`area` builtin call demand-materializes its
+    /// result through — see [`crate::query_exec`]'s own module doc
+    /// comment. A builder method (not a `new` parameter) so every existing
+    /// call site that never needs real kernel query results is unaffected.
+    pub fn with_query_executor(mut self, executor: &'a dyn KernelQueryExecutor) -> Self {
+        self.query_executor = Some(executor);
+        self
     }
 
     /// The [`GeomId`] range [`Interpreter::dispatch_builtin`] pushed for the
@@ -484,6 +536,8 @@ impl<'a> Interpreter<'a> {
             max_iterations: self.budget.max_iterations,
             peak_call_depth: self.peak_call_depth,
             max_call_depth: self.budget.max_call_depth,
+            queries_consumed: self.queries_consumed,
+            max_kernel_queries: self.budget.max_kernel_queries,
         }
     }
 
@@ -1433,6 +1487,31 @@ impl<'a> Interpreter<'a> {
             }
             Ok(count as u32)
         };
+        // Kernel-backed query builtins (`AICAD-105`, `project/
+        // DECISION_LOG.md#DL-25`) are handled separately, before
+        // `push_op` below: they push a `GeometryQuery` node (not a
+        // `GeometryOp`) and return a scalar `Value` (`Bool`/`Volume`/
+        // `Area`), never a `Value::Geometry`, so they cannot share this
+        // function's own "every arm produces a `GeomId`, wrapped in
+        // `Value::Geometry` at the end" shape below.
+        if matches!(
+            id,
+            BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area
+        ) {
+            let target = geometry(arg(0)?)?;
+            let query = match id {
+                BuiltinFnId::IsValid => GeometryQuery::IsValid(target),
+                BuiltinFnId::Volume => GeometryQuery::Volume(target),
+                BuiltinFnId::Area => GeometryQuery::Area(target),
+                _ => unreachable!("guarded by the outer matches! above"),
+            };
+            let query_node = self
+                .geometry
+                .push_query(query, span)
+                .map_err(|err| RuntimeError::GeometryConstruction { err })?;
+            return self.execute_kernel_query(id, query_node, span);
+        }
+
         // Pushes one `GeometryOp` node onto this run's own accumulated
         // `Interpreter::geometry` graph — every builtin arm below ends in
         // one or more calls to this, per this function's own doc comment
@@ -1680,8 +1759,70 @@ impl<'a> Interpreter<'a> {
                     thickness: Quantity::new(-thickness.magnitude, thickness.ty),
                 })?
             }
+            BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
+                unreachable!(
+                    "query builtins return early above, before this Construction-only match"
+                )
+            }
         };
         Ok(Value::Geometry(node))
+    }
+
+    /// Demand-materializes a kernel-backed query's real result (`AICAD-105`,
+    /// `project/DECISION_LOG.md#DL-25`) and converts it into the exact
+    /// `Value` kind `id`'s own `cad_hir::builtins::catalogue` return type
+    /// promises. `node` must already be the `GeometryQuery` node
+    /// [`Interpreter::dispatch_builtin`] just pushed onto
+    /// [`Interpreter::geometry`] for this same call — see
+    /// [`crate::query_exec`]'s own module doc comment for the full
+    /// architecture.
+    fn execute_kernel_query(
+        &mut self,
+        id: BuiltinFnId,
+        node: GeomId,
+        span: Span,
+    ) -> EvalResult<Value> {
+        self.consume_query_budget(span)?;
+        let name = builtin_name(id);
+        let executor = self
+            .query_executor
+            .ok_or(RuntimeError::KernelQueryUnavailable { name, span })?;
+        let outcome = executor.execute(&self.geometry, node).map_err(|err| {
+            RuntimeError::KernelQueryFailed {
+                name,
+                span,
+                message: err.message,
+            }
+        })?;
+        let value = match (id, outcome) {
+            (BuiltinFnId::IsValid, QueryOutcome::Bool(b)) => Value::Bool(b),
+            (BuiltinFnId::Volume, QueryOutcome::Number(magnitude)) => Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Volume, None),
+            }),
+            (BuiltinFnId::Area, QueryOutcome::Number(magnitude)) => Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Area, None),
+            }),
+            (other, outcome) => unreachable!(
+                "KernelQueryExecutor outcome {outcome:?} does not match query builtin {other:?} \
+                 -- every real implementation must return QueryOutcome::Bool for IsValid and \
+                 QueryOutcome::Number for Volume/Area"
+            ),
+        };
+        Ok(value)
+    }
+
+    /// Charges one kernel-backed query call against this interpreter's
+    /// [`ResourceBudget::max_kernel_queries`] (`AICAD-105`) — the query
+    /// analogue of [`Interpreter::enter_call`]/[`Interpreter::
+    /// consume_iteration_budget`].
+    fn consume_query_budget(&mut self, span: Span) -> EvalResult<()> {
+        if self.queries_consumed >= self.budget.max_kernel_queries {
+            return Err(RuntimeError::QueryBudgetExceeded { span }.into());
+        }
+        self.queries_consumed += 1;
+        Ok(())
     }
 
     /// Charges one function-call level against this interpreter's
@@ -2591,6 +2732,9 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::LinearPattern => "linear_pattern",
         BuiltinFnId::RadialPattern => "radial_pattern",
         BuiltinFnId::Shell => "shell",
+        BuiltinFnId::IsValid => "is_valid",
+        BuiltinFnId::Volume => "volume",
+        BuiltinFnId::Area => "area",
     }
 }
 
@@ -5670,5 +5814,147 @@ mod tests {
             box_range.end <= range.start,
             "box is built before hole's own nodes"
         );
+    }
+
+    // --- Kernel-backed queries (AICAD-105, project/DECISION_LOG.md#DL-25) ---
+
+    /// A fake [`KernelQueryExecutor`] for tests that must not depend on a
+    /// real kernel context (`cad-runtime` must not depend on
+    /// `cad-occt-bridge` — see `crate::query_exec`'s own module doc
+    /// comment): returns a fixed [`QueryOutcome`] (or a fixed failure) for
+    /// every call, proving `Interpreter`'s own dispatch/conversion/budget
+    /// logic in isolation from any real kernel dispatch.
+    struct FakeQueryExecutor {
+        outcome: Result<QueryOutcome, String>,
+    }
+
+    impl FakeQueryExecutor {
+        fn returning(outcome: QueryOutcome) -> Self {
+            FakeQueryExecutor {
+                outcome: Ok(outcome),
+            }
+        }
+
+        fn failing(message: &str) -> Self {
+            FakeQueryExecutor {
+                outcome: Err(message.to_string()),
+            }
+        }
+    }
+
+    impl KernelQueryExecutor for FakeQueryExecutor {
+        fn execute(
+            &self,
+            _graph: &cad_geometry_api::GeometryGraph,
+            _node: GeomId,
+        ) -> Result<QueryOutcome, crate::query_exec::KernelQueryError> {
+            self.outcome
+                .clone()
+                .map_err(|message| crate::query_exec::KernelQueryError { message })
+        }
+    }
+
+    #[test]
+    fn kernel_query_without_a_configured_executor_fails_cleanly() {
+        let source = "fn f() -> Bool { let b = box(1mm, 1mm, 1mm); return is_valid(b); }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E130");
+    }
+
+    #[test]
+    fn is_valid_returns_the_executors_real_value_and_drives_if_control_flow() {
+        let source = "fn f() -> Int { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 if is_valid(b) { return 1; } else { return 0; } \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 1.0);
+
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(false));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn volume_returns_a_volume_dimensioned_number() {
+        let source = "fn f() -> Volume { let b = box(1mm, 1mm, 1mm); return volume(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Number(0.5));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let value = interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(value, dimensional(0.5, Dimension::Volume));
+    }
+
+    #[test]
+    fn area_returns_an_area_dimensioned_number() {
+        let source = "fn f() -> Area { let b = box(1mm, 1mm, 1mm); return area(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Number(0.25));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let value = interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(value, dimensional(0.25, Dimension::Area));
+    }
+
+    #[test]
+    fn kernel_query_executor_failure_is_reported_as_kernel_query_failed() {
+        let source = "fn f() -> Bool { let b = box(1mm, 1mm, 1mm); return is_valid(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::failing("kernel exploded");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E131");
+    }
+
+    #[test]
+    fn kernel_query_budget_exceeded_is_a_clean_error() {
+        let source = "fn f() -> Int { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 var i = 0; \
+                 while i < 5 { \
+                     let ok = is_valid(b); \
+                     i = i + 1; \
+                 } \
+                 return i; \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_resource_budget(ResourceBudget {
+                    max_kernel_queries: 3,
+                    ..ResourceBudget::default()
+                })
+                .with_query_executor(&executor);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "BUDGET-E003");
+    }
+
+    #[test]
+    fn resource_usage_accounts_for_kernel_queries_consumed() {
+        let source = "fn f() -> Bool { let b = box(1mm, 1mm, 1mm); return is_valid(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        interp.call_by_name("f", vec![]).unwrap();
+        let usage = interp.resource_usage();
+        assert_eq!(usage.queries_consumed, 1);
+        assert_eq!(usage.max_kernel_queries, DEFAULT_QUERY_BUDGET);
     }
 }

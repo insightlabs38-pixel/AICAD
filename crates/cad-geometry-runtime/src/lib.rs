@@ -46,6 +46,7 @@
 
 pub mod bridge;
 pub mod dispatch;
+pub mod query_bridge;
 pub mod sketch_lowering;
 
 pub use bridge::number_value_to_quantity;
@@ -53,4 +54,5 @@ pub use dispatch::{
     DispatchError, GraphResults, IncrementalStats, LineageTable, NodeResult, dispatch_graph,
     dispatch_graph_incremental, dispatch_graph_incremental_with_lineage,
 };
+pub use query_bridge::OcctQueryExecutor;
 pub use sketch_lowering::{LoweredFace, SketchLoweringError, lower_profile_to_face};

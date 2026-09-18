@@ -270,6 +270,78 @@ pub enum BuiltinFnId {
     /// `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool =
     /// true` default with no separate parameter needed for it.
     Shell,
+    /// `is_valid(target: Geometry) -> Bool` (`AICAD-105`,
+    /// `project/DECISION_LOG.md#DL-23`/`DL-25`). A kernel-backed query, not
+    /// a construction op — see [`BuiltinCategory::Query`]'s own doc
+    /// comment. Dispatches to `GeometryQuery::IsValid`, demand-materialized
+    /// through `cad_runtime::query_exec::KernelQueryExecutor` so its real
+    /// result can drive ordinary source control flow immediately.
+    IsValid,
+    /// `volume(target: Geometry) -> Volume` (`AICAD-105`). Dispatches to
+    /// `GeometryQuery::Volume`. See [`BuiltinFnId::IsValid`]'s own doc
+    /// comment for the query-dispatch mechanism.
+    Volume,
+    /// `area(target: Geometry) -> Area` (`AICAD-105`). Dispatches to
+    /// `GeometryQuery::Area`. See [`BuiltinFnId::IsValid`]'s own doc
+    /// comment for the query-dispatch mechanism.
+    Area,
+}
+
+/// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
+/// the closed `RuntimeBuiltin` catalogue to carry as it scales
+/// (`project/DECISION_LOG.md#DL-23`'s own "category/effect metadata"
+/// requirement). Every entry is exactly one of:
+///
+/// - [`BuiltinCategory::Construction`]: builds/extends the caller's
+///   `cad_geometry_api::ir::GeometryGraph` (a `GeometryOp` node) and
+///   returns a `Geometry` value — pure with respect to the kernel (no
+///   kernel call happens until a later dispatch phase materializes the
+///   whole graph).
+/// - [`BuiltinCategory::Query`]: pushes a `GeometryQuery` node and — per
+///   `project/DECISION_LOG.md#DL-25`'s demand-materialization policy —
+///   synchronously executes it through `cad_runtime::query_exec::
+///   KernelQueryExecutor` during evaluation, returning an ordinary typed
+///   AICAD value a program can immediately branch on. This is a real
+///   effect (a kernel call happens now, not at some later dispatch phase),
+///   which is exactly why this category exists as its own metadata rather
+///   than being folded into `Construction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinCategory {
+    Construction,
+    Query,
+}
+
+impl BuiltinFnId {
+    /// This builtin's category — see [`BuiltinCategory`]'s own doc
+    /// comment. A `match` here (not a lookup table) so the compiler
+    /// enforces every [`BuiltinFnId::ALL`] entry has exactly one category,
+    /// the same exhaustiveness guarantee `cad_runtime::interp::
+    /// Interpreter::dispatch_builtin`'s own match already gives every
+    /// entry exactly one dispatch path.
+    pub fn category(self) -> BuiltinCategory {
+        match self {
+            BuiltinFnId::Box
+            | BuiltinFnId::Cylinder
+            | BuiltinFnId::Transform
+            | BuiltinFnId::Union
+            | BuiltinFnId::Cut
+            | BuiltinFnId::Intersect
+            | BuiltinFnId::Fillet
+            | BuiltinFnId::Chamfer
+            | BuiltinFnId::Plate
+            | BuiltinFnId::Extrude
+            | BuiltinFnId::Revolve
+            | BuiltinFnId::Hole
+            | BuiltinFnId::Pocket
+            | BuiltinFnId::Mirror
+            | BuiltinFnId::LinearPattern
+            | BuiltinFnId::RadialPattern
+            | BuiltinFnId::Shell => BuiltinCategory::Construction,
+            BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
+                BuiltinCategory::Query
+            }
+        }
+    }
 }
 
 // --- The standard type environment (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`) ---
@@ -314,7 +386,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 17] = [
+    pub const ALL: [BuiltinFnId; 20] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -332,6 +404,9 @@ impl BuiltinFnId {
         BuiltinFnId::LinearPattern,
         BuiltinFnId::RadialPattern,
         BuiltinFnId::Shell,
+        BuiltinFnId::IsValid,
+        BuiltinFnId::Volume,
+        BuiltinFnId::Area,
     ];
 }
 
@@ -544,6 +619,24 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             ],
             return_ty: named("Geometry"),
         },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsValid,
+            name: "is_valid",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Volume,
+            name: "volume",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Volume"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Area,
+            name: "area",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Area"),
+        },
     ]
 }
 
@@ -561,6 +654,38 @@ mod tests {
                 1,
                 "expected exactly one catalogue entry for {id:?}"
             );
+        }
+    }
+
+    /// `project/DECISION_LOG.md#DL-23`'s own "category/effect metadata"
+    /// requirement: every catalogue entry has exactly one
+    /// [`BuiltinCategory`], `BuiltinFnId::category` is a total match (a
+    /// compile error, not a test failure, if a variant is ever missed —
+    /// this test is the *evidence* that guarantee holds, not the guarantee
+    /// itself), and a `Construction` builtin always returns `Geometry`
+    /// while a `Query` builtin never does — the exact distinction
+    /// `cad_feature_graph::graph::FeatureGraph::resolve_geometry_expr`'s
+    /// own `is_geometry_type` check already relies on to keep a
+    /// scalar-returning query out of the feature DAG.
+    #[test]
+    fn every_catalogue_entry_has_a_category_consistent_with_its_return_type() {
+        for spec in catalogue() {
+            let is_geometry_return = matches!(
+                &spec.return_ty,
+                HirTypeRef::Named { name, .. } if name == "Geometry"
+            );
+            match spec.id.category() {
+                BuiltinCategory::Construction => assert!(
+                    is_geometry_return,
+                    "'{}' is Construction but does not return Geometry",
+                    spec.name
+                ),
+                BuiltinCategory::Query => assert!(
+                    !is_geometry_return,
+                    "'{}' is Query but returns Geometry",
+                    spec.name
+                ),
+            }
         }
     }
 
