@@ -6,8 +6,8 @@ to_stage: 5
 name: Stage 5 - programmable geometry substrate
 status: implementation-authorized
 last_completed_stage: 4
-last_completed_task: AICAD-100A
-next_task: AICAD-101
+last_completed_task: AICAD-104A
+next_task: AICAD-102
 implementation_authorized: true
 
 ## Authoritative current state
@@ -41,9 +41,15 @@ The final queue promotes the four remaining Stage-4/general-language carry-forwa
 
 ## Fixed Stage-5 batches
 
+`AICAD-104A` is an owner-requested narrow S5-00 remediation (part-body
+params in `ParamModel`, found by `AICAD-101`'s own limitation sweep) added
+alongside the four originally queued S5-00 tasks — see
+`project/reports/AICAD-104A.md`/`project/DECISION_LOG.md#DL-37`. It does
+not change the AICAD-102..104 queue below.
+
 | Batch | Tasks | Status |
 |---|---|---|
-| S5-00 | AICAD-101..104 | in progress |
+| S5-00 | AICAD-101..104, AICAD-104A | in progress (101, 104A done; 102, 103, 104 remaining) |
 | S5-01 | AICAD-105..106 | not started |
 | S5-02 | AICAD-107..108 | not started |
 | S5-03 | AICAD-109..112 | not started |

@@ -3339,6 +3339,49 @@ tasks:
   - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
   - an unresolved architecture alternative must be selected
   - work would expand into Stage 6 or later roadmap scope
+- id: AICAD-104A
+  stage: 5
+  title: Integrate part-body parameters into ParamModel
+  status: done
+  depends_on:
+  - AICAD-101
+  plan_references:
+  - project/reports/AICAD-101.md
+  - crates/cad-runtime/src/params.rs
+  - crates/cad-feature-graph/src/graph.rs
+  - project/OWNER_DECISIONS.md#D31
+  - project/DECISION_LOG.md#DL-33
+  - project/DECISION_LOG.md#DL-36
+  acceptance:
+  - Every supported part-body param (single-level and nested, matching AICAD-101's own unbounded-depth part semantics) is
+    represented by ParamModel with deterministic lexical/scoped identity (the same D31 Vec<String> scope-path convention as
+    FeatureNode::scope/qualified_feature_name), never flattened to a bare name.
+  - Two different parts declaring a param with the same leaf name never collide in ParamModel's own identity/dependency graph.
+  - Existing typed/unit/derived-expression param semantics (default expressions, override type checking, dependency-edge
+    computation) are unchanged and apply identically to a part-scoped param.
+  - A part-scoped param participates in ParamModel's dependency graph exactly like a top-level one, including transitive
+    dependency edges into/out of ordinary top-level params.
+  - Editing a part-scoped param's override triggers correct FeatureGraph dirty propagation and incremental rebuild: only
+    the affected dependent geometry recomputes; unaffected results are reused, through the real ParamModel -> FeatureGraph
+    -> ParametricBuildSession production path (never a test-only model).
+  - Relevant provenance for a part-scoped param is retained (no loss of scope/identity information through the parameter
+    pipeline).
+  - No new source syntax; no change to existing (non-part-scoped) parameter semantics; part-local parameter identity is
+    represented with an explicit scope path, never globally flattened.
+  required_checks:
+  - cargo fmt --all -- --check
+  - cargo clippy --workspace --all-targets --all-features -- -D warnings
+  - cargo test -p cad-runtime -p cad-feature-graph -p cad-cli
+  - cargo test --workspace
+  report: project/reports/AICAD-104A.md
+  escalate_if:
+  - public syntax/semantics must change beyond an approved RFC or resolved owner decision
+  - a stage gate/benchmark/test would need weakening
+  - kernel-specific types or native identity would leak above the kernel adapter
+  - semantic-reference ambiguity would require arbitrary fallback or fingerprint auto-recovery
+  - an unresolved architecture alternative must be selected
+  - work would expand into Stage 6 or later roadmap scope
+  - part-local parameter identity would need to be globally flattened to fit the existing ParamModel/FeatureGraph API shape
 - id: AICAD-105
   stage: 5
   title: Scale the closed RuntimeBuiltin catalogue and implement tracked kernel-backed query evaluation

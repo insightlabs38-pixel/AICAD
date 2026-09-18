@@ -521,15 +521,20 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         resolve_scoped_name(&self.lowered, name)
     }
 
-    /// Overrides top-level `param` named `name` to `value` for every
-    /// subsequent [`ParametricBuildSession::rebuild`] call (cumulative,
-    /// exactly like `cad_runtime::params::ParamOverrides`'s own semantics —
-    /// call again with a different value to edit it again, or with a
-    /// different param name to add another override alongside this one).
-    /// Does not itself rebuild — a caller wanting the resulting geometry
-    /// must call [`ParametricBuildSession::rebuild`] afterward, exactly
-    /// mirroring the campaign brief's own "build, edit parameter, rebuild"
-    /// three-step shape.
+    /// Overrides the `param` named `name` to `value` for every subsequent
+    /// [`ParametricBuildSession::rebuild`] call (cumulative, exactly like
+    /// `cad_runtime::params::ParamOverrides`'s own semantics — call again
+    /// with a different value to edit it again, or with a different param
+    /// name to add another override alongside this one). `name` may be a
+    /// top-level param's bare name, a part-scoped param's fully qualified
+    /// dotted path (`"Wall.width"`, `AICAD-104A`), or a part-scoped param's
+    /// own bare leaf name when it is unambiguous program-wide — see
+    /// `cad_runtime::params::ParamModel::find_by_name`'s own doc comment
+    /// for the exact, collision-safe resolution rule (`D31`). Does not
+    /// itself rebuild — a caller wanting the resulting geometry must call
+    /// [`ParametricBuildSession::rebuild`] afterward, exactly mirroring the
+    /// campaign brief's own "build, edit parameter, rebuild" three-step
+    /// shape.
     pub fn set_param(&mut self, name: &str, value: Value) -> Result<(), Box<Diagnostic>> {
         let model = ParamModel::build(&self.lowered.program).map_err(|err| {
             Box::new(
@@ -541,7 +546,7 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             Box::new(environment_diagnostic(
                 &self.file,
                 &self.source,
-                &format!("no top-level param named '{name}' in this program"),
+                &format!("no unambiguous param named '{name}' in this program"),
             ))
         })?;
         self.overrides.insert(id, value);

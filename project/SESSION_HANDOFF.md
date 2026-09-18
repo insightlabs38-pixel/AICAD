@@ -60,6 +60,17 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-Stage-5 implementation is authorized and in progress on `claude/aicad-stage5-dev`, starting with batch `S5-00` (`AICAD-101..104`) in dependency order. Work exactly one fixed batch per invocation; do not reorder tasks, combine batches, or begin later-stage work early.
+Stage-5 implementation is authorized and in progress on `claude/aicad-stage5-dev`, batch `S5-00`.
+
+Done so far in `S5-00`:
+
+- `AICAD-101` (nested `part`-in-`part` recurses to unbounded depth) — `project/reports/AICAD-101.md`, `DL-36`.
+- `AICAD-104A` (owner-requested narrow remediation: part-body `param`s now modeled by `ParamModel`, found by `AICAD-101`'s own limitation sweep) — `project/reports/AICAD-104A.md`, `DL-37`. Not part of the original four-task S5-00 definition; added to `project/TASKS.yaml` alongside it and completed in the same batch.
+
+Still open in `S5-00`, in dependency order: `AICAD-102` (Area/spatial source-value construction — investigation already done, see below), `AICAD-103` (complete `.aicad` query vocabulary lowering, depends on 101+102), `AICAD-104` (production-path proof, depends on 103).
+
+`AICAD-102` investigation findings (not yet implemented): `Dimension::Area` and `Length * Length -> Area` dimensional arithmetic already work today (`crates/cad-units/src/dimension_vector.rs`, `crates/cad-units/src/arithmetic.rs`); what's missing is purely an `Area`-dimensioned unit-literal suffix in `crates/cad-units/src/registry.rs`'s frozen `UNITS` table (no `mm2`/`m2` entries exist — the lexer already fuses arbitrary identifier suffixes with zero validation, so no lexer change is needed). `Point3`/`Vector3`/`Point2`/`Vector2`/`Axis3`/`Frame3`/`Plane` are already real, always-seeded standard source-level `struct` types (`crates/cad-hir/src/geometry_types.rs`'s `GEOMETRY_TYPES_SOURCE`, seeded by `crates/cad-hir/src/lower.rs::seed_standard_types`) with real source construction syntax already exercised by `crates/cad-runtime/src/spatial.rs`'s own tests — the genuine gap is that `crates/cad-cli/src/query_lowering.rs`'s query-clause mini-grammar has no way to spell a nested struct-literal/point argument for `area(...)`/`nearest_to(...)`/`farthest_from(...)` (its own doc comment already discloses this), and `cad_query::predicate::SpatialTarget`/`Frame3` there are a separate, simpler plain-data type from `cad_hir::geometry_types`'s struct, needing a lowering/bridging layer regardless of clause-grammar extension. This is `AICAD-102`'s (unit literal) and `AICAD-103`'s (clause grammar + bridging) work respectively.
+
+Work exactly one fixed batch per invocation; do not reorder tasks, combine batches, or begin later-stage work early. Per explicit owner instruction, do not begin `S5-01` until a future invocation is asked to.
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

@@ -573,10 +573,46 @@ impl<'a> Interpreter<'a> {
     /// pre-existing recursion into `part` nesting, so calling/constructing
     /// one from inside (or outside) a part body already worked before this
     /// task and needs no change here.
+    ///
+    /// `AICAD-104A`: this is a thin wrapper over
+    /// [`Interpreter::eval_part_body_inner`] with `params_precomputed:
+    /// false` — every `param` item evaluates its own `default` expression
+    /// directly, exactly as before. Used by [`Interpreter::run_top_level`],
+    /// which has no [`crate::params::ParamModel`]/override concept at all.
     fn eval_part_body(
         &mut self,
         part_binding: BindingId,
         items: &'a [HirItem],
+    ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
+        self.eval_part_body_inner(part_binding, items, false)
+    }
+
+    /// Like [`Interpreter::eval_part_body`], but every `param` item's value
+    /// (`params_precomputed: true`) is read back from [`Interpreter::
+    /// globals`] instead of evaluating its own `default` expression —
+    /// [`Interpreter::run_top_level_parametric`]'s own first pass already
+    /// computed it there (default-evaluated or overridden) via
+    /// [`crate::params::ParamModel`]'s dependency-ordered schedule, which
+    /// (`AICAD-104A`) now covers a part-scoped `param` exactly like a
+    /// top-level one. Re-evaluating the default here instead would silently
+    /// ignore any override on a part-scoped param. A part-scoped `param`
+    /// with neither a `default` nor an override is correctly absent from
+    /// `globals` and so is left out of this part's own `fields`, mirroring
+    /// [`Interpreter::run_top_level_parametric`]'s identical top-level
+    /// convention.
+    fn eval_part_body_parametric(
+        &mut self,
+        part_binding: BindingId,
+        items: &'a [HirItem],
+    ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
+        self.eval_part_body_inner(part_binding, items, true)
+    }
+
+    fn eval_part_body_inner(
+        &mut self,
+        part_binding: BindingId,
+        items: &'a [HirItem],
+        params_precomputed: bool,
     ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
         let mut frame: Frame = HashMap::new();
         let mut fields = Vec::new();
@@ -599,7 +635,16 @@ impl<'a> Interpreter<'a> {
                     name,
                     default,
                     ..
-                } => (*binding, name, default.as_ref()),
+                } => {
+                    if params_precomputed {
+                        if let Some(v) = self.globals.get(binding) {
+                            frame.insert(*binding, v.clone());
+                            fields.push((name.clone(), v.clone()));
+                        }
+                        continue;
+                    }
+                    (*binding, name, default.as_ref())
+                }
                 HirItem::Part {
                     binding,
                     name,
@@ -611,7 +656,11 @@ impl<'a> Interpreter<'a> {
                     // a `let`/`const` result, and into `frame` so a binding
                     // lookup by this part's own `BindingId` behaves
                     // identically to the top-level case in `run_top_level`.
-                    let value = self.eval_part_body(*binding, nested_items)?;
+                    // `params_precomputed` propagates unchanged so a
+                    // doubly-nested `param` (`AICAD-104A`) gets the same
+                    // treatment as one nested only one level deep.
+                    let value =
+                        self.eval_part_body_inner(*binding, nested_items, params_precomputed)?;
                     frame.insert(*binding, value.clone());
                     fields.push((name.clone(), value));
                     continue;
@@ -781,7 +830,13 @@ impl<'a> Interpreter<'a> {
                     // [`Interpreter::eval_part_body`]) — not a new
                     // execution semantics, just wiring an existing one
                     // into this method's own second entry point.
-                    let value = self.eval_part_body(*binding, items)?;
+                    // `AICAD-104A`: uses `eval_part_body_parametric`, not
+                    // `eval_part_body` — every `param` inside this part
+                    // (at any nesting depth) was already computed by this
+                    // method's own first pass above via `model`/
+                    // `overrides`, so its value must be read back, never
+                    // recomputed from its own `default` a second time.
+                    let value = self.eval_part_body_parametric(*binding, items)?;
                     self.globals.insert(*binding, value);
                 }
                 HirItem::Param { .. }
@@ -5200,6 +5255,165 @@ mod tests {
         // from that override, not from its own stale default expression.
         assert_number_eq(interp.globals[&width_id.0].clone(), 0.1);
         assert_number_eq(interp.globals[&double_id.0].clone(), 0.2);
+    }
+
+    // --- AICAD-104A: part-body params in ParamModel/run_top_level_parametric ---
+
+    #[test]
+    fn a_single_level_part_scoped_param_evaluates_through_the_parametric_path() {
+        let source = "part Wall {\n\
+                       \tparam width: Length = 40mm;\n\
+                       \tlet doubled: Length = width * 2.0;\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model
+            .find_by_name("Wall.width")
+            .expect("part-scoped param is modeled and resolvable by its qualified name");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.04);
+        let wall = binding_named(&lowered, "Wall");
+        match interp.global(wall) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields[0].0, "width");
+                assert_number_eq(fields[0].1.clone(), 0.04);
+                assert_eq!(fields[1].0, "doubled");
+                assert_number_eq(fields[1].1.clone(), 0.08);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_param_nested_two_levels_deep_evaluates_through_the_parametric_path() {
+        let source = "part Wall {\n\
+                       \tpart Door {\n\
+                       \t\tparam hinge_offset: Length = 5mm;\n\
+                       \t}\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let hinge_id = model
+            .find_by_name("Wall.Door.hinge_offset")
+            .expect("a param nested two levels deep is modeled with a two-element scope");
+        let decl = model.decl(hinge_id).unwrap();
+        assert_eq!(decl.scope, vec!["Wall".to_string(), "Door".to_string()]);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        assert_number_eq(interp.globals[&hinge_id.0].clone(), 0.005);
+    }
+
+    #[test]
+    fn overriding_a_part_scoped_param_recomputes_its_dependent_and_updates_the_parts_field() {
+        let source = "part Wall {\n\
+                       \tparam width: Length = 40mm;\n\
+                       \tlet doubled: Length = width * 2.0;\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model.find_by_name("Wall.width").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(width_id, dimensional(0.1, Dimension::Length));
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect("edit/rebuild should succeed");
+
+        // The override, not the stale default, is what the part's own
+        // exposed field and the dependent `let` both observe.
+        let wall = binding_named(&lowered, "Wall");
+        match interp.global(wall) {
+            Some(Value::Part { fields, .. }) => {
+                assert_number_eq(fields[0].1.clone(), 0.1);
+                assert_number_eq(fields[1].1.clone(), 0.2);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_param_in_one_part_can_depend_on_a_top_level_param_and_vice_versa() {
+        let source = "param scale: Float = 2.0;\n\
+                       part Wall {\n\
+                       \tparam width: Length = 40mm * scale;\n\
+                       }\n\
+                       let derived_from_part: Length = 1mm;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let scale_id = model.find_by_name("scale").unwrap();
+        let width_id = model.find_by_name("Wall.width").unwrap();
+        assert_eq!(
+            model.decl(width_id).unwrap().depends_on,
+            vec![scale_id],
+            "a part-scoped param's dependency on a top-level param is recorded"
+        );
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(scale_id, number(4.0));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect("edit/rebuild should succeed");
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.16);
+    }
+
+    #[test]
+    fn identical_param_leaf_names_in_two_different_part_scopes_never_collide() {
+        let source = "part Left {\n\
+                       \tparam width: Length = 1mm;\n\
+                       }\n\
+                       part Right {\n\
+                       \tparam width: Length = 2mm;\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        assert_eq!(
+            model.find_by_name("width"),
+            None,
+            "a bare leaf name colliding across two different part scopes must fail closed, \
+             never pick an arbitrary one of the two"
+        );
+        let left = model
+            .find_by_name("Left.width")
+            .expect("qualified lookup resolves");
+        let right = model
+            .find_by_name("Right.width")
+            .expect("qualified lookup resolves");
+        assert_ne!(left, right);
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        assert_number_eq(interp.globals[&left.0].clone(), 0.001);
+        assert_number_eq(interp.globals[&right.0].clone(), 0.002);
     }
 
     #[test]
