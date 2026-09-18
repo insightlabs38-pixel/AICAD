@@ -116,6 +116,10 @@ mod tests {
         Magnitude::new(value, OperandType::dimensional(Dimension::Length, None))
     }
 
+    fn area_mm2(value: f64) -> Magnitude {
+        Magnitude::new(value, OperandType::dimensional(Dimension::Area, None))
+    }
+
     fn sample_face() -> AnyRef {
         AnyRef::Face(FaceRef::from_strategy(
             ConstructionStrategy::StructuralRole("outer_boundary".into()),
@@ -127,6 +131,22 @@ mod tests {
         let predicate = GeometryPredicate::Area(Comparison::Gt(length_mm(500.0)));
         match predicate {
             GeometryPredicate::Area(Comparison::Gt(m)) => assert_eq!(m.value, 500.0),
+            _ => panic!("expected Area(Gt(_))"),
+        }
+    }
+
+    #[test]
+    fn geometry_predicate_area_comparison_can_carry_an_area_dimensioned_threshold() {
+        // `AICAD-102`: an `Area`-dimensioned `Magnitude` (`cad_units::
+        // registry`'s own new `mm2`/`m2`/... unit-literal family) can now
+        // actually be constructed from real `.aicad` source, not only from
+        // this crate's own dimension-generic `Magnitude::new` in Rust.
+        let predicate = GeometryPredicate::Area(Comparison::Gt(area_mm2(500.0)));
+        match predicate {
+            GeometryPredicate::Area(Comparison::Gt(m)) => {
+                assert_eq!(m.value, 500.0);
+                assert_eq!(m.ty, OperandType::dimensional(Dimension::Area, None));
+            }
             _ => panic!("expected Area(Gt(_))"),
         }
     }

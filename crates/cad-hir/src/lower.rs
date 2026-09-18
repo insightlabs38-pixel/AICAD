@@ -1510,6 +1510,31 @@ mod tests {
     }
 
     #[test]
+    fn area_literal_resolves_to_dimensional_area() {
+        // `AICAD-102`: `Area`'s own unit-literal spelling (RFC-0004 §4's
+        // "standard library may expand this set" clause,
+        // `crates/cad-units/src/registry.rs`) resolves through the exact
+        // same `cad_units::lookup_any(symbol)` mechanism as every other
+        // unit — no lowering-code change was needed for this to work.
+        let result = lower("let plate_area = 500mm2;");
+        let HirItem::Let { value, .. } = &result.program.items[0] else {
+            panic!("expected Let item");
+        };
+        let HirExpr::Literal { value: lit, ty, .. } = value else {
+            panic!("expected Literal expr");
+        };
+        assert_eq!(
+            *lit,
+            HirLiteral::Number {
+                text: "500".to_string(),
+                unit: Some("mm2".to_string()),
+            }
+        );
+        assert_eq!(*ty, Some(HirType::dimensional(Dimension::Area, None)));
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
     fn affine_temperature_literal_defaults_to_absolute() {
         let result = lower("let t = 20degC;");
         let HirItem::Let { value, .. } = &result.program.items[0] else {

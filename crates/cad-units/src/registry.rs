@@ -3,17 +3,32 @@
 //! mass (`mg g kg lbm`), force (`N kN lbf`), pressure/stress (`Pa kPa MPa
 //! GPa psi ksi`), temperature (`K degC degF`, affine)." RFC-0004 §4 itself
 //! is explicit that "the standard library may expand this set without a
-//! grammar change" — this registry covers exactly the six unit families
-//! §4 freezes now (`AICAD-048`), nothing beyond it (no units exist yet for
-//! `Volume`/`Time`/`Torque`/`Energy`/`Power`/etc. — RFC-0004 §4 defines
-//! none for them either).
+//! grammar change" — `AICAD-048` covered exactly the six unit families §4
+//! froze at Stage 0 (no units existed yet for `Volume`/`Time`/`Torque`/
+//! `Energy`/`Power`/etc. — RFC-0004 §4 defined none for them either).
+//!
+//! `AICAD-102` (Stage 5) is the first such standard-library expansion:
+//! `Area` unit literals (`nm2 um2 mm2 cm2 m2 km2 in2 ft2`, one squared
+//! counterpart per already-frozen length unit), needed by Stage-5 query
+//! arguments and any other source program comparing an `Area`-dimensioned
+//! quantity against a literal threshold. `cad_types::Dimension::Area` and
+//! `Length * Length -> Area` dimensional-arithmetic derivation
+//! (`crates/cad-units/src/arithmetic.rs`) already existed before this
+//! task — a source program could already *construct* an `Area` value via
+//! `width * height` (RFC-0004 §3's own worked example); what was missing
+//! was a direct literal spelling, which this expansion adds via the exact
+//! same RFC-0004-authorized mechanism as every other unit, not a new
+//! compiler intrinsic or a bare-`f64`/display-unit-dependent shortcut.
 //!
 //! `crates/cad-lexer` already recognizes *any* identifier-shaped suffix
 //! immediately following a number as a candidate unit (`AICAD-040`,
 //! deliberately deferring validation to "the unit registry (`AICAD-048`,
 //! `crates/cad-units`), which is where RFC-0004 §4's actual table
 //! belongs as executable data" — see `project/reports/AICAD-040.md`
-//! decision 1). This module is that table.
+//! decision 1). This module is that table, and every consumer
+//! (`cad_hir::lower`/`typeck`'s own `cad_units::lookup_any(symbol)` calls)
+//! resolves a literal's dimension purely from this data — adding `Area`'s
+//! entries below required no lexer, parser, or type-checker code change.
 
 use cad_types::Dimension;
 use std::fmt;
@@ -124,6 +139,58 @@ pub const UNITS: &[UnitDef] = &[
         symbol: "ft",
         dimension: Dimension::Length,
         scale_to_canonical: M_PER_FT,
+        affine_offset: None,
+    },
+    // Area (`AICAD-102`, RFC-0004 §4's own "standard library may expand
+    // this set" clause) — canonical unit = square metre, one entry per
+    // already-frozen length unit above, scaled by that unit's own factor
+    // squared (area scales as the square of a linear scale factor).
+    UnitDef {
+        symbol: "nm2",
+        dimension: Dimension::Area,
+        scale_to_canonical: 1e-9 * 1e-9,
+        affine_offset: None,
+    },
+    UnitDef {
+        symbol: "um2",
+        dimension: Dimension::Area,
+        scale_to_canonical: 1e-6 * 1e-6,
+        affine_offset: None,
+    },
+    UnitDef {
+        symbol: "mm2",
+        dimension: Dimension::Area,
+        scale_to_canonical: 1e-3 * 1e-3,
+        affine_offset: None,
+    },
+    UnitDef {
+        symbol: "cm2",
+        dimension: Dimension::Area,
+        scale_to_canonical: 1e-2 * 1e-2,
+        affine_offset: None,
+    },
+    UnitDef {
+        symbol: "m2",
+        dimension: Dimension::Area,
+        scale_to_canonical: 1.0,
+        affine_offset: None,
+    },
+    UnitDef {
+        symbol: "km2",
+        dimension: Dimension::Area,
+        scale_to_canonical: 1e3 * 1e3,
+        affine_offset: None,
+    },
+    UnitDef {
+        symbol: "in2",
+        dimension: Dimension::Area,
+        scale_to_canonical: M_PER_IN * M_PER_IN,
+        affine_offset: None,
+    },
+    UnitDef {
+        symbol: "ft2",
+        dimension: Dimension::Area,
+        scale_to_canonical: M_PER_FT * M_PER_FT,
         affine_offset: None,
     },
     // Angle.
@@ -441,6 +508,54 @@ mod tests {
                 "missing temperature unit {symbol}"
             );
         }
+    }
+
+    #[test]
+    fn area_unit_literals_are_registered_as_the_standard_librarys_own_rfc_0004_4_expansion() {
+        // `AICAD-102`: one squared counterpart per already-frozen length
+        // unit, exercising RFC-0004 §4's own explicit "the standard
+        // library may expand this set without a grammar change" clause.
+        let area: [&str; 8] = ["nm2", "um2", "mm2", "cm2", "m2", "km2", "in2", "ft2"];
+        for symbol in area {
+            assert!(
+                lookup(symbol, Dimension::Area).is_some(),
+                "missing area unit {symbol}"
+            );
+        }
+    }
+
+    #[test]
+    fn area_round_trip_mm2_to_m2_and_back() {
+        let mm2 = lookup("mm2", Dimension::Area).unwrap();
+        let m2 = lookup("m2", Dimension::Area).unwrap();
+        // 1,000,000 mm^2 = 1 m^2.
+        let in_m2 = convert_absolute(1_000_000.0, mm2, m2).unwrap();
+        assert!(approx_eq(in_m2, 1.0, 1e-12), "{in_m2}");
+        let back = convert_absolute(in_m2, m2, mm2).unwrap();
+        assert!(approx_eq(back, 1_000_000.0, 1e-6), "{back}");
+    }
+
+    #[test]
+    fn area_unit_conversion_rejects_length() {
+        let mm2 = lookup("mm2", Dimension::Area).unwrap();
+        let mm = lookup("mm", Dimension::Length).unwrap();
+        let err = convert_absolute(1.0, mm2, mm).unwrap_err();
+        assert_eq!(
+            err,
+            UnitConversionError {
+                from: Dimension::Area,
+                to: Dimension::Length
+            }
+        );
+    }
+
+    #[test]
+    fn square_feet_known_value() {
+        // 1 ft^2 = 144 in^2, exactly, since 1 ft = 12 in.
+        let ft2 = lookup("ft2", Dimension::Area).unwrap();
+        let in2 = lookup("in2", Dimension::Area).unwrap();
+        let value = convert_absolute(1.0, ft2, in2).unwrap();
+        assert!(approx_eq(value, 144.0, 1e-9), "{value}");
     }
 
     #[test]

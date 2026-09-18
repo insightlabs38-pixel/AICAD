@@ -3229,7 +3229,7 @@ tasks:
 - id: AICAD-102
   stage: 5
   title: Complete dimensional and spatial source-value construction required by Stage-5 queries
-  status: todo
+  status: done
   depends_on:
   - AICAD-100A
   plan_references:

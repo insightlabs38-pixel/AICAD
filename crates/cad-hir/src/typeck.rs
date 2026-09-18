@@ -3290,6 +3290,57 @@ mod tests {
         );
     }
 
+    // --- AICAD-102: Area source-value construction ---
+
+    #[test]
+    fn area_unit_literal_type_checks_to_dimensional_area() {
+        let (lowered, checked) = check("let plate_area = 500mm2;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(value(HirType::dimensional(
+                cad_types::Dimension::Area,
+                None
+            )))
+        );
+    }
+
+    #[test]
+    fn length_times_length_infers_area_with_no_annotation_needed() {
+        // Unlike `Force * Length` (Torque vs. Energy), `Length * Length`
+        // has exactly one dimensional-algebra match (`Dimension::Area`),
+        // so this already type-checked before `AICAD-102` -- this test
+        // pins that pre-existing behavior as part of this task's own
+        // "positive" construction-path coverage for `Area`.
+        let (lowered, checked) = check("let plate_area = 10mm * 10mm;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(value(HirType::dimensional(
+                cad_types::Dimension::Area,
+                None
+            )))
+        );
+    }
+
+    #[test]
+    fn area_plus_length_is_rejected_not_coerced() {
+        let (_lowered, checked) = check("let x = 500mm2 + 10mm;");
+        assert_eq!(codes(&checked.diagnostics), vec!["UNIT-E104"]);
+    }
+
+    #[test]
+    fn area_literal_and_derived_area_are_the_same_dimension() {
+        // A literal Area (`500mm2`) and a derived Area (`10mm * 10mm`)
+        // must type-check as freely addable -- same named dimension,
+        // regardless of construction path (DL-3's own "canonical
+        // representation independent of source-literal unit").
+        let (_lowered, checked) = check("let x = 500mm2 + 10mm * 10mm;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
     #[test]
     fn ambiguous_derived_dimension_resolves_via_function_return_type() {
         // `force * length` alone is ambiguous (Torque vs. Energy) — the

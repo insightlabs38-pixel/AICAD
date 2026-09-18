@@ -2888,6 +2888,32 @@ mod tests {
     }
 
     #[test]
+    fn area_literal_evaluates_to_canonical_square_metres() {
+        // `AICAD-102`: `Area`'s own direct unit-literal spelling, source
+        // -> parse -> lower -> typeck -> interpret, round-tripping to the
+        // same canonical (square-metre) representation the derived
+        // `length_times_length_derives_area` path above already produced.
+        let lowered = compiled("fn f() -> Area { return 500mm2; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        // 500 mm^2 = 500 * (1e-3 m)^2 = 500e-6 m^2 = 0.0005 m^2.
+        assert_number_eq(result.clone(), 0.0005);
+        match result {
+            Value::Number(n) => assert_eq!(n.ty, OperandType::dimensional(Dimension::Area, None)),
+            other => panic!("expected a Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn area_literal_and_derived_area_add_to_the_same_canonical_value() {
+        let lowered = compiled("fn f() -> Area { return 500000mm2 + 0.0m2; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        // 500,000 mm^2 = 0.5 m^2.
+        assert_number_eq(result, 0.5);
+    }
+
+    #[test]
     fn dimensional_argument_passed_directly_as_a_value() {
         let lowered = compiled("fn f(a: Length, b: Length) -> Length { return a + b; }");
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
