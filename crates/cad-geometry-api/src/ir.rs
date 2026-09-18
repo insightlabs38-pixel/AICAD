@@ -1319,4 +1319,53 @@ mod tests {
             }
         ));
     }
+
+    /// `AICAD-106` (`project/DECISION_LOG.md#DL-26` domain 3): a real
+    /// `cad_units::ApproximationTolerance` value composes directly into a
+    /// `GeometryQuery::Tessellate` node -- proving the typed tolerance
+    /// primitive actually enters AICAD-owned Geometry-IR state, not merely
+    /// existing as an unused standalone type.
+    #[test]
+    fn approximation_tolerance_composes_directly_into_a_tessellate_query() {
+        let tol = cad_units::ApproximationTolerance::new(0.001, 0.5).unwrap();
+
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let node = graph
+            .push_query(
+                GeometryQuery::Tessellate {
+                    target: solid,
+                    linear_deflection: Quantity::of(
+                        tol.linear_canonical_magnitude(),
+                        cad_units::ApproximationTolerance::linear_dimension(),
+                    ),
+                    angular_deflection: Quantity::of(
+                        tol.angular_canonical_magnitude(),
+                        cad_units::ApproximationTolerance::angular_dimension(),
+                    ),
+                },
+                span(),
+            )
+            .unwrap();
+        match &graph.nodes()[node.index() as usize].kind {
+            GeometryNodeKind::Query(GeometryQuery::Tessellate {
+                linear_deflection,
+                angular_deflection,
+                ..
+            }) => {
+                assert_eq!(linear_deflection.magnitude, 0.001);
+                assert_eq!(angular_deflection.magnitude, 0.5);
+            }
+            other => panic!("expected a Tessellate query node, found {other:?}"),
+        }
+    }
 }
