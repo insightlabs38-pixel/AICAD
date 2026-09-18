@@ -165,6 +165,7 @@
 //! this evaluator's `expected`-type context.
 
 use crate::error::RuntimeError;
+use crate::feature_trace::{CallPath, PathFrame, TraceEntry};
 use crate::query_exec::{KernelQueryExecutor, QueryOutcome};
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
@@ -175,7 +176,7 @@ use cad_hir::hir::{
     HirLiteral, HirMatchArm, HirParam, HirPattern, HirProgram, HirStmt, UnaryOp,
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
-use cad_hir::types::HirType;
+use cad_hir::types::{HirType, HirTypeRef};
 use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Transform, Vector3};
 use cad_types::{AffineKind, Dimension, PrimitiveType};
 use cad_units::{
@@ -308,6 +309,56 @@ pub struct Interpreter<'a> {
     /// far, charged against [`ResourceBudget::max_kernel_queries`] — see
     /// [`Interpreter::consume_query_budget`].
     queries_consumed: u64,
+    /// The current dynamic call/loop-iteration nesting (`AICAD-107`,
+    /// `project/DECISION_LOG.md#DL-27`) — the live stack a `RuntimeBuiltin`
+    /// geometry call's own [`CallPath`] is built from at the moment it
+    /// dispatches. Pushed/popped in [`Interpreter::call`] (one
+    /// [`PathFrame::Call`] per ordinary AICAD-source `fn` call entered) and
+    /// in [`Interpreter::exec_for`]/`while`/`loop` (one
+    /// [`PathFrame::Iteration`] per dynamic loop-body execution) — see
+    /// [`crate::feature_trace::CallPath`]'s own doc comment for why this
+    /// disambiguates every repeated dynamic visit to the same source span.
+    call_path_stack: Vec<PathFrame>,
+    /// Every top-level (or `part`-nested) declaration `BindingId` a
+    /// *local* binding's own current value transitively depends on
+    /// (`AICAD-107`) — populated at every place this crate assigns a local
+    /// binding a value derived from an expression (function-parameter
+    /// binding, `let`/`var`, assignment, a `for` loop's own element
+    /// binding, a `match` pattern binding) via [`Interpreter::
+    /// provenance_of`]. Never populated for a genuine top-level/`part`-
+    /// nested declaration itself (those are never "assigned" through one
+    /// of these sites — see [`Interpreter::run_top_level_parametric`]/
+    /// [`Interpreter::eval_part_body_inner`]), so [`Interpreter::
+    /// provenance_of`] correctly treats an absent entry as "this binding
+    /// already *is* a root". A flat, single map is safe despite nested
+    /// calls reusing it (mirrors [`Frame`]'s own "no scope stack needed"
+    /// precedent): [`BindingId`] is process-unique regardless of lexical
+    /// scope, so no two different declarations ever collide here, and a
+    /// loop-variable/local re-bound on a later iteration or call simply
+    /// overwrites its own previous entry, exactly matching how its
+    /// companion [`Frame`] entry is already overwritten.
+    binding_provenance: HashMap<BindingId, Vec<BindingId>>,
+    /// Every Geometry-returning `RuntimeBuiltin` call this run has
+    /// successfully dispatched so far, in execution order (`AICAD-107`) —
+    /// see [`Interpreter::trace`]'s own doc comment.
+    trace: Vec<TraceEntry>,
+    /// The [`CallPath`] of whichever traced call produced each live
+    /// [`Value::Geometry`] id this run has seen so far (`AICAD-107`) — how
+    /// [`Interpreter::call`] resolves one call's own `Geometry`-typed
+    /// arguments back to the [`CallPath`]s that produced them, for
+    /// [`crate::feature_trace::TraceEntry::geometry_inputs`].
+    geom_id_to_path: HashMap<GeomId, CallPath>,
+    /// The enclosing `part` name path (`D31`) of whichever top-level (or
+    /// `part`-nested) `let`/`const` is *currently* being evaluated
+    /// (`AICAD-107`) — set by [`Interpreter::run_top_level_parametric`]/
+    /// [`Interpreter::run_top_level`]/[`Interpreter::eval_part_body_inner`]
+    /// immediately before evaluating each such item's own value expression,
+    /// and copied into every [`TraceEntry::scope`] built while evaluating
+    /// it (including deep inside a function call/loop this evaluation
+    /// dynamically reaches) — see [`crate::feature_trace::TraceEntry::
+    /// scope`]'s own doc comment for why a helper function's own
+    /// *declaration* site never determines this.
+    current_scope: Vec<String>,
 }
 
 /// The single coherent configuration surface for every execution resource
@@ -474,6 +525,11 @@ impl<'a> Interpreter<'a> {
             call_geom_ranges: HashMap::new(),
             query_executor: None,
             queries_consumed: 0,
+            call_path_stack: Vec::new(),
+            binding_provenance: HashMap::new(),
+            trace: Vec::new(),
+            geom_id_to_path: HashMap::new(),
+            current_scope: Vec::new(),
         }
     }
 
@@ -508,6 +564,31 @@ impl<'a> Interpreter<'a> {
     /// completes — this crate makes zero kernel calls itself.
     pub fn geometry_graph(&self) -> &cad_geometry_api::GeometryGraph {
         &self.geometry
+    }
+
+    /// Every Geometry-returning `RuntimeBuiltin` call this run has
+    /// successfully dispatched so far, in execution order (`AICAD-107`,
+    /// `project/DECISION_LOG.md#DL-27`) — the execution-trace counterpart
+    /// of a purely-static `cad_feature_graph::graph::FeatureGraph`, built
+    /// by [`Interpreter::call`] as ordinary program execution reaches each
+    /// one, regardless of whether it occurs at top level, inside a `part`
+    /// body, inside a user function (at any call depth), inside a taken
+    /// `if`/`match` branch, or inside a loop iteration. Safe to call at any
+    /// point during or after execution, exactly like [`Interpreter::
+    /// geometry_graph`]. See `cad_feature_graph::trace_graph` for turning
+    /// this into a real dependency graph.
+    pub fn trace(&self) -> &[TraceEntry] {
+        &self.trace
+    }
+
+    /// The [`CallPath`] of the traced call that produced `id`, if `id`
+    /// names a [`Value::Geometry`] this run's own trace actually covers
+    /// (`AICAD-107`) — the accessor `cad_feature_graph::trace_graph` uses
+    /// to resolve a top-level (or `part`-nested) binding's own current
+    /// `Value::Geometry` id back to the feature that produced it, for
+    /// named lookup.
+    pub fn geom_id_path(&self, id: GeomId) -> Option<&CallPath> {
+        self.geom_id_to_path.get(&id)
     }
 
     /// Overrides this interpreter's [`ResourceBudget`] (default
@@ -560,17 +641,27 @@ impl<'a> Interpreter<'a> {
         for item in &program.items {
             match item {
                 HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
+                    // `AICAD-107`: a top-level declaration's own `part`
+                    // scope is always empty (`D31`) — a part-nested one
+                    // goes through the `HirItem::Part` arm below instead.
+                    self.current_scope.clear();
                     self.eval_top_level_value(*binding, value)?;
                 }
                 HirItem::Param {
                     binding, default, ..
                 } => {
                     if let Some(value) = default {
+                        self.current_scope.clear();
                         self.eval_top_level_value(*binding, value)?;
                     }
                 }
-                HirItem::Part { binding, items, .. } => {
-                    let value = self.eval_part_body(*binding, items)?;
+                HirItem::Part {
+                    binding,
+                    name,
+                    items,
+                    ..
+                } => {
+                    let value = self.eval_part_body(*binding, items, std::slice::from_ref(name))?;
                     self.globals.insert(*binding, value);
                 }
                 HirItem::Fn { .. }
@@ -637,8 +728,9 @@ impl<'a> Interpreter<'a> {
         &mut self,
         part_binding: BindingId,
         items: &'a [HirItem],
+        scope: &[String],
     ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
-        self.eval_part_body_inner(part_binding, items, false)
+        self.eval_part_body_inner(part_binding, items, false, scope)
     }
 
     /// Like [`Interpreter::eval_part_body`], but every `param` item's value
@@ -658,8 +750,9 @@ impl<'a> Interpreter<'a> {
         &mut self,
         part_binding: BindingId,
         items: &'a [HirItem],
+        scope: &[String],
     ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
-        self.eval_part_body_inner(part_binding, items, true)
+        self.eval_part_body_inner(part_binding, items, true, scope)
     }
 
     fn eval_part_body_inner(
@@ -667,6 +760,7 @@ impl<'a> Interpreter<'a> {
         part_binding: BindingId,
         items: &'a [HirItem],
         params_precomputed: bool,
+        scope: &[String],
     ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
         let mut frame: Frame = HashMap::new();
         let mut fields = Vec::new();
@@ -713,8 +807,18 @@ impl<'a> Interpreter<'a> {
                     // `params_precomputed` propagates unchanged so a
                     // doubly-nested `param` (`AICAD-104A`) gets the same
                     // treatment as one nested only one level deep.
-                    let value =
-                        self.eval_part_body_inner(*binding, nested_items, params_precomputed)?;
+                    // `AICAD-107`: `child_scope` extends this part's own
+                    // `scope` with the nested part's own name (`D31`),
+                    // matching `cad_feature_graph::graph::FeatureGraph::
+                    // build_items`'s identical convention exactly.
+                    let mut child_scope = scope.to_vec();
+                    child_scope.push(name.clone());
+                    let value = self.eval_part_body_inner(
+                        *binding,
+                        nested_items,
+                        params_precomputed,
+                        &child_scope,
+                    )?;
                     frame.insert(*binding, value.clone());
                     fields.push((name.clone(), value));
                     continue;
@@ -726,6 +830,7 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Query { .. } => continue,
             };
             let Some(value) = value else { continue };
+            self.current_scope = scope.to_vec();
             match self.eval_expr(&mut frame, value) {
                 Ok(v) => {
                     frame.insert(binding, v.clone());
@@ -856,15 +961,31 @@ impl<'a> Interpreter<'a> {
             let Some(default) = decl.default else {
                 continue;
             };
+            // `AICAD-107`: a `param`'s own default expression is evaluated
+            // in this flat, dependency-ordered pass with no `part`-scope
+            // context available (`crate::params::ParamModel` does not
+            // track a `param`'s own enclosing part path) — a documented,
+            // narrow limitation (see `project/reports/AICAD-107.md`), not
+            // a silent gap: any `TraceEntry` built while evaluating a
+            // `param` default (rare — a default is ordinarily a scalar
+            // computation, never a geometry construction) reports an empty
+            // scope regardless of whether the `param` itself is part-nested.
+            self.current_scope.clear();
             self.eval_top_level_value(id.0, default)?;
         }
 
         for item in &program.items {
             match item {
                 HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
+                    self.current_scope.clear();
                     self.eval_top_level_value(*binding, value)?;
                 }
-                HirItem::Part { binding, items, .. } => {
+                HirItem::Part {
+                    binding,
+                    name,
+                    items,
+                    ..
+                } => {
                     // `AICAD-096`: this method used to silently skip every
                     // `part { ... }` item (a pure declaration with no
                     // runtime effect, per this method's own prior doc
@@ -890,7 +1011,11 @@ impl<'a> Interpreter<'a> {
                     // method's own first pass above via `model`/
                     // `overrides`, so its value must be read back, never
                     // recomputed from its own `default` a second time.
-                    let value = self.eval_part_body_parametric(*binding, items)?;
+                    let value = self.eval_part_body_parametric(
+                        *binding,
+                        items,
+                        std::slice::from_ref(name),
+                    )?;
                     self.globals.insert(*binding, value);
                 }
                 HirItem::Param { .. }
@@ -1029,6 +1154,135 @@ impl<'a> Interpreter<'a> {
         self.run_fn_body(fn_item, frame)
     }
 
+    /// Computes `expr`'s own value provenance (`AICAD-107`, `project/
+    /// DECISION_LOG.md#DL-27`): every top-level (or `part`-nested)
+    /// declaration [`BindingId`] `expr`'s evaluated value transitively
+    /// depends on, resolved *through* [`Interpreter::binding_provenance`]
+    /// wherever `expr` references a local binding (a function parameter, a
+    /// loop variable, a `let`/`var` local, a `match` pattern binding) —
+    /// deduplicated, first-occurrence order, mirroring `cad_feature_graph::
+    /// cache::node_cache_key`'s own identical convention.
+    ///
+    /// This is the call-boundary-crossing counterpart of
+    /// `cad_feature_graph::cache::hash_expr`'s own purely syntactic
+    /// `BindingId` collection: that function walks *source structure*
+    /// alone and can never see through a function call (it has no
+    /// execution state to consult, by design — `cad-feature-graph` has no
+    /// interpreter); this one walks the *same* expression shapes but
+    /// resolves each local `BindingId` it finds against this run's own
+    /// live [`Interpreter::binding_provenance`] table, so a scalar
+    /// argument to a `RuntimeBuiltin` call deep inside a user function
+    /// still resolves back to the real top-level/`param` bindings it
+    /// ultimately came from at the *caller's* own call site, however many
+    /// levels of function-call argument-passing lie in between.
+    ///
+    /// # One deliberate conservative approximation
+    ///
+    /// A nested call's own provenance is the union of its own arguments'
+    /// provenance — this function does *not* look inside the callee's own
+    /// body to see whether it actually uses each argument (that would
+    /// require re-deriving a full interprocedural dataflow analysis, far
+    /// beyond what dirty-propagation correctness needs). This can only
+    /// ever *over-report* a dependency (an edit to a bindng the callee
+    /// happens to ignore triggers an unnecessary-but-harmless rebuild),
+    /// never under-report one (which would be the genuinely unsafe
+    /// direction — a real dependency silently missed).
+    fn provenance_of(&self, expr: &HirExpr) -> Vec<BindingId> {
+        let mut out = Vec::new();
+        self.collect_provenance(expr, &mut out);
+        out
+    }
+
+    fn collect_provenance(&self, expr: &HirExpr, out: &mut Vec<BindingId>) {
+        let push = |b: BindingId, out: &mut Vec<BindingId>| {
+            if !out.contains(&b) {
+                out.push(b);
+            }
+        };
+        match expr {
+            HirExpr::Literal { .. } => {}
+            HirExpr::Ident {
+                binding: Some(b), ..
+            } => match self.binding_provenance.get(b) {
+                Some(resolved) => {
+                    for r in resolved {
+                        push(*r, out);
+                    }
+                }
+                // No tracked provenance: `b` is either a genuine top-level/
+                // `part`-nested declaration (never itself "assigned"
+                // through one of `Interpreter::binding_provenance`'s own
+                // population sites — see that field's own doc comment), in
+                // which case it *is* the root to report, or an unresolved/
+                // defensive case with nothing better to report than its
+                // own identity.
+                None => push(*b, out),
+            },
+            HirExpr::Ident { binding: None, .. } => {}
+            HirExpr::Unary { operand, .. } => self.collect_provenance(operand, out),
+            HirExpr::Binary { lhs, rhs, .. } => {
+                self.collect_provenance(lhs, out);
+                self.collect_provenance(rhs, out);
+            }
+            HirExpr::Call { args, .. } => {
+                for arg in args {
+                    match arg {
+                        HirArg::Positional(e) => self.collect_provenance(e, out),
+                        HirArg::Named { value, .. } => self.collect_provenance(value, out),
+                    }
+                }
+            }
+            HirExpr::Field { receiver, .. } => self.collect_provenance(receiver, out),
+            HirExpr::Block(block) => self.collect_provenance_block(block, out),
+            HirExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.collect_provenance(cond, out);
+                self.collect_provenance_block(then_branch, out);
+                self.collect_provenance(else_branch, out);
+            }
+            HirExpr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.collect_provenance(scrutinee, out);
+                for arm in arms {
+                    self.collect_provenance(&arm.body, out);
+                }
+            }
+            HirExpr::ListLiteral { elements, .. } => {
+                for e in elements {
+                    self.collect_provenance(e, out);
+                }
+            }
+            HirExpr::Range { start, end, .. } => {
+                self.collect_provenance(start, out);
+                self.collect_provenance(end, out);
+            }
+            HirExpr::RecordLiteral { fields, .. } => {
+                for f in fields {
+                    self.collect_provenance(&f.value, out);
+                }
+            }
+        }
+    }
+
+    /// Only the trailing expression's provenance matters for "this block's
+    /// own value" (matching [`Interpreter::exec_block`]'s own evaluation
+    /// semantics: a block's statements are never themselves the block's
+    /// *value* provenance) — every intermediate statement's own local
+    /// bindings are already tracked at the point they are individually
+    /// assigned (see [`Interpreter::binding_provenance`]'s own population
+    /// sites), so walking them again here would only duplicate, never add,
+    /// real dependency information.
+    fn collect_provenance_block(&self, block: &HirBlock, out: &mut Vec<BindingId>) {
+        if let Some(trailing) = &block.trailing {
+            self.collect_provenance(trailing, out);
+        }
+    }
+
     /// Evaluates a real call site's arguments (in the caller's own frame,
     /// left to right) and dispatches on the callee binding's kind.
     fn call(
@@ -1103,11 +1357,18 @@ impl<'a> Interpreter<'a> {
                 name: name.clone(),
                 span: *callee_span,
             })?;
-        let HirItem::Fn { params, .. } = fn_item else {
+        let HirItem::Fn {
+            params,
+            body,
+            return_ty,
+            ..
+        } = fn_item
+        else {
             unreachable!("fns only ever indexes HirItem::Fn (see index_fns)")
         };
 
         let mut slots: Vec<Option<Value>> = vec![None; params.len()];
+        let mut slot_exprs: Vec<Option<&HirExpr>> = vec![None; params.len()];
         let mut next_positional = 0usize;
         for arg in args {
             match arg {
@@ -1122,6 +1383,7 @@ impl<'a> Interpreter<'a> {
                         .into());
                     }
                     slots[next_positional] = Some(value);
+                    slot_exprs[next_positional] = Some(expr);
                     next_positional += 1;
                 }
                 HirArg::Named {
@@ -1139,27 +1401,9 @@ impl<'a> Interpreter<'a> {
                             span: arg.span(),
                         })?;
                     slots[idx] = Some(evaluated);
+                    slot_exprs[idx] = Some(value);
                 }
             }
-        }
-
-        let mut frame: Frame = HashMap::new();
-        for (param, slot) in params.iter().zip(slots) {
-            let value = match slot {
-                Some(v) => v,
-                None => match &param.default {
-                    Some(default_expr) => self.eval_expr(&mut frame, default_expr)?,
-                    None => {
-                        return Err(RuntimeError::MissingArgument {
-                            name: name.clone(),
-                            param: param.name.clone(),
-                            span,
-                        }
-                        .into());
-                    }
-                },
-            };
-            frame.insert(param.binding, value);
         }
 
         // `AICAD-079B` gate remediation: for a `RuntimeBuiltin` call
@@ -1180,23 +1424,115 @@ impl<'a> Interpreter<'a> {
         // a feature node — see that module's own "Interprocedural
         // construction" scope note), so this stays narrowly scoped to
         // `RuntimeBuiltin` bodies only.
-        let is_runtime_builtin = matches!(
-            fn_item,
-            HirItem::Fn {
-                body: FunctionImplementation::RuntimeBuiltin(_),
-                ..
+        let is_runtime_builtin = matches!(body, FunctionImplementation::RuntimeBuiltin(_));
+
+        // `AICAD-107` (`project/DECISION_LOG.md#DL-27`): while filling
+        // `frame`, also record each parameter binding's own value
+        // provenance (`Interpreter::provenance_of`, resolved from the
+        // *caller's* own argument expression — see `Interpreter::
+        // binding_provenance`'s own doc comment for why this is what lets
+        // a later dirty-propagation check see straight through this call),
+        // and — for a `RuntimeBuiltin` callee only — classify each
+        // argument as a `geometry_inputs` edge or a scalar `parameters`
+        // entry, exactly mirroring `cad_feature_graph::graph::Builder::
+        // resolve_geometry_expr`'s own static classification, just driven
+        // by this call's own real dynamic argument values instead of a
+        // static type-only signature lookup.
+        let mut frame: Frame = HashMap::new();
+        let mut geometry_input_ids: Vec<GeomId> = Vec::new();
+        let mut trace_parameters: Vec<(String, Span)> = Vec::new();
+        let mut trace_binding_refs: Vec<BindingId> = Vec::new();
+        for (param, (slot, slot_expr)) in params.iter().zip(slots.into_iter().zip(slot_exprs)) {
+            let (value, expr) = match slot {
+                Some(v) => (
+                    v,
+                    slot_expr.expect("a filled slot always carries its own argument expression"),
+                ),
+                None => match &param.default {
+                    Some(default_expr) => (self.eval_expr(&mut frame, default_expr)?, default_expr),
+                    None => {
+                        return Err(RuntimeError::MissingArgument {
+                            name: name.clone(),
+                            param: param.name.clone(),
+                            span,
+                        }
+                        .into());
+                    }
+                },
+            };
+            let provenance = self.provenance_of(expr);
+            if is_runtime_builtin {
+                if is_geometry_type_ref(&param.ty) {
+                    if let Value::Geometry(id) = &value {
+                        geometry_input_ids.push(*id);
+                    }
+                } else {
+                    trace_parameters.push((param.name.clone(), expr.span()));
+                    for b in &provenance {
+                        if !trace_binding_refs.contains(b) {
+                            trace_binding_refs.push(*b);
+                        }
+                    }
+                }
             }
-        );
+            self.binding_provenance.insert(param.binding, provenance);
+            frame.insert(param.binding, value);
+        }
+
         if is_runtime_builtin {
+            let FunctionImplementation::RuntimeBuiltin(builtin_id) = body else {
+                unreachable!(
+                    "is_runtime_builtin only true for FunctionImplementation::RuntimeBuiltin"
+                )
+            };
+            let builtin_id = *builtin_id;
+            let is_geometry_result = return_ty.as_ref().is_some_and(is_geometry_type_ref);
             let start = self.geometry.nodes().len() as u32;
             let result = self.run_fn_body(fn_item, frame);
-            if result.is_ok() {
+            if let Ok(value) = &result {
                 let end = self.geometry.nodes().len() as u32;
                 self.call_geom_ranges.insert(span, start..end);
+                // Only a Geometry-returning builtin becomes a traced
+                // feature (`is_valid`/`volume`/`area`, `AICAD-105`, return
+                // a scalar/bool and are never features) — mirrors
+                // `cad_feature_graph::graph::Builder::resolve_geometry_
+                // expr`'s own identical `is_geometry_type` gate.
+                if is_geometry_result {
+                    let path = CallPath::new(self.call_path_stack.clone(), span);
+                    let geometry_inputs: Vec<CallPath> = geometry_input_ids
+                        .iter()
+                        .filter_map(|id| self.geom_id_to_path.get(id).cloned())
+                        .collect();
+                    if let Value::Geometry(result_id) = value {
+                        self.geom_id_to_path.insert(*result_id, path.clone());
+                    }
+                    self.trace.push(TraceEntry {
+                        path,
+                        op: builtin_id,
+                        geom_range: start..end,
+                        geometry_inputs,
+                        parameters: trace_parameters,
+                        binding_refs: trace_binding_refs,
+                        scope: self.current_scope.clone(),
+                    });
+                }
             }
             result
         } else {
-            self.run_fn_body(fn_item, frame)
+            // `AICAD-107`: an ordinary AICAD-source function call is one
+            // more frame of dynamic nesting for any `RuntimeBuiltin`
+            // geometry call reached inside its body — see `Interpreter::
+            // call_path_stack`'s own doc comment. Popped unconditionally
+            // (success or failure) so a failed call never leaves a stale
+            // frame behind for whatever executes next after error recovery
+            // (there is none today — every `RuntimeError` unwinds the
+            // whole run — but this keeps the invariant "the stack always
+            // reflects genuinely active dynamic nesting" exception-safe
+            // regardless).
+            self.call_path_stack.push(PathFrame::Call(span));
+            let result = self.run_fn_body(fn_item, frame);
+            self.call_path_stack.pop();
+            result
         }
     }
 
@@ -1871,6 +2207,13 @@ impl<'a> Interpreter<'a> {
         match stmt {
             HirStmt::Let { binding, value, .. } | HirStmt::Var { binding, value, .. } => {
                 let v = self.eval_expr(frame, value)?;
+                // `AICAD-107`: this local's own value provenance, so a
+                // later reference to it (however deep inside a nested
+                // function call) resolves back to the real top-level
+                // bindings it ultimately came from — see `Interpreter::
+                // binding_provenance`'s own doc comment.
+                let provenance = self.provenance_of(value);
+                self.binding_provenance.insert(*binding, provenance);
                 frame.insert(*binding, v);
                 Ok(())
             }
@@ -1885,6 +2228,8 @@ impl<'a> Interpreter<'a> {
                     name: name.clone(),
                     span: *span,
                 })?;
+                let provenance = self.provenance_of(value);
+                self.binding_provenance.insert(binding, provenance);
                 frame.insert(binding, v);
                 Ok(())
             }
@@ -1930,6 +2275,12 @@ impl<'a> Interpreter<'a> {
             HirStmt::While {
                 cond, body, span, ..
             } => {
+                // `AICAD-107`: one `PathFrame::Iteration` per dynamic
+                // `while`-body execution, disambiguating a `RuntimeBuiltin`
+                // geometry call at the same source span executed more than
+                // once by this loop — see `crate::feature_trace::CallPath`'s
+                // own doc comment.
+                let mut iteration: u64 = 0;
                 while self.eval_bool(frame, cond)? {
                     // `AICAD-058`: every `while` iteration now participates
                     // in the same shared iteration budget `for` already
@@ -1940,7 +2291,12 @@ impl<'a> Interpreter<'a> {
                     // 03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §16 says
                     // runtime budgets must protect against.
                     self.consume_iteration_budget(*span)?;
-                    match self.exec_block(frame, body) {
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(*span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    iteration += 1;
+                    match result {
                         Ok(_) => {}
                         Err(Signal::Break(_)) => break,
                         Err(Signal::Continue(_)) => continue,
@@ -1949,23 +2305,31 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(())
             }
-            HirStmt::Loop { body, span, .. } => loop {
-                // Same rationale as `While` above — a bare `loop { }` has
-                // no condition at all, so without this it was even more
-                // trivially unbounded than `while`.
-                self.consume_iteration_budget(*span)?;
-                match self.exec_block(frame, body) {
-                    Ok(_) => {}
-                    Err(Signal::Break(_)) => return Ok(()),
-                    Err(Signal::Continue(_)) => continue,
-                    Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+            HirStmt::Loop { body, span, .. } => {
+                let mut iteration: u64 = 0;
+                loop {
+                    // Same rationale as `While` above — a bare `loop { }`
+                    // has no condition at all, so without this it was even
+                    // more trivially unbounded than `while`.
+                    self.consume_iteration_budget(*span)?;
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(*span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    iteration += 1;
+                    match result {
+                        Ok(_) => {}
+                        Err(Signal::Break(_)) => return Ok(()),
+                        Err(Signal::Continue(_)) => continue,
+                        Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+                    }
                 }
-            },
+            }
             HirStmt::Match {
                 scrutinee, arms, ..
             } => {
                 let value = self.eval_expr(frame, scrutinee)?;
-                self.eval_match(frame, &value, arms, stmt.span())?;
+                self.eval_match(frame, &value, scrutinee, arms, stmt.span())?;
                 Ok(())
             }
             HirStmt::Break { span } => Err(Signal::Break(*span)),
@@ -2004,12 +2368,25 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> EvalResult<()> {
         let iterable_value = self.eval_expr(frame, iterable)?;
+        // `AICAD-107`: the loop variable's own value provenance is the
+        // *iterable* expression's own provenance — computed once here
+        // (matching "`iterable` is evaluated exactly once" above), since
+        // every element drawn from it shares that same upstream
+        // dependency regardless of which element index a given iteration
+        // binds.
+        let iterable_provenance = self.provenance_of(iterable);
         match iterable_value {
             Value::List(items) => {
-                for item in items {
+                for (iteration, item) in (0u64..).zip(items) {
                     self.consume_iteration_budget(span)?;
                     frame.insert(binding, item);
-                    match self.exec_block(frame, body) {
+                    self.binding_provenance
+                        .insert(binding, iterable_provenance.clone());
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    match result {
                         Ok(_) => {}
                         Err(Signal::Break(_)) => break,
                         Err(Signal::Continue(_)) => continue,
@@ -2060,6 +2437,7 @@ impl<'a> Interpreter<'a> {
                 let elem_ty = start.ty;
                 let end_magnitude = end.magnitude;
                 let mut current = start.magnitude;
+                let mut iteration: u64 = 0;
                 loop {
                     let has_more = if range.inclusive {
                         current <= end_magnitude
@@ -2077,6 +2455,8 @@ impl<'a> Interpreter<'a> {
                             ty: elem_ty,
                         }),
                     );
+                    self.binding_provenance
+                        .insert(binding, iterable_provenance.clone());
                     // Advanced before the body runs (rather than after),
                     // so every exit path below — falling through, `break`,
                     // or `continue` — already has the next value ready;
@@ -2084,7 +2464,12 @@ impl<'a> Interpreter<'a> {
                     // empty" falls out for free from the `has_more` check
                     // above, never an implicit reversal of direction.
                     current += 1.0;
-                    match self.exec_block(frame, body) {
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    iteration += 1;
+                    match result {
                         Ok(_) => {}
                         Err(Signal::Break(_)) => return Ok(()),
                         Err(Signal::Continue(_)) => continue,
@@ -2207,7 +2592,7 @@ impl<'a> Interpreter<'a> {
                 scrutinee, arms, ..
             } => {
                 let value = self.eval_expr(frame, scrutinee)?;
-                self.eval_match(frame, &value, arms, expr.span())
+                self.eval_match(frame, &value, scrutinee, arms, expr.span())
             }
             HirExpr::ListLiteral { elements, .. } => {
                 let mut items = Vec::with_capacity(elements.len());
@@ -2518,11 +2903,18 @@ impl<'a> Interpreter<'a> {
         &mut self,
         frame: &mut Frame,
         scrutinee: &Value,
+        scrutinee_expr: &HirExpr,
         arms: &[HirMatchArm],
         span: Span,
     ) -> EvalResult<Value> {
+        // `AICAD-107`: every pattern-bound local this match introduces
+        // inherits the *whole scrutinee's* own provenance — see
+        // `Interpreter::pattern_matches`'s own doc comment for why a
+        // per-field decomposition is a deliberate, documented
+        // simplification rather than a gap.
+        let scrutinee_provenance = self.provenance_of(scrutinee_expr);
         for arm in arms {
-            if self.pattern_matches(frame, &arm.pattern, scrutinee)? {
+            if self.pattern_matches(frame, &arm.pattern, scrutinee, &scrutinee_provenance)? {
                 return self.eval_expr(frame, &arm.body);
             }
         }
@@ -2532,16 +2924,30 @@ impl<'a> Interpreter<'a> {
     /// Tests one pattern against an already-evaluated scrutinee value,
     /// binding `HirPattern::Binding`'s own fresh name into `frame` when it
     /// matches (unconditionally — a bare binding pattern always matches).
+    ///
+    /// `scrutinee_provenance` (`AICAD-107`) is recorded verbatim as every
+    /// newly-bound pattern variable's own [`Interpreter::
+    /// binding_provenance`] entry — a deliberate simplification: a tuple/
+    /// record destructuring pattern could in principle track which top-level
+    /// binding contributed *which field*, but no evaluated [`Value`] in
+    /// this crate carries that per-field provenance today, so this
+    /// conservatively attributes the *whole* scrutinee's own provenance to
+    /// every field it destructures. Like [`Interpreter::provenance_of`]'s
+    /// own documented approximation, this can only ever over-report a
+    /// dependency, never miss a real one.
     fn pattern_matches(
-        &self,
+        &mut self,
         frame: &mut Frame,
         pattern: &HirPattern,
         scrutinee: &Value,
+        scrutinee_provenance: &[BindingId],
     ) -> EvalResult<bool> {
         match pattern {
             HirPattern::Wildcard { .. } => Ok(true),
             HirPattern::Binding { binding, .. } => {
                 frame.insert(*binding, scrutinee.clone());
+                self.binding_provenance
+                    .insert(*binding, scrutinee_provenance.to_vec());
                 Ok(true)
             }
             HirPattern::Variant { variant, .. } => {
@@ -2566,7 +2972,7 @@ impl<'a> Interpreter<'a> {
                     return Ok(false);
                 }
                 for (elem, value) in elems.iter().zip(values) {
-                    if !self.pattern_matches(frame, elem, value)? {
+                    if !self.pattern_matches(frame, elem, value, scrutinee_provenance)? {
                         return Ok(false);
                     }
                 }
@@ -2599,7 +3005,7 @@ impl<'a> Interpreter<'a> {
                         // regardless (AGENTS.md).
                         return Ok(false);
                     };
-                    if !self.pattern_matches(frame, &field.pattern, value)? {
+                    if !self.pattern_matches(frame, &field.pattern, value, scrutinee_provenance)? {
                         return Ok(false);
                     }
                 }
@@ -2705,6 +3111,16 @@ fn to_arith_op(op: BinaryOp) -> ArithmeticOp {
         BinaryOp::Div => ArithmeticOp::Div,
         _ => unreachable!("to_arith_op is only called for Add/Sub/Mul/Div"),
     }
+}
+
+/// Whether `ty` is the `Geometry` type — `AICAD-107`'s own local copy of
+/// `cad_feature_graph::graph::is_geometry_type`'s identical one-line check
+/// (that crate cannot be depended on from here without creating exactly
+/// the dependency-direction problem `cad_feature_graph::cache`'s own
+/// module doc comment already documents avoiding, in reverse — see
+/// `crate::feature_trace`'s own module doc comment).
+fn is_geometry_type_ref(ty: &HirTypeRef) -> bool {
+    matches!(ty, HirTypeRef::Named { name, .. } if name == "Geometry")
 }
 
 /// The stable name one `BuiltinFnId` variant reports in a
@@ -5956,5 +6372,275 @@ mod tests {
         let usage = interp.resource_usage();
         assert_eq!(usage.queries_consumed, 1);
         assert_eq!(usage.max_kernel_queries, DEFAULT_QUERY_BUDGET);
+    }
+
+    // --- AICAD-107: feature identity/dependency/provenance through
+    //     ordinary language abstraction (project/DECISION_LOG.md#DL-27) ---
+
+    #[test]
+    fn geometry_built_through_a_user_function_is_traced() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\n\
+                       let base = make();\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "geometry built inside a helper function's own body must still be traced, not \
+             become invisible to the feature system merely because it was reached through a \
+             function call"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+        assert_eq!(interp.trace()[0].scope, Vec::<String>::new());
+    }
+
+    #[test]
+    fn two_separate_calls_to_the_same_helper_function_are_not_collapsed() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\n\
+                       let a = make();\n\
+                       let b = make();\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            2,
+            "two separate call sites to the same helper must each get their own traced \
+             feature, never collapsed into one just because the helper's own name repeats"
+        );
+        assert_ne!(interp.trace()[0].path, interp.trace()[1].path);
+    }
+
+    #[test]
+    fn repeated_geometry_calls_inside_a_loop_get_distinct_call_paths() {
+        let source = "fn f() -> Int {\n\
+                       \tvar i = 0;\n\
+                       \twhile i < 3 {\n\
+                       \t\tlet b = box(1mm, 1mm, 1mm);\n\
+                       \t\ti = i + 1;\n\
+                       \t}\n\
+                       \treturn i;\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            3,
+            "the same call expression executed three times by a loop must be traced three times"
+        );
+        let paths: std::collections::HashSet<_> =
+            interp.trace().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths.len(),
+            3,
+            "each loop iteration's own box(...) call must get its own distinct CallPath, never \
+             collapsing onto a single bare-span identity"
+        );
+    }
+
+    #[test]
+    fn repeated_geometry_calls_inside_a_for_loop_get_distinct_call_paths() {
+        // `exec_for`'s own iteration-frame push/pop is a genuinely separate
+        // code path from `while`/`loop`'s (a different loop construct
+        // entirely, over a `List<T>`), so this is real, not redundant,
+        // coverage alongside `repeated_geometry_calls_inside_a_loop_get_
+        // distinct_call_paths` above.
+        let source = "fn f() -> Int {\n\
+                       \tvar total = 0;\n\
+                       \tfor i in 0..3 {\n\
+                       \t\tlet b = box(1mm, 1mm, 1mm);\n\
+                       \t\ttotal = total + i;\n\
+                       \t}\n\
+                       \treturn total;\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(interp.trace().len(), 3);
+        let paths: std::collections::HashSet<_> =
+            interp.trace().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths.len(),
+            3,
+            "each for-loop iteration's own box(...) call must get its own distinct CallPath"
+        );
+    }
+
+    #[test]
+    fn binding_refs_resolve_through_a_helper_functions_own_parameter() {
+        let source = "param radius: Length = 4mm;\n\
+                       fn make_boss(w: Length) -> Geometry { return cylinder(w, 12mm); }\n\
+                       let boss = make_boss(radius);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        let radius_id = model.find_by_name("radius").unwrap();
+        assert_eq!(interp.trace().len(), 1);
+        assert_eq!(
+            interp.trace()[0].binding_refs,
+            vec![radius_id.0],
+            "a scalar argument threaded through a helper function's own parameter must still \
+             resolve back to the real top-level param it ultimately came from, so an edit to \
+             that param correctly marks this feature dirty"
+        );
+    }
+
+    #[test]
+    fn binding_refs_resolve_through_two_levels_of_helper_function_nesting() {
+        let source = "param radius: Length = 4mm;\n\
+                       fn inner(w: Length) -> Geometry { return cylinder(w, 12mm); }\n\
+                       fn outer(w: Length) -> Geometry { return inner(w); }\n\
+                       let boss = outer(radius);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        let radius_id = model.find_by_name("radius").unwrap();
+        assert_eq!(interp.trace().len(), 1);
+        assert_eq!(interp.trace()[0].binding_refs, vec![radius_id.0]);
+    }
+
+    #[test]
+    fn only_the_taken_branch_of_an_if_expression_is_traced() {
+        let source = "fn f(flag: Bool) -> Geometry {\n\
+                       \tif flag {\n\
+                       \t\treturn box(1mm, 1mm, 1mm);\n\
+                       \t} else {\n\
+                       \t\treturn cylinder(1mm, 1mm);\n\
+                       \t}\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("f", vec![Value::Bool(true)]).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "only the branch actually taken at run time builds a feature -- the untaken branch \
+             never executes, so it is correctly absent from the trace rather than guessed at"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+    }
+
+    #[test]
+    fn geometry_built_through_a_helper_inside_a_part_keeps_the_parts_scope() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\n\
+                       part Wall {\n\
+                       \tlet base = make();\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(interp.trace().len(), 1);
+        assert_eq!(
+            interp.trace()[0].scope,
+            vec!["Wall".to_string()],
+            "a helper function's own declaration site (top level, outside any part) must not \
+             determine scope -- only which part-nested let's evaluation reached it dynamically \
+             does"
+        );
+    }
+
+    #[test]
+    fn geometry_inputs_resolve_across_a_helper_function_boundary() {
+        let source = "fn make_base() -> Geometry { return box(10mm, 10mm, 10mm); }\n\
+                       let base = make_base();\n\
+                       let hole = cylinder(1mm, 10mm);\n\
+                       let drilled = cut(base, hole);\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(interp.trace().len(), 3);
+        let cut_entry = interp
+            .trace()
+            .iter()
+            .find(|e| e.op == BuiltinFnId::Cut)
+            .expect("cut was traced");
+        let base_entry = interp
+            .trace()
+            .iter()
+            .find(|e| e.op == BuiltinFnId::Box)
+            .expect("box was traced");
+        assert!(
+            cut_entry.geometry_inputs.contains(&base_entry.path),
+            "cut's own base argument must resolve back to the box(...) call made deep inside \
+             make_base(), even though cut(...) itself is called directly at top level"
+        );
+    }
+
+    #[test]
+    fn geom_id_path_resolves_the_producing_call_for_a_value_built_through_a_helper() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\nlet base = make();\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        let base_binding = binding_named(&lowered, "base");
+        let Some(Value::Geometry(id)) = interp.global(base_binding) else {
+            panic!("base should have evaluated to a Geometry value");
+        };
+        assert!(
+            interp.geom_id_path(*id).is_some(),
+            "a top-level binding's own Geometry value, even one produced deep inside a helper \
+             function, must resolve back to the CallPath that produced it"
+        );
+    }
+
+    #[test]
+    fn recursive_helper_building_geometry_at_each_depth_gets_distinct_call_paths() {
+        // `build(n)`'s base case (`n <= 0`) returns a bare `box(...)` at one
+        // source span; its recursive case combines a *different* `box(...)`
+        // span with `build(n - 1)`'s own result via `cut`. Called with
+        // `n = 2`: the base-case `box` fires once (only `build(0)` reaches
+        // it), the recursive-case `box`/`cut` pair fires twice each
+        // (`build(2)`/`build(1)`), for five traced calls total -- every one
+        // of them at its own distinct `CallPath`, the recursive-case pair
+        // disambiguated purely by the growing `PathFrame::Call` stack
+        // (`build(n - 1)`'s own call expression is one fixed span, reached
+        // at increasing depth), with no separate recursion-depth counter
+        // needed.
+        let source = "fn build(n: Int) -> Geometry {\n\
+                       \tif n <= 0 {\n\
+                       \t\treturn box(1mm, 1mm, 1mm);\n\
+                       \t}\n\
+                       \treturn cut(build(n - 1), box(2mm, 2mm, 2mm));\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("build", vec![number(2.0)]).unwrap();
+        assert_eq!(interp.trace().len(), 5);
+        let paths: std::collections::HashSet<_> =
+            interp.trace().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths.len(),
+            5,
+            "every traced call across every recursion depth must get its own distinct CallPath"
+        );
     }
 }

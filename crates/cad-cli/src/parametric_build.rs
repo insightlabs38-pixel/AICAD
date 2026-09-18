@@ -38,11 +38,11 @@
 //! a disk cache, daemon, or watch server; an ordinary owned value for the
 //! lifetime of one build session, exactly the "single process/session can
 //! build, edit parameter, rebuild" scope the campaign brief's own
-//! remediation instructions call for) and re-derives `ParamModel`/
-//! `FeatureGraph` fresh from the same already-lowered `HirProgram` on every
-//! call (both are pure, cheap functions of already-owned HIR — re-deriving
-//! them avoids a self-referential-struct problem with no correctness cost,
-//! since neither type is itself mutated between calls).
+//! remediation instructions call for) and re-derives `ParamModel` fresh from
+//! the same already-lowered `HirProgram` on every call (a pure, cheap
+//! function of already-owned HIR — re-deriving it avoids a self-referential-
+//! struct problem with no correctness cost, since it is never mutated
+//! between calls).
 //!
 //! [`ParametricBuildSession::rebuild`] is the one orchestration boundary:
 //!
@@ -55,15 +55,23 @@
 //!    a freshly-evaluated `GeometryGraph` — structurally identical to the
 //!    prior round's own graph for unchanged source (same call sequence, same
 //!    `GeomId` positions), differing only in the evaluated scalar parameters
-//!    of nodes downstream of a changed param.
-//! 3. Ask `FeatureGraph::dirty_set` (the sole semantic authority for *what*
-//!    is dirty — this module never second-guesses it) which named/anonymous
-//!    feature nodes are dirty given step 1's changed bindings.
-//! 4. Translate each dirty `FeatureId` into the exact raw `GeomId`s that
-//!    feature's own call pushed (`Interpreter::geom_range_for_call`, keyed by
-//!    the same call-expression span `FeatureGraph` itself uses — no
-//!    positional guessing, and correct for both single-node and compound/
-//!    decomposed builtins).
+//!    of nodes downstream of a changed param — *and*, since this same run,
+//!    `cad_feature_graph::TraceFeatureGraph::build` builds a fresh feature/
+//!    dependency graph from `Interpreter::trace()` (`AICAD-107`, `project/
+//!    DECISION_LOG.md#DL-27`): unlike the Stage-3 `cad_feature_graph::
+//!    FeatureGraph` this replaced (a purely static top-level-only AST walk),
+//!    the trace graph sees every Geometry-returning `RuntimeBuiltin` call
+//!    this round's own run actually performed, including one reached through
+//!    a user function, a taken `if`/`match` branch, or a loop iteration.
+//! 3. Ask `TraceFeatureGraph::dirty_set` (the sole semantic authority for
+//!    *what* is dirty — this module never second-guesses it) which feature
+//!    nodes are dirty given step 1's changed bindings.
+//! 4. Each dirty node already carries the exact raw `GeomId` range its own
+//!    call pushed (`cad_runtime::feature_trace::TraceEntry::geom_range`,
+//!    recorded live by `Interpreter::call` at dispatch time — no separate
+//!    span-keyed lookup needed, and correct for both single-node and
+//!    compound/decomposed builtins, and for a call reached through any
+//!    number of function-call/loop-iteration levels).
 //! 5. Dispatch only that recompute set through `cad_geometry_runtime::
 //!    dispatch_graph_incremental`, reusing every other node's already-built
 //!    `Shape` directly from the prior round's own results (a real move of an
@@ -71,18 +79,20 @@
 //!    `Clone`, by design, so genuine reuse is the only way this could work
 //!    at all).
 //!
-//! `FeatureGraph`/`ParamModel` remain the sole authorities for dependency
-//! structure/dirty propagation; this module performs no parameter or
-//! dependency reasoning of its own beyond the one-hop `changed_param_
-//! bindings` translation described above, and introduces no second
-//! parameter system, no second dependency graph, and no persistent
-//! cross-process cache.
+//! `TraceFeatureGraph`/`ParamModel` remain the sole authorities for
+//! dependency structure/dirty propagation; this module performs no
+//! parameter or dependency reasoning of its own beyond the one-hop
+//! `changed_param_bindings` translation described above and the named-
+//! binding-to-feature resolution `named_features` performs (an ordinary
+//! `Value::Geometry` lookup through `Interpreter::geom_id_path`, not an
+//! independent dependency judgment), and introduces no second parameter
+//! system and no persistent cross-process cache.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use cad_diagnostics::{Diagnostic, Severity};
-use cad_feature_graph::FeatureGraph;
+use cad_feature_graph::TraceFeatureGraph;
 use cad_geometry_runtime::{
     GraphResults, IncrementalStats, OcctQueryExecutor, dispatch_graph_incremental_with_lineage,
 };
@@ -586,15 +596,6 @@ impl<'ctx> ParametricBuildSession<'ctx> {
                 ));
             }
         };
-        let feature_graph = match FeatureGraph::build(&self.lowered.program) {
-            Ok(graph) => graph,
-            Err(err) => {
-                return Err((
-                    empty_outcome(),
-                    vec![err.to_diagnostic(&self.file, &self.source)],
-                ));
-            }
-        };
 
         let directly_changed =
             directly_changed_params(&self.overrides, &self.last_applied_overrides);
@@ -626,10 +627,94 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             return Err((empty_outcome(), vec![*diagnostic]));
         }
 
-        let dirty_features = feature_graph.dirty_set(&changed);
+        // `AICAD-107` (`project/DECISION_LOG.md#DL-27`): built from this
+        // round's own real execution trace, not a purely static top-level
+        // AST walk — sees every Geometry-returning `RuntimeBuiltin` call
+        // this run actually performed, including one reached through a
+        // user function, a taken `if`/`match` branch, or a loop iteration.
+        // Infallible (every entry already represents a call this run
+        // actually, successfully performed), unlike the Stage-3 static
+        // `FeatureGraph::build` this replaced.
+        let trace_graph = TraceFeatureGraph::build(interp.trace());
+        let dirty_features = trace_graph.dirty_set(&changed);
         let graph = interp.geometry_graph();
+
+        // Every top-level *and* `part`-nested (`D31`) binding's own current
+        // value, recursing through `Value::Part::fields` by name
+        // (`collect_geometry_globals`'s own doc comment) — needed below
+        // because a `part`-nested binding's own value is never written into
+        // `Interpreter::globals` directly (folded into one `Value::Part`
+        // aggregate instead, `AICAD-071`), so `Interpreter::global` alone
+        // cannot see it. Computed once here and reused for
+        // `self.last_globals` at the end of this round, rather than
+        // recomputed twice.
+        let mut current_globals = HashMap::new();
+        collect_geometry_globals(&self.lowered.program.items, &interp, &mut current_globals);
+
         let mut dirty_geom_ids = HashSet::new();
-        let mut dirty_feature_names = Vec::new();
+        for node in trace_graph.nodes() {
+            if dirty_features.contains(&node.id) {
+                for index in node.geom_range.clone() {
+                    dirty_geom_ids.insert(graph.nodes()[index as usize].id);
+                }
+            }
+        }
+
+        // Every top-level (or `part`-nested, `D31`) `let`/`const`/`param`
+        // declaration whose own *current* value is a `Geometry` value,
+        // resolved back to the trace-graph node that produced it via
+        // `Interpreter::geom_id_path` -- the named-binding counterpart of
+        // `crate::graph::FeatureGraph::find_by_binding`'s own identical
+        // "resolve a name back to a feature" job, now driven by this
+        // round's own real execution trace instead of a static walk (which
+        // could never see a name whose value was built through a helper
+        // function). Walked in declaration order (matching
+        // `cad_feature_graph::graph::FeatureGraph::build_items`'s own
+        // identical top-to-bottom, part-recursing order), and deduplicated
+        // by trace-feature id (`claimed`) so an alias (`let alias = base;`,
+        // no new call at all -- `alias` simply resolves to `base`'s own
+        // already-traced `CallPath`) keeps exactly the *first*-declared
+        // name for `dirty_feature_names`/lineage evidence, mirroring the
+        // static `FeatureGraph`'s own "a node's `name` is set only once,
+        // never overwritten by a later alias" behavior exactly.
+        let mut all_bindings = Vec::new();
+        collect_scoped_bindings(&self.lowered.program.items, &[], &mut all_bindings);
+        struct NamedFeature<'x> {
+            scope: &'x [String],
+            name: &'x str,
+            feature_id: cad_feature_graph::TraceFeatureId,
+            range: Range<u32>,
+        }
+        let mut named_features: Vec<NamedFeature> = Vec::new();
+        let mut claimed: HashSet<cad_feature_graph::TraceFeatureId> = HashSet::new();
+        for (scope, name, binding) in &all_bindings {
+            let scope: &[String] = scope.as_slice();
+            let name: &str = name;
+            let Some(Value::Geometry(id)) = current_globals.get(binding) else {
+                continue;
+            };
+            let Some(path) = interp.geom_id_path(*id) else {
+                continue;
+            };
+            let Some(feature_id) = trace_graph.find_by_path(path) else {
+                continue;
+            };
+            if !claimed.insert(feature_id) {
+                continue;
+            }
+            let range = trace_graph
+                .get(feature_id)
+                .expect("find_by_path always resolves to a real node")
+                .geom_range
+                .clone();
+            named_features.push(NamedFeature {
+                scope,
+                name,
+                feature_id,
+                range,
+            });
+        }
+
         // Every named feature's own bare leaf name, counted across the
         // *whole* graph regardless of scope (`D31`) — used below to decide
         // whether a bare-name `FeatureAnchor` alias may be registered
@@ -642,11 +727,11 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         // rather than silently landing on whichever one this loop happens
         // to visit last.
         let mut bare_name_counts: HashMap<&str, usize> = HashMap::new();
-        for node in feature_graph.nodes() {
-            if let Some(name) = node.name {
-                *bare_name_counts.entry(name).or_insert(0) += 1;
-            }
+        for nf in &named_features {
+            *bare_name_counts.entry(nf.name).or_insert(0) += 1;
         }
+
+        let mut dirty_feature_names = Vec::new();
         // Every named top-level feature's own raw geom range, dirty or
         // not (`AICAD-094`): `reference_replay::capture_named_feature_
         // lineage` only actually captures the ones the dispatch below
@@ -658,34 +743,20 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         // "changed" relative to a not-yet-existing prior round -- still
         // capture real lineage, not just later incremental rounds.
         let mut named_feature_ranges: Vec<(FeatureAnchor, Range<u32>)> = Vec::new();
-        for node in feature_graph.nodes() {
-            let range = interp.geom_range_for_call(node.span);
-            if dirty_features.contains(&node.id)
-                && let Some(range) = &range
-            {
-                for index in range.clone() {
-                    dirty_geom_ids.insert(graph.nodes()[index as usize].id);
-                }
+        for nf in &named_features {
+            let qualified = qualified_feature_name(nf.scope, nf.name);
+            if dirty_features.contains(&nf.feature_id) {
+                dirty_feature_names.push(qualified.clone());
             }
-            if let Some(name) = node.name {
-                let qualified = qualified_feature_name(&node.scope, name);
-                if dirty_features.contains(&node.id) {
-                    dirty_feature_names.push(qualified.clone());
-                }
-                if let Some(range) = range {
-                    named_feature_ranges
-                        .push((FeatureAnchor::named(qualified.clone()), range.clone()));
-                    // Also register the bare leaf name as a convenience
-                    // alias resolving to the exact same evidence, but only
-                    // when it is unambiguous program-wide (`D31`) -- see
-                    // `bare_name_counts`'s own doc comment above. For an
-                    // ordinary top-level feature (empty scope),
-                    // `qualified == name` already, so this is a no-op,
-                    // never a duplicate registration.
-                    if qualified != name && bare_name_counts.get(name) == Some(&1) {
-                        named_feature_ranges.push((FeatureAnchor::named(name), range));
-                    }
-                }
+            named_feature_ranges.push((FeatureAnchor::named(qualified.clone()), nf.range.clone()));
+            // Also register the bare leaf name as a convenience alias
+            // resolving to the exact same evidence, but only when it is
+            // unambiguous program-wide (`D31`) -- see `bare_name_counts`'s
+            // own doc comment above. For an ordinary top-level feature
+            // (empty scope), `qualified == name` already, so this is a
+            // no-op, never a duplicate registration.
+            if qualified != nf.name && bare_name_counts.get(nf.name) == Some(&1) {
+                named_feature_ranges.push((FeatureAnchor::named(nf.name), nf.range.clone()));
             }
         }
 
@@ -729,9 +800,7 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             }
         }
 
-        let mut last_globals = HashMap::new();
-        collect_geometry_globals(&self.lowered.program.items, &interp, &mut last_globals);
-        self.last_globals = last_globals;
+        self.last_globals = current_globals;
         self.prior_results = Some(results);
         self.last_applied_overrides = self.overrides.clone();
 

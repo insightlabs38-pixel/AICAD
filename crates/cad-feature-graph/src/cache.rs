@@ -44,7 +44,7 @@
 //! FNV-1a 64-bit accumulator instead — simple enough to own outright rather
 //! than take a new external dependency for it.
 //!
-//! ## Why no `cad-runtime` dependency
+//! ## Why this specific traversal still does not reuse `cad-runtime`
 //!
 //! `cad_runtime::params::collect_binding_refs` already walks an `HirExpr`
 //! tree collecting referenced top-level bindings — structurally very close
@@ -52,14 +52,18 @@
 //! own `ids.rs` already establishes the precedent this follows exactly
 //! ("this module is a small, independent re-implementation of the same...
 //! concept... since `cad-hir` cannot depend on `cad-compiler`"; see that
-//! module's doc comment) — `cad-feature-graph` sits below `cad-runtime` in
-//! the intended layering (the interpreter is expected to eventually consume
-//! the feature graph, per `crate::graph`'s own doc comment referencing
-//! `cad_runtime::params::ParamModel` as "this task's own reusable input"),
-//! so a `cad-feature-graph -> cad-runtime` dependency would point the wrong
-//! direction and risk a future cycle once `cad-runtime` itself depends on
-//! this crate. Duplicating this one small traversal is the smaller, safer
-//! cost.
+//! module's doc comment). `AICAD-107` did add a real `cad-feature-graph ->
+//! cad-runtime` dependency (`crate::trace_graph`, consuming
+//! `cad_runtime::feature_trace`'s dynamic execution-trace types — the
+//! *opposite* direction from what this note originally worried about, and
+//! not a cycle: `cad-runtime` still depends on nothing in this crate), but
+//! that dependency exists for a different, execution-trace-shaped need
+//! `crate::trace_graph`'s own module doc comment explains; it does not make
+//! reusing `cad_runtime::params::collect_binding_refs` here any more
+//! appropriate — this function stays a small, independent, purely-*static*
+//! traversal (no interpreter, no evaluated `Value`), and duplicating it
+//! remains the smaller, safer cost than coupling this module's own
+//! `CacheKey` hashing to an unrelated crate's internal helper.
 //!
 //! ## What this deliberately does not do
 //!

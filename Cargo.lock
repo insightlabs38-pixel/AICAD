@@ -81,6 +81,7 @@ dependencies = [
  "cad-diagnostics",
  "cad-hir",
  "cad-parser",
+ "cad-runtime",
 ]
 
 [[package]]

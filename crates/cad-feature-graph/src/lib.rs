@@ -8,12 +8,19 @@
 //! `crate::graph`'s own module doc comment for the full design.
 //! `AICAD-068` (Batch S3-02) adds cache keys/dirty propagation
 //! (`crate::cache`). `AICAD-069` (Batch S3-02) adds source-to-feature
-//! mapping and provenance (`crate::provenance`).
+//! mapping and provenance (`crate::provenance`). `AICAD-107` (Stage 5, `project/
+//! DECISION_LOG.md#DL-27`) adds [`trace_graph`] — the execution-trace
+//! counterpart of `crate::graph`'s purely static walk, keeping geometry
+//! built through a user function, a taken branch, or a loop visible to the
+//! feature/dependency system, which a static AST walk structurally cannot
+//! do — see that module's own doc comment.
 
 mod cache;
 mod graph;
 mod provenance;
+pub mod trace_graph;
 
 pub use cache::CacheKey;
 pub use graph::{FeatureGraph, FeatureGraphError, FeatureId, FeatureNode};
 pub use provenance::{Declaration, Provenance};
+pub use trace_graph::{TraceFeatureGraph, TraceFeatureId, TraceFeatureNode};

@@ -3463,7 +3463,7 @@ tasks:
 - id: AICAD-107
   stage: 5
   title: Preserve feature identity, dependencies, and provenance through ordinary language abstractions
-  status: todo
+  status: done
   depends_on:
   - AICAD-105
   plan_references:

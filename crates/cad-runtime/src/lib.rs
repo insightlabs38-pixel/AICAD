@@ -60,6 +60,13 @@
 //!   (`Point3`/`Vector3`/`Direction3`/`Axis3`/`Frame3`/`Plane3`) later
 //!   `RuntimeBuiltin` dispatch arms (`AICAD-076`/`AICAD-077`) share rather
 //!   than each re-deriving their own extraction/validation logic.
+//! - [`feature_trace`][] (`AICAD-107`, Stage 5): [`feature_trace::
+//!   CallPath`]/[`feature_trace::TraceEntry`] — the dynamic execution-trace
+//!   identity [`interp::Interpreter`] records for every Geometry-returning
+//!   `RuntimeBuiltin` call, so geometry built through a user function, a
+//!   loop, or a branch stays visible to the feature/dependency/provenance
+//!   system (`project/DECISION_LOG.md#DL-27`) — see that module's own doc
+//!   comment for the full design.
 //!
 //! Plan references: `docs/plan/01_SYSTEM_ARCHITECTURE.md` §2.2;
 //! `docs/plan/02_LANGUAGE_AND_COMPILER.md` §17 (execution sits between
@@ -69,6 +76,7 @@
 //! WP-04.
 
 pub mod error;
+pub mod feature_trace;
 pub mod interp;
 pub mod params;
 pub mod query_exec;
@@ -76,6 +84,7 @@ pub mod spatial;
 pub mod value;
 
 pub use error::RuntimeError;
+pub use feature_trace::{CallPath, PathFrame, TraceEntry};
 pub use interp::Interpreter;
 pub use params::{ParamDecl, ParamId, ParamModel, ParamModelError, ParamOverrides};
 pub use query_exec::{KernelQueryError, KernelQueryExecutor, QueryOutcome};
