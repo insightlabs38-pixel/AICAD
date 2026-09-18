@@ -18,39 +18,77 @@
 //!
 //! ## Supported clause vocabulary
 //!
-//! Exactly the subset of `docs/plan/06_REFERENCES_QUERIES_FEATURE_DAG.md`
-//! §6's own predicate list that (a) this task's minimal `name(args)`
-//! clause grammar can express (`cad_ast::item::Item::Query`'s own doc
-//! comment: "no ... `within` modifier, direction literals ... is
-//! introduced") and (b) `cad_query::eval` already gives real production
-//! semantics (`AICAD-082`..`084`):
+//! `AICAD-100A` covered the subset of `docs/plan/06_REFERENCES_QUERIES_
+//! FEATURE_DAG.md` §6's own predicate list expressible with only a bare/
+//! dotted name or a numeric literal per argument. `AICAD-103` completes
+//! the rest, still inside that exact same minimal `name(args)` clause
+//! grammar (`cad_ast::item::Item::Query`'s own doc comment: "no ...
+//! `within` modifier, direction literals ... is introduced; a clause
+//! needing one of those is written with plain numeric/identifier
+//! arguments instead") — every remaining predicate turned out to be
+//! expressible that way too (a `Point3` as three trailing `Length`
+//! numbers, a `Frame3` as twelve, a reference target as a bare/dotted
+//! name), so **no `cad-ast`/`cad-parser`/`cad-hir` grammar change was
+//! needed** for this task; every addition below is new match arms and
+//! argument parsing in this module alone:
 //!
 //! - topology: `generated_by(name)`, `modified_by(name)`,
 //!   `descended_from(name)` (always [`LineageRole::Generated`] — this
 //!   minimal grammar has no syntax to name a "descended from a
 //!   modification" ancestor), `convex()`, `concave()`, `manifold()`,
-//!   `nonmanifold()`;
+//!   `nonmanifold()`, `boundary(outer|inner)`, `adjacent_to(name)`,
+//!   `connected_to(name)`, `intersects(name)`, `contains(x, y, z)`
+//!   (`x`/`y`/`z` are `Length` numbers);
 //! - geometry surface kind: `planar()`, `cylindrical()`, `conical()`,
 //!   `spherical()`, `toroidal()`, `bspline()`;
 //! - geometry comparisons: `radius(cmp, magnitude)`, `length(cmp,
-//!   magnitude)` (`cmp` one of `eq`/`lt`/`lte`/`gt`/`gte`) — **not**
-//!   `area`: RFC-0004 §4's own frozen initial unit-literal set
-//!   (`cad_units::registry`) has no `Area`-dimensioned unit spelling at
-//!   all yet (no `mm^2`-shaped literal syntax exists either), an existing
-//!   gap this task does not create or paper over;
+//!   magnitude)`, `area(cmp, magnitude)` (`cmp` one of `eq`/`lt`/`lte`/
+//!   `gt`/`gte`; `area`'s own magnitude needs `AICAD-102`'s new
+//!   `Area`-dimensioned unit literals, e.g. `500mm2`);
 //! - direction comparisons: `normal(x, y, z[, tolerance])`, `axis(x, y,
 //!   z[, tolerance])`;
-//! - ranking: `first()`, `largest(area|radius)`, `smallest(area|radius)`;
+//! - spatial: `inside(name)` (the named reference's own entity kind is
+//!   always [`EntityKind::Solid`] — "a volume" is unambiguous), `within(
+//!   distance, name)` / `within(distance, x, y, z)`, `above(...)`/
+//!   `below(...)`/`left(...)`/`right(...)` (each: twelve unitless/`Length`
+//!   numbers — a `Length` origin `x, y, z` then three unitless `x, y, z`
+//!   axis triples for `x_axis`, `y_axis`, `z_axis`, in that order);
+//! - ranking: `first()`, `largest(area|radius)`, `smallest(area|radius)`,
+//!   `nearest(name)` / `nearest(x, y, z)`, `farthest(name)` / `farthest(x,
+//!   y, z)` — **not** a separate `nearest_to`/`farthest_from` spelling:
+//!   `cad_query::predicate::SpatialPredicate::NearestTo`/`FarthestFrom`
+//!   exist structurally but `cad_query::eval::evaluate_spatial` itself
+//!   deliberately rejects them (`EvalError::NotYetSpecified`, "comparative
+//!   across a candidate set, not a per-candidate boolean predicate") —
+//!   the real, working mechanism for "nearest"/"farthest" is always the
+//!   ranking directive, so that is the only spelling this module ever
+//!   lowers to, avoiding wiring a clause that would deterministically
+//!   fail at evaluation time;
 //! - cardinality: `unique()`, `expect_count(n)`.
 //!
-//! Every other plan-listed predicate (`adjacent_to`, `boundary`,
-//! `connected_to`, `contains`, `intersects`, `area`, `nearest_to`,
-//! `farthest_from`, `above`/`below`/`left`/`right`, `inside`, `within`,
-//! ranking `nearest`/`farthest`) needs either a nested query/reference
-//! argument or a `Point3`/`Frame3` literal shape this task's clause
-//! grammar has no syntax for. An unknown or malformed clause is a
-//! structured `REF-E103`/`REF-E104` diagnostic, never silently dropped or
-//! guessed at.
+//! A named reference target (`adjacent_to`/`connected_to`/`intersects`/
+//! `within`/`nearest`/`farthest`, `generated_by`/`modified_by`/
+//! `descended_from` unchanged) always resolves via
+//! [`ConstructionStrategy::StructuralRole`] — the same collision-safe,
+//! already-production bare/dotted-name lookup (`D31`'s `resolve_scoped_
+//! name`) every other named-binding evidence source in this codebase
+//! already uses (`crate::parametric_build::ParametricBuildSession::
+//! resolve_structural_role`'s own doc comment); a dotted path
+//! (`Wall.hinge`) already lowers correctly today via `cad_hir::lower`'s
+//! existing `Expr::Field` -> `HirQueryArg::Name("Wall.hinge")` handling,
+//! satisfying "nested reference argument" support with no change needed
+//! there. `adjacent_to`/`connected_to`/`intersects`'s target always takes
+//! the *querying* query's own [`EntityKind`] (mirroring `descended_from`'s
+//! own pre-existing identical simplifying assumption) — this minimal
+//! grammar has no syntax to name a different entity kind for the target
+//! side. **A nested inline `query { ... }`-shaped argument (as opposed to
+//! a named reference) remains unsupported** — [`AdjacencyTarget::Query`]
+//! exists in `cad_query` but nothing in this module ever constructs it;
+//! representing a literal nested query as a clause argument would need a
+//! real grammar change this task's own minimal-extension charter does not
+//! require (every plan-listed predicate is reachable via a named
+//! reference instead). An unknown or malformed clause is a structured
+//! `REF-E103`/`REF-E104` diagnostic, never silently dropped or guessed at.
 //!
 //! ## Durability
 //!
@@ -65,13 +103,15 @@
 use cad_diagnostics::{Diagnostic, Position, Severity, SeverityLetter, SourceSpan};
 use cad_hir::hir::{HirItem, HirQueryArg, HirQueryClause};
 use cad_query::{
-    CardinalityExpectation, Comparison, Direction3, DirectionComparison, GeometryPredicate,
-    Magnitude, Metric, Query, QueryClause, RankingDirective, TopologyPredicate,
+    AdjacencyTarget, BoundaryKind, CardinalityExpectation, Comparison, Direction3,
+    DirectionComparison, Frame3, GeometryPredicate, Magnitude, Metric, Point3, Query, QueryClause,
+    RankingDirective, RelativeDirection, SpatialPredicate, SpatialTarget, TopologyPredicate,
 };
 use cad_references::{
     AnyRef, ConstructionStrategy, DurabilityLevel, EntityKind, FeatureAnchor, LineageRole,
     QueryHandle,
 };
+use cad_types::Dimension;
 
 use crate::parametric_build::qualified_feature_name;
 
@@ -361,6 +401,116 @@ fn lower_one_clause(
                 .clauses
                 .push(QueryClause::Ranking(RankingDirective::Smallest(metric)));
         }
+        "area" => {
+            let cmp = magnitude_comparison(file, source, clause)?;
+            query
+                .clauses
+                .push(QueryClause::Geometry(GeometryPredicate::Area(cmp)));
+        }
+        "boundary" => {
+            require_args(file, source, clause, 1)?;
+            let name = name_arg(file, source, clause, 0)?;
+            let kind = match name {
+                "outer" => BoundaryKind::Outer,
+                "inner" => BoundaryKind::Inner,
+                other => {
+                    return Err(malformed(
+                        file,
+                        source,
+                        clause,
+                        &format!("'{other}' is not a boundary kind -- expected 'outer' or 'inner'"),
+                    ));
+                }
+            };
+            query
+                .clauses
+                .push(QueryClause::Topology(TopologyPredicate::Boundary(kind)));
+        }
+        "adjacent_to" => {
+            require_args(file, source, clause, 1)?;
+            let target = AdjacencyTarget::Ref(ref_arg(file, source, clause, 0, query.entity_kind)?);
+            query
+                .clauses
+                .push(QueryClause::Topology(TopologyPredicate::AdjacentTo(target)));
+        }
+        "connected_to" => {
+            require_args(file, source, clause, 1)?;
+            let target = AdjacencyTarget::Ref(ref_arg(file, source, clause, 0, query.entity_kind)?);
+            query
+                .clauses
+                .push(QueryClause::Topology(TopologyPredicate::ConnectedTo(
+                    target,
+                )));
+        }
+        "intersects" => {
+            require_args(file, source, clause, 1)?;
+            let target = AdjacencyTarget::Ref(ref_arg(file, source, clause, 0, query.entity_kind)?);
+            query
+                .clauses
+                .push(QueryClause::Topology(TopologyPredicate::Intersects(target)));
+        }
+        "contains" => {
+            require_args(file, source, clause, 3)?;
+            let point = point3_arg(file, source, clause, 0)?;
+            query
+                .clauses
+                .push(QueryClause::Topology(TopologyPredicate::Contains(point)));
+        }
+        "inside" => {
+            require_args(file, source, clause, 1)?;
+            // "a volume" is unambiguous -- always Solid, matching this
+            // module's own doc comment.
+            let volume = ref_arg(file, source, clause, 0, EntityKind::Solid)?;
+            query
+                .clauses
+                .push(QueryClause::Spatial(SpatialPredicate::Inside(volume)));
+        }
+        "within" => {
+            if clause.args.is_empty() {
+                return Err(malformed(
+                    file,
+                    source,
+                    clause,
+                    "'within' expects a distance followed by a name or three coordinates",
+                ));
+            }
+            let (text, unit) = number_arg(file, source, clause, 0)?;
+            let distance = parse_magnitude(file, source, clause, text, unit)?;
+            let target = spatial_target_arg(file, source, clause, 1, query.entity_kind)?;
+            query
+                .clauses
+                .push(QueryClause::Spatial(SpatialPredicate::Within(
+                    distance, target,
+                )));
+        }
+        "above" | "below" | "left" | "right" => {
+            require_args(file, source, clause, 12)?;
+            let frame = frame3_arg(file, source, clause, 0)?;
+            let direction = match clause.name.as_str() {
+                "above" => RelativeDirection::Above,
+                "below" => RelativeDirection::Below,
+                "left" => RelativeDirection::Left,
+                "right" => RelativeDirection::Right,
+                _ => unreachable!("matched by the outer arm above"),
+            };
+            query
+                .clauses
+                .push(QueryClause::Spatial(SpatialPredicate::RelativeTo(
+                    direction, frame,
+                )));
+        }
+        "nearest" => {
+            let target = spatial_target_arg(file, source, clause, 0, query.entity_kind)?;
+            query
+                .clauses
+                .push(QueryClause::Ranking(RankingDirective::Nearest(target)));
+        }
+        "farthest" => {
+            let target = spatial_target_arg(file, source, clause, 0, query.entity_kind)?;
+            query
+                .clauses
+                .push(QueryClause::Ranking(RankingDirective::Farthest(target)));
+        }
         _ => return Err(unknown_clause(file, source, clause)),
     }
     Ok(())
@@ -513,6 +663,146 @@ fn parse_magnitude(
         value,
         cad_units::OperandType::dimensional(first.dimension, None),
     ))
+}
+
+/// Like [`parse_magnitude`], additionally requiring the resolved unit's
+/// dimension be exactly `Length` -- every spatial-coordinate argument
+/// (`contains`, a `Frame3` origin, ...) needs a `Length`, never an
+/// arbitrary other dimension that happens to also have been given a
+/// number-with-unit shape.
+fn length_magnitude_arg(
+    file: &str,
+    source: &str,
+    clause: &HirQueryClause,
+    index: usize,
+) -> Result<Magnitude, Box<Diagnostic>> {
+    let (text, unit) = number_arg(file, source, clause, index)?;
+    let magnitude = parse_magnitude(file, source, clause, text, unit)?;
+    if magnitude.ty != cad_units::OperandType::dimensional(Dimension::Length, None) {
+        return Err(malformed(
+            file,
+            source,
+            clause,
+            &format!(
+                "'{}' argument {} must be a Length quantity, found {text}{}",
+                clause.name,
+                index + 1,
+                unit.unwrap_or("")
+            ),
+        ));
+    }
+    Ok(magnitude)
+}
+
+/// A `Point3` spelled as three consecutive `Length` arguments starting at
+/// `start` (`x, y, z`) -- see this module's own doc comment for why a
+/// nested `Point3(...)` struct-literal call is not the chosen spelling.
+fn point3_arg(
+    file: &str,
+    source: &str,
+    clause: &HirQueryClause,
+    start: usize,
+) -> Result<Point3, Box<Diagnostic>> {
+    let x = length_magnitude_arg(file, source, clause, start)?;
+    let y = length_magnitude_arg(file, source, clause, start + 1)?;
+    let z = length_magnitude_arg(file, source, clause, start + 2)?;
+    Ok(Point3::new(x, y, z))
+}
+
+/// A `Direction3` spelled as three consecutive unitless numbers starting
+/// at `start` -- mirrors `direction_component`'s own unitless-number
+/// convention already used by `normal`/`axis`, extended to a full triple.
+fn direction3_arg(
+    file: &str,
+    source: &str,
+    clause: &HirQueryClause,
+    start: usize,
+) -> Result<Direction3, Box<Diagnostic>> {
+    let x = direction_component(file, source, clause, start)?;
+    let y = direction_component(file, source, clause, start + 1)?;
+    let z = direction_component(file, source, clause, start + 2)?;
+    Ok(Direction3::new(x, y, z))
+}
+
+/// A `Frame3` spelled as twelve consecutive numbers starting at `start`:
+/// a `Length` origin `x, y, z`, then three unitless axis triples
+/// (`x_axis`, `y_axis`, `z_axis`), in that order -- see this module's own
+/// doc comment ("spatial" bullet) for the exact argument order.
+fn frame3_arg(
+    file: &str,
+    source: &str,
+    clause: &HirQueryClause,
+    start: usize,
+) -> Result<Frame3, Box<Diagnostic>> {
+    let origin = point3_arg(file, source, clause, start)?;
+    let x_axis = direction3_arg(file, source, clause, start + 3)?;
+    let y_axis = direction3_arg(file, source, clause, start + 6)?;
+    let z_axis = direction3_arg(file, source, clause, start + 9)?;
+    Ok(Frame3 {
+        origin,
+        x_axis,
+        y_axis,
+        z_axis,
+    })
+}
+
+/// A stable reference to an existing named binding, addressed by its
+/// bare or `D31`-dotted-qualified name (`cad_hir::lower`'s existing
+/// `Expr::Field` -> `HirQueryArg::Name("Wall.hinge")` handling already
+/// gives a dotted path here with no change needed) -- resolved via
+/// [`ConstructionStrategy::StructuralRole`], the same collision-safe
+/// bare/dotted-name lookup every other named-binding evidence source in
+/// this codebase already uses. `entity_kind` is the *querying* query's
+/// own kind, or [`EntityKind::Solid`] for `inside(...)`'s own "a volume
+/// is unambiguous" convention -- see this module's own doc comment.
+fn ref_arg(
+    file: &str,
+    source: &str,
+    clause: &HirQueryClause,
+    index: usize,
+    entity_kind: EntityKind,
+) -> Result<AnyRef, Box<Diagnostic>> {
+    let name = name_arg(file, source, clause, index)?;
+    Ok(AnyRef::from_strategy(
+        entity_kind,
+        ConstructionStrategy::StructuralRole(name.to_string()),
+    ))
+}
+
+/// A [`SpatialTarget`] spelled either as a single name (`SpatialTarget::
+/// Ref`, resolved via [`ref_arg`]) or three trailing `Length` coordinates
+/// (`SpatialTarget::Point`, via [`point3_arg`]), starting at `start` --
+/// used by `within`/`nearest`/`farthest`, each of which may take either
+/// shape (`docs/plan/06...` §6: `nearest_to(point|ref)`).
+fn spatial_target_arg(
+    file: &str,
+    source: &str,
+    clause: &HirQueryClause,
+    start: usize,
+    entity_kind: EntityKind,
+) -> Result<SpatialTarget, Box<Diagnostic>> {
+    match clause.args.len().saturating_sub(start) {
+        1 => Ok(SpatialTarget::Ref(ref_arg(
+            file,
+            source,
+            clause,
+            start,
+            entity_kind,
+        )?)),
+        3 => Ok(SpatialTarget::Point(point3_arg(
+            file, source, clause, start,
+        )?)),
+        other => Err(malformed(
+            file,
+            source,
+            clause,
+            &format!(
+                "'{}' expects a name or three coordinates -- found {other} argument(s) where \
+                 one was expected",
+                clause.name
+            ),
+        )),
+    }
 }
 
 fn require_args(
@@ -786,6 +1076,339 @@ mod tests {
         assert!(queries.is_empty());
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code.as_string(), "REF-E104");
+    }
+
+    // --- AICAD-103: remaining Stage-4 query vocabulary ---
+
+    #[test]
+    fn area_gt_with_an_area_unit_lowers_to_a_canonical_square_metre_magnitude() {
+        let (queries, diagnostics) = lower_queries("query q : Face in body { area(gt, 500mm2); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let QueryClause::Geometry(GeometryPredicate::Area(Comparison::Gt(m))) =
+            &queries[0].query.clauses[0]
+        else {
+            panic!("expected Area(Gt(_))");
+        };
+        assert!((m.value - 0.0005).abs() < 1e-12);
+    }
+
+    #[test]
+    fn boundary_outer_and_inner_both_lower_correctly() {
+        let (queries, diagnostics) = lower_queries("query q : Wire in body { boundary(outer); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Topology(TopologyPredicate::Boundary(BoundaryKind::Outer))
+        );
+
+        let (queries, diagnostics) = lower_queries("query q : Wire in body { boundary(inner); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Topology(TopologyPredicate::Boundary(BoundaryKind::Inner))
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_boundary_kind_is_a_malformed_clause_diagnostic() {
+        let (queries, diagnostics) =
+            lower_queries("query q : Wire in body { boundary(sideways); }");
+        assert!(queries.is_empty());
+        assert_eq!(diagnostics[0].code.as_string(), "REF-E104");
+    }
+
+    #[test]
+    fn adjacent_to_connected_to_and_intersects_resolve_a_structural_role_reference() {
+        let (queries, diagnostics) = lower_queries("query q : Face in body { adjacent_to(rib); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Topology(TopologyPredicate::AdjacentTo(AdjacencyTarget::Ref(
+                AnyRef::from_strategy(
+                    EntityKind::Face,
+                    ConstructionStrategy::StructuralRole("rib".to_string()),
+                )
+            )))
+        );
+
+        let (queries, diagnostics) =
+            lower_queries("query q : Solid in body { connected_to(rib); intersects(rib); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(queries[0].query.clauses.len(), 2);
+    }
+
+    #[test]
+    fn adjacent_to_accepts_a_dotted_nested_reference() {
+        // AICAD-101/D31's own dotted-qualified-name convention: a
+        // reference into a part-nested feature is already representable
+        // here with no cad-hir change (Expr::Field lowering already
+        // produces a qualified HirQueryArg::Name).
+        let (queries, diagnostics) =
+            lower_queries("query q : Face in body { adjacent_to(Wall.hinge); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Topology(TopologyPredicate::AdjacentTo(AdjacencyTarget::Ref(
+                AnyRef::from_strategy(
+                    EntityKind::Face,
+                    ConstructionStrategy::StructuralRole("Wall.hinge".to_string()),
+                )
+            )))
+        );
+    }
+
+    #[test]
+    fn contains_lowers_three_length_coordinates_to_a_point3() {
+        let (queries, diagnostics) =
+            lower_queries("query q : Solid in body { contains(1mm, 2mm, 3mm); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let QueryClause::Topology(TopologyPredicate::Contains(p)) = &queries[0].query.clauses[0]
+        else {
+            panic!("expected Contains(_)");
+        };
+        assert!((p.x.value - 0.001).abs() < 1e-12);
+        assert!((p.y.value - 0.002).abs() < 1e-12);
+        assert!((p.z.value - 0.003).abs() < 1e-12);
+    }
+
+    #[test]
+    fn contains_rejects_a_non_length_coordinate() {
+        let (queries, diagnostics) =
+            lower_queries("query q : Solid in body { contains(1kg, 2mm, 3mm); }");
+        assert!(queries.is_empty());
+        assert_eq!(diagnostics[0].code.as_string(), "REF-E104");
+    }
+
+    #[test]
+    fn inside_always_targets_a_solid_regardless_of_the_querys_own_kind() {
+        let (queries, diagnostics) = lower_queries("query q : Face in body { inside(housing); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Spatial(SpatialPredicate::Inside(AnyRef::from_strategy(
+                EntityKind::Solid,
+                ConstructionStrategy::StructuralRole("housing".to_string()),
+            )))
+        );
+    }
+
+    #[test]
+    fn within_accepts_either_a_named_target_or_three_coordinates() {
+        let (queries, diagnostics) =
+            lower_queries("query q : Face in body { within(5mm, anchor); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Spatial(SpatialPredicate::Within(
+                Magnitude::new(
+                    0.005,
+                    cad_units::OperandType::dimensional(Dimension::Length, None)
+                ),
+                SpatialTarget::Ref(AnyRef::from_strategy(
+                    EntityKind::Face,
+                    ConstructionStrategy::StructuralRole("anchor".to_string()),
+                ))
+            ))
+        );
+
+        let (queries, diagnostics) =
+            lower_queries("query q : Face in body { within(5mm, 1mm, 2mm, 3mm); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let QueryClause::Spatial(SpatialPredicate::Within(_, SpatialTarget::Point(p))) =
+            &queries[0].query.clauses[0]
+        else {
+            panic!("expected Within(_, Point(_))");
+        };
+        assert!((p.x.value - 0.001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn within_with_the_wrong_trailing_argument_count_is_malformed() {
+        let (queries, diagnostics) =
+            lower_queries("query q : Face in body { within(5mm, 1mm, 2mm); }");
+        assert!(queries.is_empty());
+        assert_eq!(diagnostics[0].code.as_string(), "REF-E104");
+    }
+
+    #[test]
+    fn above_below_left_right_lower_a_twelve_argument_frame() {
+        let (queries, diagnostics) = lower_queries(
+            "query q : Face in body { \
+                 above(0mm, 0mm, 0mm, 1, 0, 0, 0, 1, 0, 0, 0, 1); \
+             }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Spatial(SpatialPredicate::RelativeTo(
+                RelativeDirection::Above,
+                Frame3 {
+                    origin: Point3::new(
+                        Magnitude::new(
+                            0.0,
+                            cad_units::OperandType::dimensional(Dimension::Length, None)
+                        ),
+                        Magnitude::new(
+                            0.0,
+                            cad_units::OperandType::dimensional(Dimension::Length, None)
+                        ),
+                        Magnitude::new(
+                            0.0,
+                            cad_units::OperandType::dimensional(Dimension::Length, None)
+                        ),
+                    ),
+                    x_axis: Direction3::new(1.0, 0.0, 0.0),
+                    y_axis: Direction3::new(0.0, 1.0, 0.0),
+                    z_axis: Direction3::new(0.0, 0.0, 1.0),
+                }
+            ))
+        );
+
+        for name in ["below", "left", "right"] {
+            let (queries, diagnostics) = lower_queries(&format!(
+                "query q : Face in body {{ {name}(0mm, 0mm, 0mm, 1, 0, 0, 0, 1, 0, 0, 0, 1); }}"
+            ));
+            assert!(diagnostics.is_empty(), "{name}: {diagnostics:?}");
+            assert_eq!(queries[0].query.clauses.len(), 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn nearest_and_farthest_accept_either_a_named_target_or_three_coordinates() {
+        let (queries, diagnostics) = lower_queries("query q : Face in body { nearest(anchor); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Ranking(RankingDirective::Nearest(SpatialTarget::Ref(
+                AnyRef::from_strategy(
+                    EntityKind::Face,
+                    ConstructionStrategy::StructuralRole("anchor".to_string()),
+                )
+            )))
+        );
+
+        let (queries, diagnostics) =
+            lower_queries("query q : Face in body { farthest(1mm, 2mm, 3mm); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let QueryClause::Ranking(RankingDirective::Farthest(SpatialTarget::Point(p))) =
+            &queries[0].query.clauses[0]
+        else {
+            panic!("expected Farthest(Point(_))");
+        };
+        assert!((p.z.value - 0.003).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nearest_to_and_farthest_from_are_intentionally_not_recognized_clause_names() {
+        // These predicate names exist in cad_query::predicate but
+        // cad_query::eval::evaluate_spatial deliberately rejects them
+        // (NotYetSpecified) -- this module never lowers to them, so the
+        // spelling itself must be an unknown-clause diagnostic, not a
+        // silently-accepted clause that would fail later at evaluation.
+        let (queries, diagnostics) =
+            lower_queries("query q : Face in body { nearest_to(anchor); }");
+        assert!(queries.is_empty());
+        assert_eq!(diagnostics[0].code.as_string(), "REF-E103");
+    }
+
+    /// `AICAD-103`'s own required conformance evidence: every supported
+    /// clause spelling this module's doc comment claims, proven to lower
+    /// cleanly (source -> parser -> `cad-hir` -> this module -> a real
+    /// `cad_query::Query`) in one place, so a future change that silently
+    /// drops or breaks one clause's own lowering shows up here rather than
+    /// only in that clause's own isolated unit test above. `(entity_kind,
+    /// clause_source)` pairs; every one must lower with zero diagnostics
+    /// and add exactly one clause (cardinality clauses are covered by
+    /// their own dedicated tests above, not this table).
+    #[test]
+    fn source_vocabulary_conformance_table_covers_every_supported_clause() {
+        const CLAUSES: &[(&str, &str)] = &[
+            ("Face", "generated_by(base)"),
+            ("Face", "modified_by(base)"),
+            ("Face", "descended_from(base)"),
+            ("Face", "convex()"),
+            ("Face", "concave()"),
+            ("Solid", "manifold()"),
+            ("Solid", "nonmanifold()"),
+            ("Wire", "boundary(outer)"),
+            ("Face", "adjacent_to(rib)"),
+            ("Solid", "connected_to(rib)"),
+            ("Solid", "intersects(rib)"),
+            ("Solid", "contains(1mm, 2mm, 3mm)"),
+            ("Face", "planar()"),
+            ("Face", "cylindrical()"),
+            ("Face", "conical()"),
+            ("Face", "spherical()"),
+            ("Face", "toroidal()"),
+            ("Face", "bspline()"),
+            ("Face", "radius(gt, 2mm)"),
+            ("Edge", "length(gt, 2mm)"),
+            ("Face", "area(gt, 500mm2)"),
+            ("Face", "normal(0, 0, 1)"),
+            ("Face", "axis(0, 0, 1, 0.1deg)"),
+            ("Solid", "inside(housing)"),
+            ("Face", "within(5mm, anchor)"),
+            ("Face", "within(5mm, 1mm, 2mm, 3mm)"),
+            ("Face", "above(0mm, 0mm, 0mm, 1, 0, 0, 0, 1, 0, 0, 0, 1)"),
+            ("Face", "below(0mm, 0mm, 0mm, 1, 0, 0, 0, 1, 0, 0, 0, 1)"),
+            ("Face", "left(0mm, 0mm, 0mm, 1, 0, 0, 0, 1, 0, 0, 0, 1)"),
+            ("Face", "right(0mm, 0mm, 0mm, 1, 0, 0, 0, 1, 0, 0, 0, 1)"),
+            ("Face", "first()"),
+            ("Face", "largest(area)"),
+            ("Face", "smallest(radius)"),
+            ("Face", "nearest(anchor)"),
+            ("Face", "farthest(1mm, 2mm, 3mm)"),
+        ];
+        for (entity_kind, clause) in CLAUSES {
+            let source = format!("query q : {entity_kind} in body {{ {clause}; }}");
+            let (queries, diagnostics) = lower_queries(&source);
+            assert!(
+                diagnostics.is_empty(),
+                "'{clause}' produced diagnostics: {diagnostics:?}"
+            );
+            assert_eq!(
+                queries.first().map(|q| q.query.clauses.len()),
+                Some(1),
+                "'{clause}' did not lower to exactly one clause"
+            );
+        }
+    }
+
+    /// The complementary negative half of the conformance table: every
+    /// plan-listed predicate this module deliberately does **not** map to
+    /// a source clause spelling, named explicitly (never silently
+    /// omitted) -- see this module's own doc comment for the full
+    /// rationale of each.
+    #[test]
+    fn intentionally_unsupported_clause_spellings_are_named_explicitly() {
+        const DEFERRED: &[&str] = &[
+            // SpatialPredicate::NearestTo/FarthestFrom exist in cad_query
+            // but evaluate_spatial rejects them outright; `nearest`/
+            // `farthest` (the ranking directives) are the real spelling.
+            "nearest_to(anchor)",
+            "farthest_from(anchor)",
+            // A literal nested `query { ... }`-shaped clause argument
+            // (AdjacencyTarget::Query) has no grammar support -- every
+            // adjacency/spatial target is a named reference instead.
+            "adjacent_to(query : Face in body { planar(); })",
+        ];
+        for clause in DEFERRED {
+            let source = format!("query q : Face in body {{ {clause}; }}");
+            let (program, parse_diagnostics) = cad_parser::parse_program(&source, "test.aicad");
+            if !parse_diagnostics.is_empty() {
+                // A nested `query { ... }` shape does not even parse as a
+                // valid clause argument -- itself proof this form is
+                // unsupported, not silently accepted.
+                continue;
+            }
+            let lowered = lower_program(&program, "test.aicad", &source);
+            let (queries, diagnostics) =
+                lower_hir_queries("test.aicad", &source, &lowered.program.items);
+            assert!(
+                queries.is_empty() && (!diagnostics.is_empty() || !lowered.diagnostics.is_empty()),
+                "'{clause}' was expected to remain unsupported, but lowered cleanly"
+            );
+        }
     }
 
     #[test]
