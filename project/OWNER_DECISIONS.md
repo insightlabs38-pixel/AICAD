@@ -1478,3 +1478,14 @@ Stage 0 work but should stay visible:
   either is a real (if small) design choice this sweep should surface,
   not quietly re-decide by leaving the current silent-truncation
   behavior as an unexamined default.
+
+  **Resolved by `AICAD-101`:** chose unbounded recursive depth (the first
+  alternative above), not a diagnostic-rejected bound. `Interpreter::
+  eval_part_body` and `cad-cli`'s `collect_geometry_globals` (the two
+  call sites actually capped at one level by a non-recursive loop) now
+  recurse into a nested `HirItem::Part` to any depth; `FeatureGraph::
+  build_items`, `collect_scoped_bindings`, and `lower_items_scoped` were
+  already self-recursive in code (their "one level" doc comments were
+  incorrect, not their behavior) and needed only doc corrections plus
+  test coverage. See `project/DECISION_LOG.md#DL-36` and
+  `project/reports/AICAD-101.md` for the full evidence.

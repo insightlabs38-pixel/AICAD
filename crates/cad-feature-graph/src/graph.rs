@@ -99,10 +99,13 @@
 //! instantiation composes with feature identity. `D31`'s owner ruling
 //! (`AICAD-100A`) is: **`part { ... }` is an abstraction/scope boundary,
 //! not a feature-visibility barrier.** [`FeatureGraph::build`] therefore
-//! recurses into every [`HirItem::Part`] body (one level, matching the
-//! grammar's own current single-level `part` nesting — `cad_ast`/`cad_hir`
-//! do not yet support `part`-in-`part`) and builds a feature node for each
-//! part-nested `let`/`const` exactly as it would for a top-level one.
+//! recurses into every [`HirItem::Part`] body, to any nesting depth
+//! (`AICAD-101`; `grammar.ebnf`'s `item = ... | part_decl` production
+//! already permits `part`-in-`part`, and `cad_hir::lower` already lowers
+//! it — only `cad_runtime::interp::Interpreter::eval_part_body`'s own
+//! runtime evaluation was capped at one level, fixed by `AICAD-101`) and
+//! builds a feature node for each part-nested `let`/`const` exactly as it
+//! would for a top-level one.
 //!
 //! A part-nested node's own [`FeatureNode::scope`] records the enclosing
 //! part-name path (`["Wall"]` for a feature declared directly inside `part
@@ -378,10 +381,10 @@ impl<'a> FeatureGraph<'a> {
 
     /// Builds every feature node directly declared in `items`, at scope
     /// path `scope` (empty for the module top level), then recurses into
-    /// each nested [`HirItem::Part`] body one level deeper (`D31`, this
-    /// module's own doc comment "`part` bodies") — the same
-    /// `let`/`const`-only recognition [`FeatureGraph::build`] always used,
-    /// applied uniformly regardless of nesting depth.
+    /// each nested [`HirItem::Part`] body, to any nesting depth (`D31`/
+    /// `AICAD-101`, this module's own doc comment "`part` bodies") — the
+    /// same `let`/`const`-only recognition [`FeatureGraph::build`] always
+    /// used, applied uniformly regardless of nesting depth.
     fn build_items(
         builder: &mut Builder<'a>,
         items: &'a [HirItem],
@@ -1310,6 +1313,66 @@ mod tests {
         // already collision-free before D31 -- see this module's own doc
         // comment, "`part` bodies -- D31".
         assert_eq!(graph.find_by_binding(*binding), Some(graph.nodes()[0].id));
+    }
+
+    #[test]
+    fn a_feature_declared_two_levels_deep_is_discovered_with_a_two_element_scope() {
+        let lowered = lowered(
+            "part Wall {\n\
+             \tlet sill = box(10mm, 10mm, 10mm);\n\
+             \tpart Door {\n\
+             \t\tlet hinge = cylinder(1mm, 10mm);\n\
+             \t}\n\
+             }\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        assert_eq!(
+            graph.nodes().len(),
+            2,
+            "AICAD-101: a feature nested two levels deep must be discovered, not silently \
+             dropped"
+        );
+        let sill = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("sill"))
+            .expect("sill is discovered");
+        assert_eq!(sill.scope, vec!["Wall".to_string()]);
+        let hinge = graph
+            .nodes()
+            .iter()
+            .find(|n| n.name == Some("hinge"))
+            .expect("hinge is discovered");
+        assert_eq!(hinge.scope, vec!["Wall".to_string(), "Door".to_string()]);
+    }
+
+    #[test]
+    fn repeated_leaf_names_in_different_part_scopes_are_distinct_nodes() {
+        let lowered = lowered(
+            "part Wall {\n\
+             \tpart Left {\n\
+             \t\tlet body = box(10mm, 10mm, 10mm);\n\
+             \t}\n\
+             \tpart Right {\n\
+             \t\tlet body = box(20mm, 10mm, 10mm);\n\
+             \t}\n\
+             }\n",
+        );
+        let graph = FeatureGraph::build(&lowered.program).expect("builds cleanly");
+        let bodies: Vec<_> = graph
+            .nodes()
+            .iter()
+            .filter(|n| n.name == Some("body"))
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            2,
+            "two same-leaf-name features in different part scopes are both discovered, as two \
+             distinct nodes, never merged/collapsed"
+        );
+        let scopes: std::collections::HashSet<_> = bodies.iter().map(|n| n.scope.clone()).collect();
+        assert!(scopes.contains(&vec!["Wall".to_string(), "Left".to_string()]));
+        assert!(scopes.contains(&vec!["Wall".to_string(), "Right".to_string()]));
     }
 
     #[test]

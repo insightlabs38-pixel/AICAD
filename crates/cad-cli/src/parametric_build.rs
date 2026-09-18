@@ -111,10 +111,10 @@ fn has_error(diagnostics: &[Diagnostic]) -> bool {
 /// scope path (`D31`, `cad_feature_graph::graph::FeatureNode::scope`'s own
 /// identical convention — empty for a top-level declaration, `["Wall"]`
 /// for one declared directly inside `part Wall { ... }`) it was declared
-/// under. Recurses one level into `HirItem::Part` bodies, matching every
-/// other Stage-4 `part`-aware walk in this crate (`collect_geometry_
-/// globals`, `cad_feature_graph::graph::FeatureGraph::build_items`) — the
-/// grammar itself supports no deeper nesting today.
+/// under. Recurses into `HirItem::Part` bodies to any depth (`AICAD-101`),
+/// matching every other Stage-5 `part`-aware walk in this crate
+/// (`collect_geometry_globals`, `cad_feature_graph::graph::
+/// FeatureGraph::build_items`).
 fn collect_scoped_bindings<'a>(
     items: &'a [cad_hir::hir::HirItem],
     scope: &[String],
@@ -237,9 +237,11 @@ fn resolve_scoped_name(lowered: &LowerResult, name: &str) -> Option<BindingId> {
 /// and record it under that item's own real [`BindingId`] — never guessed,
 /// never positional, an exact name match against the same HIR the part
 /// was built from. Does not recurse into a function body's own local
-/// `let`s (`HirItem::Fn`) or into a nested `part`-in-`part` (matching
-/// `eval_part_body`'s own identical, already-documented boundary) — only
-/// one level of `part` nesting exists in the grammar today.
+/// `let`s (`HirItem::Fn`) — a function body is a separate execution scope,
+/// never a named/query-visible feature. A nested `part`-in-`part`
+/// (`AICAD-101`) recurses to any depth via [`collect_part_fields`], the
+/// `cad-cli`-side counterpart of `Interpreter::eval_part_body`'s own
+/// recursive nested-part evaluation.
 fn collect_geometry_globals(
     items: &[cad_hir::hir::HirItem],
     interp: &Interpreter<'_>,
@@ -262,18 +264,49 @@ fn collect_geometry_globals(
                 let Some(Value::Part { fields, .. }) = interp.global(*part_binding) else {
                     continue;
                 };
-                for inner in part_items {
-                    let (inner_binding, inner_name) = match inner {
-                        cad_hir::hir::HirItem::Let { binding, name, .. }
-                        | cad_hir::hir::HirItem::Const { binding, name, .. }
-                        | cad_hir::hir::HirItem::Param { binding, name, .. } => {
-                            (*binding, name.as_str())
-                        }
-                        _ => continue,
-                    };
-                    if let Some((_, value)) = fields.iter().find(|(name, _)| name == inner_name) {
-                        out.insert(inner_binding, value.clone());
-                    }
+                collect_part_fields(part_items, fields, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Recurses into one `part` body's own item list (`items`), matching each
+/// leaf `let`/`const`/`param` and nested `part` against `fields` (that
+/// same part's own evaluated `Value::Part::fields`, name-keyed) by name,
+/// at any nesting depth (`AICAD-101`) — see [`collect_geometry_globals`]'s
+/// own doc comment for why a name match against the source HIR, rather
+/// than a positional one, is the only correct key.
+fn collect_part_fields(
+    items: &[cad_hir::hir::HirItem],
+    fields: &[(String, Value)],
+    out: &mut HashMap<BindingId, Value>,
+) {
+    for item in items {
+        match item {
+            cad_hir::hir::HirItem::Let { binding, name, .. }
+            | cad_hir::hir::HirItem::Const { binding, name, .. }
+            | cad_hir::hir::HirItem::Param { binding, name, .. } => {
+                if let Some((_, value)) = fields.iter().find(|(n, _)| n == name) {
+                    out.insert(*binding, value.clone());
+                }
+            }
+            cad_hir::hir::HirItem::Part {
+                binding: nested_binding,
+                name,
+                items: nested_items,
+                ..
+            } => {
+                if let Some((
+                    _,
+                    value @ Value::Part {
+                        fields: nested_fields,
+                        ..
+                    },
+                )) = fields.iter().find(|(n, _)| n == name)
+                {
+                    out.insert(*nested_binding, value.clone());
+                    collect_part_fields(nested_items, nested_fields, out);
                 }
             }
             _ => {}

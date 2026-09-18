@@ -556,11 +556,16 @@ impl<'a> Interpreter<'a> {
     ///   this stays unresolved at the type level; only this crate's own
     ///   runtime [`Value::Part`] and [`Interpreter::global`] exist so far,
     ///   for introspection (tests, a future `cad-cli` reporting a part's
-    ///   outputs), not general `.aicad` source syntax;
-    /// - nested `part`-in-`part` bodies — skipped exactly like `fn`/
-    ///   `struct`/`enum`/`import` are, matching this method's own
-    ///   top-level-only precedent, with no forcing evidence requiring
-    ///   recursion here yet.
+    ///   outputs), not general `.aicad` source syntax.
+    ///
+    /// `AICAD-101` extended this method to recurse into a nested
+    /// `part`-in-`part` body (arbitrary depth, matching `grammar.ebnf`'s
+    /// own `item = ... | part_decl` production, which already permitted
+    /// this — only every walker's own runtime behavior was capped at one
+    /// level before): a nested `HirItem::Part` is evaluated by calling
+    /// this same method recursively, and the resulting nested
+    /// [`Value::Part`] is folded into the enclosing part's own `fields`
+    /// under the nested part's name, exactly like a `let`/`const` result.
     ///
     /// `fn`/`struct` items declared *inside* a part body are unaffected by
     /// any of the above: [`Interpreter::fns`]/[`Interpreter::structs`]
@@ -595,10 +600,25 @@ impl<'a> Interpreter<'a> {
                     default,
                     ..
                 } => (*binding, name, default.as_ref()),
+                HirItem::Part {
+                    binding,
+                    name,
+                    items: nested_items,
+                    ..
+                } => {
+                    // Recurse to any depth (AICAD-101) — a nested part's own
+                    // value is folded into this part's `fields` exactly like
+                    // a `let`/`const` result, and into `frame` so a binding
+                    // lookup by this part's own `BindingId` behaves
+                    // identically to the top-level case in `run_top_level`.
+                    let value = self.eval_part_body(*binding, nested_items)?;
+                    frame.insert(*binding, value.clone());
+                    fields.push((name.clone(), value));
+                    continue;
+                }
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
-                | HirItem::Part { .. }
                 | HirItem::Import { .. }
                 | HirItem::Query { .. } => continue,
             };
@@ -3012,6 +3032,79 @@ mod tests {
             }
             other => panic!("expected Some(Value::Part), got {other:?}"),
         }
+    }
+
+    // --- AICAD-101: nested part-in-part execution -----------------------
+
+    #[test]
+    fn a_part_nested_inside_another_part_is_evaluated_and_exposed() {
+        let lowered = compiled(
+            "part Wall { \
+                 let sill: Length = 1mm; \
+                 part Door { \
+                     let hinge: Length = 2mm; \
+                 } \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let wall = binding_named(&lowered, "Wall");
+        match interp.global(wall) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "sill");
+                assert_number_eq(fields[0].1.clone(), 0.001);
+                assert_eq!(fields[1].0, "Door");
+                match &fields[1].1 {
+                    Value::Part {
+                        fields: door_fields,
+                        ..
+                    } => {
+                        assert_eq!(door_fields.len(), 1);
+                        assert_eq!(door_fields[0].0, "hinge");
+                        assert_number_eq(door_fields[0].1.clone(), 0.002);
+                    }
+                    other => panic!("expected the nested part's own Value::Part, got {other:?}"),
+                }
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn three_levels_of_part_nesting_all_evaluate() {
+        let lowered = compiled(
+            "part A { \
+                 part B { \
+                     part C { \
+                         let leaf: Length = 3mm; \
+                     } \
+                 } \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let a = binding_named(&lowered, "A");
+        let Some(Value::Part {
+            fields: a_fields, ..
+        }) = interp.global(a)
+        else {
+            panic!("expected A to be a Value::Part");
+        };
+        let Value::Part {
+            fields: b_fields, ..
+        } = &a_fields[0].1
+        else {
+            panic!("expected B to be a Value::Part");
+        };
+        let Value::Part {
+            fields: c_fields, ..
+        } = &b_fields[0].1
+        else {
+            panic!("expected C to be a Value::Part");
+        };
+        assert_eq!(c_fields[0].0, "leaf");
+        assert_number_eq(c_fields[0].1.clone(), 0.003);
     }
 
     #[test]

@@ -93,9 +93,10 @@ pub struct SourceQuery {
     pub reference: AnyRef,
 }
 
-/// Walks `items` (recursing one level into `HirItem::Part` bodies, exactly
-/// matching `crate::parametric_build::collect_scoped_bindings`'s own D31
-/// scope-path convention), lowering every `HirItem::Query` found into a
+/// Walks `items` (recursing into `HirItem::Part` bodies to any nesting
+/// depth, `AICAD-101`, exactly matching `crate::parametric_build::
+/// collect_scoped_bindings`'s own D31 scope-path convention), lowering
+/// every `HirItem::Query` found into a
 /// real [`SourceQuery`]. Returns every diagnostic encountered along the
 /// way (an unknown clause name, a malformed argument list, ...) — this
 /// never silently drops a malformed query declaration; the caller decides
