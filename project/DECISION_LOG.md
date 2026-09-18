@@ -1778,3 +1778,15 @@ into an open registration ABI. If Stage-4 evidence genuinely conflicts with
 an approved invariant, implementation must stop at that conflict, document
 the evidence, and propose an amended owner decision rather than silently
 working around the ruling.
+
+---
+
+## DL-35: Stage-5 queue approved — implementation authorized
+
+- Date: 2026-09-18
+- Resolves: the outstanding Stage-5 implementation-authorization gate described in `project/CURRENT_STAGE.md` and `project/SESSION_HANDOFF.md` after the `claude/aicad-stage5-transition` merge (`df9334634e09a9793191ea5de40f0aad12032589`, PR #14).
+- Decision: **the final Stage-5 queue is approved.** The owner reviewed the finalized `AICAD-101..AICAD-130` queue, the fixed `S5-00..S5-10` batches, and the transition report, and explicitly authorizes Stage-5 implementation to begin. The durable approval record is `project/approvals/STAGE5_QUEUE_OWNER_APPROVAL.md`. `claude/aicad-stage5-dev` is created from the exact approved merged head above, per the flow `CURRENT_STAGE.md` and `SESSION_HANDOFF.md` already documented.
+- Rationale: Stage-4 approval (`DL-34`) authorized only the bounded transition/roadmap-freeze planning pass, not implementation. A separate, explicit review/approval of the resulting queue is the gate this entry closes.
+- Consequences: implementation may begin with `AICAD-101` (batch `S5-00`), executed in the fixed batch order in `project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md`. All D1-D31 invariants carried forward by the transition remain unchanged; this entry authorizes proceeding, it does not amend any semantic decision. Stage 6/7 remain provisional and non-executable.
+- Affected tasks: unblocks `AICAD-101..AICAD-130`.
+- Supersedes: the "implementation_authorized: false" / "do not implement AICAD-101 here" stop rule in the pre-approval `project/CURRENT_STAGE.md` and `project/SESSION_HANDOFF.md`, both synchronized by this same change.

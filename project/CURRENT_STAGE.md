@@ -1,14 +1,14 @@
 # Current AICAD Stage
 
-stage: transition
+stage: 5
 from_stage: 4
 to_stage: 5
-name: Stage 4 -> Stage 5 roadmap freeze
-status: stage5-queue-finalized-pending-owner-review
+name: Stage 5 - programmable geometry substrate
+status: implementation-authorized
 last_completed_stage: 4
 last_completed_task: AICAD-100A
-next_task_after_transition_approval: AICAD-101
-implementation_authorized: false
+next_task: AICAD-101
+implementation_authorized: true
 
 ## Authoritative current state
 
@@ -19,20 +19,41 @@ Stage 4 is **complete, owner-approved, and merged**.
 - Final gate: `project/gates/stage-4-gate.md`.
 - Owner approval date: 2026-09-16.
 - Owner approval record on `main`: `project/approvals/STAGE4_OWNER_APPROVAL.md`, commit `35547025bbe32f350bcdaf2c1556ed2482a2cada`.
-- Decision-log recording: `project/DECISION_LOG.md#DL-34` on this transition branch.
+- Decision-log recording: `project/DECISION_LOG.md#DL-34`.
 
-The owner approval authorizes this bounded Stage-4 -> Stage-5 planning/reconciliation pass. It does **not** authorize Stage-5 implementation.
+The Stage-4 -> Stage-5 transition/planning pass was merged to `main` at `df9334634e09a9793191ea5de40f0aad12032589` (PR #14), finalizing the executable Stage-5 queue for owner review.
 
-## Stage-5 transition state
+## Stage-5 queue approval
 
-The final executable Stage-5 task queue is frozen for owner review:
+The owner has reviewed and **approved** the finalized Stage-5 queue:
 
 - exact task IDs: `AICAD-101` through `AICAD-130`;
 - exact task dependencies and acceptance criteria: `project/TASKS.yaml`;
 - fixed execution batches/checkpoints: `project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md`;
-- implementation status: **not begun**.
+- transition rationale: `project/planning/transitions/stage4-to-stage5/TRANSITION_REPORT.md`.
+- Owner approval date: 2026-09-18.
+- Owner approval record: `project/approvals/STAGE5_QUEUE_OWNER_APPROVAL.md`.
+- Decision-log recording: `project/DECISION_LOG.md#DL-35`.
 
-The final queue explicitly promotes the four remaining Stage-4/general-language carry-forwards into Batch S5-00: nested `part` semantics, dimensional/spatial source construction including Area, remaining `.aicad` Stage-4 query vocabulary/lowering, and production-path source-query regression proof. It does not enable automatic fingerprint recovery.
+`claude/aicad-stage5-dev` was created from the exact approved merged head `df9334634e09a9793191ea5de40f0aad12032589`. Stage-5 implementation begins on this branch with `AICAD-101` (batch `S5-00`), in the fixed batch order below.
+
+The final queue promotes the four remaining Stage-4/general-language carry-forwards into Batch S5-00: nested `part` semantics, dimensional/spatial source construction including Area, remaining `.aicad` Stage-4 query vocabulary/lowering, and production-path source-query regression proof. It does not enable automatic fingerprint recovery.
+
+## Fixed Stage-5 batches
+
+| Batch | Tasks | Status |
+|---|---|---|
+| S5-00 | AICAD-101..104 | in progress |
+| S5-01 | AICAD-105..106 | not started |
+| S5-02 | AICAD-107..108 | not started |
+| S5-03 | AICAD-109..112 | not started |
+| S5-04 | AICAD-113..116 | not started |
+| S5-05 | AICAD-117..118 | not started |
+| S5-06 | AICAD-119..121 | not started |
+| S5-07 | AICAD-122..124 | not started |
+| S5-08 | AICAD-125..126 | not started |
+| S5-09 | AICAD-127..129 | not started |
+| S5-10 | AICAD-130 | not started |
 
 ## Later stages
 
@@ -47,13 +68,4 @@ Future promotion follows `project/planning/transitions/stage4-to-stage5/STAGE_PR
 
 ## Current stop rule
 
-No Stage-5 implementation may begin on this planning branch. Specifically, do **not** implement `AICAD-101` here.
-
-Next owner flow:
-
-1. review the final Stage-5 queue and transition report;
-2. if accepted, merge `claude/aicad-stage5-transition` to `main`;
-3. create `claude/aicad-stage5-dev` from that exact approved merged HEAD;
-4. begin `AICAD-101` only on the authorized Stage-5 development state.
-
-The transition report is `project/planning/transitions/stage4-to-stage5/TRANSITION_REPORT.md`.
+Work exactly one fixed batch per invocation, in order, starting with `S5-00`. Do not combine batches, reorder tasks, or begin later-stage work early. The agent implementing Stage 5 does not approve stage progression to Stage 6; that remains a separate future owner gate.
