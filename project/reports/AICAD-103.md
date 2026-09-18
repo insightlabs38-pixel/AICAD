@@ -4,6 +4,26 @@
 
 Done. Batch S5-00, third task (depends on `AICAD-101` and `AICAD-102`).
 
+**Correction (recorded during `AICAD-104`):** this report originally
+excluded `nearest_to`/`farthest_from` as clause spellings, reasoning that
+`cad_query::eval::evaluate_spatial` rejects `SpatialPredicate::NearestTo`/
+`FarthestFrom` outright (`EvalError::NotYetSpecified`). Deeper
+investigation while building `AICAD-104`'s production-path proof found
+that `cad_query::resolve::filter_and_rank` — the actual path every real
+query executes through — rewrites that exact clause shape into the
+equivalent `RankingDirective::Nearest`/`Farthest` *before* evaluation
+(`cad_query::eval`'s own module doc comment says so explicitly: "Every
+real query executed through `cad_query::resolve_query`/`resolve_reference`
+... therefore gives `nearest_to`/`farthest_from` real, already-tested
+comparative semantics ... never a placeholder"). The original exclusion
+was a mistake, not a considered scope boundary. Fixed in place, in the
+same commit as this correction note: `nearest_to`/`farthest_from` are now
+real, supported, tested clause spellings (see `crates/cad-cli/src/
+query_lowering.rs`'s updated module doc comment and the replaced test
+`nearest_to_and_farthest_from_lower_to_the_real_spatial_predicate`). The
+"Deliberately not implemented" section below (a literal nested
+`query { ... }` clause argument) is unaffected and remains accurate.
+
 ## Objective
 
 `AICAD-100A` gave a first, deliberately minimal subset of `docs/plan/
@@ -41,22 +61,24 @@ in fact expressible that way:
 addition is new match arms and argument-parsing helper functions inside
 `crates/cad-cli/src/query_lowering.rs` alone.
 
-## A real bug avoided: `nearest_to`/`farthest_from` do not work
+## `nearest_to`/`farthest_from`: real semantics via the resolver rewrite
 
-`cad_query::predicate::SpatialPredicate::NearestTo`/`FarthestFrom` exist
-structurally, but `cad_query::eval::evaluate_spatial` explicitly rejects
-both with `EvalError::NotYetSpecified` ("comparative across a candidate
-set, not a per-candidate boolean predicate"). Wiring a `.aicad`
-`nearest_to(...)` clause spelling to that variant would have produced a
-clause that always fails at evaluation time. The actual, working
-mechanism is the ranking directive (`RankingDirective::Nearest`/
-`Farthest`, already routed through `resolve.rs`'s own ranking rewrite per
-`AICAD-100A`'s report). This module therefore only ever lowers to
-`nearest(target)`/`farthest(target)` (matching the plan's own separate
-"Ranking/disambiguation: `nearest(target)`" naming) and treats
-`nearest_to`/`farthest_from` as unrecognized clause names (`REF-E103`),
-with a regression test (`nearest_to_and_farthest_from_are_intentionally_
-not_recognized_clause_names`) pinning this choice.
+`cad_query::predicate::SpatialPredicate::NearestTo`/`FarthestFrom` are
+genuinely comparative across a candidate *set*, so a *direct* call to
+`cad_query::eval::evaluate_spatial` on either reports `EvalError::
+NotYetSpecified`. But `cad_query::resolve::filter_and_rank` — the real
+path `resolve_query`/`resolve_reference` (every production query
+execution in this workspace) goes through — rewrites this exact clause
+shape into the equivalent `RankingDirective::Nearest`/`Farthest` *before*
+evaluation ever runs, giving it real, already-tested comparative
+semantics in production (see the correction note at the top of this
+report). This module lowers `nearest_to(target)`/`farthest_from(target)`
+directly to `SpatialPredicate::NearestTo`/`FarthestFrom`, and separately
+`nearest(target)`/`farthest(target)` to the equivalent
+`RankingDirective::Nearest`/`Farthest` — plain synonyms, both real,
+matching the plan's own two named spellings ("spatial predicates:
+`nearest_to(point|ref)`" and "ranking: `nearest(target)`") for what turns
+out to be the same underlying mechanism.
 
 ## What was implemented
 
@@ -77,6 +99,9 @@ New `.aicad` clause spellings, all in `crates/cad-cli/src/query_lowering.rs`:
   `SpatialPredicate::RelativeTo(RelativeDirection, Frame3)`.
 - `nearest(name|x,y,z)`, `farthest(name|x,y,z)` →
   `RankingDirective::{Nearest,Farthest}(SpatialTarget)`.
+- `nearest_to(name|x,y,z)`, `farthest_from(name|x,y,z)` →
+  `SpatialPredicate::{NearestTo,FarthestFrom}(SpatialTarget)` (real
+  semantics via the resolver's ranking rewrite — see above).
 
 Every named-reference argument resolves via `ConstructionStrategy::
 StructuralRole` — the same collision-safe bare/dotted-name lookup
@@ -103,13 +128,12 @@ reference test (`adjacent_to(Wall.hinge)`), and two required conformance
 tests:
 
 - `source_vocabulary_conformance_table_covers_every_supported_clause` — a
-  table of every supported clause spelling (36 entries spanning all six
+  table of every supported clause spelling (38 entries spanning all six
   entity kinds where relevant), each asserted to lower with zero
   diagnostics and exactly one produced clause.
 - `intentionally_unsupported_clause_spellings_are_named_explicitly` — the
-  complementary negative table: `nearest_to`/`farthest_from` (unknown
-  clause) and a literal nested `query { ... }` argument (does not even
-  parse as a valid clause argument), both explicitly asserted to remain
+  complementary negative table: a literal nested `query { ... }` argument
+  (does not even parse as a valid clause argument), asserted to remain
   unsupported rather than silently accepted.
 
 ## Verification

@@ -53,22 +53,33 @@
 //!   `below(...)`/`left(...)`/`right(...)` (each: twelve unitless/`Length`
 //!   numbers — a `Length` origin `x, y, z` then three unitless `x, y, z`
 //!   axis triples for `x_axis`, `y_axis`, `z_axis`, in that order);
+//! - spatial (comparative): `nearest_to(name)` / `nearest_to(x, y, z)`,
+//!   `farthest_from(name)` / `farthest_from(x, y, z)` — lowered to
+//!   `cad_query::predicate::SpatialPredicate::NearestTo`/`FarthestFrom`.
+//!   These are genuinely comparative across a candidate *set*, not a
+//!   per-candidate boolean (`cad_query::eval::evaluate_spatial` itself
+//!   reports `EvalError::NotYetSpecified` for a *direct*, resolver-
+//!   bypassing call), but `crate::resolve::filter_and_rank` — the real
+//!   production path every `.aicad` query actually executes through —
+//!   rewrites this exact clause shape into the equivalent
+//!   `RankingDirective::Nearest`/`Farthest` before evaluation
+//!   (`cad_query::eval`'s own module doc comment, "`SpatialPredicate::
+//!   {NearestTo, FarthestFrom}`"), so this spelling has real,
+//!   already-tested comparative semantics through the production
+//!   resolver;
 //! - ranking: `first()`, `largest(area|radius)`, `smallest(area|radius)`,
 //!   `nearest(name)` / `nearest(x, y, z)`, `farthest(name)` / `farthest(x,
-//!   y, z)` — **not** a separate `nearest_to`/`farthest_from` spelling:
-//!   `cad_query::predicate::SpatialPredicate::NearestTo`/`FarthestFrom`
-//!   exist structurally but `cad_query::eval::evaluate_spatial` itself
-//!   deliberately rejects them (`EvalError::NotYetSpecified`, "comparative
-//!   across a candidate set, not a per-candidate boolean predicate") —
-//!   the real, working mechanism for "nearest"/"farthest" is always the
-//!   ranking directive, so that is the only spelling this module ever
-//!   lowers to, avoiding wiring a clause that would deterministically
-//!   fail at evaluation time;
+//!   y, z)` — plain synonyms for `nearest_to`/`farthest_from` above (the
+//!   plan lists both a "spatial predicate" and a "ranking" spelling for
+//!   the same underlying comparative semantics; both lower to real,
+//!   working clauses here, since `filter_and_rank` treats them
+//!   identically regardless of which `QueryClause` variant carries them);
 //! - cardinality: `unique()`, `expect_count(n)`.
 //!
 //! A named reference target (`adjacent_to`/`connected_to`/`intersects`/
-//! `within`/`nearest`/`farthest`, `generated_by`/`modified_by`/
-//! `descended_from` unchanged) always resolves via
+//! `within`/`nearest`/`farthest`/`nearest_to`/`farthest_from`,
+//! `generated_by`/`modified_by`/`descended_from` unchanged) always
+//! resolves via
 //! [`ConstructionStrategy::StructuralRole`] — the same collision-safe,
 //! already-production bare/dotted-name lookup (`D31`'s `resolve_scoped_
 //! name`) every other named-binding evidence source in this codebase
@@ -510,6 +521,18 @@ fn lower_one_clause(
             query
                 .clauses
                 .push(QueryClause::Ranking(RankingDirective::Farthest(target)));
+        }
+        "nearest_to" => {
+            let target = spatial_target_arg(file, source, clause, 0, query.entity_kind)?;
+            query
+                .clauses
+                .push(QueryClause::Spatial(SpatialPredicate::NearestTo(target)));
+        }
+        "farthest_from" => {
+            let target = spatial_target_arg(file, source, clause, 0, query.entity_kind)?;
+            query
+                .clauses
+                .push(QueryClause::Spatial(SpatialPredicate::FarthestFrom(target)));
         }
         _ => return Err(unknown_clause(file, source, clause)),
     }
@@ -1299,16 +1322,37 @@ mod tests {
     }
 
     #[test]
-    fn nearest_to_and_farthest_from_are_intentionally_not_recognized_clause_names() {
-        // These predicate names exist in cad_query::predicate but
-        // cad_query::eval::evaluate_spatial deliberately rejects them
-        // (NotYetSpecified) -- this module never lowers to them, so the
-        // spelling itself must be an unknown-clause diagnostic, not a
-        // silently-accepted clause that would fail later at evaluation.
+    fn nearest_to_and_farthest_from_lower_to_the_real_spatial_predicate() {
+        // Correction of an earlier assumption in this module: a *direct*
+        // call to `cad_query::eval::evaluate_spatial` rejects these two
+        // variants (`NotYetSpecified`), but `crate::resolve::
+        // filter_and_rank` -- the real path every `.aicad` query executes
+        // through -- rewrites them into the equivalent ranking directive
+        // before evaluation, so they have real production semantics and
+        // belong in the supported vocabulary (see this module's own doc
+        // comment, "spatial (comparative)").
         let (queries, diagnostics) =
             lower_queries("query q : Face in body { nearest_to(anchor); }");
-        assert!(queries.is_empty());
-        assert_eq!(diagnostics[0].code.as_string(), "REF-E103");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(
+            queries[0].query.clauses[0],
+            QueryClause::Spatial(SpatialPredicate::NearestTo(SpatialTarget::Ref(
+                AnyRef::from_strategy(
+                    EntityKind::Face,
+                    ConstructionStrategy::StructuralRole("anchor".to_string()),
+                )
+            )))
+        );
+
+        let (queries, diagnostics) =
+            lower_queries("query q : Face in body { farthest_from(1mm, 2mm, 3mm); }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let QueryClause::Spatial(SpatialPredicate::FarthestFrom(SpatialTarget::Point(p))) =
+            &queries[0].query.clauses[0]
+        else {
+            panic!("expected FarthestFrom(Point(_))");
+        };
+        assert!((p.x.value - 0.001).abs() < 1e-12);
     }
 
     /// `AICAD-103`'s own required conformance evidence: every supported
@@ -1358,6 +1402,8 @@ mod tests {
             ("Face", "smallest(radius)"),
             ("Face", "nearest(anchor)"),
             ("Face", "farthest(1mm, 2mm, 3mm)"),
+            ("Face", "nearest_to(anchor)"),
+            ("Face", "farthest_from(1mm, 2mm, 3mm)"),
         ];
         for (entity_kind, clause) in CLAUSES {
             let source = format!("query q : {entity_kind} in body {{ {clause}; }}");
@@ -1382,11 +1428,6 @@ mod tests {
     #[test]
     fn intentionally_unsupported_clause_spellings_are_named_explicitly() {
         const DEFERRED: &[&str] = &[
-            // SpatialPredicate::NearestTo/FarthestFrom exist in cad_query
-            // but evaluate_spatial rejects them outright; `nearest`/
-            // `farthest` (the ranking directives) are the real spelling.
-            "nearest_to(anchor)",
-            "farthest_from(anchor)",
             // A literal nested `query { ... }`-shaped clause argument
             // (AdjacencyTarget::Query) has no grammar support -- every
             // adjacency/spatial target is a named reference instead.
