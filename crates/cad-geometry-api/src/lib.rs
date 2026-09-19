@@ -49,4 +49,7 @@ pub use ir::{
 };
 pub use operation_report::OperationReport;
 pub use query_result::{QueryFailure, QueryOutcome};
-pub use surface::{AnalyticSurface, SurfaceConstructionError, SurfaceSample};
+pub use surface::{
+    AnalyticSurface, Orientation, SurfaceConstructionError, SurfaceSample, SurfaceTrimError,
+    TrimError, TrimLoop,
+};

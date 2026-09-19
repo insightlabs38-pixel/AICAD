@@ -3744,7 +3744,7 @@ tasks:
 - id: AICAD-115
   stage: 5
   title: Implement trimmed-surface semantic model and bounded construction
-  status: todo
+  status: done
   depends_on:
   - AICAD-114
   - AICAD-111

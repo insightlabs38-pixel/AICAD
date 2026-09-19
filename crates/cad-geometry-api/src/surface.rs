@@ -30,9 +30,29 @@
 //! locations are reported structurally" acceptance criterion is about the
 //! parametrization, not the underlying point.
 
+//! # Trimmed surfaces (`AICAD-115`)
+//!
+//! [`AnalyticSurface::Trimmed`]/[`AnalyticSurface::trim`]/[`TrimLoop`] add a
+//! bounded surface: an underlying (base) surface plus an outer trim loop
+//! and zero or more hole loops, all living in the base surface's own
+//! `(u, v)` parameter domain — a "pcurve" in conventional CAD-kernel
+//! terminology, though `TrimLoop` is AICAD-owned data, never an OCCT
+//! `Geom2d_Curve`. A trim loop is exactly one already-closed
+//! [`crate::curve::AnalyticCurve`], evaluated with its point's `x`/`y`
+//! components read as `(u, v)` (`z` must be numerically zero — the loop
+//! must actually lie in the parameter plane). Composite multi-segment
+//! loops (e.g. a rounded-rectangle boundary built from several curve
+//! pieces) are **not yet supported** — see [`TrimLoop::new`]'s own doc
+//! comment for exactly which single-curve shapes close on their own (a full
+//! [`crate::curve::AnalyticCurve::Circle`]/[`crate::curve::AnalyticCurve::
+//! Ellipse`] is the common practical case: a circular/elliptical hole or
+//! outer boundary).
+
 use crate::Quantity;
+use crate::curve::AnalyticCurve;
 use crate::query_result::{QueryFailure, QueryOutcome};
 use cad_kernel_api::{Axis3, Direction3, Frame3, Point3, Vector3};
+use cad_units::ConstructionTolerance;
 use std::fmt;
 
 /// One of the closed set of analytic surface families Stage 5 values may
@@ -97,16 +117,28 @@ pub enum AnalyticSurface {
         periodic_u: bool,
         periodic_v: bool,
     },
+    /// A bounded (trimmed) surface (`AICAD-115`): `base`, restricted to the
+    /// region inside `outer` and outside every one of `holes` — see module
+    /// doc comment. Constructed only via [`AnalyticSurface::trim`] (fields
+    /// are private, unlike every other variant — `outer`/`holes` carry
+    /// their own construction-time-validated orientation, which a
+    /// struct-literal caller could otherwise silently invalidate).
+    Trimmed {
+        base: Box<AnalyticSurface>,
+        outer: TrimLoop,
+        holes: Vec<TrimLoop>,
+    },
 }
 
 impl AnalyticSurface {
     /// This surface's own anchor point — a plane/sphere's own defining
-    /// point, a cylinder/cone/torus's own axis origin, or a Bezier/B-spline
+    /// point, a cylinder/cone/torus's own axis origin, a Bezier/B-spline
     /// surface's own first control point (`.first()` rather than indexing —
     /// an empty control net is only reachable via direct struct-literal
     /// construction bypassing [`AnalyticSurface::bezier`]/[`AnalyticSurface::
     /// bspline`], mirroring [`crate::curve::AnalyticCurve::anchor`]'s
-    /// identical defensive convention).
+    /// identical defensive convention), or a trimmed surface's own `base`
+    /// anchor.
     pub fn anchor(&self) -> Point3 {
         match self {
             AnalyticSurface::Plane { origin, .. } => *origin,
@@ -114,6 +146,7 @@ impl AnalyticSurface {
             | AnalyticSurface::Cone { axis, .. }
             | AnalyticSurface::Torus { axis, .. } => axis.origin,
             AnalyticSurface::Sphere { center, .. } => *center,
+            AnalyticSurface::Trimmed { base, .. } => base.anchor(),
             AnalyticSurface::Bezier { control_points, .. }
             | AnalyticSurface::BSpline { control_points, .. } => control_points
                 .first()
@@ -471,6 +504,346 @@ fn normal_from_derivatives(du: Vector3, dv: Vector3) -> Option<Direction3> {
     du.cross(dv).normalize()
 }
 
+// --- AICAD-115: trim loops ---
+
+/// One `(u, v, du, dv, z)` sample of a trim loop's own underlying curve —
+/// see [`sample_uv_curve`].
+struct UvSample {
+    u: f64,
+    v: f64,
+    du: f64,
+    dv: f64,
+    z: f64,
+}
+
+/// The (even) sample count [`sample_uv_curve`]'s composite-Simpson's-rule
+/// integration uses — fixed, matching [`crate::curve::AnalyticCurve::
+/// closest_point`]'s own `numeric_closest_points::SAMPLES` precedent of a
+/// fixed, not adaptive, sample budget for a bounded numerical method.
+const LOOP_SAMPLE_COUNT: usize = 256;
+
+/// Samples `curve.evaluate` at `LOOP_SAMPLE_COUNT + 1` evenly-spaced
+/// parameters across `[lo, hi]`, reading each sample's point `x`/`y` as
+/// `(u, v)` and its own `z` for the [`TrimLoop::new`] planarity check.
+/// `None` if any sample fails to evaluate (an unsupported/degenerate
+/// underlying curve).
+fn sample_uv_curve(curve: &AnalyticCurve, lo: f64, hi: f64) -> Option<Vec<UvSample>> {
+    let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+    let mut samples = Vec::with_capacity(LOOP_SAMPLE_COUNT + 1);
+    for i in 0..=LOOP_SAMPLE_COUNT {
+        let t = lo + h * i as f64;
+        let QueryOutcome::Solutions(mut s) = curve.evaluate(t) else {
+            return None;
+        };
+        if s.len() != 1 {
+            return None;
+        }
+        let sample = s.pop().unwrap();
+        samples.push(UvSample {
+            u: sample.point.x,
+            v: sample.point.y,
+            du: sample.tangent.x,
+            dv: sample.tangent.y,
+            z: sample.point.z,
+        });
+    }
+    Some(samples)
+}
+
+/// Composite Simpson's rule over `samples` (`samples.len() - 1 ==
+/// LOOP_SAMPLE_COUNT`, always even), given the fixed sample spacing `h`.
+fn simpson_integrate(samples: &[UvSample], h: f64, integrand: impl Fn(&UvSample) -> f64) -> f64 {
+    let n = samples.len() - 1;
+    let mut sum = integrand(&samples[0]) + integrand(&samples[n]);
+    for (i, sample) in samples.iter().enumerate().take(n).skip(1) {
+        let coeff = if i % 2 == 0 { 2.0 } else { 4.0 };
+        sum += coeff * integrand(sample);
+    }
+    sum * h / 3.0
+}
+
+/// The signed area enclosed by a `(u, v)` loop, via the exact Green's-
+/// theorem line integral `(1/2) * oint (u dv - v du)` — using each sample's
+/// own *analytic* tangent (`AnalyticCurve::evaluate`'s own derivative), not
+/// a finite difference, so this converges far faster than a plain polygon/
+/// shoelace approximation over the same sample count. Positive for a
+/// counter-clockwise loop, negative for clockwise (the standard planar
+/// orientation convention) — see [`Orientation`].
+fn signed_area(samples: &[UvSample], h: f64) -> f64 {
+    simpson_integrate(samples, h, |s| 0.5 * (s.u * s.dv - s.v * s.du))
+}
+
+/// The winding number of a `(u, v)` loop around the query point `(qu, qv)`
+/// — `+-1` for a point strictly inside a simple (non-self-intersecting)
+/// loop, `0` for a point strictly outside, computed via the exact winding-
+/// angle line integral `(1/2*pi) * oint d(theta)` (the standard robust
+/// point-in-region test for a loop with curved, not merely polygonal,
+/// edges). [`TrimLoop::contains`]'s own `|winding| > 0.5` threshold
+/// distinguishes the two cases without needing an exact `0`/`1` (which
+/// floating-point quadrature cannot guarantee bit-for-bit).
+fn winding_number(samples: &[UvSample], h: f64, qu: f64, qv: f64) -> f64 {
+    let angle = simpson_integrate(samples, h, |s| {
+        let du = s.u - qu;
+        let dv = s.v - qv;
+        let denom = du * du + dv * dv;
+        if denom < 1e-300 {
+            0.0
+        } else {
+            (du * s.dv - dv * s.du) / denom
+        }
+    });
+    angle / std::f64::consts::TAU
+}
+
+/// This curve's own natural closed-loop parameter domain, if it has one —
+/// distinct from [`AnalyticCurve::domain`]: a full [`AnalyticCurve::
+/// Circle`]/[`AnalyticCurve::Ellipse`] is always closed over one period
+/// (`domain` returns `None` for both, since *evaluation* accepts any finite
+/// parameter — this function is specifically about the loop-closing
+/// period), while [`AnalyticCurve::Line`] can never close (infinite) and
+/// every other family closes only if its own already-bounded `domain`
+/// happens to start/end at the same point (checked numerically by
+/// [`TrimLoop::new`], not assumed here).
+fn loop_domain(curve: &AnalyticCurve) -> Option<(f64, f64)> {
+    match curve {
+        AnalyticCurve::Line { .. } => None,
+        AnalyticCurve::Circle { .. } | AnalyticCurve::Ellipse { .. } => {
+            Some((0.0, std::f64::consts::TAU))
+        }
+        _ => curve.domain(),
+    }
+}
+
+/// A trim loop's own orientation in its surface's `(u, v)` parameter plane
+/// — the standard planar-region convention: an outer boundary is
+/// [`Orientation::CounterClockwise`] (positive signed area), a hole is
+/// [`Orientation::Clockwise`] (negative signed area). [`AnalyticSurface::
+/// trim`] enforces this assignment; it is never inferred silently from an
+/// ambiguous or degenerate loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    CounterClockwise,
+    Clockwise,
+}
+
+/// Every way [`TrimLoop::new`] can reject a candidate loop curve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrimError {
+    /// This curve family has no closed-loop parameter domain at all (only
+    /// [`AnalyticCurve::Line`] today — see [`loop_domain`]'s own doc
+    /// comment).
+    UnsupportedCurveFamily,
+    /// The curve's own domain endpoints do not map to the same `(u, v)`
+    /// point within `tolerance` — composite multi-segment loops are not
+    /// yet supported (see this module's own doc comment), so a genuine
+    /// closed loop must already be exactly one closed curve.
+    NotClosed,
+    /// A sampled point's own `z` component was not (within `tolerance`)
+    /// zero — the loop does not actually lie in the `(u, v)` parameter
+    /// plane.
+    NonPlanarLoop,
+    /// The loop's own enclosed signed area was too small to reliably
+    /// determine an orientation (a genuinely zero-area or self-retracing
+    /// loop).
+    DegenerateLoop,
+}
+
+impl fmt::Display for TrimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            TrimError::UnsupportedCurveFamily => {
+                "this curve family has no closed-loop parameter domain (composite multi-segment \
+                 loops are not yet supported)"
+            }
+            TrimError::NotClosed => {
+                "the curve's own domain endpoints do not map to the same (u, v) point"
+            }
+            TrimError::NonPlanarLoop => "the loop does not lie in the (u, v) parameter plane",
+            TrimError::DegenerateLoop => "the loop's own enclosed area is too small to orient",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for TrimError {}
+
+/// One closed loop in a surface's own `(u, v)` parameter domain
+/// (`AICAD-115`) — see module doc comment. Immutable and validated at
+/// construction: [`TrimLoop::orientation`] is always the curve's own
+/// actually-computed orientation, never caller-asserted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrimLoop {
+    curve: AnalyticCurve,
+    domain: (f64, f64),
+    orientation: Orientation,
+}
+
+impl TrimLoop {
+    /// Validates and builds a trim loop from `curve`, read as a `(u, v)`
+    /// parameter-plane curve. Rejects a curve family with no closed-loop
+    /// domain ([`TrimError::UnsupportedCurveFamily`] —
+    /// [`AnalyticCurve::Line`] only), a domain whose endpoints do not
+    /// coincide within `tolerance` ([`TrimError::NotClosed`]), a sampled
+    /// `z` exceeding `tolerance` ([`TrimError::NonPlanarLoop`]), or a
+    /// too-small enclosed area ([`TrimError::DegenerateLoop`]). `tolerance`
+    /// is `project/DECISION_LOG.md#DL-26`'s modeling/construction domain,
+    /// reused here as a dimensionless `(u, v)`-space epsilon since `u`/`v`
+    /// carry mixed dimensions per surface family (an angle for one axis, a
+    /// length for another) and Stage 5 has no separate parameter-space
+    /// tolerance domain — a deliberate, disclosed simplification, not a
+    /// silent cross-domain reuse of a *typed* `Length` value.
+    pub fn new(
+        curve: AnalyticCurve,
+        tolerance: ConstructionTolerance,
+    ) -> Result<TrimLoop, TrimError> {
+        let Some((lo, hi)) = loop_domain(&curve) else {
+            return Err(TrimError::UnsupportedCurveFamily);
+        };
+        let Some(samples) = sample_uv_curve(&curve, lo, hi) else {
+            return Err(TrimError::UnsupportedCurveFamily);
+        };
+        let tol = tolerance.canonical_magnitude();
+        let first = &samples[0];
+        let last = &samples[samples.len() - 1];
+        let closure_gap = ((first.u - last.u).powi(2) + (first.v - last.v).powi(2)).sqrt();
+        if closure_gap > tol {
+            return Err(TrimError::NotClosed);
+        }
+        let max_abs_z = samples.iter().fold(0.0f64, |acc, s| acc.max(s.z.abs()));
+        if max_abs_z > tol {
+            return Err(TrimError::NonPlanarLoop);
+        }
+        let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+        let area = signed_area(&samples, h);
+        if area.abs() < tol * tol {
+            return Err(TrimError::DegenerateLoop);
+        }
+        let orientation = if area > 0.0 {
+            Orientation::CounterClockwise
+        } else {
+            Orientation::Clockwise
+        };
+        Ok(TrimLoop {
+            curve,
+            domain: (lo, hi),
+            orientation,
+        })
+    }
+
+    /// This loop's own underlying `(u, v)`-parameter-plane curve.
+    pub fn curve(&self) -> &AnalyticCurve {
+        &self.curve
+    }
+
+    /// This loop's own closed-loop parameter domain (see [`loop_domain`]).
+    pub fn domain(&self) -> (f64, f64) {
+        self.domain
+    }
+
+    /// This loop's own actually-computed orientation — see [`Orientation`].
+    pub fn orientation(&self) -> Orientation {
+        self.orientation
+    }
+
+    /// Whether `(u, v)` lies strictly inside this loop (winding-number
+    /// test — see [`winding_number`]). Re-samples the underlying curve on
+    /// every call rather than caching samples: simpler, and a trim-region
+    /// membership test is not yet a hot path anywhere in Stage 5 — a
+    /// disclosed performance limitation, not a correctness one.
+    fn contains(&self, u: f64, v: f64) -> bool {
+        let (lo, hi) = self.domain;
+        let Some(samples) = sample_uv_curve(&self.curve, lo, hi) else {
+            return false;
+        };
+        let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+        winding_number(&samples, h, u, v).abs() > 0.5
+    }
+}
+
+/// Every way [`AnalyticSurface::trim`] can reject a candidate outer/hole
+/// loop combination — distinct from [`TrimError`] (which is about one
+/// loop's own construction, independent of any base surface).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceTrimError {
+    /// `outer`'s own [`TrimLoop::orientation`] was not
+    /// [`Orientation::CounterClockwise`].
+    OuterMustBeCounterClockwise,
+    /// One of `holes`'s own [`TrimLoop::orientation`] was not
+    /// [`Orientation::Clockwise`].
+    HoleMustBeClockwise,
+    /// A sampled `(u, v)` point on `outer` or a hole fell outside `base`'s
+    /// own valid evaluation domain — the trim boundary must lie entirely on
+    /// the base surface it bounds, never partly off it.
+    LoopOutsideBaseDomain,
+}
+
+impl fmt::Display for SurfaceTrimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            SurfaceTrimError::OuterMustBeCounterClockwise => {
+                "the outer trim loop must be oriented counter-clockwise"
+            }
+            SurfaceTrimError::HoleMustBeClockwise => {
+                "every hole trim loop must be oriented clockwise"
+            }
+            SurfaceTrimError::LoopOutsideBaseDomain => {
+                "a trim loop sample fell outside the base surface's own valid domain"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for SurfaceTrimError {}
+
+impl AnalyticSurface {
+    /// Builds a trimmed surface (`AICAD-115`): `base`, restricted to the
+    /// region inside `outer` and outside every one of `holes`. Rejects an
+    /// `outer` not [`Orientation::CounterClockwise`]
+    /// ([`SurfaceTrimError::OuterMustBeCounterClockwise`]), a hole not
+    /// [`Orientation::Clockwise`] ([`SurfaceTrimError::HoleMustBeClockwise`]),
+    /// or any loop with a sampled `(u, v)` point where `base.evaluate`
+    /// fails ([`SurfaceTrimError::LoopOutsideBaseDomain`]) — validated
+    /// rather than accepting silent kernel repair as semantic truth, per
+    /// this task's own acceptance criterion. Each `TrimLoop` already
+    /// carries its own construction-time-validated closure/planarity/
+    /// orientation evidence (`TrimLoop::new`'s own `ConstructionTolerance`
+    /// parameter) — this function does not re-derive or re-heal any of it.
+    pub fn trim(
+        base: AnalyticSurface,
+        outer: TrimLoop,
+        holes: Vec<TrimLoop>,
+    ) -> Result<AnalyticSurface, SurfaceTrimError> {
+        if outer.orientation() != Orientation::CounterClockwise {
+            return Err(SurfaceTrimError::OuterMustBeCounterClockwise);
+        }
+        for hole in &holes {
+            if hole.orientation() != Orientation::Clockwise {
+                return Err(SurfaceTrimError::HoleMustBeClockwise);
+            }
+        }
+        for loop_ in std::iter::once(&outer).chain(holes.iter()) {
+            let (lo, hi) = loop_.domain();
+            let Some(samples) = sample_uv_curve(loop_.curve(), lo, hi) else {
+                return Err(SurfaceTrimError::LoopOutsideBaseDomain);
+            };
+            for sample in &samples {
+                if !matches!(
+                    base.evaluate(sample.u, sample.v),
+                    QueryOutcome::Solutions(_)
+                ) {
+                    return Err(SurfaceTrimError::LoopOutsideBaseDomain);
+                }
+            }
+        }
+        Ok(AnalyticSurface::Trimmed {
+            base: Box::new(base),
+            outer,
+            holes,
+        })
+    }
+}
+
 impl AnalyticSurface {
     /// Evaluates this surface at parameter pair `(u, v)` (`AICAD-113`).
     /// Each family's own parameter convention:
@@ -695,6 +1068,15 @@ impl AnalyticSurface {
                     u,
                     v,
                 )
+            }
+            AnalyticSurface::Trimmed { base, outer, holes } => {
+                if !outer.contains(u, v) {
+                    return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+                }
+                if holes.iter().any(|hole| hole.contains(u, v)) {
+                    return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+                }
+                base.evaluate(u, v)
             }
         }
     }
@@ -1376,5 +1758,143 @@ mod tests {
         let b = AnalyticSurface::bezier(net, None).unwrap();
         assert_eq!(a, b);
         assert!(!format!("{a:?}").is_empty());
+    }
+
+    // --- AICAD-115: trimmed-surface semantic model ---
+
+    fn tol() -> ConstructionTolerance {
+        ConstructionTolerance::new(1e-9).unwrap()
+    }
+
+    /// A full circle read as a `(u, v)`-parameter-plane loop: `normal =
+    /// +Z` traverses counter-clockwise (an outer boundary), `normal = -Z`
+    /// traverses clockwise (a hole) — see `TrimLoop`'s own module doc
+    /// comment for the derivation.
+    fn uv_circle(center_u: f64, center_v: f64, radius: f64, normal: Direction3) -> AnalyticCurve {
+        AnalyticCurve::circle(Point3::new(center_u, center_v, 0.0), normal, length(radius)).unwrap()
+    }
+
+    fn flat_plane() -> AnalyticSurface {
+        AnalyticSurface::plane(Point3::ORIGIN, Direction3::Z)
+    }
+
+    #[test]
+    fn a_ccw_circle_is_counter_clockwise_and_a_reversed_one_is_clockwise() {
+        let ccw = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        assert_eq!(ccw.orientation(), Orientation::CounterClockwise);
+        let cw = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, -Direction3::Z), tol()).unwrap();
+        assert_eq!(cw.orientation(), Orientation::Clockwise);
+    }
+
+    #[test]
+    fn trim_loop_rejects_an_unclosed_arc() {
+        let arc = AnalyticCurve::arc(
+            Point3::ORIGIN,
+            Direction3::Z,
+            length(1.0),
+            angle(0.0),
+            angle(std::f64::consts::PI),
+        )
+        .unwrap();
+        assert_eq!(TrimLoop::new(arc, tol()), Err(TrimError::NotClosed));
+    }
+
+    #[test]
+    fn trim_loop_rejects_an_unsupported_line() {
+        let line = AnalyticCurve::line(Point3::ORIGIN, Direction3::X);
+        assert_eq!(
+            TrimLoop::new(line, tol()),
+            Err(TrimError::UnsupportedCurveFamily)
+        );
+    }
+
+    #[test]
+    fn trim_loop_rejects_a_non_planar_circle() {
+        let tilted_normal = cad_kernel_api::Vector3::new(1.0, 1.0, 1.0)
+            .normalize()
+            .unwrap();
+        let circle = AnalyticCurve::circle(Point3::ORIGIN, tilted_normal, length(1.0)).unwrap();
+        assert_eq!(TrimLoop::new(circle, tol()), Err(TrimError::NonPlanarLoop));
+    }
+
+    #[test]
+    fn plane_trimmed_by_a_circle_matches_the_closed_form_area_via_boundary_sampling() {
+        // Not a direct area computation (that is a later query task's own
+        // job) — an independent check that the same Green's-theorem
+        // integral this module already uses for orientation reproduces
+        // pi*r^2 to high precision, since `flat_plane`'s own (u, v)
+        // parametrization is an isometry (`point(u, v) = (u, v, 0)`).
+        let radius = 7.0;
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, radius, Direction3::Z), tol()).unwrap();
+        let (lo, hi) = outer.domain();
+        let samples = sample_uv_curve(outer.curve(), lo, hi).unwrap();
+        let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+        let area = signed_area(&samples, h);
+        assert_close(area, std::f64::consts::PI * radius * radius, 1e-6);
+    }
+
+    #[test]
+    fn trimmed_plane_with_a_hole_evaluates_inside_outside_and_hole_correctly() {
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        let hole = TrimLoop::new(uv_circle(3.0, 0.0, 2.0, -Direction3::Z), tol()).unwrap();
+        let trimmed = AnalyticSurface::trim(flat_plane(), outer, vec![hole]).unwrap();
+
+        // Inside the outer boundary, outside the hole: succeeds.
+        let QueryOutcome::Solutions(mut s) = trimmed.evaluate(0.0, 0.0) else {
+            panic!("(0, 0) is inside the outer boundary and outside the hole")
+        };
+        assert_point_close(s.pop().unwrap().point, Point3::ORIGIN, 1e-9);
+
+        // Just outside the hole boundary (hole spans u in [1, 5]).
+        assert!(matches!(
+            trimmed.evaluate(5.5, 0.0),
+            QueryOutcome::Solutions(_)
+        ));
+        // Just inside the hole boundary.
+        assert_eq!(
+            trimmed.evaluate(4.5, 0.0),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+        // Well outside the outer boundary.
+        assert_eq!(
+            trimmed.evaluate(15.0, 0.0),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+        // Near the outer boundary but still inside.
+        assert!(matches!(
+            trimmed.evaluate(9.9, 0.0),
+            QueryOutcome::Solutions(_)
+        ));
+    }
+
+    #[test]
+    fn trim_rejects_a_hole_with_the_wrong_orientation() {
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        // Both counter-clockwise — the hole must be clockwise.
+        let bad_hole = TrimLoop::new(uv_circle(3.0, 0.0, 2.0, Direction3::Z), tol()).unwrap();
+        assert_eq!(
+            AnalyticSurface::trim(flat_plane(), outer, vec![bad_hole]),
+            Err(SurfaceTrimError::HoleMustBeClockwise)
+        );
+    }
+
+    #[test]
+    fn trim_rejects_a_loop_outside_the_base_surface_domain() {
+        // A cone requires v >= 0; a (u, v) circle straddling v = 0 samples
+        // points with v < 0, which the cone itself rejects.
+        let cone =
+            AnalyticSurface::cone(Axis3::new(Point3::ORIGIN, Direction3::Z), angle(0.4)).unwrap();
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 1.0, Direction3::Z), tol()).unwrap();
+        assert_eq!(
+            AnalyticSurface::trim(cone, outer, Vec::new()),
+            Err(SurfaceTrimError::LoopOutsideBaseDomain)
+        );
+    }
+
+    #[test]
+    fn trimmed_surface_anchor_delegates_to_its_own_base() {
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        let trimmed = AnalyticSurface::trim(flat_plane(), outer, Vec::new()).unwrap();
+        assert_eq!(trimmed.anchor(), flat_plane().anchor());
     }
 }

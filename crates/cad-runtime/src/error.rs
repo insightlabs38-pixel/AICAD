@@ -520,6 +520,33 @@ pub enum RuntimeError {
         span: Span,
         reason: cad_geometry_api::QueryFailure,
     },
+    /// `trim_surface` (`AICAD-115`) received an `outer`/`holes` curve that
+    /// is not a valid trim loop — not closed, not planar in the base
+    /// surface's own `(u, v)` plane, or too small to orient
+    /// (`cad_geometry_api::TrimError`).
+    InvalidTrimLoop {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::TrimError,
+    },
+    /// `trim_surface` (`AICAD-115`) received a structurally valid outer/
+    /// hole loop combination that `AnalyticSurface::trim` still rejects —
+    /// wrong orientation, or a loop sample outside the base surface's own
+    /// valid domain (`cad_geometry_api::SurfaceTrimError`).
+    SurfaceTrimFailed {
+        span: Span,
+        reason: cad_geometry_api::SurfaceTrimError,
+    },
+    /// `trim_surface`'s (`AICAD-115`) own `tolerance` argument evaluated to
+    /// a non-finite/non-positive magnitude (`cad_units::ToleranceError`) —
+    /// type-checking cannot rule this out, mirroring [`RuntimeError::
+    /// InvalidSpatialArgument`]'s own identical "depends on the actual
+    /// evaluated value" rationale.
+    InvalidToleranceMagnitude {
+        name: &'static str,
+        span: Span,
+        reason: cad_units::ToleranceError,
+    },
 }
 
 impl RuntimeError {
@@ -571,6 +598,9 @@ impl RuntimeError {
             RuntimeError::ClosestPointFailed { .. } => "RUNTIME-E135".to_string(),
             RuntimeError::InvalidSurfaceConstruction { .. } => "RUNTIME-E136".to_string(),
             RuntimeError::SurfaceEvaluationFailed { .. } => "RUNTIME-E137".to_string(),
+            RuntimeError::InvalidTrimLoop { .. } => "RUNTIME-E138".to_string(),
+            RuntimeError::SurfaceTrimFailed { .. } => "RUNTIME-E139".to_string(),
+            RuntimeError::InvalidToleranceMagnitude { .. } => "RUNTIME-E140".to_string(),
         }
     }
 
@@ -632,7 +662,10 @@ impl RuntimeError {
             | RuntimeError::CurveOperationFailed { span, .. }
             | RuntimeError::ClosestPointFailed { span, .. }
             | RuntimeError::InvalidSurfaceConstruction { span, .. }
-            | RuntimeError::SurfaceEvaluationFailed { span, .. } => *span,
+            | RuntimeError::SurfaceEvaluationFailed { span, .. }
+            | RuntimeError::InvalidTrimLoop { span, .. }
+            | RuntimeError::SurfaceTrimFailed { span, .. }
+            | RuntimeError::InvalidToleranceMagnitude { span, .. } => *span,
         }
     }
 
@@ -682,6 +715,9 @@ impl RuntimeError {
             RuntimeError::ClosestPointFailed { .. } => "CLOSEST_POINT_FAILED",
             RuntimeError::InvalidSurfaceConstruction { .. } => "INVALID_SURFACE_CONSTRUCTION",
             RuntimeError::SurfaceEvaluationFailed { .. } => "SURFACE_EVALUATION_FAILED",
+            RuntimeError::InvalidTrimLoop { .. } => "INVALID_TRIM_LOOP",
+            RuntimeError::SurfaceTrimFailed { .. } => "SURFACE_TRIM_FAILED",
+            RuntimeError::InvalidToleranceMagnitude { .. } => "INVALID_TOLERANCE_MAGNITUDE",
         }
     }
 
@@ -818,6 +854,15 @@ impl RuntimeError {
             }
             RuntimeError::SurfaceEvaluationFailed { reason, .. } => {
                 format!("'evaluate_surface' could not evaluate this surface: {reason}")
+            }
+            RuntimeError::InvalidTrimLoop { name, reason, .. } => {
+                format!("'{name}' received an invalid trim loop: {reason}")
+            }
+            RuntimeError::SurfaceTrimFailed { reason, .. } => {
+                format!("'trim_surface' could not build a trimmed surface: {reason}")
+            }
+            RuntimeError::InvalidToleranceMagnitude { name, reason, .. } => {
+                format!("'{name}' received an invalid tolerance: {reason}")
             }
         }
     }

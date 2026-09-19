@@ -172,7 +172,7 @@ use cad_ast::Span;
 use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
 use cad_geometry_api::{
     AnalyticCurve, AnalyticSurface, CurveConstructionError, CurveOperationError, EdgeIndex,
-    FaceIndex, GeomId, GeometryOp, GeometryQuery, Quantity,
+    FaceIndex, GeomId, GeometryOp, GeometryQuery, Quantity, TrimLoop,
 };
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
@@ -1995,6 +1995,7 @@ impl<'a> Interpreter<'a> {
                 | BuiltinFnId::EvaluateSurface
                 | BuiltinFnId::BezierSurface
                 | BuiltinFnId::BSplineSurface
+                | BuiltinFnId::TrimSurface
         ) {
             return self.dispatch_surface_builtin(id, name, params, frame, span);
         }
@@ -2271,7 +2272,8 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::TorusSurface
             | BuiltinFnId::EvaluateSurface
             | BuiltinFnId::BezierSurface
-            | BuiltinFnId::BSplineSurface => unreachable!(
+            | BuiltinFnId::BSplineSurface
+            | BuiltinFnId::TrimSurface => unreachable!(
                 "surface builtins return early above, before this Construction-only match"
             ),
         };
@@ -2707,6 +2709,27 @@ impl<'a> Interpreter<'a> {
                     RuntimeError::InvalidSurfaceConstruction { name, span, reason }.into()
                 })
         };
+        // `AICAD-115`: `trim_surface`'s own `outer`/`holes` curve/curve-list
+        // extraction, mirroring `dispatch_curve_builtin`'s own `curve`
+        // closure.
+        let curve = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok((**c).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let curve_list = |value: &Value| -> EvalResult<Vec<AnalyticCurve>> {
+            match value {
+                Value::List(items) => items.iter().map(curve).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let trim_loop = |c: AnalyticCurve,
+                         construction_tolerance: cad_units::ConstructionTolerance|
+         -> EvalResult<TrimLoop> {
+            TrimLoop::new(c, construction_tolerance)
+                .map_err(|reason| RuntimeError::InvalidTrimLoop { name, span, reason }.into())
+        };
         match id {
             BuiltinFnId::PlaneSurface => {
                 let origin = spatial_point(arg(0)?)?;
@@ -2764,6 +2787,26 @@ impl<'a> Interpreter<'a> {
                     periodic_u,
                     periodic_v,
                 ))
+            }
+            BuiltinFnId::TrimSurface => {
+                let base = surface(arg(0)?)?;
+                let outer_curve = curve(arg(1)?)?;
+                let hole_curves = curve_list(arg(2)?)?;
+                let tolerance_magnitude = quantity(arg(3)?)?.magnitude;
+                let construction_tolerance = cad_units::ConstructionTolerance::new(
+                    tolerance_magnitude,
+                )
+                .map_err(|reason| {
+                    Signal::from(RuntimeError::InvalidToleranceMagnitude { name, span, reason })
+                })?;
+                let outer = trim_loop(outer_curve, construction_tolerance)?;
+                let holes = hole_curves
+                    .into_iter()
+                    .map(|c| trim_loop(c, construction_tolerance))
+                    .collect::<EvalResult<Vec<TrimLoop>>>()?;
+                AnalyticSurface::trim(base, outer, holes)
+                    .map(|s| Value::Surface(Box::new(s)))
+                    .map_err(|reason| RuntimeError::SurfaceTrimFailed { span, reason }.into())
             }
             BuiltinFnId::EvaluateSurface => {
                 let s = surface(arg(0)?)?;
@@ -3864,6 +3907,7 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::EvaluateSurface => "evaluate_surface",
         BuiltinFnId::BezierSurface => "bezier_surface",
         BuiltinFnId::BSplineSurface => "bspline_surface",
+        BuiltinFnId::TrimSurface => "trim_surface",
     }
 }
 
@@ -4315,12 +4359,26 @@ mod tests {
 
     // --- AICAD-071: part body execution ---------------------------------
 
+    /// Finds a *user*-declared binding (`let`/`const`/`part`/...) by name —
+    /// never a `BindingKind::Param`, so a user program's own top-level
+    /// `let base = ...;` cannot collide with an unrelated `RuntimeBuiltin`
+    /// catalogue entry's parameter of the same name (`AICAD-115`'s own
+    /// `trim_surface(base: Surface, ...)` first exposed this: `cad_hir::
+    /// lower::Lowerer::seed_builtins` seeds every catalogue parameter as
+    /// its own global-scope binding too, so a naive name-only search could
+    /// silently return the wrong one — this test helper's own `.find`,
+    /// not a real interpreter bug).
     fn binding_named(lowered: &LowerResult, name: &str) -> BindingId {
         lowered
             .bindings
             .iter()
-            .find(|b| b.name == name)
-            .unwrap_or_else(|| panic!("no binding named '{name}' in {:?}", lowered.bindings))
+            .find(|b| b.name == name && !matches!(b.kind, BindingKind::Param))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no non-parameter binding named '{name}' in {:?}",
+                    lowered.bindings
+                )
+            })
             .id
     }
 
@@ -8126,5 +8184,130 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    // --- AICAD-115: trimmed-surface semantic model ---
+
+    #[test]
+    fn trim_surface_and_evaluate_surface_accept_inside_and_reject_outside() {
+        // `outer`'s own `radius`/`plane_surface`'s own `origin` are given in
+        // whole metres (not `mm`) specifically so their canonical magnitude
+        // matches `evaluate_surface`'s own raw (unitless) `u`/`v` arguments
+        // directly, without a unit-conversion factor to track by hand.
+        let source = "\
+            fn inside() -> Length { \
+                let base = plane_surface( \
+                    origin = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let outer = circle_curve( \
+                    center = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 10m, \
+                ); \
+                let trimmed = trim_surface(base, outer, [], 0.001mm); \
+                let e = evaluate_surface(trimmed, 0.0, 0.0); \
+                return e.point.x; \
+            } \
+            fn outside() -> Length { \
+                let base = plane_surface( \
+                    origin = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let outer = circle_curve( \
+                    center = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 10m, \
+                ); \
+                let trimmed = trim_surface(base, outer, [], 0.001mm); \
+                let e = evaluate_surface(trimmed, 20.0, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("inside", vec![]).unwrap(), 0.0);
+        let err = interp.call_by_name("outside", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn trim_surface_with_a_hole_excludes_points_inside_the_hole() {
+        let source = "\
+            fn build(u: Float) -> Length { \
+                let base = plane_surface( \
+                    origin = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let outer = circle_curve( \
+                    center = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 10m, \
+                ); \
+                let hole = circle_curve( \
+                    center = Point3(x = 3m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = -1.0), \
+                    radius = 2m, \
+                ); \
+                let trimmed = trim_surface(base, outer, [hole], 0.001mm); \
+                let e = evaluate_surface(trimmed, u, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // Outside the hole (hole spans u in [1, 5]): succeeds.
+        assert_number_eq(
+            interp.call_by_name("build", vec![number(5.5)]).unwrap(),
+            5.5,
+        );
+        // Inside the hole: rejected.
+        let err = interp.call_by_name("build", vec![number(3.0)]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn trim_surface_rejects_an_unclosed_loop() {
+        let source = "fn f() -> Surface { \
+                 let base = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let outer = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 10mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 return trim_surface(base, outer, [], 0.001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E138");
+    }
+
+    #[test]
+    fn trim_surface_rejects_a_hole_with_the_wrong_orientation() {
+        let source = "fn f() -> Surface { \
+                 let base = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let outer = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 10mm, \
+                 ); \
+                 let hole = circle_curve( \
+                     center = Point3(x = 3mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 2mm, \
+                 ); \
+                 return trim_surface(base, outer, [hole], 0.001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E139");
     }
 }

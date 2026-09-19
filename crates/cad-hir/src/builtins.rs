@@ -455,6 +455,19 @@ pub enum BuiltinFnId {
     /// [`BuiltinFnId::BSplineCurve`]'s own identical scope limitation. See
     /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
     BSplineSurface,
+    /// `trim_surface(base: Surface, outer: Curve, holes: List<Curve>,
+    /// tolerance: Length) -> Surface` (`AICAD-115`). Builds a validated
+    /// `cad_geometry_api::surface::AnalyticSurface::Trimmed`
+    /// (`AnalyticSurface::trim`) — `outer`/each element of `holes` is a
+    /// `Curve` read as a closed loop in `base`'s own `(u, v)` parameter
+    /// plane (`cad_geometry_api::surface::TrimLoop::new`, `tolerance` its
+    /// own `project/DECISION_LOG.md#DL-26` modeling/construction
+    /// tolerance). Rejects an unclosed/non-planar/degenerate loop, a hole
+    /// oriented the same way as the outer boundary, or a loop sample
+    /// outside `base`'s own valid domain — see `AnalyticSurface::trim`'s
+    /// own doc comment for the full validation. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    TrimSurface,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -539,7 +552,8 @@ impl BuiltinFnId {
             | BuiltinFnId::TorusSurface
             | BuiltinFnId::EvaluateSurface
             | BuiltinFnId::BezierSurface
-            | BuiltinFnId::BSplineSurface => BuiltinCategory::Value,
+            | BuiltinFnId::BSplineSurface
+            | BuiltinFnId::TrimSurface => BuiltinCategory::Value,
         }
     }
 }
@@ -586,7 +600,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 39] = [
+    pub const ALL: [BuiltinFnId; 40] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -626,6 +640,7 @@ impl BuiltinFnId {
         BuiltinFnId::EvaluateSurface,
         BuiltinFnId::BezierSurface,
         BuiltinFnId::BSplineSurface,
+        BuiltinFnId::TrimSurface,
     ];
 }
 
@@ -1042,6 +1057,17 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("weights", list_of_ref(list_of("Float"))),
                 ("periodic_u", named("Bool")),
                 ("periodic_v", named("Bool")),
+            ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TrimSurface,
+            name: "trim_surface",
+            params: vec![
+                ("base", named("Surface")),
+                ("outer", named("Curve")),
+                ("holes", list_of("Curve")),
+                ("tolerance", named("Length")),
             ],
             return_ty: named("Surface"),
         },
