@@ -1970,6 +1970,8 @@ impl<'a> Interpreter<'a> {
                 | BuiltinFnId::ArcCurve
                 | BuiltinFnId::EllipseCurve
                 | BuiltinFnId::EvaluateCurve
+                | BuiltinFnId::BezierCurve
+                | BuiltinFnId::BSplineCurve
         ) {
             return self.dispatch_curve_builtin(id, name, params, frame, span);
         }
@@ -2230,7 +2232,9 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::CircleCurve
             | BuiltinFnId::ArcCurve
             | BuiltinFnId::EllipseCurve
-            | BuiltinFnId::EvaluateCurve => unreachable!(
+            | BuiltinFnId::EvaluateCurve
+            | BuiltinFnId::BezierCurve
+            | BuiltinFnId::BSplineCurve => unreachable!(
                 "curve builtins return early above, before this Construction-only match"
             ),
         };
@@ -2295,7 +2299,7 @@ impl<'a> Interpreter<'a> {
         };
         let curve = |value: &Value| -> EvalResult<AnalyticCurve> {
             match value {
-                Value::Curve(c) => Ok(**c),
+                Value::Curve(c) => Ok((**c).clone()),
                 _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
             }
         };
@@ -2305,6 +2309,63 @@ impl<'a> Interpreter<'a> {
                     RuntimeError::InvalidCurveConstruction { name, span, reason }.into()
                 })
             };
+        // `AICAD-110`: `List<Point3>` control points, `List<Float>` knot/
+        // weight lists, `List<Int>` multiplicities — every element
+        // converted through the same closures/`crate::spatial` boundary a
+        // scalar argument already uses, applied once per list element.
+        let point_list = |value: &Value| -> EvalResult<Vec<Point3>> {
+            match value {
+                Value::List(items) => items.iter().map(spatial_point).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let float_list = |value: &Value| -> EvalResult<Vec<f64>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `None` for an empty list — the catalogue's own documented
+        // "no optional-parameter mechanism yet" convention
+        // (`BuiltinFnId::BezierCurve`'s own doc comment).
+        let optional_weights = |value: &Value| -> EvalResult<Option<Vec<f64>>> {
+            let weights = float_list(value)?;
+            Ok(if weights.is_empty() {
+                None
+            } else {
+                Some(weights)
+            })
+        };
+        let usize_list = |value: &Value| -> EvalResult<Vec<usize>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude.round() as usize),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let bool_value = |value: &Value| -> EvalResult<bool> {
+            match value {
+                Value::Bool(b) => Ok(*b),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
         match id {
             BuiltinFnId::LineCurve => {
                 let origin = spatial_point(arg(0)?)?;
@@ -2370,8 +2431,29 @@ impl<'a> Interpreter<'a> {
                     ),
                 }
             }
+            BuiltinFnId::BezierCurve => {
+                let control_points = point_list(arg(0)?)?;
+                let weights = optional_weights(arg(1)?)?;
+                curve_construction(AnalyticCurve::bezier(control_points, weights))
+            }
+            BuiltinFnId::BSplineCurve => {
+                let degree = usize_value(arg(0)?)?;
+                let control_points = point_list(arg(1)?)?;
+                let knots = float_list(arg(2)?)?;
+                let multiplicities = usize_list(arg(3)?)?;
+                let weights = optional_weights(arg(4)?)?;
+                let periodic = bool_value(arg(5)?)?;
+                curve_construction(AnalyticCurve::bspline(
+                    degree,
+                    control_points,
+                    knots,
+                    multiplicities,
+                    weights,
+                    periodic,
+                ))
+            }
             _ => unreachable!(
-                "dispatch_curve_builtin is only ever called for the five curve BuiltinFnIds \
+                "dispatch_curve_builtin is only ever called for the curve BuiltinFnIds \
                  guarded by dispatch_builtin's own matches! check"
             ),
         }
@@ -3429,6 +3511,8 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::ArcCurve => "arc_curve",
         BuiltinFnId::EllipseCurve => "ellipse_curve",
         BuiltinFnId::EvaluateCurve => "evaluate_curve",
+        BuiltinFnId::BezierCurve => "bezier_curve",
+        BuiltinFnId::BSplineCurve => "bspline_curve",
     }
 }
 
@@ -7103,5 +7187,111 @@ mod tests {
         let lowered = compiled(source);
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.003);
+    }
+
+    // --- AICAD-110: Bezier/B-spline construction/evaluation ---
+
+    #[test]
+    fn bezier_curve_evaluates_a_known_quadratic_point() {
+        let source = "fn f() -> Length { \
+                 let c = bezier_curve( \
+                     control_points = [ \
+                         Point3(x = 0mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 2mm, z = 0mm), \
+                         Point3(x = 2mm, y = 0mm, z = 0mm), \
+                     ], \
+                     weights = [], \
+                 ); \
+                 let e = evaluate_curve(c, 0.5); \
+                 return e.point.y; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // B(0.5) = 0.25*P0 + 0.5*P1 + 0.25*P2 -> y = 0.5 * 2mm = 1mm.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn bezier_curve_with_weights_reproduces_an_exact_arc_point() {
+        let source = "fn f() -> Length { \
+                 let c = bezier_curve( \
+                     control_points = [ \
+                         Point3(x = 1m, y = 0m, z = 0m), \
+                         Point3(x = 1m, y = 1m, z = 0m), \
+                         Point3(x = 0m, y = 1m, z = 0m), \
+                     ], \
+                     weights = [1.0, 0.70710678118, 1.0], \
+                 ); \
+                 let e = evaluate_curve(c, 0.5); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        match result {
+            Value::Number(n) => {
+                assert!((n.magnitude - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6)
+            }
+            other => panic!("expected a Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bspline_curve_passes_through_a_control_point_at_its_own_knot() {
+        let source = "fn f() -> Length { \
+                 let c = bspline_curve( \
+                     degree = 1, \
+                     control_points = [ \
+                         Point3(x = 0mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     ], \
+                     knots = [0.0, 1.0, 2.0], \
+                     multiplicities = [2, 1, 2], \
+                     weights = [], \
+                     periodic = false, \
+                 ); \
+                 let e = evaluate_curve(c, 1.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn bezier_curve_rejects_too_few_control_points() {
+        let source = "fn f() -> Curve { \
+                 return bezier_curve( \
+                     control_points = [Point3(x = 0mm, y = 0mm, z = 0mm)], \
+                     weights = [], \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    #[test]
+    fn bspline_curve_rejects_periodic() {
+        let source = "fn f() -> Curve { \
+                 return bspline_curve( \
+                     degree = 1, \
+                     control_points = [ \
+                         Point3(x = 0mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 0mm, z = 0mm), \
+                         Point3(x = 2mm, y = 0mm, z = 0mm), \
+                     ], \
+                     knots = [0.0, 1.0, 2.0], \
+                     multiplicities = [2, 1, 2], \
+                     weights = [], \
+                     periodic = true, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
     }
 }

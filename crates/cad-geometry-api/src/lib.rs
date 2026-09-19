@@ -12,8 +12,10 @@
 //! wiring for each remains that later batch's own job (see each module's
 //! own doc comment for the exact dependency):
 //! - [`curve`]: [`curve::AnalyticCurve`] — analytic curve values
-//!   (`AICAD-109` wired construction/evaluation; kernel dispatch was not
-//!   needed — see that module's own doc comment).
+//!   (`AICAD-109` wired construction/evaluation for the analytic families;
+//!   `AICAD-110` extended the same enum with Bezier/B-spline/NURBS;
+//!   kernel dispatch was not needed for either — see that module's own
+//!   doc comment).
 //! - [`surface`]: [`surface::AnalyticSurface`] — analytic surface values
 //!   (`AICAD-113`-`116` wire construction/evaluation).
 //! - [`query_result`][]: [`query_result::QueryOutcome`]/[`query_result::

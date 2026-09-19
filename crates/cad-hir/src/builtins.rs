@@ -323,6 +323,34 @@ pub enum BuiltinFnId {
     /// structured `RuntimeError`, never a silently wrong point. See
     /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
     EvaluateCurve,
+    /// `bezier_curve(control_points: List<Point3>, weights: List<Float>)
+    /// -> Curve` (`AICAD-110`). Builds a validated `cad_geometry_api::
+    /// curve::AnalyticCurve::Bezier` (`AnalyticCurve::bezier`) — rejects
+    /// fewer than 2 control points, or (when `weights` is non-empty) a
+    /// length mismatch or a non-positive/non-finite weight. An empty
+    /// `weights` list means a plain (non-rational) Bezier — `docs/plan/
+    /// 05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own `weights: List<Float>?`
+    /// spelling is an *optional* parameter, which the closed `RuntimeBuiltin`
+    /// catalogue (`cad_hir::builtins::BuiltinFnSpec`) has no mechanism for
+    /// yet (no existing catalogue entry has ever needed one — every
+    /// existing optional-shaped signature in `docs/plan` was already
+    /// narrowed away, e.g. `plate`'s own missing `corner_radius`); an
+    /// empty list plays that same "absent" role using a mechanism the
+    /// catalogue already fully supports. See [`BuiltinFnId::LineCurve`]'s
+    /// own doc comment for the category.
+    BezierCurve,
+    /// `bspline_curve(degree: Int, control_points: List<Point3>, knots:
+    /// List<Float>, multiplicities: List<Int>, weights: List<Float>,
+    /// periodic: Bool) -> Curve` (`AICAD-110`). Builds a validated
+    /// `AnalyticCurve::BSpline` (`AnalyticCurve::bspline`) — see that
+    /// constructor's own doc comment for the full validation list.
+    /// `periodic: true` is rejected (`CurveConstructionError::
+    /// UnsupportedPeriodic`) rather than silently ignored — a documented
+    /// `AICAD-110` scope limitation, not a default value standing in for
+    /// an unsupported case. `weights` follows [`BuiltinFnId::BezierCurve`]'s
+    /// own "empty list means non-rational" convention. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    BSplineCurve,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -393,7 +421,9 @@ impl BuiltinFnId {
             | BuiltinFnId::CircleCurve
             | BuiltinFnId::ArcCurve
             | BuiltinFnId::EllipseCurve
-            | BuiltinFnId::EvaluateCurve => BuiltinCategory::Value,
+            | BuiltinFnId::EvaluateCurve
+            | BuiltinFnId::BezierCurve
+            | BuiltinFnId::BSplineCurve => BuiltinCategory::Value,
         }
     }
 }
@@ -440,7 +470,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 25] = [
+    pub const ALL: [BuiltinFnId; 27] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -466,6 +496,8 @@ impl BuiltinFnId {
         BuiltinFnId::ArcCurve,
         BuiltinFnId::EllipseCurve,
         BuiltinFnId::EvaluateCurve,
+        BuiltinFnId::BezierCurve,
+        BuiltinFnId::BSplineCurve,
     ];
 }
 
@@ -749,6 +781,28 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "evaluate_curve",
             params: vec![("curve", named("Curve")), ("u", named("Float"))],
             return_ty: named("CurveEvaluation"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BezierCurve,
+            name: "bezier_curve",
+            params: vec![
+                ("control_points", list_of("Point3")),
+                ("weights", list_of("Float")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BSplineCurve,
+            name: "bspline_curve",
+            params: vec![
+                ("degree", named("Int")),
+                ("control_points", list_of("Point3")),
+                ("knots", list_of("Float")),
+                ("multiplicities", list_of("Int")),
+                ("weights", list_of("Float")),
+                ("periodic", named("Bool")),
+            ],
+            return_ty: named("Curve"),
         },
     ]
 }
