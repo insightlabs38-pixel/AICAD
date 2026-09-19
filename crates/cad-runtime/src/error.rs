@@ -556,6 +556,21 @@ pub enum RuntimeError {
         span: Span,
         reason: cad_geometry_api::SurfaceOperationError,
     },
+    /// `intersect_curves`/`intersect_curve_surface`/`intersect_surfaces`/
+    /// `project_point_to_surface`/`distance_curve_curve`/
+    /// `distance_curve_surface`/`distance_surface_surface` (`AICAD-117`)
+    /// could not evaluate reliably — a coincident/overlapping or tangent
+    /// input (`QueryFailure::Degenerate`), a family combination this
+    /// query does not yet support (`QueryFailure::Unsupported`), or (in
+    /// principle, though no current query in this batch produces it) a
+    /// non-convergent numerical search or out-of-domain parameter
+    /// (`cad_geometry_api::QueryFailure`). Genuinely zero solutions is a
+    /// real, successful answer (an empty `List`), never this error.
+    GeometricQueryFailed {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
 }
 
 impl RuntimeError {
@@ -611,6 +626,7 @@ impl RuntimeError {
             RuntimeError::SurfaceTrimFailed { .. } => "RUNTIME-E139".to_string(),
             RuntimeError::InvalidToleranceMagnitude { .. } => "RUNTIME-E140".to_string(),
             RuntimeError::SurfaceOperationFailed { .. } => "RUNTIME-E141".to_string(),
+            RuntimeError::GeometricQueryFailed { .. } => "RUNTIME-E142".to_string(),
         }
     }
 
@@ -676,7 +692,8 @@ impl RuntimeError {
             | RuntimeError::InvalidTrimLoop { span, .. }
             | RuntimeError::SurfaceTrimFailed { span, .. }
             | RuntimeError::InvalidToleranceMagnitude { span, .. }
-            | RuntimeError::SurfaceOperationFailed { span, .. } => *span,
+            | RuntimeError::SurfaceOperationFailed { span, .. }
+            | RuntimeError::GeometricQueryFailed { span, .. } => *span,
         }
     }
 
@@ -730,6 +747,7 @@ impl RuntimeError {
             RuntimeError::SurfaceTrimFailed { .. } => "SURFACE_TRIM_FAILED",
             RuntimeError::InvalidToleranceMagnitude { .. } => "INVALID_TOLERANCE_MAGNITUDE",
             RuntimeError::SurfaceOperationFailed { .. } => "SURFACE_OPERATION_FAILED",
+            RuntimeError::GeometricQueryFailed { .. } => "GEOMETRIC_QUERY_FAILED",
         }
     }
 
@@ -878,6 +896,9 @@ impl RuntimeError {
             }
             RuntimeError::SurfaceOperationFailed { name, reason, .. } => {
                 format!("'{name}' failed: {reason}")
+            }
+            RuntimeError::GeometricQueryFailed { name, reason, .. } => {
+                format!("'{name}' could not be evaluated: {reason}")
             }
         }
     }

@@ -140,10 +140,36 @@ struct SurfaceEvaluation {
     dv: Vector3<Float>,
     normal: Vector3<Float>,
 }
+
+struct CurveIntersectionResult {
+    point: Point3,
+    parameter_a: Float,
+    parameter_b: Float,
+}
+
+struct CurveSurfaceIntersectionResult {
+    point: Point3,
+    curve_parameter: Float,
+    surface_u: Float,
+    surface_v: Float,
+}
+
+struct SurfaceProjectionResult {
+    point: Point3,
+    u: Float,
+    v: Float,
+    distance: Length,
+}
+
+struct DistanceResult {
+    distance: Length,
+    point_a: Point3,
+    point_b: Point3,
+}
 ";
 
 /// Parses [`GEOMETRY_TYPES_SOURCE`] and returns a new [`Program`] whose
-/// items are these nine struct declarations followed by every item in
+/// items are these fourteen struct declarations followed by every item in
 /// `user_program`, in that order — see [`crate::prelude::with_prelude`]
 /// for the identical mechanism and rationale this mirrors exactly.
 ///
@@ -162,7 +188,7 @@ struct SurfaceEvaluation {
 /// lower::lower_program` at all — `crate::typeck::check_program` performs
 /// no seeding of its own). Calling it and relying on `lower_program`'s
 /// own seeding are **idempotent together**: `seed_standard_types` skips
-/// any of these nine names `user_program` already declares (by name, at
+/// any of these fourteen names `user_program` already declares (by name, at
 /// the AST level), so composing this function never produces two
 /// distinct `BindingId`s nominally named the same standard type.
 ///
@@ -206,15 +232,15 @@ mod tests {
     }
 
     #[test]
-    fn with_geometry_types_prepends_the_ten_declarations_before_user_items() {
+    fn with_geometry_types_prepends_the_fourteen_declarations_before_user_items() {
         let (user_program, diags) = cad_parser::parse_program("let x = 1;", "test.aicad");
         assert!(diags.is_empty(), "{diags:?}");
         let combined = with_geometry_types(&user_program);
-        assert_eq!(combined.items.len(), 11);
-        for item in &combined.items[..10] {
+        assert_eq!(combined.items.len(), 15);
+        for item in &combined.items[..14] {
             assert!(matches!(item, cad_ast::Item::Struct { .. }));
         }
-        assert!(matches!(combined.items[10], cad_ast::Item::Let { .. }));
+        assert!(matches!(combined.items[14], cad_ast::Item::Let { .. }));
     }
 
     #[test]

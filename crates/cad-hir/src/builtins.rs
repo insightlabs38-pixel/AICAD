@@ -477,6 +477,59 @@ pub enum BuiltinFnId {
     /// comment). See [`BuiltinFnId::PlaneSurface`]'s own doc comment for the
     /// category.
     OffsetSurface,
+    /// `intersect_curves(a: Curve, b: Curve, tolerance: Length) ->
+    /// List<CurveIntersectionResult>` (`AICAD-117`,
+    /// `cad_geometry_api::intersect_curves`). Every transversal crossing
+    /// point, in a deterministic order — genuinely zero is a real answer,
+    /// never a failure; a coincident/overlapping pair (or a tangency with
+    /// no well-formed finite point) is a structured `RuntimeError`, never a
+    /// silently empty or arbitrary result. See [`BuiltinFnId::LineCurve`]'s
+    /// own doc comment for the category.
+    IntersectCurves,
+    /// `intersect_curve_surface(curve: Curve, surface: Surface, tolerance:
+    /// Length) -> List<CurveSurfaceIntersectionResult>` (`AICAD-117`,
+    /// `cad_geometry_api::intersect_curve_surface`). Mirrors
+    /// [`BuiltinFnId::IntersectCurves`]'s own cardinality/failure
+    /// convention for the curve/surface case.
+    IntersectCurveSurface,
+    /// `intersect_surfaces(a: Surface, b: Surface, tolerance: Length) ->
+    /// List<Curve>` (`AICAD-117`, `cad_geometry_api::intersect_surfaces`).
+    /// Exact only for `Plane`-`Plane`/`Plane`-`Sphere`/`Sphere`-`Sphere`
+    /// (every other pair's intersection curve is not representable by
+    /// `Curve`'s own closed family set — a structural, not merely
+    /// narrow-effort, limit, reported `RuntimeError::Unsupported`); `0` or
+    /// `1` list elements (never more — every supported pair's intersection
+    /// is a single connected curve). See [`BuiltinFnId::LineCurve`]'s own
+    /// doc comment for the category.
+    IntersectSurfaces,
+    /// `project_point_to_surface(surface: Surface, point: Point3) ->
+    /// List<SurfaceProjectionResult>` (`AICAD-117`,
+    /// `cad_geometry_api::surface::AnalyticSurface::project_point`). The
+    /// surface-family counterpart of [`BuiltinFnId::ClosestPointOnCurve`] —
+    /// every local-minimum-distance point, never an arbitrary single one.
+    ProjectPointToSurface,
+    /// `distance_curve_curve(a: Curve, b: Curve) -> List<DistanceResult>`
+    /// (`AICAD-117`, `cad_geometry_api::distance_curve_curve`). The
+    /// achieved minimum distance and a witness point on each curve; more
+    /// than one element only when genuinely tied (e.g. two parallel skew
+    /// lines). See [`BuiltinFnId::LineCurve`]'s own doc comment for the
+    /// category.
+    DistanceCurveCurve,
+    /// `distance_curve_surface(curve: Curve, surface: Surface) ->
+    /// List<DistanceResult>` (`AICAD-117`,
+    /// `cad_geometry_api::distance_curve_surface`). Mirrors
+    /// [`BuiltinFnId::DistanceCurveCurve`] for the curve/surface case;
+    /// `RuntimeError::Unsupported` for a `Surface::Trimmed` or a genuinely
+    /// unsupported `Line`-vs-family combination (see
+    /// `cad_geometry_api::query`'s own module doc comment).
+    DistanceCurveSurface,
+    /// `distance_surface_surface(a: Surface, b: Surface) ->
+    /// List<DistanceResult>` (`AICAD-117`,
+    /// `cad_geometry_api::distance_surface_surface`). Mirrors
+    /// [`BuiltinFnId::DistanceCurveCurve`] for the surface/surface case;
+    /// `RuntimeError::Unsupported` when both surfaces are unbounded
+    /// (`Plane`/`Cylinder`/`Cone`) or either is `Surface::Trimmed`.
+    DistanceSurfaceSurface,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -563,7 +616,14 @@ impl BuiltinFnId {
             | BuiltinFnId::BezierSurface
             | BuiltinFnId::BSplineSurface
             | BuiltinFnId::TrimSurface
-            | BuiltinFnId::OffsetSurface => BuiltinCategory::Value,
+            | BuiltinFnId::OffsetSurface
+            | BuiltinFnId::IntersectCurves
+            | BuiltinFnId::IntersectCurveSurface
+            | BuiltinFnId::IntersectSurfaces
+            | BuiltinFnId::ProjectPointToSurface
+            | BuiltinFnId::DistanceCurveCurve
+            | BuiltinFnId::DistanceCurveSurface
+            | BuiltinFnId::DistanceSurfaceSurface => BuiltinCategory::Value,
         }
     }
 }
@@ -610,7 +670,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 41] = [
+    pub const ALL: [BuiltinFnId; 48] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -652,6 +712,13 @@ impl BuiltinFnId {
         BuiltinFnId::BSplineSurface,
         BuiltinFnId::TrimSurface,
         BuiltinFnId::OffsetSurface,
+        BuiltinFnId::IntersectCurves,
+        BuiltinFnId::IntersectCurveSurface,
+        BuiltinFnId::IntersectSurfaces,
+        BuiltinFnId::ProjectPointToSurface,
+        BuiltinFnId::DistanceCurveCurve,
+        BuiltinFnId::DistanceCurveSurface,
+        BuiltinFnId::DistanceSurfaceSurface,
     ];
 }
 
@@ -1087,6 +1154,60 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "offset_surface",
             params: vec![("surface", named("Surface")), ("distance", named("Length"))],
             return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IntersectCurves,
+            name: "intersect_curves",
+            params: vec![
+                ("a", named("Curve")),
+                ("b", named("Curve")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: list_of("CurveIntersectionResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IntersectCurveSurface,
+            name: "intersect_curve_surface",
+            params: vec![
+                ("curve", named("Curve")),
+                ("surface", named("Surface")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: list_of("CurveSurfaceIntersectionResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IntersectSurfaces,
+            name: "intersect_surfaces",
+            params: vec![
+                ("a", named("Surface")),
+                ("b", named("Surface")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: list_of("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ProjectPointToSurface,
+            name: "project_point_to_surface",
+            params: vec![("surface", named("Surface")), ("point", named("Point3"))],
+            return_ty: list_of("SurfaceProjectionResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::DistanceCurveCurve,
+            name: "distance_curve_curve",
+            params: vec![("a", named("Curve")), ("b", named("Curve"))],
+            return_ty: list_of("DistanceResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::DistanceCurveSurface,
+            name: "distance_curve_surface",
+            params: vec![("curve", named("Curve")), ("surface", named("Surface"))],
+            return_ty: list_of("DistanceResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::DistanceSurfaceSurface,
+            name: "distance_surface_surface",
+            params: vec![("a", named("Surface")), ("b", named("Surface"))],
+            return_ty: list_of("DistanceResult"),
         },
     ]
 }

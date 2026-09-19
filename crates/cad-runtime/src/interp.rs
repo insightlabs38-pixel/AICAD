@@ -2001,6 +2001,24 @@ impl<'a> Interpreter<'a> {
             return self.dispatch_surface_builtin(id, name, params, frame, span);
         }
 
+        // Multi-solution curve/surface geometric queries (`AICAD-117`) —
+        // `cad_geometry_api::query`'s own intersection/projection/distance
+        // functions are pure math over already-constructed `Curve`/
+        // `Surface` values, exactly like the two blocks immediately above:
+        // no `GeometryGraph`/kernel call.
+        if matches!(
+            id,
+            BuiltinFnId::IntersectCurves
+                | BuiltinFnId::IntersectCurveSurface
+                | BuiltinFnId::IntersectSurfaces
+                | BuiltinFnId::ProjectPointToSurface
+                | BuiltinFnId::DistanceCurveCurve
+                | BuiltinFnId::DistanceCurveSurface
+                | BuiltinFnId::DistanceSurfaceSurface
+        ) {
+            return self.dispatch_geometric_query_builtin(id, name, params, frame, span);
+        }
+
         // Pushes one `GeometryOp` node onto this run's own accumulated
         // `Interpreter::geometry` graph — every builtin arm below ends in
         // one or more calls to this, per this function's own doc comment
@@ -2277,6 +2295,15 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::TrimSurface
             | BuiltinFnId::OffsetSurface => unreachable!(
                 "surface builtins return early above, before this Construction-only match"
+            ),
+            BuiltinFnId::IntersectCurves
+            | BuiltinFnId::IntersectCurveSurface
+            | BuiltinFnId::IntersectSurfaces
+            | BuiltinFnId::ProjectPointToSurface
+            | BuiltinFnId::DistanceCurveCurve
+            | BuiltinFnId::DistanceCurveSurface
+            | BuiltinFnId::DistanceSurfaceSurface => unreachable!(
+                "geometric-query builtins return early above, before this Construction-only match"
             ),
         };
         Ok(Value::Geometry(node))
@@ -2850,6 +2877,235 @@ impl<'a> Interpreter<'a> {
                  guarded by dispatch_builtin's own matches! check"
             ),
         }
+    }
+
+    /// The `AICAD-117` multi-solution curve/surface geometric-query half of
+    /// [`Interpreter::dispatch_builtin`] — `cad_geometry_api::query`'s own
+    /// intersection/projection/distance functions, each already returning
+    /// `cad_geometry_api::QueryOutcome<T>`: genuinely zero solutions
+    /// becomes an empty `Value::List` (a real, successful answer, never an
+    /// error), one solution per element otherwise, and `QueryOutcome::
+    /// Failed` becomes `RuntimeError::GeometricQueryFailed`. Factored into
+    /// its own method for the identical reason
+    /// [`Interpreter::dispatch_curve_builtin`]'s own doc comment gives.
+    fn dispatch_geometric_query_builtin(
+        &self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let curve = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok((**c).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let surface = |value: &Value| -> EvalResult<AnalyticSurface> {
+            match value {
+                Value::Surface(s) => Ok((**s).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let tolerance = |value: &Value| -> EvalResult<cad_units::ConstructionTolerance> {
+            let magnitude = match value {
+                Value::Number(n) => n.magnitude,
+                _ => return Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            };
+            cad_units::ConstructionTolerance::new(magnitude).map_err(|reason| {
+                RuntimeError::InvalidToleranceMagnitude { name, reason, span }.into()
+            })
+        };
+        let query_failed = |reason: cad_geometry_api::QueryFailure| -> Signal {
+            RuntimeError::GeometricQueryFailed { name, span, reason }.into()
+        };
+        let length_value = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Length, None),
+            })
+        };
+        let float_value = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::Scalar(PrimitiveType::Float),
+            })
+        };
+        match id {
+            BuiltinFnId::IntersectCurves => {
+                let a = curve(arg(0)?)?;
+                let b = curve(arg(1)?)?;
+                let tol = tolerance(arg(2)?)?;
+                match cad_geometry_api::intersect_curves(&a, &b, tol) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for s in solutions {
+                            let point = self.point3_value(s.point, span)?;
+                            elements.push(self.build_geometry_struct(
+                                "CurveIntersectionResult",
+                                vec![
+                                    ("point", point),
+                                    ("parameter_a", float_value(s.parameter_a)),
+                                    ("parameter_b", float_value(s.parameter_b)),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::IntersectCurveSurface => {
+                let c = curve(arg(0)?)?;
+                let s = surface(arg(1)?)?;
+                let tol = tolerance(arg(2)?)?;
+                match cad_geometry_api::intersect_curve_surface(&c, &s, tol) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for hit in solutions {
+                            let point = self.point3_value(hit.point, span)?;
+                            elements.push(self.build_geometry_struct(
+                                "CurveSurfaceIntersectionResult",
+                                vec![
+                                    ("point", point),
+                                    ("curve_parameter", float_value(hit.curve_parameter)),
+                                    ("surface_u", float_value(hit.surface_u)),
+                                    ("surface_v", float_value(hit.surface_v)),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::IntersectSurfaces => {
+                let a = surface(arg(0)?)?;
+                let b = surface(arg(1)?)?;
+                let tol = tolerance(arg(2)?)?;
+                match cad_geometry_api::intersect_surfaces(&a, &b, tol) {
+                    CurveQueryOutcome::Solutions(curves) => Ok(Value::List(
+                        curves
+                            .into_iter()
+                            .map(|c| Value::Curve(Box::new(c)))
+                            .collect(),
+                    )),
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::ProjectPointToSurface => {
+                let s = surface(arg(0)?)?;
+                let point = spatial_point(arg(1)?)?;
+                match s.project_point(point) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for result in solutions {
+                            let point_value = self.point3_value(result.point, span)?;
+                            elements.push(self.build_geometry_struct(
+                                "SurfaceProjectionResult",
+                                vec![
+                                    ("point", point_value),
+                                    ("u", float_value(result.u)),
+                                    ("v", float_value(result.v)),
+                                    ("distance", length_value(result.distance.magnitude)),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::DistanceCurveCurve => {
+                let a = curve(arg(0)?)?;
+                let b = curve(arg(1)?)?;
+                match cad_geometry_api::distance_curve_curve(&a, &b) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        self.distance_result_list(solutions, span)
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::DistanceCurveSurface => {
+                let c = curve(arg(0)?)?;
+                let s = surface(arg(1)?)?;
+                match cad_geometry_api::distance_curve_surface(&c, &s) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        self.distance_result_list(solutions, span)
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::DistanceSurfaceSurface => {
+                let a = surface(arg(0)?)?;
+                let b = surface(arg(1)?)?;
+                match cad_geometry_api::distance_surface_surface(&a, &b) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        self.distance_result_list(solutions, span)
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            _ => unreachable!(
+                "dispatch_geometric_query_builtin is only ever called for the AICAD-117 \
+                 BuiltinFnIds guarded by dispatch_builtin's own matches! check"
+            ),
+        }
+    }
+
+    /// Builds a `List<DistanceResult>` `Value` from
+    /// `cad_geometry_api::DistanceResult` solutions — shared by every
+    /// `AICAD-117` distance builtin's own dispatch arm above.
+    fn distance_result_list(
+        &self,
+        solutions: Vec<cad_geometry_api::DistanceResult>,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let mut elements = Vec::with_capacity(solutions.len());
+        for result in solutions {
+            let point_a = self.point3_value(result.point_a, span)?;
+            let point_b = self.point3_value(result.point_b, span)?;
+            elements.push(self.build_geometry_struct(
+                "DistanceResult",
+                vec![
+                    (
+                        "distance",
+                        Value::Number(NumberValue {
+                            magnitude: result.distance.magnitude,
+                            ty: OperandType::dimensional(Dimension::Length, None),
+                        }),
+                    ),
+                    ("point_a", point_a),
+                    ("point_b", point_b),
+                ],
+                span,
+            )?);
+        }
+        Ok(Value::List(elements))
     }
 
     /// Demand-materializes a kernel-backed query's real result (`AICAD-105`,
@@ -3920,6 +4176,13 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::BSplineSurface => "bspline_surface",
         BuiltinFnId::TrimSurface => "trim_surface",
         BuiltinFnId::OffsetSurface => "offset_surface",
+        BuiltinFnId::IntersectCurves => "intersect_curves",
+        BuiltinFnId::IntersectCurveSurface => "intersect_curve_surface",
+        BuiltinFnId::IntersectSurfaces => "intersect_surfaces",
+        BuiltinFnId::ProjectPointToSurface => "project_point_to_surface",
+        BuiltinFnId::DistanceCurveCurve => "distance_curve_curve",
+        BuiltinFnId::DistanceCurveSurface => "distance_curve_surface",
+        BuiltinFnId::DistanceSurfaceSurface => "distance_surface_surface",
     }
 }
 
@@ -8373,5 +8636,239 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E141");
+    }
+
+    // --- AICAD-117: multi-solution geometric queries ---
+
+    #[test]
+    fn intersect_curves_finds_the_crossing_point_of_two_lines() {
+        let source = "fn f() -> Length { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 2mm, y = -1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0), \
+                 ); \
+                 let results = intersect_curves(a, b, 0.000001mm); \
+                 var count = 0; \
+                 var x = 0mm; \
+                 for r in results { \
+                     count = count + 1; \
+                     x = r.point.x; \
+                 } \
+                 if count == 1 { \
+                     return x; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.002);
+    }
+
+    #[test]
+    fn intersect_curves_of_parallel_lines_is_a_real_empty_list_not_an_error() {
+        let source = "fn f() -> Int { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = intersect_curves(a, b, 0.000001mm); \
+                 var count = 0; \
+                 for r in results { \
+                     count = count + 1; \
+                 } \
+                 return count; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn intersect_curves_of_coincident_lines_is_a_structured_error() {
+        let source = "fn f() -> List<CurveIntersectionResult> { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 3mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 return intersect_curves(a, b, 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E142");
+    }
+
+    #[test]
+    fn intersect_curve_surface_finds_where_a_line_crosses_a_plane() {
+        let source = "fn f() -> Length { \
+                 let l = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = -5mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let p = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let results = intersect_curve_surface(l, p, 0.000001mm); \
+                 var count = 0; \
+                 var z = -1mm; \
+                 for r in results { \
+                     count = count + 1; \
+                     z = r.point.z; \
+                 } \
+                 if count == 1 { \
+                     return z; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn intersect_surfaces_of_two_planes_returns_a_usable_line_curve() {
+        let source = "fn f() -> Length { \
+                 let a = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let b = plane_surface( \
+                     origin = Point3(x = 5mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = intersect_surfaces(a, b, 0.000001mm); \
+                 var count = 0; \
+                 var x = 0mm; \
+                 for c in results { \
+                     count = count + 1; \
+                     let e = evaluate_curve(c, 0.0); \
+                     x = e.point.x; \
+                 } \
+                 if count == 1 { \
+                     return x; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.005);
+    }
+
+    #[test]
+    fn intersect_surfaces_of_unsupported_families_is_a_structured_error() {
+        let source = "fn f() -> List<Curve> { \
+                 let a = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 2mm, \
+                 ); \
+                 let b = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), \
+                     radius = 2mm, \
+                 ); \
+                 return intersect_surfaces(a, b, 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E142");
+    }
+
+    #[test]
+    fn project_point_to_surface_returns_the_orthogonal_foot_on_a_plane() {
+        let source = "fn f() -> Length { \
+                 let p = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let results = project_point_to_surface( \
+                     p, Point3(x = 3mm, y = 4mm, z = 7mm), \
+                 ); \
+                 for r in results { \
+                     return r.distance; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn distance_curve_curve_between_two_parallel_lines() {
+        let source = "fn f() -> Length { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 0mm, y = 3mm, z = 4mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = distance_curve_curve(a, b); \
+                 for r in results { \
+                     return r.distance; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.005);
+    }
+
+    #[test]
+    fn distance_curve_surface_between_a_line_and_a_sphere_it_misses() {
+        let source = "fn f() -> Length { \
+                 let l = line_curve( \
+                     origin = Point3(x = -10mm, y = 10mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let s = sphere_surface( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     radius = 3mm, \
+                 ); \
+                 let results = distance_curve_surface(l, s); \
+                 for r in results { \
+                     return r.distance; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn distance_surface_surface_between_two_unbounded_families_is_a_structured_error() {
+        let source = "fn f() -> List<DistanceResult> { \
+                 let a = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let b = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 5mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 2mm, \
+                 ); \
+                 return distance_surface_surface(a, b); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E142");
     }
 }

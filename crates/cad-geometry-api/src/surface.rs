@@ -1208,6 +1208,424 @@ impl AnalyticSurface {
     }
 }
 
+// --- AICAD-117: point-to-surface projection ---
+
+/// One solution of [`AnalyticSurface::project_point`]: the surface's own
+/// parameter pair at the projected point, the point itself, and its
+/// distance from the target — the surface-family counterpart of
+/// [`crate::curve::ClosestPointResult`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceProjectionResult {
+    pub u: f64,
+    pub v: f64,
+    pub point: Point3,
+    pub distance: Quantity,
+}
+
+fn distance_quantity(a: Point3, b: Point3) -> Quantity {
+    crate::curve::distance_quantity(a, b)
+}
+
+/// `target`'s own cylindrical coordinates relative to `axis` — shared by
+/// [`AnalyticSurface::project_point`]'s `Cylinder`/`Cone`/`Torus` cases
+/// (every axis-symmetric family except `Sphere`, which has no `axis` field
+/// of its own — see that case's own separate handling). `None` if `target`
+/// lies on `axis` itself (`r0 < 1e-9`) — every point on the surface is then
+/// equidistant in angle, a genuine ambiguity, never an arbitrary `u`.
+struct Cylindrical {
+    a0: f64,
+    r0: f64,
+    ex: Vector3,
+    ey: Vector3,
+    ez: Vector3,
+    radial_dir: Vector3,
+}
+
+impl Cylindrical {
+    fn new(axis: Axis3, target: Point3) -> Option<Cylindrical> {
+        let frame = Frame3::from_z(axis.origin, axis.direction);
+        let rel = target - axis.origin;
+        let ez = axis.direction.as_vector3();
+        let a0 = rel.dot(ez);
+        let radial_vec = rel - ez * a0;
+        let r0 = radial_vec.length();
+        if !r0.is_finite() || r0 < 1e-9 {
+            return None;
+        }
+        let radial_dir = radial_vec * (1.0 / r0);
+        Some(Cylindrical {
+            a0,
+            r0,
+            ex: frame.x.as_vector3(),
+            ey: frame.y.as_vector3(),
+            ez,
+            radial_dir,
+        })
+    }
+
+    /// `target`'s own angular parameter — see module-level "solids of
+    /// revolution never need to search over `u`" note on
+    /// [`AnalyticSurface::project_point`].
+    fn u(&self) -> f64 {
+        self.radial_dir
+            .dot(self.ey)
+            .atan2(self.radial_dir.dot(self.ex))
+    }
+
+    fn point_at(&self, origin: Point3, axial: f64, radial: f64) -> Point3 {
+        origin + self.ez * axial + self.radial_dir * radial
+    }
+}
+
+/// This surface's own bounded `(u, v)` numerical-search domain (`AICAD-117`)
+/// — `Some` only for [`AnalyticSurface::Bezier`]/[`AnalyticSurface::
+/// BSpline`] (the two families [`AnalyticSurface::project_point`] searches
+/// numerically), `None` for every other family (each already has an exact
+/// closed form, or — [`AnalyticSurface::Trimmed`] — is not yet supported by
+/// this search at all).
+pub(crate) fn numeric_surface_domain(
+    surface: &AnalyticSurface,
+) -> Option<((f64, f64), (f64, f64))> {
+    match surface {
+        AnalyticSurface::Bezier { .. } => Some(((0.0, 1.0), (0.0, 1.0))),
+        AnalyticSurface::BSpline {
+            degree_u,
+            degree_v,
+            control_points,
+            knots_u,
+            multiplicities_u,
+            knots_v,
+            multiplicities_v,
+            ..
+        } => {
+            let nu = control_points.len();
+            let nv = control_points.first().map_or(0, Vec::len);
+            if *degree_u == 0 || *degree_v == 0 || nu == 0 || nv == 0 {
+                return None;
+            }
+            let ku = crate::curve::expand_knots(knots_u, multiplicities_u);
+            let kv = crate::curve::expand_knots(knots_v, multiplicities_v);
+            if ku.len() != nu + degree_u + 1 || kv.len() != nv + degree_v + 1 {
+                return None;
+            }
+            Some(((ku[*degree_u], ku[nu]), (kv[*degree_v], kv[nv])))
+        }
+        _ => None,
+    }
+}
+
+/// One-dimensional golden-section minimization of `f` over `[lo, hi]` —
+/// mirrors [`crate::curve::golden_section_minimize`]'s own algorithm
+/// exactly, generalized to an arbitrary scalar objective (that function is
+/// hard-coded to squared curve/target distance; this one takes `f`
+/// directly so [`refine_surface_minimum`] can reuse it for both `u` and `v`
+/// in turn).
+fn golden_section_1d(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
+    const ITERATIONS: u32 = 40;
+    const INV_PHI: f64 = 0.618_033_988_749_895;
+    let mut c = hi - INV_PHI * (hi - lo);
+    let mut d = lo + INV_PHI * (hi - lo);
+    let mut fc = f(c);
+    let mut fd = f(d);
+    for _ in 0..ITERATIONS {
+        if fc < fd {
+            hi = d;
+            d = c;
+            fd = fc;
+            c = hi - INV_PHI * (hi - lo);
+            fc = f(c);
+        } else {
+            lo = c;
+            c = d;
+            fc = fd;
+            d = lo + INV_PHI * (hi - lo);
+            fd = f(d);
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// Refines a coarse-grid local minimum of squared distance from `target` to
+/// `surface.evaluate(u, v)` at `(u0, v0)` (found within grid cell bounds
+/// `(u_lo, u_hi) x (v_lo, v_hi)`) via alternating-axis golden section —
+/// fix `v`, minimize over `u`; fix `u`, minimize over `v`; repeat — a
+/// standard coordinate-descent refinement for a smooth two-parameter
+/// objective, matching this crate's own established numerical-effort level
+/// (`crate::curve::numeric_closest_points`'s 1D precedent, applied per
+/// axis). Returns `None` if `surface.evaluate` fails at every sample tried
+/// (an unreachable coarse-grid cell).
+fn refine_surface_minimum(
+    surface: &AnalyticSurface,
+    target: Point3,
+    (u_lo, u_hi): (f64, f64),
+    (v_lo, v_hi): (f64, f64),
+    u0: f64,
+    v0: f64,
+) -> Option<(f64, f64)> {
+    const ROUNDS: u32 = 6;
+    let squared_distance = |u: f64, v: f64| -> f64 {
+        match surface.evaluate(u, v) {
+            QueryOutcome::Solutions(mut s) if s.len() == 1 => {
+                let p = s.pop().unwrap().point;
+                let d = p - target;
+                d.dot(d)
+            }
+            _ => f64::INFINITY,
+        }
+    };
+    let mut u = u0;
+    let mut v = v0;
+    for _ in 0..ROUNDS {
+        u = golden_section_1d(|candidate_u| squared_distance(candidate_u, v), u_lo, u_hi);
+        v = golden_section_1d(|candidate_v| squared_distance(u, candidate_v), v_lo, v_hi);
+    }
+    if squared_distance(u, v).is_finite() {
+        Some((u, v))
+    } else {
+        None
+    }
+}
+
+/// Numerical `project_point` search for [`AnalyticSurface::Bezier`]/
+/// [`AnalyticSurface::BSpline`] (`AICAD-117`) — coarse grid sampling to
+/// bracket every local minimum of squared distance (an 8-neighbor test on
+/// the grid, the 2D counterpart of [`crate::curve::numeric_closest_points`]'s
+/// own 1D bracket scan), then [`refine_surface_minimum`] per bracket.
+/// Reports every local minimum found (deduplicated by resulting point),
+/// never only the single global one.
+fn numeric_project_point(
+    surface: &AnalyticSurface,
+    target: Point3,
+    (u_lo, u_hi): (f64, f64),
+    (v_lo, v_hi): (f64, f64),
+) -> QueryOutcome<SurfaceProjectionResult> {
+    const GRID: usize = 12;
+    if !u_lo.is_finite() || !u_hi.is_finite() || u_lo >= u_hi {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    if !v_lo.is_finite() || !v_hi.is_finite() || v_lo >= v_hi {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    let step_u = (u_hi - u_lo) / GRID as f64;
+    let step_v = (v_hi - v_lo) / GRID as f64;
+    let grid_u: Vec<f64> = (0..=GRID).map(|i| u_lo + step_u * i as f64).collect();
+    let grid_v: Vec<f64> = (0..=GRID).map(|j| v_lo + step_v * j as f64).collect();
+    let squared_distance_at = |i: usize, j: usize| -> Option<f64> {
+        match surface.evaluate(grid_u[i], grid_v[j]) {
+            QueryOutcome::Solutions(mut s) if s.len() == 1 => {
+                let p = s.pop().unwrap().point;
+                let d = p - target;
+                Some(d.dot(d))
+            }
+            _ => None,
+        }
+    };
+    let mut candidates: Vec<(f64, f64)> = Vec::new();
+    for i in 0..=GRID {
+        for j in 0..=GRID {
+            let Some(d_ij) = squared_distance_at(i, j) else {
+                continue;
+            };
+            let mut is_local_min = true;
+            for di in -1i32..=1 {
+                for dj in -1i32..=1 {
+                    if di == 0 && dj == 0 {
+                        continue;
+                    }
+                    let (ni, nj) = (i as i32 + di, j as i32 + dj);
+                    if ni < 0 || nj < 0 || ni > GRID as i32 || nj > GRID as i32 {
+                        continue;
+                    }
+                    if let Some(d_n) = squared_distance_at(ni as usize, nj as usize)
+                        && d_n < d_ij
+                    {
+                        is_local_min = false;
+                    }
+                }
+            }
+            if !is_local_min {
+                continue;
+            }
+            let cell_u = (
+                if i == 0 { u_lo } else { grid_u[i - 1] },
+                if i == GRID { u_hi } else { grid_u[i + 1] },
+            );
+            let cell_v = (
+                if j == 0 { v_lo } else { grid_v[j - 1] },
+                if j == GRID { v_hi } else { grid_v[j + 1] },
+            );
+            if let Some(refined) =
+                refine_surface_minimum(surface, target, cell_u, cell_v, grid_u[i], grid_v[j])
+            {
+                candidates.push(refined);
+            }
+        }
+    }
+    let mut solutions: Vec<SurfaceProjectionResult> = Vec::new();
+    for (u, v) in candidates {
+        let QueryOutcome::Solutions(mut s) = surface.evaluate(u, v) else {
+            continue;
+        };
+        if s.len() != 1 {
+            continue;
+        }
+        let point = s.pop().unwrap().point;
+        let is_duplicate = solutions
+            .iter()
+            .any(|existing| (existing.point - point).length() < 1e-6);
+        if is_duplicate {
+            continue;
+        }
+        solutions.push(SurfaceProjectionResult {
+            u,
+            v,
+            point,
+            distance: distance_quantity(point, target),
+        });
+    }
+    if solutions.is_empty() {
+        QueryOutcome::Failed(QueryFailure::Degenerate)
+    } else {
+        QueryOutcome::Solutions(solutions)
+    }
+}
+
+impl AnalyticSurface {
+    /// Every point on this surface closest to `target` (`AICAD-117`,
+    /// `project_point_to_surface`) — the surface-family counterpart of
+    /// [`crate::curve::AnalyticCurve::closest_point`]. Exact, closed-form
+    /// for [`AnalyticSurface::Plane`]/[`AnalyticSurface::Cylinder`]/
+    /// [`AnalyticSurface::Cone`]/[`AnalyticSurface::Sphere`]/
+    /// [`AnalyticSurface::Torus`] — the same five families
+    /// [`AnalyticSurface::offset`] already handles exactly; a bounded
+    /// numerical search ([`numeric_project_point`]) for
+    /// [`AnalyticSurface::Bezier`]/[`AnalyticSurface::BSpline`];
+    /// [`QueryFailure::Unsupported`] for [`AnalyticSurface::Trimmed`] (a
+    /// disclosed scope limit — this search does not yet account for a
+    /// trimmed region's own boundary).
+    ///
+    /// # Solids of revolution never need to search over `u`
+    ///
+    /// For every axis-symmetric family (`Cylinder`/`Cone`/`Sphere`/
+    /// `Torus`), the closest point's own angular parameter `u` always
+    /// equals `target`'s own angle around the axis: rotating the whole
+    /// configuration about the axis changes neither the surface nor the
+    /// distance from `target` to any fixed-`u` meridian point, so each case
+    /// below only ever solves a 1D problem in the `(axial, radial)`
+    /// meridian half-plane, never a genuine 2D search. `target` exactly on
+    /// the axis (`Sphere`: exactly at `center`) has no well-defined `u` —
+    /// [`QueryFailure::Degenerate`], never an arbitrary pick.
+    pub fn project_point(&self, target: Point3) -> QueryOutcome<SurfaceProjectionResult> {
+        match self {
+            AnalyticSurface::Plane { origin, normal } => {
+                let frame = Frame3::from_z(*origin, *normal);
+                let offset = target - *origin;
+                let u = offset.dot(frame.x.as_vector3());
+                let v = offset.dot(frame.y.as_vector3());
+                let point = *origin + frame.x.as_vector3() * u + frame.y.as_vector3() * v;
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u,
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Cylinder { axis, radius } => {
+                let Some(cyl) = Cylindrical::new(*axis, target) else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let point = cyl.point_at(axis.origin, cyl.a0, radius.magnitude);
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u: cyl.u(),
+                    v: cyl.a0,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Cone { axis, half_angle } => {
+                let Some(cyl) = Cylindrical::new(*axis, target) else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let (sin_ha, cos_ha) = half_angle.magnitude.sin_cos();
+                let t = cyl.a0 * cos_ha + cyl.r0 * sin_ha;
+                if t < 0.0 {
+                    // The closest point projects onto the apex itself,
+                    // which has no well-defined `u` — see module doc
+                    // comment on `AnalyticSurface::evaluate`'s own apex
+                    // handling.
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let v = t * cos_ha;
+                let r_prime = v * sin_ha / cos_ha;
+                let point = cyl.point_at(axis.origin, v, r_prime);
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u: cyl.u(),
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Sphere { center, radius } => {
+                let offset = target - *center;
+                let Some(dir) = offset.normalize() else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let dv = dir.as_vector3();
+                let world = Frame3::WORLD;
+                let u = dv
+                    .dot(world.y.as_vector3())
+                    .atan2(dv.dot(world.x.as_vector3()));
+                let v = dv.dot(world.z.as_vector3()).clamp(-1.0, 1.0).asin();
+                let point = *center + dv * radius.magnitude;
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u,
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Torus {
+                axis,
+                major_radius,
+                minor_radius,
+            } => {
+                let Some(cyl) = Cylindrical::new(*axis, target) else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let da = cyl.a0;
+                let dr = cyl.r0 - major_radius.magnitude;
+                let len = (da * da + dr * dr).sqrt();
+                if !len.is_finite() || len < 1e-9 {
+                    // `target` sits exactly on the tube's own core circle
+                    // center in the meridian plane — every meridian angle
+                    // is equidistant.
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let v = da.atan2(dr);
+                let (sin_v, cos_v) = v.sin_cos();
+                let radial_prime = major_radius.magnitude + minor_radius.magnitude * cos_v;
+                let axial_prime = minor_radius.magnitude * sin_v;
+                let point = cyl.point_at(axis.origin, axial_prime, radial_prime);
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u: cyl.u(),
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Bezier { .. } | AnalyticSurface::BSpline { .. } => {
+                match numeric_surface_domain(self) {
+                    Some((u_domain, v_domain)) => {
+                        numeric_project_point(self, target, u_domain, v_domain)
+                    }
+                    None => QueryOutcome::Failed(QueryFailure::Degenerate),
+                }
+            }
+            AnalyticSurface::Trimmed { .. } => QueryOutcome::Failed(QueryFailure::Unsupported),
+        }
+    }
+}
+
 /// [`AnalyticSurface::evaluate`]'s own boolean-returning shape/positivity
 /// check for a Bezier/B-spline surface's `weights` — the surface-family
 /// counterpart of [`crate::curve::weights_are_valid`] (private to that
@@ -2183,5 +2601,169 @@ mod tests {
                 1e-5 * (1.0 + sample.dv.length()),
             );
         }
+    }
+
+    // --- AICAD-117: project_point ---
+
+    fn one_projection(surface: &AnalyticSurface, target: Point3) -> SurfaceProjectionResult {
+        match surface.project_point(target) {
+            QueryOutcome::Solutions(mut s) if s.len() == 1 => s.pop().unwrap(),
+            other => panic!("expected exactly one projection solution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plane_projection_is_the_orthogonal_foot() {
+        let plane = AnalyticSurface::Plane {
+            origin: Point3::ORIGIN,
+            normal: Direction3::Z,
+        };
+        let result = one_projection(&plane, Point3::new(3.0, 4.0, 7.0));
+        assert_close(result.point.x, 3.0, 1e-9);
+        assert_close(result.point.y, 4.0, 1e-9);
+        assert_close(result.point.z, 0.0, 1e-9);
+        assert_close(result.distance.magnitude, 7.0, 1e-9);
+    }
+
+    #[test]
+    fn cylinder_projection_lands_on_the_radius_at_the_same_height() {
+        let cylinder = AnalyticSurface::Cylinder {
+            axis: axis(),
+            radius: length(2.0),
+        };
+        // Radially outside, at height 5.
+        let result = one_projection(&cylinder, Point3::new(5.0, 0.0, 5.0));
+        assert_close(
+            (result.point.x.powi(2) + result.point.y.powi(2)).sqrt(),
+            2.0,
+            1e-9,
+        );
+        assert_close(result.point.z, 5.0, 1e-9);
+        assert_close(result.distance.magnitude, 3.0, 1e-9);
+    }
+
+    #[test]
+    fn cylinder_projection_from_the_axis_is_degenerate() {
+        let cylinder = AnalyticSurface::Cylinder {
+            axis: axis(),
+            radius: length(2.0),
+        };
+        assert_eq!(
+            cylinder.project_point(Point3::new(0.0, 0.0, 3.0)),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn sphere_projection_cross_checked_against_evaluate() {
+        let sphere = AnalyticSurface::Sphere {
+            center: Point3::new(1.0, 1.0, 1.0),
+            radius: length(3.0),
+        };
+        let target = Point3::new(10.0, 1.0, 1.0);
+        let result = one_projection(&sphere, target);
+        let QueryOutcome::Solutions(mut eval) = sphere.evaluate(result.u, result.v) else {
+            panic!("projection's own (u, v) must itself evaluate")
+        };
+        let evaluated_point = eval.pop().unwrap().point;
+        assert_close((evaluated_point - result.point).length(), 0.0, 1e-9);
+        assert_close(result.distance.magnitude, 6.0, 1e-9);
+    }
+
+    #[test]
+    fn sphere_projection_from_the_center_is_degenerate() {
+        let sphere = AnalyticSurface::Sphere {
+            center: Point3::new(1.0, 1.0, 1.0),
+            radius: length(3.0),
+        };
+        assert_eq!(
+            sphere.project_point(Point3::new(1.0, 1.0, 1.0)),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn cone_projection_onto_a_generator_matches_the_generator_point_itself() {
+        // A point already exactly on the cone must project onto itself.
+        let cone = AnalyticSurface::Cone {
+            axis: axis(),
+            half_angle: angle(std::f64::consts::FRAC_PI_4),
+        };
+        let QueryOutcome::Solutions(mut s) = cone.evaluate(0.3, 4.0) else {
+            panic!("evaluate must succeed for a valid (u, v)")
+        };
+        let on_surface = s.pop().unwrap().point;
+        let result = one_projection(&cone, on_surface);
+        assert_close((result.point - on_surface).length(), 0.0, 1e-6);
+        assert_close(result.distance.magnitude, 0.0, 1e-6);
+    }
+
+    #[test]
+    fn cone_projection_behind_the_apex_is_degenerate() {
+        let cone = AnalyticSurface::Cone {
+            axis: axis(),
+            half_angle: angle(std::f64::consts::FRAC_PI_4),
+        };
+        // Far behind the apex along the negative axis direction, close to
+        // the axis: the closest point on the (one-nappe, v >= 0) cone is
+        // the ill-defined apex itself.
+        assert_eq!(
+            cone.project_point(Point3::new(0.01, 0.0, -50.0)),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn torus_projection_cross_checked_against_evaluate() {
+        let torus = AnalyticSurface::Torus {
+            axis: axis(),
+            major_radius: length(5.0),
+            minor_radius: length(1.0),
+        };
+        let target = Point3::new(8.0, 0.0, 0.0);
+        let result = one_projection(&torus, target);
+        let QueryOutcome::Solutions(mut eval) = torus.evaluate(result.u, result.v) else {
+            panic!("projection's own (u, v) must itself evaluate")
+        };
+        let evaluated_point = eval.pop().unwrap().point;
+        assert_close((evaluated_point - result.point).length(), 0.0, 1e-9);
+        // Target is on the outer equator: closest point is the outer rim,
+        // at radius major+minor = 6, so distance = 8 - 6 = 2.
+        assert_close(result.distance.magnitude, 2.0, 1e-9);
+    }
+
+    #[test]
+    fn bezier_surface_projection_numeric_search_finds_a_flat_plane_analog() {
+        // A flat (planar) Bezier patch: projection should match the exact
+        // Plane case closely.
+        let bezier = AnalyticSurface::bezier(
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            None,
+        )
+        .unwrap();
+        let result = one_projection(&bezier, Point3::new(0.5, 0.5, 2.0));
+        assert_close(result.point.z, 0.0, 1e-4);
+        assert_close(result.distance.magnitude, 2.0, 1e-3);
+    }
+
+    #[test]
+    fn trimmed_surface_projection_is_unsupported() {
+        let base = AnalyticSurface::Plane {
+            origin: Point3::ORIGIN,
+            normal: Direction3::Z,
+        };
+        let outer = TrimLoop::new(
+            AnalyticCurve::circle(Point3::ORIGIN, Direction3::Z, length(5.0)).unwrap(),
+            ConstructionTolerance::new(1e-6).unwrap(),
+        )
+        .unwrap();
+        let trimmed = AnalyticSurface::trim(base, outer, Vec::new()).unwrap();
+        assert_eq!(
+            trimmed.project_point(Point3::new(0.0, 0.0, 3.0)),
+            QueryOutcome::Failed(QueryFailure::Unsupported)
+        );
     }
 }

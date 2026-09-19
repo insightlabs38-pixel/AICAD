@@ -35,6 +35,7 @@ pub mod adoption;
 pub mod curve;
 pub mod ir;
 pub mod operation_report;
+pub mod query;
 pub mod query_result;
 pub mod surface;
 
@@ -48,8 +49,13 @@ pub use ir::{
     GeometryOp, GeometryQuery, Quantity,
 };
 pub use operation_report::OperationReport;
+pub use query::{
+    CurveCurveIntersection, CurveSurfaceIntersection, DistanceResult, distance_curve_curve,
+    distance_curve_surface, distance_surface_surface, intersect_curve_surface, intersect_curves,
+    intersect_surfaces,
+};
 pub use query_result::{QueryFailure, QueryOutcome};
 pub use surface::{
-    AnalyticSurface, Orientation, SurfaceConstructionError, SurfaceOperationError, SurfaceSample,
-    SurfaceTrimError, TrimError, TrimLoop,
+    AnalyticSurface, Orientation, SurfaceConstructionError, SurfaceOperationError,
+    SurfaceProjectionResult, SurfaceSample, SurfaceTrimError, TrimError, TrimLoop,
 };

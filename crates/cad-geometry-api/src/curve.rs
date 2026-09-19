@@ -1071,7 +1071,7 @@ pub struct ClosestPointResult {
     pub distance: Quantity,
 }
 
-fn distance_quantity(a: Point3, b: Point3) -> Quantity {
+pub(crate) fn distance_quantity(a: Point3, b: Point3) -> Quantity {
     let d = a - b;
     Quantity::of(
         (d.x * d.x + d.y * d.y + d.z * d.z).sqrt(),
