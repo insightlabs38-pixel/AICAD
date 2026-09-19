@@ -1,0 +1,21 @@
+param radius: Length = 40mm;
+
+part SurfaceQueryBasics {
+    let equator_plane: Surface = plane_surface(
+        origin = Point3(x = 0mm, y = 0mm, z = 0mm),
+        normal = Vector3(x = 0.0, y = 0.0, z = 1.0),
+    );
+    let globe: Surface = sphere_surface(
+        center = Point3(x = 0mm, y = 0mm, z = 0mm),
+        radius = radius,
+    );
+
+    // A plane through a sphere's own center always cuts a great circle of
+    // the sphere's own radius.
+    let equator: List<Curve> = intersect_surfaces(equator_plane, globe, 0.000001mm);
+
+    // The point on the sphere closest to an off-surface probe, plus the
+    // achieved clearance distance.
+    let probe: Point3 = Point3(x = radius + 15mm, y = 0mm, z = 0mm);
+    let landing: List<SurfaceProjectionResult> = project_point_to_surface(globe, probe);
+}

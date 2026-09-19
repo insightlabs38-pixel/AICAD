@@ -15,6 +15,8 @@ Every file listed as **ACTIVE** below uses current supported `.aicad` syntax and
 | ACTIVE | `references/broken_reference.aicad` | Expected fail-closed broken reference |
 | ACTIVE | `curves/circle_curve_basics.aicad` | Minimal analytic curve construction/evaluation |
 | ACTIVE | `curves/cable_routing_path.aicad` | Realistic curve use: rational-Bezier fillet arc, line segments, closest-point clearance check |
+| ACTIVE | `surfaces/surface_query_basics.aicad` | Minimal surface/surface intersection and point-to-surface projection |
+| ACTIVE | `surfaces/pipe_clearance_check.aicad` | Realistic surface-query use: curve-to-surface clearance distance and curve/surface crossing point |
 
 Historical `stage2_*` / `stage3_*` filenames are retained for evidence/test compatibility; ACTIVE means they still represent current supported syntax.
 

@@ -1,0 +1,37 @@
+param pipe_radius: Length = 30mm;
+param pipe_length: Length = 400mm;
+
+part PipeClearanceCheck {
+    let pipe: Surface = cylinder_surface(
+        axis = Axis3(
+            origin = Point3(x = 0mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        ),
+        radius = pipe_radius,
+    );
+
+    // A support rail running parallel to the pipe, offset to one side —
+    // the real minimum clearance between the rail and the pipe's own
+    // curved surface (not merely axis-to-axis distance).
+    let support_rail: Curve = line_curve(
+        origin = Point3(x = 50mm, y = 0mm, z = 0mm),
+        direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+    );
+    let rail_clearance: List<DistanceResult> = distance_curve_surface(support_rail, pipe);
+
+    // A drainage line crossing the pipe's own end-cap plane — the exact
+    // crossing point, not merely "does it cross".
+    let drain_line: Curve = line_curve(
+        origin = Point3(x = 12mm, y = 0mm, z = 0mm - 50mm),
+        direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+    );
+    let end_cap: Surface = plane_surface(
+        origin = Point3(x = 0mm, y = 0mm, z = pipe_length),
+        normal = Vector3(x = 0.0, y = 0.0, z = 1.0),
+    );
+    let drain_crossing: List<CurveSurfaceIntersectionResult> = intersect_curve_surface(
+        drain_line,
+        end_cap,
+        0.000001mm,
+    );
+}
