@@ -547,6 +547,15 @@ pub enum RuntimeError {
         span: Span,
         reason: cad_units::ToleranceError,
     },
+    /// `offset_surface` (`AICAD-116`) could not offset its `surface`
+    /// argument — an unsupported family (Bezier/B-spline/trimmed), or a
+    /// distance that would produce a degenerate result
+    /// (`cad_geometry_api::SurfaceOperationError`).
+    SurfaceOperationFailed {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::SurfaceOperationError,
+    },
 }
 
 impl RuntimeError {
@@ -601,6 +610,7 @@ impl RuntimeError {
             RuntimeError::InvalidTrimLoop { .. } => "RUNTIME-E138".to_string(),
             RuntimeError::SurfaceTrimFailed { .. } => "RUNTIME-E139".to_string(),
             RuntimeError::InvalidToleranceMagnitude { .. } => "RUNTIME-E140".to_string(),
+            RuntimeError::SurfaceOperationFailed { .. } => "RUNTIME-E141".to_string(),
         }
     }
 
@@ -665,7 +675,8 @@ impl RuntimeError {
             | RuntimeError::SurfaceEvaluationFailed { span, .. }
             | RuntimeError::InvalidTrimLoop { span, .. }
             | RuntimeError::SurfaceTrimFailed { span, .. }
-            | RuntimeError::InvalidToleranceMagnitude { span, .. } => *span,
+            | RuntimeError::InvalidToleranceMagnitude { span, .. }
+            | RuntimeError::SurfaceOperationFailed { span, .. } => *span,
         }
     }
 
@@ -718,6 +729,7 @@ impl RuntimeError {
             RuntimeError::InvalidTrimLoop { .. } => "INVALID_TRIM_LOOP",
             RuntimeError::SurfaceTrimFailed { .. } => "SURFACE_TRIM_FAILED",
             RuntimeError::InvalidToleranceMagnitude { .. } => "INVALID_TOLERANCE_MAGNITUDE",
+            RuntimeError::SurfaceOperationFailed { .. } => "SURFACE_OPERATION_FAILED",
         }
     }
 
@@ -863,6 +875,9 @@ impl RuntimeError {
             }
             RuntimeError::InvalidToleranceMagnitude { name, reason, .. } => {
                 format!("'{name}' received an invalid tolerance: {reason}")
+            }
+            RuntimeError::SurfaceOperationFailed { name, reason, .. } => {
+                format!("'{name}' failed: {reason}")
             }
         }
     }

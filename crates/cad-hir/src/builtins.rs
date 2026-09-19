@@ -468,6 +468,15 @@ pub enum BuiltinFnId {
     /// own doc comment for the full validation. See
     /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
     TrimSurface,
+    /// `offset_surface(surface: Surface, distance: Length) -> Surface`
+    /// (`AICAD-116`). Exact for `Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`
+    /// (`cad_geometry_api::surface::AnalyticSurface::offset`); every other
+    /// family reports `SurfaceOperationError::UnsupportedFamily` (exact
+    /// offsetting of a Bezier/B-spline/trimmed surface is not, in general,
+    /// expressible in the same family — see that error variant's own doc
+    /// comment). See [`BuiltinFnId::PlaneSurface`]'s own doc comment for the
+    /// category.
+    OffsetSurface,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -553,7 +562,8 @@ impl BuiltinFnId {
             | BuiltinFnId::EvaluateSurface
             | BuiltinFnId::BezierSurface
             | BuiltinFnId::BSplineSurface
-            | BuiltinFnId::TrimSurface => BuiltinCategory::Value,
+            | BuiltinFnId::TrimSurface
+            | BuiltinFnId::OffsetSurface => BuiltinCategory::Value,
         }
     }
 }
@@ -600,7 +610,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 40] = [
+    pub const ALL: [BuiltinFnId; 41] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -641,6 +651,7 @@ impl BuiltinFnId {
         BuiltinFnId::BezierSurface,
         BuiltinFnId::BSplineSurface,
         BuiltinFnId::TrimSurface,
+        BuiltinFnId::OffsetSurface,
     ];
 }
 
@@ -1069,6 +1080,12 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("holes", list_of("Curve")),
                 ("tolerance", named("Length")),
             ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::OffsetSurface,
+            name: "offset_surface",
+            params: vec![("surface", named("Surface")), ("distance", named("Length"))],
             return_ty: named("Surface"),
         },
     ]

@@ -60,68 +60,81 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Batch `S5-03` is complete** on `claude/aicad-stage5-dev` (`S5-00`
-through `S5-02` were completed and handed off previously — see
-`project/reports/AICAD-101.md` through `AICAD-108.md`; this section now
-reflects `S5-03`'s completion, batches `S5-00`-`S5-02`'s own summaries
-retired from this file per its own "current state, not an appended diary"
-convention):
+**Batch `S5-04` is complete** on `claude/aicad-stage5-dev` (`S5-00`
+through `S5-03` were completed and handed off previously — see
+`project/reports/AICAD-101.md` through `AICAD-112.md`; this section now
+reflects `S5-04`'s completion, earlier batches' own summaries retired from
+this file per its own "current state, not an appended diary" convention):
 
-- `AICAD-109` (analytic curve families — Line/Circle/Arc/Ellipse — wired
-  end to end: validated constructors plus exact closed-form evaluation on
-  `cad_geometry_api::curve::AnalyticCurve` (`AICAD-108`), reached from real
-  `.aicad` source via `line_curve`/`circle_curve`/`arc_curve`/
-  `ellipse_curve`/`evaluate_curve` through a new third
-  `BuiltinCategory::Value` — pure value computation, no `GeometryGraph`
-  node, no kernel call at all, since every family's evaluation is
-  closed-form) — `project/reports/AICAD-109.md`.
-- `AICAD-110` (extended the same enum with Bezier/B-spline/NURBS, sharing
-  one exact de Boor's-algorithm evaluation core in homogeneous coordinates
-  — a Bezier curve evaluates as the equivalent clamped B-spline, not a
-  separate implementation. Widened `cad_hir::typeck::CheckedType::List`
-  from a `Value`-only element type to any `CheckedType` (contained to one
-  file), needed for `List<Point3>` control-point arguments — recorded as
-  an architecture decision for independent review, judged non-escalating)
-  — `project/reports/AICAD-110.md`.
-- `AICAD-111` (curve-local operations: trim (generic domain-restriction
-  wrapper), offset (exact for Line/Circle/Arc, honest
-  `UnsupportedFamily` elsewhere), closest-point (exact for Line/Circle,
-  golden-section search elsewhere, reporting every local minimum found,
-  never an arbitrary one), and exact global cubic B-spline interpolation
-  via a Gaussian-elimination linear solve, checked against its own
-  achieved residual) — `project/reports/AICAD-111.md`.
-- `AICAD-112` (Checkpoint A — passed, no architecture conflict: a
-  production-path vertical slice reproduces an exact textbook geometric
-  identity with direct evidence of zero kernel calls; D21/D23/D24/D25
-  re-audited with new targeted tests, not merely re-cited; two new ACTIVE
-  examples; native OCCT CMake+CTest run directly, 18/18) —
-  `project/reports/AICAD-112.md`.
+- `AICAD-113` (analytic surface families — Plane/Cylinder/Cone/Sphere/ring
+  Torus — wired end to end on `cad_geometry_api::surface::AnalyticSurface`
+  (`AICAD-108` stub): validated constructors, and `evaluate(u, v)` giving
+  point/`du`/`dv`/normal, all closed-form, no kernel call. The normal is
+  always `du.cross(dv)` normalized, never a family-specific shortcut — this
+  is what makes a genuine parametrization singularity (a sphere's own
+  pole, a cone's own apex) surface as `QueryFailure::Degenerate` for free.
+  Reached from `.aicad` source via `plane_surface`/`cylinder_surface`/
+  `cone_surface`/`sphere_surface`/`torus_surface`/`evaluate_surface`
+  through the same `BuiltinCategory::Value` curves already established) —
+  `project/reports/AICAD-113.md`.
+- `AICAD-114` (extended the enum with tensor-product Bezier/B-spline/NURBS
+  surfaces, reusing `crate::curve`'s own de Boor/derivative/knot-expansion
+  core directly — widened to `pub(crate)` rather than re-implemented — since
+  a tensor-product surface is separable into two ordinary curve evaluations
+  per direction. `bezier_surface`/`bspline_surface` take `List<List<Point3>>`
+  control nets, the first two-levels-deep nested list literal this language
+  has exercised) — `project/reports/AICAD-114.md`.
+- `AICAD-115` (trimmed surfaces — `AnalyticSurface::Trimmed`: a base surface
+  plus an outer `TrimLoop` and hole `TrimLoop`s, each loop exactly one
+  already-closed `AnalyticCurve` read in the base's own `(u, v)` plane
+  (composite multi-segment loops are a disclosed, not-yet-supported scope
+  limit). Closure/planarity/orientation validated at construction, and
+  point-in-region membership at evaluation, both via one shared Green's-
+  theorem/winding-number numerical core over exact analytic tangents —
+  proven against a closed-form circle area to `1e-6`. Found and root-fixed
+  a test-helper bug (`binding_named` matched by name only, so a
+  `RuntimeBuiltin` parameter named `base` could shadow a same-named
+  top-level test binding)) — `project/reports/AICAD-115.md`.
+- `AICAD-116` (bounded surface offset — exact for Plane/Cylinder/Cone/
+  Sphere/Torus, `UnsupportedFamily` for Bezier/B-spline/Trimmed; the cone
+  case derives a same-half-angle apex-shift identity, cross-checked in a
+  unit test against the original surface's own point+normal, not merely
+  internal self-consistency. Also adds a central-finite-difference
+  independent check of `du`/`dv` against `evaluate`'s own analytic values
+  across every constructible family) — `project/reports/AICAD-116.md`.
 
-All required checks pass: `cargo fmt`, `cargo clippy -D warnings`, the full
-`cargo test --workspace` (83 test-result blocks, 0 failed), the frozen
-`stage4_resolver_execution` corpus (11/11, unchanged), the semantic-
-reference harness `validate`/`self-test` (both `ok`), and the native OCCT
-bridge CMake build + CTest suite (18/18). Automatic geometry-fingerprint
-recovery remains disabled.
+All required checks pass: `cargo fmt --all -- --check`, `cargo clippy
+--workspace --all-targets --all-features -- -D warnings`, the full `cargo
+test --workspace` (0 failed across every crate), and the native OCCT
+bridge tests reached via `cargo test -p cad-occt-bridge` (concurrency/
+adversarial/Stage-1-bracket suites all green). `cad-query`'s own suite
+(98 tests) is unaffected. Automatic geometry-fingerprint recovery remains
+disabled.
 
-Known, explicitly-disclosed limitations carried forward (see each task's
-own report for full detail): `AICAD-107`'s conservative nested-call
+Known, explicitly-disclosed limitations carried forward from `S5-00`-`S5-03`
+(see each task's own report): `AICAD-107`'s conservative nested-call
 provenance approximation; `AICAD-105`'s full-graph query redispatch;
 `AICAD-106`'s `ApproximationTolerance` has no default constructor;
-`AICAD-108`'s value families remain progressively wired by each dependent
-task. New this batch: `AICAD-109`'s arcs cannot wrap through angle zero;
-`AICAD-110`'s B-splines cannot be periodic (closed/wrapping), and
-`weights`/other plan-spelled optional parameters are mandatory
-(empty-list-means-absent) since the catalogue has no optional-parameter
-mechanism; `AICAD-111`'s `offset_curve` is exact only for Line/Circle/Arc,
-`closest_point`'s numerical branch resolves to only `~sqrt(f64 epsilon)`
-near a flat minimum (an inherent numerical-method limit), and
-`interpolate_curve` is fixed at degree 3 with no tangent/periodic option.
-No `make_edge`/topology-construction path from a `Curve` exists yet —
-curves remain pure values until a later Stage-5 topology task bridges
-them.
+`AICAD-109`'s arcs cannot wrap through angle zero; `AICAD-110`'s B-splines
+cannot be periodic; `AICAD-111`'s `offset_curve` is exact only for
+Line/Circle/Arc. New this batch: `AICAD-113`'s ring-torus-only scope
+(`minor_radius < major_radius` required at construction); `AICAD-114`'s
+B-spline surfaces cannot be periodic in either direction (mirrors
+`AICAD-110`'s curve limitation); `AICAD-115`'s trim loops must already be
+one closed curve (no composite multi-segment loops yet), and
+`TrimLoop::contains` re-samples on every call (no caching); `AICAD-116`'s
+offset is `UnsupportedFamily` for every freeform/trimmed surface family
+(mirrors `AICAD-111`'s curve-offset narrowing). No `make_face`/topology-
+construction path from a `Surface` exists yet — surfaces remain pure
+values until a later Stage-5 topology task (`AICAD-119`+) bridges them,
+exactly like curves.
 
-Per the fixed batch order, the next invocation begins `S5-04`
-(`AICAD-113..116`, surfaces).
+Per the fixed batch order, the next invocation begins `S5-05`
+(`AICAD-117..118`: multi-solution geometric queries, then Checkpoint B).
+No active example has been added since `AICAD-112`'s own two — Checkpoint
+B's own acceptance requires at least one new representative example
+drawing on the curves+surfaces+queries surface together, so example work
+is deliberately deferred to it rather than split piecemeal across
+`AICAD-113`-`118`.
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

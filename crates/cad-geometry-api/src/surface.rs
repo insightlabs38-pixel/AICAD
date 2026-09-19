@@ -1098,6 +1098,116 @@ impl AnalyticSurface {
     }
 }
 
+// --- AICAD-116: bounded surface offset ---
+
+/// Every way [`AnalyticSurface::offset`] can fail — the surface-family
+/// counterpart of [`crate::curve::CurveOperationError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceOperationError {
+    /// This operation is not supported for this surface family. Exact
+    /// offsetting of a Bezier/B-spline/trimmed surface is not, in general,
+    /// expressible as a surface in the same family — the identical
+    /// well-known CAD limitation [`crate::curve::CurveOperationError::
+    /// UnsupportedFamily`] documents for a curve, applied here.
+    UnsupportedFamily,
+    /// The requested offset distance would produce a degenerate result
+    /// (e.g. a cylinder/sphere radius, or a torus minor radius, reaching
+    /// zero or negative, or a torus offset that would break the
+    /// `minor_radius < major_radius` ring-torus invariant).
+    DegenerateResult,
+}
+
+impl fmt::Display for SurfaceOperationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            SurfaceOperationError::UnsupportedFamily => {
+                "this operation is not supported for this surface family"
+            }
+            SurfaceOperationError::DegenerateResult => {
+                "this operation would produce a degenerate surface"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for SurfaceOperationError {}
+
+impl AnalyticSurface {
+    /// Offsets this surface by `distance` along its own outward normal
+    /// (`AICAD-116`, `offset_surface`). Exact for every analytic family
+    /// except [`AnalyticSurface::Cone`]'s neighbors in the enum
+    /// ([`AnalyticSurface::Bezier`]/[`AnalyticSurface::BSpline`]/
+    /// [`AnalyticSurface::Trimmed`] — [`SurfaceOperationError::
+    /// UnsupportedFamily`], mirroring [`crate::curve::AnalyticCurve::
+    /// offset`]'s own identical curve-family narrowing):
+    ///
+    /// - [`AnalyticSurface::Plane`]: `origin` translated by `distance`
+    ///   along `normal`; `normal` unchanged. Never degenerate.
+    /// - [`AnalyticSurface::Cylinder`]/[`AnalyticSurface::Sphere`]: `radius
+    ///   += distance`, staying coaxial/concentric.
+    /// - [`AnalyticSurface::Torus`]: `minor_radius += distance`, staying
+    ///   coaxial with the same `major_radius` (a torus's own outward
+    ///   normal always points directly away from the tube's own center
+    ///   circle by exactly `minor_radius`, so offsetting is exactly this
+    ///   one substitution).
+    /// - [`AnalyticSurface::Cone`]: the offset of a cone is exactly another
+    ///   coaxial cone with the *same* `half_angle`, apex translated along
+    ///   `axis.direction` by `-distance / sin(half_angle)` — a standard
+    ///   analytic-geometry identity (a cone's own outward normal has a
+    ///   constant axial component `-sin(half_angle)` everywhere on the
+    ///   surface, independent of the radial parameter, which is exactly
+    ///   what makes a constant-distance offset stay a cone of the *same*
+    ///   angle rather than becoming a different shape).
+    ///
+    /// [`SurfaceOperationError::DegenerateResult`] if the offset radius
+    /// (cylinder/sphere/torus) would be non-positive, or a torus offset
+    /// would break `minor_radius < major_radius`.
+    pub fn offset(&self, distance: Quantity) -> Result<AnalyticSurface, SurfaceOperationError> {
+        if !distance.magnitude.is_finite() {
+            return Err(SurfaceOperationError::DegenerateResult);
+        }
+        match self {
+            AnalyticSurface::Plane { origin, normal } => Ok(AnalyticSurface::Plane {
+                origin: *origin + normal.as_vector3() * distance.magnitude,
+                normal: *normal,
+            }),
+            AnalyticSurface::Cylinder { axis, radius } => {
+                let new_radius = Quantity::new(radius.magnitude + distance.magnitude, radius.ty);
+                AnalyticSurface::cylinder(*axis, new_radius)
+                    .map_err(|_| SurfaceOperationError::DegenerateResult)
+            }
+            AnalyticSurface::Sphere { center, radius } => {
+                let new_radius = Quantity::new(radius.magnitude + distance.magnitude, radius.ty);
+                AnalyticSurface::sphere(*center, new_radius)
+                    .map_err(|_| SurfaceOperationError::DegenerateResult)
+            }
+            AnalyticSurface::Torus {
+                axis,
+                major_radius,
+                minor_radius,
+            } => {
+                let new_minor =
+                    Quantity::new(minor_radius.magnitude + distance.magnitude, minor_radius.ty);
+                AnalyticSurface::torus(*axis, *major_radius, new_minor)
+                    .map_err(|_| SurfaceOperationError::DegenerateResult)
+            }
+            AnalyticSurface::Cone { axis, half_angle } => {
+                let sin_half = half_angle.magnitude.sin();
+                let shift = distance.magnitude / sin_half;
+                let new_apex = axis.origin + axis.direction.as_vector3() * (-shift);
+                Ok(AnalyticSurface::Cone {
+                    axis: Axis3::new(new_apex, axis.direction),
+                    half_angle: *half_angle,
+                })
+            }
+            AnalyticSurface::Bezier { .. }
+            | AnalyticSurface::BSpline { .. }
+            | AnalyticSurface::Trimmed { .. } => Err(SurfaceOperationError::UnsupportedFamily),
+        }
+    }
+}
+
 /// [`AnalyticSurface::evaluate`]'s own boolean-returning shape/positivity
 /// check for a Bezier/B-spline surface's `weights` — the surface-family
 /// counterpart of [`crate::curve::weights_are_valid`] (private to that
@@ -1896,5 +2006,182 @@ mod tests {
         let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
         let trimmed = AnalyticSurface::trim(flat_plane(), outer, Vec::new()).unwrap();
         assert_eq!(trimmed.anchor(), flat_plane().anchor());
+    }
+
+    // --- AICAD-116: bounded surface offset ---
+
+    #[test]
+    fn plane_offset_translates_the_origin_along_its_own_normal() {
+        let plane = AnalyticSurface::plane(Point3::new(0.0, 0.0, 1.0), Direction3::Z);
+        let offset = plane.offset(length(0.5)).unwrap();
+        let QueryOutcome::Solutions(mut before) = plane.evaluate(2.0, 3.0) else {
+            panic!("plane evaluation never fails")
+        };
+        let QueryOutcome::Solutions(mut after) = offset.evaluate(2.0, 3.0) else {
+            panic!("offset plane evaluation never fails")
+        };
+        let (b, a) = (before.pop().unwrap(), after.pop().unwrap());
+        assert_point_close(a.point, b.point + Vector3::new(0.0, 0.0, 0.5), 1e-12);
+        assert_eq!(a.normal, b.normal);
+    }
+
+    #[test]
+    fn cylinder_and_sphere_offset_adjust_radius_by_exactly_the_distance() {
+        let cylinder = AnalyticSurface::cylinder(axis(), length(0.02)).unwrap();
+        let offset_cylinder = cylinder.offset(length(0.005)).unwrap();
+        let AnalyticSurface::Cylinder { radius, .. } = offset_cylinder else {
+            panic!("offsetting a cylinder must produce another cylinder")
+        };
+        assert_close(radius.magnitude, 0.025, 1e-12);
+
+        let sphere = AnalyticSurface::sphere(Point3::ORIGIN, length(0.02)).unwrap();
+        let offset_sphere = sphere.offset(length(-0.005)).unwrap();
+        let AnalyticSurface::Sphere { radius, .. } = offset_sphere else {
+            panic!("offsetting a sphere must produce another sphere")
+        };
+        assert_close(radius.magnitude, 0.015, 1e-12);
+    }
+
+    #[test]
+    fn cylinder_offset_rejects_a_distance_that_would_make_the_radius_non_positive() {
+        let cylinder = AnalyticSurface::cylinder(axis(), length(0.01)).unwrap();
+        assert_eq!(
+            cylinder.offset(length(-0.02)),
+            Err(SurfaceOperationError::DegenerateResult)
+        );
+    }
+
+    #[test]
+    fn torus_offset_adjusts_minor_radius_and_rejects_breaking_the_ring_invariant() {
+        let torus = AnalyticSurface::torus(axis(), length(0.05), length(0.01)).unwrap();
+        let offset = torus.offset(length(0.01)).unwrap();
+        let AnalyticSurface::Torus { minor_radius, .. } = offset else {
+            panic!("offsetting a torus must produce another torus")
+        };
+        assert_close(minor_radius.magnitude, 0.02, 1e-12);
+
+        // An offset large enough to reach/exceed major_radius breaks the
+        // ring-torus invariant.
+        assert_eq!(
+            torus.offset(length(0.05)),
+            Err(SurfaceOperationError::DegenerateResult)
+        );
+    }
+
+    #[test]
+    fn cone_offset_produces_the_same_half_angle_surface_at_the_exact_offset_distance() {
+        // Independent evidence for the derived apex-shift formula: pick a
+        // point on the original cone, and check that the offset cone's own
+        // evaluation at the predicted corresponding parameter lands exactly
+        // `distance` away along the original point's own normal.
+        let half_angle = 0.4;
+        let cone = AnalyticSurface::cone(axis(), angle(half_angle)).unwrap();
+        let distance = 0.003;
+        let offset = cone.offset(length(distance)).unwrap();
+        let AnalyticSurface::Cone {
+            half_angle: offset_half_angle,
+            ..
+        } = offset
+        else {
+            panic!("offsetting a cone must produce another cone")
+        };
+        assert_close(offset_half_angle.magnitude, half_angle, 1e-12);
+
+        let (u0, v0) = (1.1, 0.02);
+        let QueryOutcome::Solutions(mut original) = cone.evaluate(u0, v0) else {
+            panic!("cone evaluation away from the apex is never degenerate")
+        };
+        let sample = original.pop().unwrap();
+        let expected = sample.point + sample.normal.as_vector3() * distance;
+        let v_prime = v0 + distance * half_angle.cos().powi(2) / half_angle.sin();
+        let QueryOutcome::Solutions(mut offset_samples) = offset.evaluate(u0, v_prime) else {
+            panic!("offset cone evaluation is never degenerate here")
+        };
+        assert_point_close(offset_samples.pop().unwrap().point, expected, 1e-9);
+    }
+
+    #[test]
+    fn bezier_bspline_and_trimmed_surfaces_reject_offset() {
+        let bezier = AnalyticSurface::bezier(hyperbolic_paraboloid_net(), None).unwrap();
+        assert_eq!(
+            bezier.offset(length(0.001)),
+            Err(SurfaceOperationError::UnsupportedFamily)
+        );
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        let trimmed = AnalyticSurface::trim(flat_plane(), outer, Vec::new()).unwrap();
+        assert_eq!(
+            trimmed.offset(length(0.001)),
+            Err(SurfaceOperationError::UnsupportedFamily)
+        );
+    }
+
+    /// Independent numerical evidence for `du`/`dv` across every
+    /// constructible family (not merely each family's own hand-derived
+    /// closed form, already checked by `AICAD-113`/`114`'s own tests): a
+    /// central finite difference of `evaluate`'s own point must agree with
+    /// the analytic derivative it returns, to well within the difference
+    /// scheme's own truncation error.
+    #[test]
+    fn analytic_derivatives_agree_with_a_central_finite_difference_everywhere() {
+        let h = 1e-5;
+        let cases: Vec<(AnalyticSurface, f64, f64)> = vec![
+            (
+                AnalyticSurface::plane(Point3::new(1.0, -2.0, 0.5), Direction3::Z),
+                0.3,
+                0.7,
+            ),
+            (
+                AnalyticSurface::cylinder(axis(), length(0.02)).unwrap(),
+                1.1,
+                0.4,
+            ),
+            (AnalyticSurface::cone(axis(), angle(0.4)).unwrap(), 0.9, 0.6),
+            (
+                AnalyticSurface::sphere(Point3::new(0.1, 0.2, -0.1), length(0.03)).unwrap(),
+                1.3,
+                0.5,
+            ),
+            (
+                AnalyticSurface::torus(axis(), length(0.05), length(0.01)).unwrap(),
+                0.8,
+                2.1,
+            ),
+            (
+                AnalyticSurface::bezier(hyperbolic_paraboloid_net(), None).unwrap(),
+                0.4,
+                0.6,
+            ),
+        ];
+        for (surface, u, v) in cases {
+            let QueryOutcome::Solutions(mut center) = surface.evaluate(u, v) else {
+                panic!("evaluation at the chosen interior parameter must not be degenerate")
+            };
+            let sample = center.pop().unwrap();
+            let QueryOutcome::Solutions(mut up) = surface.evaluate(u + h, v) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let QueryOutcome::Solutions(mut um) = surface.evaluate(u - h, v) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let du_fd = (up.pop().unwrap().point - um.pop().unwrap().point) * (1.0 / (2.0 * h));
+            assert_close(
+                (du_fd - sample.du).length(),
+                0.0,
+                1e-5 * (1.0 + sample.du.length()),
+            );
+
+            let QueryOutcome::Solutions(mut vp) = surface.evaluate(u, v + h) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let QueryOutcome::Solutions(mut vm) = surface.evaluate(u, v - h) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let dv_fd = (vp.pop().unwrap().point - vm.pop().unwrap().point) * (1.0 / (2.0 * h));
+            assert_close(
+                (dv_fd - sample.dv).length(),
+                0.0,
+                1e-5 * (1.0 + sample.dv.length()),
+            );
+        }
     }
 }

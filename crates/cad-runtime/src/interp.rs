@@ -1996,6 +1996,7 @@ impl<'a> Interpreter<'a> {
                 | BuiltinFnId::BezierSurface
                 | BuiltinFnId::BSplineSurface
                 | BuiltinFnId::TrimSurface
+                | BuiltinFnId::OffsetSurface
         ) {
             return self.dispatch_surface_builtin(id, name, params, frame, span);
         }
@@ -2273,7 +2274,8 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::EvaluateSurface
             | BuiltinFnId::BezierSurface
             | BuiltinFnId::BSplineSurface
-            | BuiltinFnId::TrimSurface => unreachable!(
+            | BuiltinFnId::TrimSurface
+            | BuiltinFnId::OffsetSurface => unreachable!(
                 "surface builtins return early above, before this Construction-only match"
             ),
         };
@@ -2807,6 +2809,15 @@ impl<'a> Interpreter<'a> {
                 AnalyticSurface::trim(base, outer, holes)
                     .map(|s| Value::Surface(Box::new(s)))
                     .map_err(|reason| RuntimeError::SurfaceTrimFailed { span, reason }.into())
+            }
+            BuiltinFnId::OffsetSurface => {
+                let s = surface(arg(0)?)?;
+                let distance = quantity(arg(1)?)?;
+                s.offset(distance)
+                    .map(|offset| Value::Surface(Box::new(offset)))
+                    .map_err(|reason| {
+                        RuntimeError::SurfaceOperationFailed { name, span, reason }.into()
+                    })
             }
             BuiltinFnId::EvaluateSurface => {
                 let s = surface(arg(0)?)?;
@@ -3908,6 +3919,7 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::BezierSurface => "bezier_surface",
         BuiltinFnId::BSplineSurface => "bspline_surface",
         BuiltinFnId::TrimSurface => "trim_surface",
+        BuiltinFnId::OffsetSurface => "offset_surface",
     }
 }
 
@@ -8309,5 +8321,57 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E139");
+    }
+
+    // --- AICAD-116: bounded surface offset ---
+
+    #[test]
+    fn offset_surface_and_evaluate_surface_reproduce_the_adjusted_cylinder_radius() {
+        let source = "fn f() -> Length { \
+                 let s = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 5mm, \
+                 ); \
+                 let widened = offset_surface(s, 2mm); \
+                 let e = evaluate_surface(widened, 0.0, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn offset_surface_rejects_a_degenerate_result() {
+        let source = "fn f() -> Surface { \
+                 let s = sphere_surface( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     radius = 5mm, \
+                 ); \
+                 return offset_surface(s, -10mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E141");
+    }
+
+    #[test]
+    fn offset_surface_rejects_an_unsupported_family() {
+        let source = "fn f() -> Surface { \
+                 let s = bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+                 return offset_surface(s, 1mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E141");
     }
 }
