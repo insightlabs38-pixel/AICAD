@@ -87,6 +87,14 @@ pub enum QueryFailure {
     /// supported by the concrete query's own implementation — an honest
     /// "not implemented", never silently treated as "no solutions".
     Unsupported,
+    /// The input parameter itself was outside the query's own valid
+    /// domain (`AICAD-109`) — e.g. a non-finite curve-evaluation parameter,
+    /// or a parameter outside a trimmed/bounded curve's own valid range.
+    /// Distinct from [`QueryFailure::Degenerate`] (the *geometry* is
+    /// invalid) and [`QueryFailure::Unsupported`] (this combination is
+    /// never supported): an out-of-domain parameter would succeed for the
+    /// identical geometry at a different, in-domain parameter value.
+    OutOfDomain,
 }
 
 impl std::fmt::Display for QueryFailure {
@@ -97,6 +105,7 @@ impl std::fmt::Display for QueryFailure {
                 "the query could not be evaluated within a trusted numerical tolerance"
             }
             QueryFailure::Unsupported => "this input combination is not yet supported",
+            QueryFailure::OutOfDomain => "the parameter is outside this query's valid domain",
         };
         f.write_str(message)
     }
@@ -137,6 +146,7 @@ mod tests {
             QueryFailure::Degenerate,
             QueryFailure::NumericallyUnstable,
             QueryFailure::Unsupported,
+            QueryFailure::OutOfDomain,
         ] {
             assert!(!reason.to_string().is_empty());
         }

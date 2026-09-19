@@ -456,6 +456,29 @@ pub enum RuntimeError {
     QueryBudgetExceeded {
         span: Span,
     },
+    /// `line_curve`/`circle_curve`/`arc_curve`/`ellipse_curve`
+    /// (`AICAD-109`) received arguments that evaluate to a genuinely
+    /// invalid curve — a non-finite/non-positive radius, an empty/reversed
+    /// arc angle range, or an ellipse `major_direction` not perpendicular
+    /// to `normal` (`cad_geometry_api::curve::CurveConstructionError`).
+    /// Type-checking cannot rule this out (it depends on the actual
+    /// evaluated numeric components), mirroring
+    /// [`RuntimeError::InvalidSpatialArgument`]'s own identical rationale.
+    InvalidCurveConstruction {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::CurveConstructionError,
+    },
+    /// `evaluate_curve` (`AICAD-109`) could not evaluate its `curve`
+    /// argument at the given `u` — a non-finite `u`, an `Arc`'s `u` outside
+    /// its own `start_angle..=end_angle` domain, or (only reachable for a
+    /// directly struct-literal-constructed `AnalyticCurve` bypassing this
+    /// crate's own validated constructors) a degenerate curve shape
+    /// (`cad_geometry_api::QueryFailure`).
+    CurveEvaluationFailed {
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
 }
 
 impl RuntimeError {
@@ -501,6 +524,8 @@ impl RuntimeError {
             RuntimeError::KernelQueryUnavailable { .. } => "RUNTIME-E130".to_string(),
             RuntimeError::KernelQueryFailed { .. } => "RUNTIME-E131".to_string(),
             RuntimeError::QueryBudgetExceeded { .. } => "BUDGET-E003".to_string(),
+            RuntimeError::InvalidCurveConstruction { .. } => "RUNTIME-E132".to_string(),
+            RuntimeError::CurveEvaluationFailed { .. } => "RUNTIME-E133".to_string(),
         }
     }
 
@@ -556,7 +581,9 @@ impl RuntimeError {
             | RuntimeError::InvalidPatternCount { span, .. }
             | RuntimeError::KernelQueryUnavailable { span, .. }
             | RuntimeError::KernelQueryFailed { span, .. }
-            | RuntimeError::QueryBudgetExceeded { span } => *span,
+            | RuntimeError::QueryBudgetExceeded { span }
+            | RuntimeError::InvalidCurveConstruction { span, .. }
+            | RuntimeError::CurveEvaluationFailed { span, .. } => *span,
         }
     }
 
@@ -600,6 +627,8 @@ impl RuntimeError {
             RuntimeError::KernelQueryUnavailable { .. } => "KERNEL_QUERY_UNAVAILABLE",
             RuntimeError::KernelQueryFailed { .. } => "KERNEL_QUERY_FAILED",
             RuntimeError::QueryBudgetExceeded { .. } => "QUERY_BUDGET_EXCEEDED",
+            RuntimeError::InvalidCurveConstruction { .. } => "INVALID_CURVE_CONSTRUCTION",
+            RuntimeError::CurveEvaluationFailed { .. } => "CURVE_EVALUATION_FAILED",
         }
     }
 
@@ -718,6 +747,12 @@ impl RuntimeError {
             }
             RuntimeError::QueryBudgetExceeded { .. } => {
                 "exceeded this interpreter's kernel-query budget".to_string()
+            }
+            RuntimeError::InvalidCurveConstruction { name, reason, .. } => {
+                format!("'{name}' received invalid curve parameters: {reason}")
+            }
+            RuntimeError::CurveEvaluationFailed { reason, .. } => {
+                format!("'evaluate_curve' could not evaluate this curve: {reason}")
             }
         }
     }

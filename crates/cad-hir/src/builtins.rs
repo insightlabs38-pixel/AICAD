@@ -285,6 +285,44 @@ pub enum BuiltinFnId {
     /// `GeometryQuery::Area`. See [`BuiltinFnId::IsValid`]'s own doc
     /// comment for the query-dispatch mechanism.
     Area,
+    /// `line_curve(origin: Point3, direction: Vector3<Float>) -> Curve`
+    /// (`AICAD-109`). Builds a `cad_geometry_api::curve::AnalyticCurve::
+    /// Line` — a [`BuiltinCategory::Value`] builtin: pure data assembly, no
+    /// `GeometryGraph` node and no kernel call (`AnalyticCurve`'s own doc
+    /// comment: "constructing one is pure data assembly, never a kernel
+    /// call").
+    LineCurve,
+    /// `circle_curve(center: Point3, normal: Vector3<Float>, radius:
+    /// Length) -> Curve` (`AICAD-109`). Builds a validated
+    /// `AnalyticCurve::Circle` (`cad_geometry_api::curve::AnalyticCurve::
+    /// circle`) — rejects a non-finite/non-positive `radius`. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    CircleCurve,
+    /// `arc_curve(center: Point3, normal: Vector3<Float>, radius: Length,
+    /// start_angle: Angle, end_angle: Angle) -> Curve` (`AICAD-109`).
+    /// Builds a validated `AnalyticCurve::Arc` — rejects a non-finite/
+    /// non-positive `radius` or a `start_angle >= end_angle`. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    ArcCurve,
+    /// `ellipse_curve(center: Point3, normal: Vector3<Float>,
+    /// major_direction: Vector3<Float>, major_radius: Length, minor_radius:
+    /// Length) -> Curve` (`AICAD-109`). Builds a validated
+    /// `AnalyticCurve::Ellipse` — rejects a non-finite/non-positive radius,
+    /// `major_radius < minor_radius`, or a `major_direction` not
+    /// perpendicular to `normal`. See [`BuiltinFnId::LineCurve`]'s own doc
+    /// comment for the category.
+    EllipseCurve,
+    /// `evaluate_curve(curve: Curve, u: Float) -> CurveEvaluation`
+    /// (`AICAD-109`). Evaluates any [`BuiltinFnId::LineCurve`]/
+    /// [`BuiltinFnId::CircleCurve`]/[`BuiltinFnId::ArcCurve`]/
+    /// [`BuiltinFnId::EllipseCurve`]-constructed `Curve` at parameter `u`
+    /// via `cad_geometry_api::curve::AnalyticCurve::evaluate` — a
+    /// closed-form computation (see that method's own doc comment for each
+    /// family's parameter convention), never a kernel call. A degenerate
+    /// curve or an out-of-domain `u` (an `Arc`'s own restricted range) is a
+    /// structured `RuntimeError`, never a silently wrong point. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    EvaluateCurve,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -305,10 +343,21 @@ pub enum BuiltinFnId {
 ///   effect (a kernel call happens now, not at some later dispatch phase),
 ///   which is exactly why this category exists as its own metadata rather
 ///   than being folded into `Construction`.
+/// - [`BuiltinCategory::Value`] (`AICAD-109`): computes an ordinary typed
+///   AICAD value directly, with **no** `GeometryGraph`/`GeometryQuery` node
+///   and **no** kernel call at all — e.g. analytic curve construction/
+///   evaluation, which is closed-form (`cad_geometry_api::curve::
+///   AnalyticCurve`'s own doc comment: "pure data assembly, never a kernel
+///   call"). Distinct from `Query`: nothing here demand-materializes
+///   through a live kernel context, so this category never touches
+///   `cad_runtime::query_exec::KernelQueryExecutor` or the query budget —
+///   `project/DECISION_LOG.md#DL-23`'s own "category... metadata" is
+///   explicitly extensible for exactly this kind of scaling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinCategory {
     Construction,
     Query,
+    Value,
 }
 
 impl BuiltinFnId {
@@ -340,6 +389,11 @@ impl BuiltinFnId {
             BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
                 BuiltinCategory::Query
             }
+            BuiltinFnId::LineCurve
+            | BuiltinFnId::CircleCurve
+            | BuiltinFnId::ArcCurve
+            | BuiltinFnId::EllipseCurve
+            | BuiltinFnId::EvaluateCurve => BuiltinCategory::Value,
         }
     }
 }
@@ -386,7 +440,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 20] = [
+    pub const ALL: [BuiltinFnId; 25] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -407,6 +461,11 @@ impl BuiltinFnId {
         BuiltinFnId::IsValid,
         BuiltinFnId::Volume,
         BuiltinFnId::Area,
+        BuiltinFnId::LineCurve,
+        BuiltinFnId::CircleCurve,
+        BuiltinFnId::ArcCurve,
+        BuiltinFnId::EllipseCurve,
+        BuiltinFnId::EvaluateCurve,
     ];
 }
 
@@ -438,6 +497,14 @@ fn vector3_of(elem: &str) -> HirTypeRef {
         args: vec![named(elem)],
         span: Span::new(0, 0),
     }
+}
+
+/// `Vector3<Float>` — the concrete instantiation every existing struct-
+/// typed builtin parameter already uses for a plain direction/vector
+/// (`extrude`/`revolve`/`hole`/... above), reused unchanged for the new
+/// `AICAD-109` curve builtins.
+fn direction3() -> HirTypeRef {
+    vector3_of("Float")
 }
 
 /// One catalogue entry: a runtime-backed function's name and signature,
@@ -637,6 +704,52 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             params: vec![("target", named("Geometry"))],
             return_ty: named("Area"),
         },
+        BuiltinFnSpec {
+            id: BuiltinFnId::LineCurve,
+            name: "line_curve",
+            params: vec![("origin", named("Point3")), ("direction", direction3())],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::CircleCurve,
+            name: "circle_curve",
+            params: vec![
+                ("center", named("Point3")),
+                ("normal", direction3()),
+                ("radius", named("Length")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ArcCurve,
+            name: "arc_curve",
+            params: vec![
+                ("center", named("Point3")),
+                ("normal", direction3()),
+                ("radius", named("Length")),
+                ("start_angle", named("Angle")),
+                ("end_angle", named("Angle")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EllipseCurve,
+            name: "ellipse_curve",
+            params: vec![
+                ("center", named("Point3")),
+                ("normal", direction3()),
+                ("major_direction", direction3()),
+                ("major_radius", named("Length")),
+                ("minor_radius", named("Length")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EvaluateCurve,
+            name: "evaluate_curve",
+            params: vec![("curve", named("Curve")), ("u", named("Float"))],
+            return_ty: named("CurveEvaluation"),
+        },
     ]
 }
 
@@ -683,6 +796,11 @@ mod tests {
                 BuiltinCategory::Query => assert!(
                     !is_geometry_return,
                     "'{}' is Query but returns Geometry",
+                    spec.name
+                ),
+                BuiltinCategory::Value => assert!(
+                    !is_geometry_return,
+                    "'{}' is Value but returns Geometry",
                     spec.name
                 ),
             }

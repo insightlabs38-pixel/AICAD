@@ -169,7 +169,11 @@ use crate::feature_trace::{CallPath, PathFrame, TraceEntry};
 use crate::query_exec::{KernelQueryExecutor, QueryOutcome};
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
-use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryOp, GeometryQuery, Quantity};
+use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
+use cad_geometry_api::{
+    AnalyticCurve, CurveConstructionError, EdgeIndex, FaceIndex, GeomId, GeometryOp, GeometryQuery,
+    Quantity,
+};
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
     BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
@@ -177,7 +181,7 @@ use cad_hir::hir::{
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::{HirType, HirTypeRef};
-use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Transform, Vector3};
+use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Point3, Transform, Vector3};
 use cad_types::{AffineKind, Dimension, PrimitiveType};
 use cad_units::{
     ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison, check_unary_neg,
@@ -1622,6 +1626,107 @@ impl<'a> Interpreter<'a> {
         })
     }
 
+    /// Looks up an always-seeded `cad_hir::geometry_types` struct's own
+    /// `BindingId` by its declared name (`AICAD-109`) — the *return*-value
+    /// counterpart of [`Interpreter::construct_struct`]'s own by-`BindingId`
+    /// lookup: `evaluate_curve`'s own dispatch arm needs to *build* a
+    /// `Point3`/`CurveEvaluation` return value, not merely read an
+    /// already-constructed one, so it needs the declaring `BindingId` from
+    /// a bare name instead. Linear search over [`Interpreter::structs`] —
+    /// that map only ever holds a handful of always-seeded types plus
+    /// whatever a user program itself declares, and this runs at most once
+    /// per `evaluate_curve`/curve-construction call, never in a hot loop.
+    fn struct_binding_named(&self, name: &str) -> Option<BindingId> {
+        self.structs.iter().find_map(|(id, item)| match item {
+            HirItem::Struct { name: n, .. } if n == name => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// Builds a [`Value::Struct`] for the always-seeded struct `name`, from
+    /// `fields` given in any order — reordered into the struct's own
+    /// declared field order, exactly matching [`Value::Struct`]'s own
+    /// "declared field order, not construction order" contract (mirrors
+    /// [`Interpreter::construct_struct`]'s identical convention for an
+    /// ordinary source-level struct literal). Only ever called by this
+    /// crate's own `AICAD-109` curve-builtin dispatch with a `name`/
+    /// `fields` shape it fully controls (never user input) — a lookup
+    /// failure is therefore an internal-error
+    /// [`RuntimeError::BuiltinArgumentShape`], mirroring
+    /// [`Interpreter::construct_struct`]'s own "trusts, but verifies"
+    /// precedent, never a panic.
+    fn build_geometry_struct(
+        &self,
+        name: &'static str,
+        fields: Vec<(&'static str, Value)>,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let ty = self
+            .struct_binding_named(name)
+            .ok_or(RuntimeError::BuiltinArgumentShape { name, span })?;
+        let HirItem::Struct {
+            fields: field_decls,
+            ..
+        } = self
+            .structs
+            .get(&ty)
+            .copied()
+            .ok_or(RuntimeError::BuiltinArgumentShape { name, span })?
+        else {
+            unreachable!("structs only ever indexes HirItem::Struct (see index_structs)")
+        };
+        let mut ordered = Vec::with_capacity(field_decls.len());
+        for decl in field_decls {
+            let value = fields
+                .iter()
+                .find(|(field_name, _)| *field_name == decl.name.as_str())
+                .map(|(_, v)| v.clone())
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })?;
+            ordered.push((decl.name.clone(), value));
+        }
+        Ok(Value::Struct {
+            ty,
+            fields: ordered,
+        })
+    }
+
+    /// Builds a `Point3` [`Value::Struct`] from a kernel-neutral
+    /// [`cad_kernel_api::Point3`] (`AICAD-109`) — each component's
+    /// canonical magnitude (metres) tagged `Length`-dimensional, mirroring
+    /// `crate::spatial::point3_from_value`'s own identical "canonical
+    /// magnitude, unconverted" convention in reverse.
+    fn point3_value(&self, p: Point3, span: Span) -> EvalResult<Value> {
+        let length = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Length, None),
+            })
+        };
+        self.build_geometry_struct(
+            "Point3",
+            vec![("x", length(p.x)), ("y", length(p.y)), ("z", length(p.z))],
+            span,
+        )
+    }
+
+    /// Builds a `Vector3<Float>` [`Value::Struct`] from a kernel-neutral
+    /// [`cad_kernel_api::Vector3`] (`AICAD-109`) — each component a plain
+    /// scalar `Float`, mirroring `crate::spatial::
+    /// vector3_float_from_value`'s own identical shape in reverse.
+    fn vector3_float_value(&self, v: Vector3, span: Span) -> EvalResult<Value> {
+        let scalar = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::Scalar(PrimitiveType::Float),
+            })
+        };
+        self.build_geometry_struct(
+            "Vector3",
+            vec![("x", scalar(v.x)), ("y", scalar(v.y)), ("z", scalar(v.z))],
+            span,
+        )
+    }
+
     fn run_fn_body(&mut self, fn_item: &'a HirItem, mut frame: Frame) -> EvalResult<Value> {
         let HirItem::Fn {
             name,
@@ -1846,6 +1951,27 @@ impl<'a> Interpreter<'a> {
                 .push_query(query, span)
                 .map_err(|err| RuntimeError::GeometryConstruction { err })?;
             return self.execute_kernel_query(id, query_node, span);
+        }
+
+        // Analytic curve construction/evaluation (`AICAD-109`,
+        // `BuiltinCategory::Value`): a `cad_geometry_api::curve::
+        // AnalyticCurve` is pure backend-independent data (that module's
+        // own doc comment: "constructing one is pure data assembly, never
+        // a kernel call") — these builtins never push a `GeometryGraph`/
+        // `GeometryQuery` node and never touch a kernel context, so they
+        // are handled entirely separately from both the `Query` block
+        // above and the `GeometryOp`-pushing match below. Factored into its
+        // own method, not inlined here — see `Interpreter::
+        // dispatch_curve_builtin`'s own doc comment for why.
+        if matches!(
+            id,
+            BuiltinFnId::LineCurve
+                | BuiltinFnId::CircleCurve
+                | BuiltinFnId::ArcCurve
+                | BuiltinFnId::EllipseCurve
+                | BuiltinFnId::EvaluateCurve
+        ) {
+            return self.dispatch_curve_builtin(id, name, params, frame, span);
         }
 
         // Pushes one `GeometryOp` node onto this run's own accumulated
@@ -2100,8 +2226,155 @@ impl<'a> Interpreter<'a> {
                     "query builtins return early above, before this Construction-only match"
                 )
             }
+            BuiltinFnId::LineCurve
+            | BuiltinFnId::CircleCurve
+            | BuiltinFnId::ArcCurve
+            | BuiltinFnId::EllipseCurve
+            | BuiltinFnId::EvaluateCurve => unreachable!(
+                "curve builtins return early above, before this Construction-only match"
+            ),
         };
         Ok(Value::Geometry(node))
+    }
+
+    /// The `AICAD-109` curve-construction/evaluation half of
+    /// [`Interpreter::dispatch_builtin`] (`BuiltinFnId::LineCurve`/
+    /// `CircleCurve`/`ArcCurve`/`EllipseCurve`/`EvaluateCurve`), factored
+    /// into its own method rather than inlined there so its own locals do
+    /// not inflate the stack frame of *every* `dispatch_builtin` call
+    /// (including the overwhelming majority that never touch a curve
+    /// builtin at all) — [`DEFAULT_MAX_CALL_DEPTH`]'s own doc comment
+    /// already measured `dispatch_builtin`'s per-call debug-build stack
+    /// footprint empirically once; adding this whole block inline there
+    /// reduced the safe self-recursion margin enough to trip
+    /// `moderately_deep_self_recursion_succeeds_within_the_default_budget`.
+    /// Re-derives its own small `arg`/`quantity`/`spatial_point`/
+    /// `spatial_direction` closures from `params`/`frame` rather than
+    /// receiving `dispatch_builtin`'s own (which would require naming
+    /// their otherwise-anonymous closure types) — the very small
+    /// duplication this costs is exactly what keeps this a genuinely
+    /// separate, independently-sized stack frame.
+    fn dispatch_curve_builtin(
+        &self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let quantity = |value: &Value| -> EvalResult<Quantity> {
+            match value {
+                Value::Number(n) => Ok(Quantity::new(n.magnitude, n.ty)),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_direction = |value: &Value| -> EvalResult<Direction3> {
+            crate::spatial::direction3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let curve = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok(**c),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let curve_construction =
+            |result: Result<AnalyticCurve, CurveConstructionError>| -> EvalResult<Value> {
+                result.map(|c| Value::Curve(Box::new(c))).map_err(|reason| {
+                    RuntimeError::InvalidCurveConstruction { name, span, reason }.into()
+                })
+            };
+        match id {
+            BuiltinFnId::LineCurve => {
+                let origin = spatial_point(arg(0)?)?;
+                let direction = spatial_direction(arg(1)?)?;
+                Ok(Value::Curve(Box::new(AnalyticCurve::line(
+                    origin, direction,
+                ))))
+            }
+            BuiltinFnId::CircleCurve => {
+                let center = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                let radius = quantity(arg(2)?)?;
+                curve_construction(AnalyticCurve::circle(center, normal, radius))
+            }
+            BuiltinFnId::ArcCurve => {
+                let center = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                let radius = quantity(arg(2)?)?;
+                let start_angle = quantity(arg(3)?)?;
+                let end_angle = quantity(arg(4)?)?;
+                curve_construction(AnalyticCurve::arc(
+                    center,
+                    normal,
+                    radius,
+                    start_angle,
+                    end_angle,
+                ))
+            }
+            BuiltinFnId::EllipseCurve => {
+                let center = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                let major_direction = spatial_direction(arg(2)?)?;
+                let major_radius = quantity(arg(3)?)?;
+                let minor_radius = quantity(arg(4)?)?;
+                curve_construction(AnalyticCurve::ellipse(
+                    center,
+                    normal,
+                    major_direction,
+                    major_radius,
+                    minor_radius,
+                ))
+            }
+            BuiltinFnId::EvaluateCurve => {
+                let c = curve(arg(0)?)?;
+                let u = quantity(arg(1)?)?.magnitude;
+                match c.evaluate(u) {
+                    CurveQueryOutcome::Solutions(mut solutions) if solutions.len() == 1 => {
+                        let sample = solutions.pop().unwrap();
+                        let point = self.point3_value(sample.point, span)?;
+                        let tangent = self.vector3_float_value(sample.tangent, span)?;
+                        self.build_geometry_struct(
+                            "CurveEvaluation",
+                            vec![("point", point), ("tangent", tangent)],
+                            span,
+                        )
+                    }
+                    CurveQueryOutcome::Failed(reason) => {
+                        Err(RuntimeError::CurveEvaluationFailed { span, reason }.into())
+                    }
+                    other => unreachable!(
+                        "AnalyticCurve::evaluate always returns exactly one solution or \
+                         Failed, got {other:?}"
+                    ),
+                }
+            }
+            _ => unreachable!(
+                "dispatch_curve_builtin is only ever called for the five curve BuiltinFnIds \
+                 guarded by dispatch_builtin's own matches! check"
+            ),
+        }
     }
 
     /// Demand-materializes a kernel-backed query's real result (`AICAD-105`,
@@ -3151,6 +3424,11 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::IsValid => "is_valid",
         BuiltinFnId::Volume => "volume",
         BuiltinFnId::Area => "area",
+        BuiltinFnId::LineCurve => "line_curve",
+        BuiltinFnId::CircleCurve => "circle_curve",
+        BuiltinFnId::ArcCurve => "arc_curve",
+        BuiltinFnId::EllipseCurve => "ellipse_curve",
+        BuiltinFnId::EvaluateCurve => "evaluate_curve",
     }
 }
 
@@ -6642,5 +6920,188 @@ mod tests {
             5,
             "every traced call across every recursion depth must get its own distinct CallPath"
         );
+    }
+
+    // --- AICAD-109: analytic curve construction/evaluation ---
+
+    #[test]
+    fn line_curve_and_evaluate_curve_reproduce_the_analytic_point_and_tangent() {
+        let source = "\
+            fn p() -> Length { \
+                let c = line_curve( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                ); \
+                let e = evaluate_curve(c, 0.005); \
+                return e.point.x; \
+            } \
+            fn t() -> Float { \
+                let c = line_curve( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                ); \
+                let e = evaluate_curve(c, 0.005); \
+                return e.tangent.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("p", vec![]).unwrap(), 0.005);
+        assert_number_eq(interp.call_by_name("t", vec![]).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn circle_curve_and_evaluate_curve_reproduce_the_analytic_point_and_tangent() {
+        let source = "\
+            fn p() -> Length { \
+                let c = circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 2mm, \
+                ); \
+                let e = evaluate_curve(c, 0.0); \
+                return e.point.x; \
+            } \
+            fn t() -> Float { \
+                let c = circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 2mm, \
+                ); \
+                let e = evaluate_curve(c, 0.0); \
+                return e.tangent.y; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // At u = 0, `circle_curve`'s deterministic reference direction
+        // (`Frame3::from_z`) places the point at `(radius, 0, 0)` and the
+        // tangent at `(0, radius, 0)` — see `AnalyticCurve::evaluate`'s own
+        // doc comment.
+        assert_number_eq(interp.call_by_name("p", vec![]).unwrap(), 0.002);
+        assert_number_eq(interp.call_by_name("t", vec![]).unwrap(), 0.002);
+    }
+
+    #[test]
+    fn ellipse_curve_and_evaluate_curve_reproduce_the_major_axis_endpoint() {
+        let source = "fn f() -> Length { \
+                 let c = ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     major_radius = 20mm, \
+                     minor_radius = 10mm, \
+                 ); \
+                 let e = evaluate_curve(c, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.02);
+    }
+
+    #[test]
+    fn arc_curve_evaluates_its_own_start_endpoint() {
+        let source = "fn f() -> Length { \
+                 let c = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 let e = evaluate_curve(c, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn arc_curve_evaluation_outside_its_own_domain_is_a_structured_error() {
+        let source = "fn f() -> Length { \
+                 let c = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 let e = evaluate_curve(c, 2.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E133");
+    }
+
+    #[test]
+    fn circle_curve_rejects_a_non_positive_radius() {
+        let source = "fn f() -> Curve { \
+                 return circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 0mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    #[test]
+    fn ellipse_curve_rejects_a_major_direction_not_perpendicular_to_normal() {
+        let source = "fn f() -> Curve { \
+                 return ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_radius = 20mm, \
+                     minor_radius = 10mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    #[test]
+    fn line_curve_rejects_a_degenerate_direction() {
+        let source = "fn f() -> Curve { \
+                 return line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = 0.0), \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E128");
+    }
+
+    #[test]
+    fn a_curve_value_can_be_bound_and_passed_through_an_ordinary_helper_function() {
+        // Proves a `Curve` value flows through ordinary lexical
+        // binding/function-call argument passing exactly like any other
+        // value (`AICAD-109` deliberately needs no `cad_feature_graph`/
+        // `feature_trace` integration — see this task's own report).
+        let source = "\
+            fn make() -> Curve { \
+                return circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 3mm, \
+                ); \
+            } \
+            fn f() -> Length { \
+                let c = make(); \
+                let e = evaluate_curve(c, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.003);
     }
 }

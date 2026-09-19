@@ -3536,7 +3536,7 @@ tasks:
 - id: AICAD-109
   stage: 5
   title: Implement analytic curve families end to end
-  status: todo
+  status: done
   depends_on:
   - AICAD-108
   plan_references:

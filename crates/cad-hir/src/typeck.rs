@@ -212,6 +212,16 @@ pub enum CheckedType {
     /// it resolves `"Length"`/`"Int"`), so there is no declaring item to
     /// point back to.
     Geometry,
+    /// A kernel-neutral analytic curve value (`AICAD-109`,
+    /// `cad_geometry_api::curve::AnalyticCurve`) — a second single opaque
+    /// nominal type alongside [`CheckedType::Geometry`], resolved from the
+    /// bare source name `"Curve"` exactly the same way. Deliberately kept
+    /// distinct from `Geometry` rather than reusing it: a `Curve` carries
+    /// no `cad_geometry_api::GeomId` (it is pure backend-independent data,
+    /// never a `GeometryGraph` node — see `AnalyticCurve`'s own module doc
+    /// comment), so passing one where a topology-consuming builtin expects
+    /// `Geometry` must be a type error, not a silent reinterpretation.
+    Curve,
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -414,6 +424,7 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::Range(e), CheckedType::Range(a)) => value_types_compatible(e, a),
         (CheckedType::TypeParam(e), CheckedType::TypeParam(a)) => e == a,
         (CheckedType::Geometry, CheckedType::Geometry) => true,
+        (CheckedType::Curve, CheckedType::Curve) => true,
         // Nominal, not structural (`AICAD-057D`): the same declaring
         // struct/enum `base`, with every type argument pairwise
         // compatible in declared order.
@@ -566,6 +577,7 @@ impl<'a> Checker<'a> {
                 format!("{name}<{}>", arg_strs.join(", "))
             }
             CheckedType::Geometry => "Geometry".to_string(),
+            CheckedType::Curve => "Curve".to_string(),
         }
     }
 
@@ -730,6 +742,12 @@ impl<'a> Checker<'a> {
                 // `Int` already do).
                 if name == "Geometry" {
                     return Some(CheckedType::Geometry);
+                }
+                // `Curve` (`AICAD-109`): the identical single-opaque-
+                // nominal-type pattern as `Geometry` immediately above,
+                // checked before `self.type_names` for the same reason.
+                if name == "Curve" {
+                    return Some(CheckedType::Curve);
                 }
                 if let Some(prim) = PrimitiveType::from_name(name) {
                     return Some(CheckedType::Value(HirType::Scalar(prim)));

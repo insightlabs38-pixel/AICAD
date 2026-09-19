@@ -12,7 +12,8 @@
 //! wiring for each remains that later batch's own job (see each module's
 //! own doc comment for the exact dependency):
 //! - [`curve`]: [`curve::AnalyticCurve`] — analytic curve values
-//!   (`AICAD-109` wires construction/evaluation).
+//!   (`AICAD-109` wired construction/evaluation; kernel dispatch was not
+//!   needed — see that module's own doc comment).
 //! - [`surface`]: [`surface::AnalyticSurface`] — analytic surface values
 //!   (`AICAD-113`-`116` wire construction/evaluation).
 //! - [`query_result`][]: [`query_result::QueryOutcome`]/[`query_result::
@@ -33,7 +34,7 @@ pub mod query_result;
 pub mod surface;
 
 pub use adoption::{AdoptionEvidence, AdoptionOutcome, AdoptionRejection};
-pub use curve::AnalyticCurve;
+pub use curve::{AnalyticCurve, CurveConstructionError, CurveSample};
 pub use ir::{
     EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryIrError, GeometryNode, GeometryNodeKind,
     GeometryOp, GeometryQuery, Quantity,
