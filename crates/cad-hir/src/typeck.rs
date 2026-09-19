@@ -237,6 +237,12 @@ pub enum CheckedType {
     /// comment), so passing one where a topology-consuming builtin expects
     /// `Geometry` must be a type error, not a silent reinterpretation.
     Curve,
+    /// A kernel-neutral analytic surface value (`AICAD-113`,
+    /// `cad_geometry_api::surface::AnalyticSurface`) — the surface-family
+    /// counterpart of [`CheckedType::Curve`], resolved from the bare source
+    /// name `"Surface"` the identical way and kept distinct from both
+    /// `Curve` and `Geometry` for the same reason.
+    Surface,
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -440,6 +446,7 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::TypeParam(e), CheckedType::TypeParam(a)) => e == a,
         (CheckedType::Geometry, CheckedType::Geometry) => true,
         (CheckedType::Curve, CheckedType::Curve) => true,
+        (CheckedType::Surface, CheckedType::Surface) => true,
         // Nominal, not structural (`AICAD-057D`): the same declaring
         // struct/enum `base`, with every type argument pairwise
         // compatible in declared order.
@@ -593,6 +600,7 @@ impl<'a> Checker<'a> {
             }
             CheckedType::Geometry => "Geometry".to_string(),
             CheckedType::Curve => "Curve".to_string(),
+            CheckedType::Surface => "Surface".to_string(),
         }
     }
 
@@ -751,6 +759,10 @@ impl<'a> Checker<'a> {
                 // checked before `self.type_names` for the same reason.
                 if name == "Curve" {
                     return Some(CheckedType::Curve);
+                }
+                // `Surface` (`AICAD-113`): the identical pattern again.
+                if name == "Surface" {
+                    return Some(CheckedType::Surface);
                 }
                 if let Some(prim) = PrimitiveType::from_name(name) {
                     return Some(CheckedType::Value(HirType::Scalar(prim)));

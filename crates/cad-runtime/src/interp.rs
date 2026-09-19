@@ -171,8 +171,8 @@ use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
 use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
 use cad_geometry_api::{
-    AnalyticCurve, CurveConstructionError, CurveOperationError, EdgeIndex, FaceIndex, GeomId,
-    GeometryOp, GeometryQuery, Quantity,
+    AnalyticCurve, AnalyticSurface, CurveConstructionError, CurveOperationError, EdgeIndex,
+    FaceIndex, GeomId, GeometryOp, GeometryQuery, Quantity,
 };
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
@@ -1981,6 +1981,22 @@ impl<'a> Interpreter<'a> {
             return self.dispatch_curve_builtin(id, name, params, frame, span);
         }
 
+        // Analytic surface construction/evaluation (`AICAD-113`) — the
+        // surface-family counterpart of the curve block immediately above,
+        // for the identical reason: pure backend-independent data, no
+        // `GeometryGraph`/kernel call.
+        if matches!(
+            id,
+            BuiltinFnId::PlaneSurface
+                | BuiltinFnId::CylinderSurface
+                | BuiltinFnId::ConeSurface
+                | BuiltinFnId::SphereSurface
+                | BuiltinFnId::TorusSurface
+                | BuiltinFnId::EvaluateSurface
+        ) {
+            return self.dispatch_surface_builtin(id, name, params, frame, span);
+        }
+
         // Pushes one `GeometryOp` node onto this run's own accumulated
         // `Interpreter::geometry` graph — every builtin arm below ends in
         // one or more calls to this, per this function's own doc comment
@@ -2245,6 +2261,14 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::ClosestPointOnCurve
             | BuiltinFnId::InterpolateCurve => unreachable!(
                 "curve builtins return early above, before this Construction-only match"
+            ),
+            BuiltinFnId::PlaneSurface
+            | BuiltinFnId::CylinderSurface
+            | BuiltinFnId::ConeSurface
+            | BuiltinFnId::SphereSurface
+            | BuiltinFnId::TorusSurface
+            | BuiltinFnId::EvaluateSurface => unreachable!(
+                "surface builtins return early above, before this Construction-only match"
             ),
         };
         Ok(Value::Geometry(node))
@@ -2531,6 +2555,134 @@ impl<'a> Interpreter<'a> {
             }
             _ => unreachable!(
                 "dispatch_curve_builtin is only ever called for the curve BuiltinFnIds \
+                 guarded by dispatch_builtin's own matches! check"
+            ),
+        }
+    }
+
+    /// The `AICAD-113` surface-construction/evaluation half of
+    /// [`Interpreter::dispatch_builtin`] — the surface-family counterpart of
+    /// [`Interpreter::dispatch_curve_builtin`], factored into its own method
+    /// for the identical stack-frame-size reason (see that method's own doc
+    /// comment).
+    fn dispatch_surface_builtin(
+        &self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let quantity = |value: &Value| -> EvalResult<Quantity> {
+            match value {
+                Value::Number(n) => Ok(Quantity::new(n.magnitude, n.ty)),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_direction = |value: &Value| -> EvalResult<Direction3> {
+            crate::spatial::direction3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_axis = |value: &Value| -> EvalResult<Axis3> {
+            crate::spatial::axis3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let surface = |value: &Value| -> EvalResult<AnalyticSurface> {
+            match value {
+                Value::Surface(s) => Ok(**s),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let surface_construction = |result: Result<
+            AnalyticSurface,
+            cad_geometry_api::SurfaceConstructionError,
+        >|
+         -> EvalResult<Value> {
+            result
+                .map(|s| Value::Surface(Box::new(s)))
+                .map_err(|reason| {
+                    RuntimeError::InvalidSurfaceConstruction { name, span, reason }.into()
+                })
+        };
+        match id {
+            BuiltinFnId::PlaneSurface => {
+                let origin = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                Ok(Value::Surface(Box::new(AnalyticSurface::plane(
+                    origin, normal,
+                ))))
+            }
+            BuiltinFnId::CylinderSurface => {
+                let axis = spatial_axis(arg(0)?)?;
+                let radius = quantity(arg(1)?)?;
+                surface_construction(AnalyticSurface::cylinder(axis, radius))
+            }
+            BuiltinFnId::ConeSurface => {
+                let axis = spatial_axis(arg(0)?)?;
+                let half_angle = quantity(arg(1)?)?;
+                surface_construction(AnalyticSurface::cone(axis, half_angle))
+            }
+            BuiltinFnId::SphereSurface => {
+                let center = spatial_point(arg(0)?)?;
+                let radius = quantity(arg(1)?)?;
+                surface_construction(AnalyticSurface::sphere(center, radius))
+            }
+            BuiltinFnId::TorusSurface => {
+                let axis = spatial_axis(arg(0)?)?;
+                let major_radius = quantity(arg(1)?)?;
+                let minor_radius = quantity(arg(2)?)?;
+                surface_construction(AnalyticSurface::torus(axis, major_radius, minor_radius))
+            }
+            BuiltinFnId::EvaluateSurface => {
+                let s = surface(arg(0)?)?;
+                let u = quantity(arg(1)?)?.magnitude;
+                let v = quantity(arg(2)?)?.magnitude;
+                match s.evaluate(u, v) {
+                    CurveQueryOutcome::Solutions(mut solutions) if solutions.len() == 1 => {
+                        let sample = solutions.pop().unwrap();
+                        let point = self.point3_value(sample.point, span)?;
+                        let du = self.vector3_float_value(sample.du, span)?;
+                        let dv = self.vector3_float_value(sample.dv, span)?;
+                        let normal = self.vector3_float_value(sample.normal.as_vector3(), span)?;
+                        self.build_geometry_struct(
+                            "SurfaceEvaluation",
+                            vec![("point", point), ("du", du), ("dv", dv), ("normal", normal)],
+                            span,
+                        )
+                    }
+                    CurveQueryOutcome::Failed(reason) => {
+                        Err(RuntimeError::SurfaceEvaluationFailed { span, reason }.into())
+                    }
+                    other => unreachable!(
+                        "AnalyticSurface::evaluate always returns exactly one solution or \
+                         Failed, got {other:?}"
+                    ),
+                }
+            }
+            _ => unreachable!(
+                "dispatch_surface_builtin is only ever called for the surface BuiltinFnIds \
                  guarded by dispatch_builtin's own matches! check"
             ),
         }
@@ -3594,6 +3746,12 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::OffsetCurve => "offset_curve",
         BuiltinFnId::ClosestPointOnCurve => "closest_point_on_curve",
         BuiltinFnId::InterpolateCurve => "interpolate_curve",
+        BuiltinFnId::PlaneSurface => "plane_surface",
+        BuiltinFnId::CylinderSurface => "cylinder_surface",
+        BuiltinFnId::ConeSurface => "cone_surface",
+        BuiltinFnId::SphereSurface => "sphere_surface",
+        BuiltinFnId::TorusSurface => "torus_surface",
+        BuiltinFnId::EvaluateSurface => "evaluate_surface",
     }
 }
 
@@ -7557,6 +7715,195 @@ mod tests {
             1,
             "only the real Geometry-producing box() call should be traced; circle_curve()/\
              evaluate_curve() must not add spurious entries"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+    }
+
+    // --- AICAD-113: analytic surface construction/evaluation ---
+
+    #[test]
+    fn plane_surface_and_evaluate_surface_reproduce_the_analytic_point_and_normal() {
+        let source = "\
+            fn p() -> Length { \
+                let s = plane_surface( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 1mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let e = evaluate_surface(s, 2.0, 3.0); \
+                return e.point.z; \
+            } \
+            fn n() -> Float { \
+                let s = plane_surface( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 1mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let e = evaluate_surface(s, 2.0, 3.0); \
+                return e.normal.z; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("p", vec![]).unwrap(), 0.001);
+        assert_number_eq(interp.call_by_name("n", vec![]).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn cylinder_surface_evaluates_a_point_at_the_correct_radius_and_height() {
+        let source = "\
+            fn radius() -> Length { \
+                let s = cylinder_surface( \
+                    axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                  direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                    radius = 5mm, \
+                ); \
+                let e = evaluate_surface(s, 0.0, 0.007); \
+                return e.point.x; \
+            } \
+            fn height() -> Length { \
+                let s = cylinder_surface( \
+                    axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                  direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                    radius = 5mm, \
+                ); \
+                let e = evaluate_surface(s, 0.0, 0.007); \
+                return e.point.z; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("radius", vec![]).unwrap(), 0.005);
+        assert_number_eq(interp.call_by_name("height", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn cone_surface_apex_is_a_structured_degenerate_error() {
+        let source = "fn f() -> Length { \
+                 let s = cone_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     half_angle = 30deg, \
+                 ); \
+                 let e = evaluate_surface(s, 0.0, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn sphere_surface_pole_is_a_structured_degenerate_error() {
+        let source = "fn f() -> Length { \
+                 let s = sphere_surface( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     radius = 5mm, \
+                 ); \
+                 let e = evaluate_surface(s, 0.0, 1.5707963267948966); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn torus_surface_evaluates_a_point_at_the_correct_distance_from_the_main_circle() {
+        let source = "fn f() -> Length { \
+                 let s = torus_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     major_radius = 10mm, \
+                     minor_radius = 3mm, \
+                 ); \
+                 let e = evaluate_surface(s, 0.0, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // At (u, v) = (0, 0), the tube point sits directly outward from the
+        // main circle along +X: 10mm (major) + 3mm (minor) = 13mm.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.013);
+    }
+
+    #[test]
+    fn cylinder_surface_rejects_a_non_positive_radius() {
+        let source = "fn f() -> Surface { \
+                 return cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 0mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    #[test]
+    fn torus_surface_rejects_minor_radius_not_less_than_major() {
+        let source = "fn f() -> Surface { \
+                 return torus_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     major_radius = 5mm, \
+                     minor_radius = 5mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    #[test]
+    fn a_surface_value_can_be_bound_and_passed_through_an_ordinary_helper_function() {
+        let source = "\
+            fn make() -> Surface { \
+                return sphere_surface( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    radius = 4mm, \
+                ); \
+            } \
+            fn f() -> Length { \
+                let s = make(); \
+                let e = evaluate_surface(s, 0.0, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.004);
+    }
+
+    /// Mirrors `curve_construction_stays_invisible_to_the_feature_trace_
+    /// alongside_real_geometry` exactly, for `Surface` instead of `Curve` —
+    /// `AICAD-107`'s `is_geometry_type_ref` gate is generic over any
+    /// non-`Geometry` type reference, not curve-specific.
+    #[test]
+    fn surface_construction_stays_invisible_to_the_feature_trace_alongside_real_geometry() {
+        let source = "\
+            fn make_geometry() -> Geometry { \
+                return box(1mm, 1mm, 1mm); \
+            } \
+            fn make_surface() -> Surface { \
+                return sphere_surface( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    radius = 1mm, \
+                ); \
+            } \
+            let base = make_geometry(); \
+            let profile = make_surface(); \
+            let sample = evaluate_surface(profile, 0.0, 0.0); \
+        ";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "only the real Geometry-producing box() call should be traced; sphere_surface()/\
+             evaluate_surface() must not add spurious entries"
         );
         assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
     }

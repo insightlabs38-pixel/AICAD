@@ -18,7 +18,9 @@
 //!   interpolate; kernel dispatch was not needed for any of them — see
 //!   that module's own doc comment).
 //! - [`surface`]: [`surface::AnalyticSurface`] — analytic surface values
-//!   (`AICAD-113`-`116` wire construction/evaluation).
+//!   (`AICAD-113` wired construction/evaluation for the analytic families;
+//!   `AICAD-114`-`116` extend it with Bezier/B-spline/NURBS/trimmed
+//!   surfaces and generalized derivative/offset operations).
 //! - [`query_result`][]: [`query_result::QueryOutcome`]/[`query_result::
 //!   QueryFailure`] — the multi-solution query result shape (`AICAD-117`/
 //!   `118` instantiate it for real queries).
@@ -47,4 +49,4 @@ pub use ir::{
 };
 pub use operation_report::OperationReport;
 pub use query_result::{QueryFailure, QueryOutcome};
-pub use surface::AnalyticSurface;
+pub use surface::{AnalyticSurface, SurfaceConstructionError, SurfaceSample};

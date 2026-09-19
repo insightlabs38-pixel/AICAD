@@ -390,6 +390,47 @@ pub enum BuiltinFnId {
     /// builtin interpolates exactly, it does not least-squares-fit). See
     /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
     InterpolateCurve,
+    /// `plane_surface(origin: Point3, normal: Vector3<Float>) -> Surface`
+    /// (`AICAD-113`). Builds a `cad_geometry_api::surface::AnalyticSurface::
+    /// Plane` — a [`BuiltinCategory::Value`] builtin, mirroring
+    /// [`BuiltinFnId::LineCurve`]'s own "pure data assembly, never a kernel
+    /// call" category exactly, applied to the surface-family counterpart of
+    /// `Curve`.
+    PlaneSurface,
+    /// `cylinder_surface(axis: Axis3, radius: Length) -> Surface`
+    /// (`AICAD-113`). Builds a validated `AnalyticSurface::Cylinder`
+    /// (`AnalyticSurface::cylinder`) — rejects a non-finite/non-positive
+    /// `radius`. See [`BuiltinFnId::PlaneSurface`]'s own doc comment for the
+    /// category.
+    CylinderSurface,
+    /// `cone_surface(axis: Axis3, half_angle: Angle) -> Surface`
+    /// (`AICAD-113`). Builds a validated `AnalyticSurface::Cone` — rejects a
+    /// `half_angle` outside `(0, pi/2)`. See [`BuiltinFnId::PlaneSurface`]'s
+    /// own doc comment for the category.
+    ConeSurface,
+    /// `sphere_surface(center: Point3, radius: Length) -> Surface`
+    /// (`AICAD-113`). Builds a validated `AnalyticSurface::Sphere` —
+    /// rejects a non-finite/non-positive `radius`. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    SphereSurface,
+    /// `torus_surface(axis: Axis3, major_radius: Length, minor_radius:
+    /// Length) -> Surface` (`AICAD-113`). Builds a validated
+    /// `AnalyticSurface::Torus` — rejects a non-finite/non-positive radius
+    /// or `minor_radius >= major_radius` (Stage-5's initial "ring torus
+    /// only" scope — see `SurfaceConstructionError::
+    /// MinorNotLessThanMajor`'s own doc comment). See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    TorusSurface,
+    /// `evaluate_surface(surface: Surface, u: Float, v: Float) ->
+    /// SurfaceEvaluation` (`AICAD-113`). Evaluates any surface builtin's
+    /// constructed `Surface` at `(u, v)` via `cad_geometry_api::surface::
+    /// AnalyticSurface::evaluate` — a closed-form computation (see that
+    /// method's own doc comment for each family's parameter convention),
+    /// never a kernel call. A genuine parametrization singularity (e.g. a
+    /// sphere's own pole) or an out-of-domain `(u, v)` is a structured
+    /// `RuntimeError`, never a silently wrong point/normal. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    EvaluateSurface,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -466,7 +507,13 @@ impl BuiltinFnId {
             | BuiltinFnId::TrimCurve
             | BuiltinFnId::OffsetCurve
             | BuiltinFnId::ClosestPointOnCurve
-            | BuiltinFnId::InterpolateCurve => BuiltinCategory::Value,
+            | BuiltinFnId::InterpolateCurve
+            | BuiltinFnId::PlaneSurface
+            | BuiltinFnId::CylinderSurface
+            | BuiltinFnId::ConeSurface
+            | BuiltinFnId::SphereSurface
+            | BuiltinFnId::TorusSurface
+            | BuiltinFnId::EvaluateSurface => BuiltinCategory::Value,
         }
     }
 }
@@ -513,7 +560,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 31] = [
+    pub const ALL: [BuiltinFnId; 37] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -545,6 +592,12 @@ impl BuiltinFnId {
         BuiltinFnId::OffsetCurve,
         BuiltinFnId::ClosestPointOnCurve,
         BuiltinFnId::InterpolateCurve,
+        BuiltinFnId::PlaneSurface,
+        BuiltinFnId::CylinderSurface,
+        BuiltinFnId::ConeSurface,
+        BuiltinFnId::SphereSurface,
+        BuiltinFnId::TorusSurface,
+        BuiltinFnId::EvaluateSurface,
     ];
 }
 
@@ -885,6 +938,50 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("tolerance", named("Length")),
             ],
             return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::PlaneSurface,
+            name: "plane_surface",
+            params: vec![("origin", named("Point3")), ("normal", direction3())],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::CylinderSurface,
+            name: "cylinder_surface",
+            params: vec![("axis", named("Axis3")), ("radius", named("Length"))],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ConeSurface,
+            name: "cone_surface",
+            params: vec![("axis", named("Axis3")), ("half_angle", named("Angle"))],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::SphereSurface,
+            name: "sphere_surface",
+            params: vec![("center", named("Point3")), ("radius", named("Length"))],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TorusSurface,
+            name: "torus_surface",
+            params: vec![
+                ("axis", named("Axis3")),
+                ("major_radius", named("Length")),
+                ("minor_radius", named("Length")),
+            ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EvaluateSurface,
+            name: "evaluate_surface",
+            params: vec![
+                ("surface", named("Surface")),
+                ("u", named("Float")),
+                ("v", named("Float")),
+            ],
+            return_ty: named("SurfaceEvaluation"),
         },
     ]
 }

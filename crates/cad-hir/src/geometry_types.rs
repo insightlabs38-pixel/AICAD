@@ -57,7 +57,10 @@
 //! as every other type in this module. `AICAD-111` added
 //! `ClosestPointResult` the same way — `closest_point_on_curve`'s own
 //! per-solution element type (used as `List<ClosestPointResult>`, per
-//! `AICAD-110`'s own widened `List<T>`).
+//! `AICAD-110`'s own widened `List<T>`). `AICAD-113` added
+//! `SurfaceEvaluation` — `evaluate_surface`'s own return shape (a point plus
+//! both partial derivatives and the unit normal), mirroring
+//! `CurveEvaluation` exactly.
 //!
 //! `AICAD-076` wired the first real `RuntimeBuiltin` consumers
 //! (`extrude`/`revolve`/`hole`/`pocket`) through that boundary, and in
@@ -130,6 +133,13 @@ struct ClosestPointResult {
     point: Point3,
     distance: Length,
 }
+
+struct SurfaceEvaluation {
+    point: Point3,
+    du: Vector3<Float>,
+    dv: Vector3<Float>,
+    normal: Vector3<Float>,
+}
 ";
 
 /// Parses [`GEOMETRY_TYPES_SOURCE`] and returns a new [`Program`] whose
@@ -196,15 +206,15 @@ mod tests {
     }
 
     #[test]
-    fn with_geometry_types_prepends_the_nine_declarations_before_user_items() {
+    fn with_geometry_types_prepends_the_ten_declarations_before_user_items() {
         let (user_program, diags) = cad_parser::parse_program("let x = 1;", "test.aicad");
         assert!(diags.is_empty(), "{diags:?}");
         let combined = with_geometry_types(&user_program);
-        assert_eq!(combined.items.len(), 10);
-        for item in &combined.items[..9] {
+        assert_eq!(combined.items.len(), 11);
+        for item in &combined.items[..10] {
             assert!(matches!(item, cad_ast::Item::Struct { .. }));
         }
-        assert!(matches!(combined.items[9], cad_ast::Item::Let { .. }));
+        assert!(matches!(combined.items[10], cad_ast::Item::Let { .. }));
     }
 
     #[test]
@@ -291,6 +301,27 @@ mod tests {
                  let e = CurveEvaluation( \
                      point = Point3(x = 1mm, y = 2mm, z = 3mm), \
                      tangent = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 return e.point.x; \
+             }";
+        let (user_program, diags) = cad_parser::parse_program(source, "test.aicad");
+        assert!(diags.is_empty(), "{diags:?}");
+        let combined = with_geometry_types(&user_program);
+        let lowered = crate::lower::lower_program(&combined, "test.aicad", source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked =
+            crate::typeck::check_program(&lowered.program, &lowered.bindings, "test.aicad", source);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn user_code_can_construct_and_read_a_surface_evaluation() {
+        let source = "fn f() -> Length { \
+                 let e = SurfaceEvaluation( \
+                     point = Point3(x = 1mm, y = 2mm, z = 3mm), \
+                     du = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     dv = Vector3(x = 0.0, y = 1.0, z = 0.0), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
                  ); \
                  return e.point.x; \
              }";

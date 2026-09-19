@@ -498,6 +498,28 @@ pub enum RuntimeError {
         span: Span,
         reason: cad_geometry_api::QueryFailure,
     },
+    /// `plane_surface`/`cylinder_surface`/`cone_surface`/`sphere_surface`/
+    /// `torus_surface` (`AICAD-113`) received arguments that evaluate to a
+    /// genuinely invalid surface — a non-finite/non-positive radius, a
+    /// cone `half_angle` outside `(0, pi/2)`, or a torus `minor_radius >=
+    /// major_radius` (`cad_geometry_api::SurfaceConstructionError`).
+    /// Mirrors [`RuntimeError::InvalidCurveConstruction`]'s own identical
+    /// rationale.
+    InvalidSurfaceConstruction {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::SurfaceConstructionError,
+    },
+    /// `evaluate_surface` (`AICAD-113`) could not evaluate its `surface`
+    /// argument at the given `(u, v)` — a non-finite/out-of-domain
+    /// parameter, or a genuine parametrization singularity (e.g. a
+    /// sphere's own pole, a cone's own apex — see `cad_geometry_api::
+    /// surface`'s own module doc comment) (`cad_geometry_api::
+    /// QueryFailure`).
+    SurfaceEvaluationFailed {
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
 }
 
 impl RuntimeError {
@@ -547,6 +569,8 @@ impl RuntimeError {
             RuntimeError::CurveEvaluationFailed { .. } => "RUNTIME-E133".to_string(),
             RuntimeError::CurveOperationFailed { .. } => "RUNTIME-E134".to_string(),
             RuntimeError::ClosestPointFailed { .. } => "RUNTIME-E135".to_string(),
+            RuntimeError::InvalidSurfaceConstruction { .. } => "RUNTIME-E136".to_string(),
+            RuntimeError::SurfaceEvaluationFailed { .. } => "RUNTIME-E137".to_string(),
         }
     }
 
@@ -606,7 +630,9 @@ impl RuntimeError {
             | RuntimeError::InvalidCurveConstruction { span, .. }
             | RuntimeError::CurveEvaluationFailed { span, .. }
             | RuntimeError::CurveOperationFailed { span, .. }
-            | RuntimeError::ClosestPointFailed { span, .. } => *span,
+            | RuntimeError::ClosestPointFailed { span, .. }
+            | RuntimeError::InvalidSurfaceConstruction { span, .. }
+            | RuntimeError::SurfaceEvaluationFailed { span, .. } => *span,
         }
     }
 
@@ -654,6 +680,8 @@ impl RuntimeError {
             RuntimeError::CurveEvaluationFailed { .. } => "CURVE_EVALUATION_FAILED",
             RuntimeError::CurveOperationFailed { .. } => "CURVE_OPERATION_FAILED",
             RuntimeError::ClosestPointFailed { .. } => "CLOSEST_POINT_FAILED",
+            RuntimeError::InvalidSurfaceConstruction { .. } => "INVALID_SURFACE_CONSTRUCTION",
+            RuntimeError::SurfaceEvaluationFailed { .. } => "SURFACE_EVALUATION_FAILED",
         }
     }
 
@@ -784,6 +812,12 @@ impl RuntimeError {
             }
             RuntimeError::ClosestPointFailed { reason, .. } => {
                 format!("'closest_point_on_curve' could not find a closest point: {reason}")
+            }
+            RuntimeError::InvalidSurfaceConstruction { name, reason, .. } => {
+                format!("'{name}' received invalid surface parameters: {reason}")
+            }
+            RuntimeError::SurfaceEvaluationFailed { reason, .. } => {
+                format!("'evaluate_surface' could not evaluate this surface: {reason}")
             }
         }
     }

@@ -160,6 +160,11 @@ pub enum Value {
     /// one heap allocation per constructed curve, matching the ordinary
     /// Rust idiom for exactly this "one large variant" shape.
     Curve(Box<cad_geometry_api::AnalyticCurve>),
+    /// A kernel-neutral analytic surface value (`AICAD-113`,
+    /// `project/DECISION_LOG.md#DL-5`/`DL-26`) — the surface-family
+    /// counterpart of [`Value::Curve`], for the identical reasons (pure
+    /// backend-independent data, boxed to keep `Value` small).
+    Surface(Box<cad_geometry_api::AnalyticSurface>),
     /// A struct-instance value (`AICAD-070`) — completes `AICAD-053`'s
     /// already-approved general struct declarations with an actual
     /// runtime representation (previously documented above as a genuine,
@@ -243,6 +248,7 @@ impl Value {
             Value::Range(_) => "Range",
             Value::Geometry(_) => "Geometry",
             Value::Curve(_) => "Curve",
+            Value::Surface(_) => "Surface",
             Value::Struct { .. } => "struct instance",
             Value::Part { .. } => "part instance",
         }
@@ -273,6 +279,7 @@ impl Value {
             | Value::Range(_)
             | Value::Geometry(_)
             | Value::Curve(_)
+            | Value::Surface(_)
             | Value::Struct { .. }
             | Value::Part { .. } => None,
         }
