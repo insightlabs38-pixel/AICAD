@@ -479,6 +479,25 @@ pub enum RuntimeError {
         span: Span,
         reason: cad_geometry_api::QueryFailure,
     },
+    /// `offset_curve`/`interpolate_curve` (`AICAD-111`) could not perform
+    /// the requested curve operation — an unsupported family, a missing/
+    /// degenerate offset direction, a degenerate result, or (for
+    /// `interpolate_curve`) too few/duplicate points or an achieved
+    /// residual above the caller's tolerance
+    /// (`cad_geometry_api::CurveOperationError`).
+    CurveOperationFailed {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::CurveOperationError,
+    },
+    /// `closest_point_on_curve` (`AICAD-111`) could not find a closest
+    /// point — e.g. the target lies exactly on a circle/ellipse's own
+    /// normal axis, where every point on the curve is equidistant (a
+    /// genuine ambiguity, never resolved by an arbitrary pick).
+    ClosestPointFailed {
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
 }
 
 impl RuntimeError {
@@ -526,6 +545,8 @@ impl RuntimeError {
             RuntimeError::QueryBudgetExceeded { .. } => "BUDGET-E003".to_string(),
             RuntimeError::InvalidCurveConstruction { .. } => "RUNTIME-E132".to_string(),
             RuntimeError::CurveEvaluationFailed { .. } => "RUNTIME-E133".to_string(),
+            RuntimeError::CurveOperationFailed { .. } => "RUNTIME-E134".to_string(),
+            RuntimeError::ClosestPointFailed { .. } => "RUNTIME-E135".to_string(),
         }
     }
 
@@ -583,7 +604,9 @@ impl RuntimeError {
             | RuntimeError::KernelQueryFailed { span, .. }
             | RuntimeError::QueryBudgetExceeded { span }
             | RuntimeError::InvalidCurveConstruction { span, .. }
-            | RuntimeError::CurveEvaluationFailed { span, .. } => *span,
+            | RuntimeError::CurveEvaluationFailed { span, .. }
+            | RuntimeError::CurveOperationFailed { span, .. }
+            | RuntimeError::ClosestPointFailed { span, .. } => *span,
         }
     }
 
@@ -629,6 +652,8 @@ impl RuntimeError {
             RuntimeError::QueryBudgetExceeded { .. } => "QUERY_BUDGET_EXCEEDED",
             RuntimeError::InvalidCurveConstruction { .. } => "INVALID_CURVE_CONSTRUCTION",
             RuntimeError::CurveEvaluationFailed { .. } => "CURVE_EVALUATION_FAILED",
+            RuntimeError::CurveOperationFailed { .. } => "CURVE_OPERATION_FAILED",
+            RuntimeError::ClosestPointFailed { .. } => "CLOSEST_POINT_FAILED",
         }
     }
 
@@ -753,6 +778,12 @@ impl RuntimeError {
             }
             RuntimeError::CurveEvaluationFailed { reason, .. } => {
                 format!("'evaluate_curve' could not evaluate this curve: {reason}")
+            }
+            RuntimeError::CurveOperationFailed { name, reason, .. } => {
+                format!("'{name}' failed: {reason}")
+            }
+            RuntimeError::ClosestPointFailed { reason, .. } => {
+                format!("'closest_point_on_curve' could not find a closest point: {reason}")
             }
         }
     }

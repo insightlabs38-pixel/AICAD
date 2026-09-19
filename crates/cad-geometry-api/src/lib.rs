@@ -14,8 +14,9 @@
 //! - [`curve`]: [`curve::AnalyticCurve`] — analytic curve values
 //!   (`AICAD-109` wired construction/evaluation for the analytic families;
 //!   `AICAD-110` extended the same enum with Bezier/B-spline/NURBS;
-//!   kernel dispatch was not needed for either — see that module's own
-//!   doc comment).
+//!   `AICAD-111` added curve-local operations — trim/offset/closest-point/
+//!   interpolate; kernel dispatch was not needed for any of them — see
+//!   that module's own doc comment).
 //! - [`surface`]: [`surface::AnalyticSurface`] — analytic surface values
 //!   (`AICAD-113`-`116` wire construction/evaluation).
 //! - [`query_result`][]: [`query_result::QueryOutcome`]/[`query_result::
@@ -36,7 +37,10 @@ pub mod query_result;
 pub mod surface;
 
 pub use adoption::{AdoptionEvidence, AdoptionOutcome, AdoptionRejection};
-pub use curve::{AnalyticCurve, CurveConstructionError, CurveSample};
+pub use curve::{
+    AnalyticCurve, ClosestPointResult, CurveConstructionError, CurveOperationError, CurveSample,
+    interpolate,
+};
 pub use ir::{
     EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryIrError, GeometryNode, GeometryNodeKind,
     GeometryOp, GeometryQuery, Quantity,

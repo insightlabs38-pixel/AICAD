@@ -171,8 +171,8 @@ use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
 use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
 use cad_geometry_api::{
-    AnalyticCurve, CurveConstructionError, EdgeIndex, FaceIndex, GeomId, GeometryOp, GeometryQuery,
-    Quantity,
+    AnalyticCurve, CurveConstructionError, CurveOperationError, EdgeIndex, FaceIndex, GeomId,
+    GeometryOp, GeometryQuery, Quantity,
 };
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
@@ -184,7 +184,8 @@ use cad_hir::types::{HirType, HirTypeRef};
 use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Point3, Transform, Vector3};
 use cad_types::{AffineKind, Dimension, PrimitiveType};
 use cad_units::{
-    ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison, check_unary_neg,
+    ApproximationTolerance, ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison,
+    check_unary_neg,
 };
 use std::collections::HashMap;
 
@@ -1972,6 +1973,10 @@ impl<'a> Interpreter<'a> {
                 | BuiltinFnId::EvaluateCurve
                 | BuiltinFnId::BezierCurve
                 | BuiltinFnId::BSplineCurve
+                | BuiltinFnId::TrimCurve
+                | BuiltinFnId::OffsetCurve
+                | BuiltinFnId::ClosestPointOnCurve
+                | BuiltinFnId::InterpolateCurve
         ) {
             return self.dispatch_curve_builtin(id, name, params, frame, span);
         }
@@ -2234,7 +2239,11 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::EllipseCurve
             | BuiltinFnId::EvaluateCurve
             | BuiltinFnId::BezierCurve
-            | BuiltinFnId::BSplineCurve => unreachable!(
+            | BuiltinFnId::BSplineCurve
+            | BuiltinFnId::TrimCurve
+            | BuiltinFnId::OffsetCurve
+            | BuiltinFnId::ClosestPointOnCurve
+            | BuiltinFnId::InterpolateCurve => unreachable!(
                 "curve builtins return early above, before this Construction-only match"
             ),
         };
@@ -2451,6 +2460,74 @@ impl<'a> Interpreter<'a> {
                     weights,
                     periodic,
                 ))
+            }
+            BuiltinFnId::TrimCurve => {
+                let c = curve(arg(0)?)?;
+                let u0 = quantity(arg(1)?)?.magnitude;
+                let u1 = quantity(arg(2)?)?.magnitude;
+                curve_construction(AnalyticCurve::trim(c, u0, u1))
+            }
+            BuiltinFnId::OffsetCurve => {
+                let c = curve(arg(0)?)?;
+                let distance = quantity(arg(1)?)?;
+                let normal = spatial_direction(arg(2)?)?;
+                c.offset(distance, Some(normal))
+                    .map(|offset| Value::Curve(Box::new(offset)))
+                    .map_err(|reason| {
+                        RuntimeError::CurveOperationFailed { name, span, reason }.into()
+                    })
+            }
+            BuiltinFnId::ClosestPointOnCurve => {
+                let c = curve(arg(0)?)?;
+                let point = spatial_point(arg(1)?)?;
+                match c.closest_point(point) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for result in solutions {
+                            let parameter_value = Value::Number(NumberValue {
+                                magnitude: result.parameter,
+                                ty: OperandType::Scalar(PrimitiveType::Float),
+                            });
+                            let point_value = self.point3_value(result.point, span)?;
+                            let distance_value = Value::Number(NumberValue {
+                                magnitude: result.distance.magnitude,
+                                ty: OperandType::dimensional(Dimension::Length, None),
+                            });
+                            elements.push(self.build_geometry_struct(
+                                "ClosestPointResult",
+                                vec![
+                                    ("parameter", parameter_value),
+                                    ("point", point_value),
+                                    ("distance", distance_value),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => {
+                        Err(RuntimeError::ClosestPointFailed { span, reason }.into())
+                    }
+                }
+            }
+            BuiltinFnId::InterpolateCurve => {
+                let points = point_list(arg(0)?)?;
+                let tolerance_magnitude = quantity(arg(1)?)?.magnitude;
+                let tolerance: ApproximationTolerance =
+                    ApproximationTolerance::new(tolerance_magnitude, tolerance_magnitude).map_err(
+                        |_| {
+                            Signal::from(RuntimeError::CurveOperationFailed {
+                                name,
+                                span,
+                                reason: CurveOperationError::DegenerateResult,
+                            })
+                        },
+                    )?;
+                cad_geometry_api::interpolate(&points, tolerance)
+                    .map(|curve| Value::Curve(Box::new(curve)))
+                    .map_err(|reason| {
+                        RuntimeError::CurveOperationFailed { name, span, reason }.into()
+                    })
             }
             _ => unreachable!(
                 "dispatch_curve_builtin is only ever called for the curve BuiltinFnIds \
@@ -3513,6 +3590,10 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::EvaluateCurve => "evaluate_curve",
         BuiltinFnId::BezierCurve => "bezier_curve",
         BuiltinFnId::BSplineCurve => "bspline_curve",
+        BuiltinFnId::TrimCurve => "trim_curve",
+        BuiltinFnId::OffsetCurve => "offset_curve",
+        BuiltinFnId::ClosestPointOnCurve => "closest_point_on_curve",
+        BuiltinFnId::InterpolateCurve => "interpolate_curve",
     }
 }
 
@@ -7293,5 +7374,148 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    // --- AICAD-111: trim/offset/closest_point/interpolate ---
+
+    #[test]
+    fn trim_curve_restricts_a_circle_to_a_quarter() {
+        let source = "fn f() -> Length { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 let quarter = trim_curve(c, 0.0, 1.5707963267948966); \
+                 let e = evaluate_curve(quarter, 1.5707963267948966); \
+                 return e.point.y; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn trim_curve_rejects_evaluation_past_its_own_end() {
+        let source = "fn f() -> Length { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 let quarter = trim_curve(c, 0.0, 1.0); \
+                 let e = evaluate_curve(quarter, 2.0); \
+                 return e.point.y; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E133");
+    }
+
+    #[test]
+    fn offset_curve_on_a_circle_increases_the_radius() {
+        let source = "fn f() -> Length { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 2mm, \
+                 ); \
+                 let bigger = offset_curve( \
+                     c, 1mm, Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let e = evaluate_curve(bigger, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.003);
+    }
+
+    #[test]
+    fn offset_curve_on_an_ellipse_is_a_structured_error() {
+        let source = "fn f() -> Curve { \
+                 let c = ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     major_radius = 2mm, \
+                     minor_radius = 1mm, \
+                 ); \
+                 return offset_curve(c, 1mm, Vector3(x = 0.0, y = 0.0, z = 1.0)); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E134");
+    }
+
+    #[test]
+    fn closest_point_on_curve_returns_exactly_one_result_for_a_line() {
+        let source = "fn f() -> Length { \
+                 let c = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = closest_point_on_curve( \
+                     c, Point3(x = 5mm, y = 3mm, z = 0mm), \
+                 ); \
+                 for r in results { \
+                     return r.point.x; \
+                 } \
+                 return 0mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.005);
+    }
+
+    #[test]
+    fn closest_point_on_curve_from_a_circles_own_center_is_a_structured_error() {
+        let source = "fn f() -> List<ClosestPointResult> { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 return closest_point_on_curve(c, Point3(x = 0mm, y = 0mm, z = 0mm)); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E135");
+    }
+
+    #[test]
+    fn interpolate_curve_passes_through_its_own_endpoints() {
+        let source = "fn f() -> Length { \
+                 let pts = [ \
+                     Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     Point3(x = 1mm, y = 2mm, z = 0mm), \
+                     Point3(x = 3mm, y = 3mm, z = 0mm), \
+                     Point3(x = 4mm, y = 0mm, z = 0mm), \
+                 ]; \
+                 let c = interpolate_curve(pts, 0.000001mm); \
+                 let e = evaluate_curve(c, 1.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.004);
+    }
+
+    #[test]
+    fn interpolate_curve_rejects_too_few_points() {
+        let source = "fn f() -> Curve { \
+                 let pts = [ \
+                     Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     Point3(x = 1mm, y = 0mm, z = 0mm), \
+                 ]; \
+                 return interpolate_curve(pts, 0.001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E134");
     }
 }

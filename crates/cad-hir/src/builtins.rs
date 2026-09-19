@@ -351,6 +351,45 @@ pub enum BuiltinFnId {
     /// own "empty list means non-rational" convention. See
     /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
     BSplineCurve,
+    /// `trim_curve(curve: Curve, u0: Float, u1: Float) -> Curve`
+    /// (`AICAD-111`). Builds a validated `AnalyticCurve::Trimmed`
+    /// (`AnalyticCurve::trim`) — rejects a non-finite `u0`/`u1`,
+    /// `u0 >= u1`, or (when `curve` already has a bounded
+    /// `AnalyticCurve::domain`) a `[u0, u1]` that is not a sub-range of
+    /// it. See [`BuiltinFnId::LineCurve`]'s own doc comment for the
+    /// category.
+    TrimCurve,
+    /// `offset_curve(curve: Curve, distance: Length, normal:
+    /// Vector3<Float>) -> Curve` (`AICAD-111`). Exact for `Line`/`Circle`/
+    /// `Arc` (`AnalyticCurve::offset`); every other family reports
+    /// `CurveOperationError::UnsupportedFamily` (exact offsetting is not,
+    /// in general, expressible in the same family — see that error
+    /// variant's own doc comment). `normal` is always required (the
+    /// catalogue has no optional-parameter mechanism — see
+    /// [`BuiltinFnId::BezierCurve`]'s own doc comment) even though only a
+    /// `Line` offset actually consumes it. See [`BuiltinFnId::LineCurve`]'s
+    /// own doc comment for the category.
+    OffsetCurve,
+    /// `closest_point_on_curve(curve: Curve, point: Point3) ->
+    /// List<ClosestPointResult>` (`AICAD-111`). Every point on `curve`
+    /// closest to `point` (`AnalyticCurve::closest_point`) — **every**
+    /// local-minimum solution found, never an arbitrary single one, per
+    /// `AGENTS.md`'s "ambiguity is an error, never an arbitrary
+    /// selection": a target equidistant from more than one point on the
+    /// curve returns every one of them as a separate list element. A
+    /// genuinely degenerate query (e.g. a circle's own center) is a
+    /// structured `RuntimeError`, never a silently empty list standing in
+    /// for "could not tell." See [`BuiltinFnId::LineCurve`]'s own doc
+    /// comment for the category.
+    ClosestPointOnCurve,
+    /// `interpolate_curve(points: List<Point3>, tolerance: Length) ->
+    /// Curve` (`AICAD-111`). Fits an *exact* interpolating cubic B-spline
+    /// through `points` (`cad_geometry_api::curve::interpolate`) —
+    /// `tolerance` bounds only the achieved numerical residual the linear
+    /// solve itself may leave, never a target approximation error (this
+    /// builtin interpolates exactly, it does not least-squares-fit). See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    InterpolateCurve,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -423,7 +462,11 @@ impl BuiltinFnId {
             | BuiltinFnId::EllipseCurve
             | BuiltinFnId::EvaluateCurve
             | BuiltinFnId::BezierCurve
-            | BuiltinFnId::BSplineCurve => BuiltinCategory::Value,
+            | BuiltinFnId::BSplineCurve
+            | BuiltinFnId::TrimCurve
+            | BuiltinFnId::OffsetCurve
+            | BuiltinFnId::ClosestPointOnCurve
+            | BuiltinFnId::InterpolateCurve => BuiltinCategory::Value,
         }
     }
 }
@@ -470,7 +513,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 27] = [
+    pub const ALL: [BuiltinFnId; 31] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -498,6 +541,10 @@ impl BuiltinFnId {
         BuiltinFnId::EvaluateCurve,
         BuiltinFnId::BezierCurve,
         BuiltinFnId::BSplineCurve,
+        BuiltinFnId::TrimCurve,
+        BuiltinFnId::OffsetCurve,
+        BuiltinFnId::ClosestPointOnCurve,
+        BuiltinFnId::InterpolateCurve,
     ];
 }
 
@@ -801,6 +848,41 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("multiplicities", list_of("Int")),
                 ("weights", list_of("Float")),
                 ("periodic", named("Bool")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TrimCurve,
+            name: "trim_curve",
+            params: vec![
+                ("curve", named("Curve")),
+                ("u0", named("Float")),
+                ("u1", named("Float")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::OffsetCurve,
+            name: "offset_curve",
+            params: vec![
+                ("curve", named("Curve")),
+                ("distance", named("Length")),
+                ("normal", direction3()),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ClosestPointOnCurve,
+            name: "closest_point_on_curve",
+            params: vec![("curve", named("Curve")), ("point", named("Point3"))],
+            return_ty: list_of("ClosestPointResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::InterpolateCurve,
+            name: "interpolate_curve",
+            params: vec![
+                ("points", list_of("Point3")),
+                ("tolerance", named("Length")),
             ],
             return_ty: named("Curve"),
         },

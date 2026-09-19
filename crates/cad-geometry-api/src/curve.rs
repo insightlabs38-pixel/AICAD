@@ -41,6 +41,23 @@
 //! ACCEPTANCE.md`-governed tolerance), needing no kernel call, exactly
 //! like every other family in this enum.
 //!
+//! `AICAD-111` ("Implement curve operations with explicit result and
+//! tolerance semantics") adds curve-*local* operations, each returning an
+//! explicit result rather than guessing at a single answer where more than
+//! one is mathematically possible: [`AnalyticCurve::Trimmed`]/
+//! [`AnalyticCurve::trim`] (parameter-domain restriction, no
+//! reparametrization/subdivision), [`AnalyticCurve::offset`] (exact for
+//! `Line`/`Circle`/`Arc`, `CurveOperationError::UnsupportedFamily`
+//! otherwise — exact offsetting of an ellipse/Bezier/B-spline curve is not,
+//! in general, expressible in the same family), [`AnalyticCurve::
+//! closest_point`] (`QueryOutcome<ClosestPointResult>` — exact for `Line`/
+//! `Circle`, numerical golden-section search elsewhere, always reporting
+//! *every* local minimum found, never an arbitrary one), and the free
+//! function [`interpolate`] (exact global cubic B-spline interpolation
+//! through a point sequence, `cad_units::ApproximationTolerance`-checked
+//! against its own achieved numerical residual — not approximating/
+//! least-squares fitting).
+//!
 //! # Why a closed enum, not a generic curve trait/kernel handle
 //!
 //! Mirrors [`crate::GeometryOp`]'s own closed-vocabulary design: a fixed,
@@ -54,6 +71,7 @@
 use crate::Quantity;
 use crate::query_result::{QueryFailure, QueryOutcome};
 use cad_kernel_api::{Direction3, Frame3, Point3, Vector3};
+use cad_units::ApproximationTolerance;
 use std::fmt;
 
 /// One of the closed set of analytic curve families Stage 5 values may
@@ -127,6 +145,17 @@ pub enum AnalyticCurve {
         weights: Option<Vec<f64>>,
         periodic: bool,
     },
+    /// `base`, restricted to the parameter sub-domain `[u0, u1]`
+    /// (`AICAD-111`, `trim_curve`) — evaluates identically to `base` within
+    /// that range (no reparametrization/subdivision, no recomputed control
+    /// points), and reports [`QueryFailure::OutOfDomain`] outside it. See
+    /// [`AnalyticCurve::trim`]'s own doc comment for the validation this
+    /// implies.
+    Trimmed {
+        base: Box<AnalyticCurve>,
+        u0: f64,
+        u1: f64,
+    },
 }
 
 impl AnalyticCurve {
@@ -148,6 +177,43 @@ impl AnalyticCurve {
             | AnalyticCurve::BSpline { control_points, .. } => {
                 control_points.first().copied().unwrap_or(Point3::ORIGIN)
             }
+            AnalyticCurve::Trimmed { base, .. } => base.anchor(),
+        }
+    }
+
+    /// This curve's own valid parameter domain, if it has an intrinsic
+    /// bound (`AICAD-111`) — `None` for a family with none (`Line`
+    /// accepts any finite `u`; `Circle`/`Ellipse` are periodic and accept
+    /// any finite `u`). Used by [`AnalyticCurve::trim`] to validate a
+    /// requested sub-range actually narrows (never widens) an
+    /// already-bounded curve.
+    pub fn domain(&self) -> Option<(f64, f64)> {
+        match self {
+            AnalyticCurve::Line { .. }
+            | AnalyticCurve::Circle { .. }
+            | AnalyticCurve::Ellipse { .. } => None,
+            AnalyticCurve::Arc {
+                start_angle,
+                end_angle,
+                ..
+            } => Some((start_angle.magnitude, end_angle.magnitude)),
+            AnalyticCurve::Bezier { .. } => Some((0.0, 1.0)),
+            AnalyticCurve::BSpline {
+                degree,
+                control_points,
+                knots,
+                multiplicities,
+                ..
+            } => {
+                let knot_vector = expand_knots(knots, multiplicities);
+                let n = control_points.len();
+                if *degree == 0 || n == 0 || knot_vector.len() != n + degree + 1 {
+                    None
+                } else {
+                    Some((knot_vector[*degree], knot_vector[n]))
+                }
+            }
+            AnalyticCurve::Trimmed { u0, u1, .. } => Some((*u0, *u1)),
         }
     }
 }
@@ -207,6 +273,11 @@ pub enum CurveConstructionError {
     /// from the clamped/open case this module implements, not merely a
     /// parameter-domain restriction on the same math.
     UnsupportedPeriodic,
+    /// `trim_curve`'s (`AICAD-111`) `u0`/`u1` were non-finite, not
+    /// `u0 < u1`, or (when `base` already has a bounded [`AnalyticCurve::
+    /// domain`]) not a sub-range of it — trimming may only narrow an
+    /// already-bounded curve's domain, never widen it.
+    InvalidTrimRange,
 }
 
 impl fmt::Display for CurveConstructionError {
@@ -243,6 +314,10 @@ impl fmt::Display for CurveConstructionError {
             }
             CurveConstructionError::UnsupportedPeriodic => {
                 "periodic (closed/wrapping) B-spline curves are not yet supported"
+            }
+            CurveConstructionError::InvalidTrimRange => {
+                "trim range must be finite, u0 < u1, and (for an already-bounded curve) within \
+                 its own domain"
             }
         };
         f.write_str(message)
@@ -426,6 +501,32 @@ impl AnalyticCurve {
             multiplicities,
             weights,
             periodic,
+        })
+    }
+
+    /// Restricts `base` to the parameter sub-domain `[u0, u1]`
+    /// (`AICAD-111`, `trim_curve`). Rejects a non-finite `u0`/`u1`,
+    /// `u0 >= u1`, or — when `base` already reports a bounded
+    /// [`AnalyticCurve::domain`] — a `[u0, u1]` that is not a sub-range of
+    /// it (trimming only narrows an already-bounded curve, it never
+    /// widens or wraps one).
+    pub fn trim(
+        base: AnalyticCurve,
+        u0: f64,
+        u1: f64,
+    ) -> Result<AnalyticCurve, CurveConstructionError> {
+        if !u0.is_finite() || !u1.is_finite() || u0 >= u1 {
+            return Err(CurveConstructionError::InvalidTrimRange);
+        }
+        if let Some((lo, hi)) = base.domain()
+            && (u0 < lo || u1 > hi)
+        {
+            return Err(CurveConstructionError::InvalidTrimRange);
+        }
+        Ok(AnalyticCurve::Trimmed {
+            base: Box::new(base),
+            u0,
+            u1,
         })
     }
 }
@@ -785,6 +886,15 @@ impl AnalyticCurve {
                 }
                 nurbs_evaluate(*degree, control_points, &knot_vector, weights.as_deref(), u)
             }
+            AnalyticCurve::Trimmed { base, u0, u1 } => {
+                if !u0.is_finite() || !u1.is_finite() || u0 >= u1 {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if u < *u0 || u > *u1 {
+                    return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+                }
+                base.evaluate(u)
+            }
         }
     }
 
@@ -812,6 +922,551 @@ impl AnalyticCurve {
         let tangent = x * (-radius * sin_u) + y * (radius * cos_u);
         Some(CurveSample { point, tangent })
     }
+}
+
+/// Every way a curve-local operation (`AICAD-111`: `offset`, ...) other
+/// than construction can fail — distinct from [`CurveConstructionError`]
+/// (which is about an operation's own *input arguments*, not the
+/// mathematical operation itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurveOperationError {
+    /// This operation is not supported for this curve family. Exact
+    /// offsetting of an ellipse/Bezier/B-spline curve is not, in general,
+    /// expressible as a curve in the same family (a well-known CAD
+    /// limitation — the true offset is a higher-degree, often non-
+    /// rational, curve) — an honest "not supported," never an
+    /// approximated or wrong result.
+    UnsupportedFamily,
+    /// A required direction (`offset_curve`'s own `normal`, disambiguating
+    /// a line's offset direction) was missing, or parallel/degenerate with
+    /// respect to the curve, so no unambiguous offset direction exists.
+    DegenerateDirection,
+    /// The requested operation produced a degenerate result (e.g. an
+    /// offset distance that would make a circle/arc's own radius zero or
+    /// negative).
+    DegenerateResult,
+    /// `interpolate_curve` (`AICAD-111`) received fewer than `degree + 1`
+    /// (4, for the fixed cubic degree this module implements) points.
+    TooFewPoints,
+    /// `interpolate_curve` received input points whose chord-length
+    /// parametrization is degenerate (e.g. two consecutive duplicate
+    /// points, or every point coincident) — no meaningful curve exists
+    /// through them.
+    DuplicatePoints,
+    /// `interpolate_curve`'s own linear solve produced a curve whose
+    /// achieved interpolation residual (evaluated at each input point's
+    /// own parameter) exceeded the caller's `ApproximationTolerance` —
+    /// reported explicitly rather than silently returning a curve that
+    /// does not actually pass through the given points within tolerance.
+    ToleranceNotAchieved,
+}
+
+impl fmt::Display for CurveOperationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            CurveOperationError::UnsupportedFamily => {
+                "this operation is not supported for this curve family"
+            }
+            CurveOperationError::DegenerateDirection => {
+                "no unambiguous direction exists for this operation"
+            }
+            CurveOperationError::DegenerateResult => {
+                "this operation would produce a degenerate curve"
+            }
+            CurveOperationError::TooFewPoints => "interpolation needs at least 4 points",
+            CurveOperationError::DuplicatePoints => {
+                "interpolation points are degenerate (e.g. duplicate consecutive points)"
+            }
+            CurveOperationError::ToleranceNotAchieved => {
+                "the interpolated curve's achieved residual exceeded the approximation tolerance"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for CurveOperationError {}
+
+impl AnalyticCurve {
+    /// Offsets this curve by `distance` (`AICAD-111`, `offset_curve`).
+    /// Exact for [`AnalyticCurve::Line`] (translated by `distance` along
+    /// `direction.cross(normal)` — `normal` is required to disambiguate
+    /// which of the infinitely many perpendicular directions in 3D to use,
+    /// exactly like `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own
+    /// `offset_curve` signature documents: "required for 3D where
+    /// ambiguous"), [`AnalyticCurve::Circle`], and [`AnalyticCurve::Arc`]
+    /// (radius `+= distance`, staying in the same plane — `normal` is not
+    /// needed for these two, since offsetting within an already-defined
+    /// plane has no direction ambiguity). [`CurveOperationError::
+    /// UnsupportedFamily`] for every other family (see that variant's own
+    /// doc comment).
+    pub fn offset(
+        &self,
+        distance: Quantity,
+        normal: Option<Direction3>,
+    ) -> Result<AnalyticCurve, CurveOperationError> {
+        if !distance.magnitude.is_finite() {
+            return Err(CurveOperationError::DegenerateResult);
+        }
+        match self {
+            AnalyticCurve::Line { origin, direction } => {
+                let plane_normal = normal.ok_or(CurveOperationError::DegenerateDirection)?;
+                let offset_dir = direction
+                    .cross(plane_normal)
+                    .ok_or(CurveOperationError::DegenerateDirection)?;
+                let new_origin = *origin + offset_dir.as_vector3() * distance.magnitude;
+                Ok(AnalyticCurve::Line {
+                    origin: new_origin,
+                    direction: *direction,
+                })
+            }
+            AnalyticCurve::Circle {
+                center,
+                normal: plane_normal,
+                radius,
+            } => {
+                let new_radius = Quantity::new(radius.magnitude + distance.magnitude, radius.ty);
+                AnalyticCurve::circle(*center, *plane_normal, new_radius)
+                    .map_err(|_| CurveOperationError::DegenerateResult)
+            }
+            AnalyticCurve::Arc {
+                center,
+                normal: plane_normal,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                let new_radius = Quantity::new(radius.magnitude + distance.magnitude, radius.ty);
+                AnalyticCurve::arc(*center, *plane_normal, new_radius, *start_angle, *end_angle)
+                    .map_err(|_| CurveOperationError::DegenerateResult)
+            }
+            AnalyticCurve::Ellipse { .. }
+            | AnalyticCurve::Bezier { .. }
+            | AnalyticCurve::BSpline { .. }
+            | AnalyticCurve::Trimmed { .. } => Err(CurveOperationError::UnsupportedFamily),
+        }
+    }
+}
+
+/// One closest-point-on-curve solution (`AICAD-111`, `AnalyticCurve::
+/// closest_point`): the curve's own parameter at that point, the point
+/// itself, and its distance from the target — `distance` is always
+/// non-negative and `Length`-dimensioned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClosestPointResult {
+    pub parameter: f64,
+    pub point: Point3,
+    pub distance: Quantity,
+}
+
+fn distance_quantity(a: Point3, b: Point3) -> Quantity {
+    let d = a - b;
+    Quantity::of(
+        (d.x * d.x + d.y * d.y + d.z * d.z).sqrt(),
+        cad_types::Dimension::Length,
+    )
+}
+
+impl AnalyticCurve {
+    /// Every point on this curve closest to `target` (`AICAD-111`,
+    /// `closest_point`/`project_to_curve`-shaped queries later Stage-5
+    /// tasks build on). Exact, closed-form for [`AnalyticCurve::Line`]
+    /// (orthogonal projection) and [`AnalyticCurve::Circle`] (radial
+    /// projection); every other family uses a bounded numerical search
+    /// (coarse sampling plus golden-section refinement per local minimum
+    /// found — `numeric_closest_points`), since no closed form exists in
+    /// general (a classical result for ellipses/Bezier/B-spline curves).
+    /// **Never** silently picks one candidate: every local minimum found
+    /// is reported (deduplicated by parameter), so a target equidistant
+    /// from more than one point on the curve reports every one of them,
+    /// per `AGENTS.md`'s "ambiguity is an error, never an arbitrary
+    /// selection." A target exactly on a circle/arc/ellipse's own normal
+    /// axis (every point on the circle equidistant) is
+    /// [`QueryFailure::Degenerate`], never an arbitrary single answer.
+    pub fn closest_point(&self, target: Point3) -> QueryOutcome<ClosestPointResult> {
+        match self {
+            AnalyticCurve::Line { origin, direction } => {
+                let d = direction.as_vector3();
+                let to_target = target - *origin;
+                let u = to_target.dot(d);
+                let point = *origin + d * u;
+                QueryOutcome::Solutions(vec![ClosestPointResult {
+                    parameter: u,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticCurve::Circle {
+                center,
+                normal,
+                radius,
+            } => match closest_angle_on_circle(*center, *normal, target) {
+                Some(u) => match Self::evaluate_on_circle(*center, *normal, radius.magnitude, u) {
+                    Some(sample) => QueryOutcome::Solutions(vec![ClosestPointResult {
+                        parameter: u,
+                        point: sample.point,
+                        distance: distance_quantity(sample.point, target),
+                    }]),
+                    None => QueryOutcome::Failed(QueryFailure::Degenerate),
+                },
+                None => QueryOutcome::Failed(QueryFailure::Degenerate),
+            },
+            AnalyticCurve::Arc {
+                start_angle,
+                end_angle,
+                ..
+            } => numeric_closest_points(self, target, start_angle.magnitude, end_angle.magnitude),
+            AnalyticCurve::Ellipse { .. } => {
+                numeric_closest_points(self, target, 0.0, 2.0 * std::f64::consts::PI)
+            }
+            AnalyticCurve::Bezier { .. } => numeric_closest_points(self, target, 0.0, 1.0),
+            AnalyticCurve::BSpline { .. } => match self.domain() {
+                Some((lo, hi)) => numeric_closest_points(self, target, lo, hi),
+                None => QueryOutcome::Failed(QueryFailure::Degenerate),
+            },
+            AnalyticCurve::Trimmed { u0, u1, .. } => numeric_closest_points(self, target, *u0, *u1),
+        }
+    }
+}
+
+/// The angle (circle-local parameter, [`AnalyticCurve::evaluate`]'s own
+/// `Circle` convention) of the point on the circle through `(center,
+/// normal)` closest to `target` — `None` if `target` lies exactly on the
+/// normal axis through `center` (every point on the circle is then
+/// equidistant, a genuine ambiguity, not a numerical edge case to paper
+/// over).
+fn closest_angle_on_circle(center: Point3, normal: Direction3, target: Point3) -> Option<f64> {
+    let offset = target - center;
+    let normal_component = offset.dot(normal.as_vector3());
+    let in_plane = offset - normal.as_vector3() * normal_component;
+    let direction_from_center = in_plane.normalize()?;
+    let frame = Frame3::from_z(center, normal);
+    let x = frame.x.as_vector3();
+    let y = frame.y.as_vector3();
+    Some(
+        direction_from_center
+            .as_vector3()
+            .dot(y)
+            .atan2(direction_from_center.as_vector3().dot(x)),
+    )
+}
+
+fn squared_distance_at(curve: &AnalyticCurve, u: f64, target: Point3) -> Option<f64> {
+    match curve.evaluate(u) {
+        QueryOutcome::Solutions(mut solutions) if solutions.len() == 1 => {
+            let p = solutions.pop().unwrap().point;
+            let d = p - target;
+            Some(d.x * d.x + d.y * d.y + d.z * d.z)
+        }
+        _ => None,
+    }
+}
+
+/// Golden-section search for the parameter minimizing squared distance to
+/// `target` within `[lo, hi]` — correct as long as squared distance is
+/// unimodal on that bracket, which a fine enough sampling
+/// (`numeric_closest_points`'s own per-local-minimum bracket) makes true
+/// in practice for the smooth curve families this is used for.
+fn golden_section_minimize(curve: &AnalyticCurve, target: Point3, mut lo: f64, mut hi: f64) -> f64 {
+    const ITERATIONS: u32 = 60;
+    const INV_PHI: f64 = 0.618_033_988_749_895; // (sqrt(5) - 1) / 2
+    let mut c = hi - INV_PHI * (hi - lo);
+    let mut d = lo + INV_PHI * (hi - lo);
+    let mut fc = squared_distance_at(curve, c, target).unwrap_or(f64::INFINITY);
+    let mut fd = squared_distance_at(curve, d, target).unwrap_or(f64::INFINITY);
+    for _ in 0..ITERATIONS {
+        if fc < fd {
+            hi = d;
+            d = c;
+            fd = fc;
+            c = hi - INV_PHI * (hi - lo);
+            fc = squared_distance_at(curve, c, target).unwrap_or(f64::INFINITY);
+        } else {
+            lo = c;
+            c = d;
+            fc = fd;
+            d = lo + INV_PHI * (hi - lo);
+            fd = squared_distance_at(curve, d, target).unwrap_or(f64::INFINITY);
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// Numerical closest-point search over `[lo, hi]` (`AICAD-111`) — coarse
+/// sampling to bracket every local minimum of squared distance, then
+/// [`golden_section_minimize`] refines each bracket. Reports every local
+/// minimum found (deduplicated by parameter within `1e-6`), never only the
+/// single global one, so a genuinely multi-solution target (e.g.
+/// equidistant from two symmetric points) is reported as such.
+fn numeric_closest_points(
+    curve: &AnalyticCurve,
+    target: Point3,
+    lo: f64,
+    hi: f64,
+) -> QueryOutcome<ClosestPointResult> {
+    const SAMPLES: usize = 64;
+    if !lo.is_finite() || !hi.is_finite() || lo >= hi {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    let step = (hi - lo) / SAMPLES as f64;
+    let sample_u: Vec<f64> = (0..=SAMPLES).map(|i| lo + step * i as f64).collect();
+    let sample_d: Vec<Option<f64>> = sample_u
+        .iter()
+        .map(|&u| squared_distance_at(curve, u, target))
+        .collect();
+    if sample_d.iter().all(Option::is_none) {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    let mut candidates: Vec<f64> = Vec::new();
+    for i in 0..=SAMPLES {
+        let Some(di) = sample_d[i] else { continue };
+        let left_ok = i == 0 || sample_d[i - 1].is_none_or(|dl| dl >= di);
+        let right_ok = i == SAMPLES || sample_d[i + 1].is_none_or(|dr| dr >= di);
+        if left_ok && right_ok {
+            let bracket_lo = if i == 0 { lo } else { sample_u[i - 1] };
+            let bracket_hi = if i == SAMPLES { hi } else { sample_u[i + 1] };
+            candidates.push(golden_section_minimize(
+                curve, target, bracket_lo, bracket_hi,
+            ));
+        }
+    }
+    candidates.sort_by(|a, b| {
+        a.partial_cmp(b)
+            .expect("golden_section_minimize never returns NaN")
+    });
+    let mut solutions: Vec<ClosestPointResult> = Vec::new();
+    for u in candidates {
+        let QueryOutcome::Solutions(mut s) = curve.evaluate(u) else {
+            continue;
+        };
+        if s.len() != 1 {
+            continue;
+        }
+        let point = s.pop().unwrap().point;
+        // Deduplicate by the resulting *point*, not the parameter — a
+        // periodic family (`Circle`/`Ellipse`) samples both `lo` and `hi`
+        // as separate parameters even when they land on the identical
+        // physical point (the seam), which parameter-only deduplication
+        // would wrongly report as two distinct solutions.
+        let is_duplicate = solutions
+            .iter()
+            .any(|existing| (existing.point - point).length() < 1e-6);
+        if is_duplicate {
+            continue;
+        }
+        solutions.push(ClosestPointResult {
+            parameter: u,
+            point,
+            distance: distance_quantity(point, target),
+        });
+    }
+    if solutions.is_empty() {
+        QueryOutcome::Failed(QueryFailure::Degenerate)
+    } else {
+        QueryOutcome::Solutions(solutions)
+    }
+}
+
+/// The `degree + 1` nonzero B-spline basis function values at `u`'s own
+/// knot `span` (Piegl & Tiller Algorithm A2.2) — `result[j]` is
+/// `N_{span - degree + j, degree}(u)`.
+fn basis_funs(span: usize, u: f64, degree: usize, knot_vector: &[f64]) -> Vec<f64> {
+    let mut basis = vec![0.0; degree + 1];
+    let mut left = vec![0.0; degree + 1];
+    let mut right = vec![0.0; degree + 1];
+    basis[0] = 1.0;
+    for j in 1..=degree {
+        left[j] = u - knot_vector[span + 1 - j];
+        right[j] = knot_vector[span + j] - u;
+        let mut saved = 0.0;
+        for r in 0..j {
+            let denom = right[r + 1] + left[j - r];
+            let temp = if denom.abs() < 1e-15 {
+                0.0
+            } else {
+                basis[r] / denom
+            };
+            basis[r] = saved + right[r + 1] * temp;
+            saved = left[j - r] * temp;
+        }
+        basis[j] = saved;
+    }
+    basis
+}
+
+/// Solves the square linear system `matrix * x = rhs` via Gaussian
+/// elimination with partial pivoting. `matrix` is small (one row/column
+/// per interpolated point — `interpolate_curve`'s own caller-bounded input
+/// size), so plain O(n^3) elimination is more than fast enough; no need
+/// for a specialized banded solver. Returns `(_, false)` (an unusable
+/// placeholder result) if the system is numerically singular — e.g.
+/// duplicate/collinear input points collapsing the chord-length
+/// parametrization used to build `matrix`.
+#[allow(clippy::needless_range_loop)] // cross-indexes `a`/`b` by `row`/`col`/`k` together;
+// an iterator-based rewrite would need at least three
+// independently-advancing iterators and would be less clear, not more.
+fn solve_linear_system(matrix: &[Vec<f64>], rhs: &[f64]) -> (Vec<f64>, bool) {
+    let n = rhs.len();
+    let mut a: Vec<Vec<f64>> = matrix.to_vec();
+    let mut b: Vec<f64> = rhs.to_vec();
+    for col in 0..n {
+        let mut pivot_row = col;
+        let mut pivot_val = a[col][col].abs();
+        for row in (col + 1)..n {
+            if a[row][col].abs() > pivot_val {
+                pivot_val = a[row][col].abs();
+                pivot_row = row;
+            }
+        }
+        if pivot_val < 1e-12 {
+            return (vec![0.0; n], false);
+        }
+        a.swap(col, pivot_row);
+        b.swap(col, pivot_row);
+        for row in (col + 1)..n {
+            let factor = a[row][col] / a[col][col];
+            if factor == 0.0 {
+                continue;
+            }
+            for k in col..n {
+                a[row][k] -= factor * a[col][k];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for row in (0..n).rev() {
+        let mut sum = b[row];
+        for k in (row + 1)..n {
+            sum -= a[row][k] * x[k];
+        }
+        if a[row][row].abs() < 1e-12 {
+            return (vec![0.0; n], false);
+        }
+        x[row] = sum / a[row][row];
+    }
+    (x, true)
+}
+
+/// Collapses a fully-expanded, non-decreasing knot vector into
+/// [`AnalyticCurve::bspline`]'s own `(knots, multiplicities)` pair —
+/// `interpolate_curve`'s own averaged knot vector is built expanded
+/// (Piegl & Tiller's own formula produces it that way directly), but the
+/// public constructor expects the distinct-values-plus-multiplicity shape
+/// every other `AICAD-110` construction path uses.
+fn collapse_knots(expanded: &[f64]) -> (Vec<f64>, Vec<usize>) {
+    let mut knots: Vec<f64> = Vec::new();
+    let mut multiplicities: Vec<usize> = Vec::new();
+    for &k in expanded {
+        if let Some(&last) = knots.last()
+            && (k - last).abs() < 1e-9
+        {
+            *multiplicities
+                .last_mut()
+                .expect("knots and multiplicities stay parallel") += 1;
+            continue;
+        }
+        knots.push(k);
+        multiplicities.push(1);
+    }
+    (knots, multiplicities)
+}
+
+/// Fits an exact interpolating cubic (degree-3) B-spline through `points`,
+/// in order (`AICAD-111`, `interpolate_curve`) — Piegl & Tiller §9.2.1's
+/// standard global curve interpolation algorithm: chord-length parameter
+/// values, an averaged knot vector, and control points solved from the
+/// resulting linear system `sum_i N_{i,3}(u_k) P_i = Q_k`
+/// ([`basis_funs`]/[`solve_linear_system`]). The result passes through
+/// every input point *exactly* at its own chord-length parameter — this
+/// is **interpolation**, not approximating/least-squares *fitting* to a
+/// target error (`docs/plan`'s own `interpolate_curve` signature: no
+/// error-budget parameter, only `tolerance`). `tolerance` bounds only the
+/// achieved *numerical* residual the linear solve itself may leave —
+/// [`CurveOperationError::ToleranceNotAchieved`] if a near-singular system
+/// (duplicate/collinear points) leaves a residual above it, per
+/// `AGENTS.md`'s "report achieved error... rather than silently widening":
+/// this never returns a curve claimed to interpolate the input without
+/// having actually checked that it does.
+pub fn interpolate(
+    points: &[Point3],
+    tolerance: ApproximationTolerance,
+) -> Result<AnalyticCurve, CurveOperationError> {
+    const DEGREE: usize = 3;
+    let n = points.len();
+    if n < DEGREE + 1 {
+        return Err(CurveOperationError::TooFewPoints);
+    }
+
+    let mut chord_lengths = vec![0.0; n - 1];
+    let mut total_length = 0.0;
+    for i in 0..n - 1 {
+        let d = points[i + 1] - points[i];
+        let len = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
+        chord_lengths[i] = len;
+        total_length += len;
+    }
+    if !(total_length.is_finite() && total_length > 0.0) {
+        return Err(CurveOperationError::DuplicatePoints);
+    }
+
+    let mut u_bar = vec![0.0; n];
+    let mut acc = 0.0;
+    for i in 1..n - 1 {
+        acc += chord_lengths[i - 1];
+        u_bar[i] = acc / total_length;
+    }
+    u_bar[n - 1] = 1.0;
+
+    let knot_count = n + DEGREE + 1;
+    let mut knot_vector = vec![0.0; knot_count];
+    for i in 0..=DEGREE {
+        knot_vector[i] = 0.0;
+        knot_vector[knot_count - 1 - i] = 1.0;
+    }
+    for j in 1..=(n - DEGREE - 1) {
+        let sum: f64 = u_bar[j..j + DEGREE].iter().sum();
+        knot_vector[j + DEGREE] = sum / DEGREE as f64;
+    }
+
+    let mut matrix = vec![vec![0.0; n]; n];
+    for (k, &u) in u_bar.iter().enumerate() {
+        let span = find_span(u, DEGREE, &knot_vector, n);
+        let basis = basis_funs(span, u, DEGREE, &knot_vector);
+        for (j, &b) in basis.iter().enumerate() {
+            matrix[k][span - DEGREE + j] = b;
+        }
+    }
+    let xs: Vec<f64> = points.iter().map(|p| p.x).collect();
+    let ys: Vec<f64> = points.iter().map(|p| p.y).collect();
+    let zs: Vec<f64> = points.iter().map(|p| p.z).collect();
+    let (cx, ok_x) = solve_linear_system(&matrix, &xs);
+    let (cy, ok_y) = solve_linear_system(&matrix, &ys);
+    let (cz, ok_z) = solve_linear_system(&matrix, &zs);
+    if !(ok_x && ok_y && ok_z) {
+        return Err(CurveOperationError::DuplicatePoints);
+    }
+    let control_points: Vec<Point3> = (0..n).map(|i| Point3::new(cx[i], cy[i], cz[i])).collect();
+
+    let (knots, multiplicities) = collapse_knots(&knot_vector);
+    let curve = AnalyticCurve::bspline(DEGREE, control_points, knots, multiplicities, None, false)
+        .map_err(|_| CurveOperationError::DuplicatePoints)?;
+
+    let mut max_residual = 0.0f64;
+    for (k, &u) in u_bar.iter().enumerate() {
+        let QueryOutcome::Solutions(mut s) = curve.evaluate(u) else {
+            return Err(CurveOperationError::ToleranceNotAchieved);
+        };
+        let Some(sample) = s.pop() else {
+            return Err(CurveOperationError::ToleranceNotAchieved);
+        };
+        let d = sample.point - points[k];
+        max_residual = max_residual.max((d.x * d.x + d.y * d.y + d.z * d.z).sqrt());
+    }
+    if max_residual > tolerance.linear_canonical_magnitude() {
+        return Err(CurveOperationError::ToleranceNotAchieved);
+    }
+    Ok(curve)
 }
 
 #[cfg(test)]
@@ -1512,5 +2167,287 @@ mod tests {
             curve.evaluate(0.5),
             QueryOutcome::Failed(QueryFailure::Unsupported)
         );
+    }
+
+    // --- AICAD-111: trim ---
+
+    #[test]
+    fn trim_rejects_a_reversed_or_empty_range() {
+        let line = AnalyticCurve::line(Point3::ORIGIN, Direction3::X);
+        assert_eq!(
+            AnalyticCurve::trim(line.clone(), 1.0, 0.0).unwrap_err(),
+            CurveConstructionError::InvalidTrimRange
+        );
+        assert_eq!(
+            AnalyticCurve::trim(line, 1.0, 1.0).unwrap_err(),
+            CurveConstructionError::InvalidTrimRange
+        );
+    }
+
+    #[test]
+    fn trim_rejects_widening_an_already_bounded_curve() {
+        let arc = AnalyticCurve::arc(
+            Point3::ORIGIN,
+            Direction3::Z,
+            length(1.0),
+            angle(0.0),
+            angle(1.0),
+        )
+        .unwrap();
+        assert_eq!(
+            AnalyticCurve::trim(arc, -0.1, 0.5).unwrap_err(),
+            CurveConstructionError::InvalidTrimRange
+        );
+    }
+
+    #[test]
+    fn trim_restricts_evaluation_to_its_own_sub_range() {
+        let circle = AnalyticCurve::circle(Point3::ORIGIN, Direction3::Z, length(1.0)).unwrap();
+        let quarter = AnalyticCurve::trim(circle, 0.0, std::f64::consts::FRAC_PI_2).unwrap();
+        assert_point_eq(
+            solution(quarter.evaluate(0.0)).point,
+            Point3::new(1.0, 0.0, 0.0),
+        );
+        assert_point_eq(
+            solution(quarter.evaluate(std::f64::consts::FRAC_PI_2)).point,
+            Point3::new(0.0, 1.0, 0.0),
+        );
+        assert_eq!(
+            quarter.evaluate(std::f64::consts::PI),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+    }
+
+    // --- AICAD-111: offset ---
+
+    #[test]
+    fn circle_offset_increases_the_radius_exactly() {
+        let circle = AnalyticCurve::circle(Point3::ORIGIN, Direction3::Z, length(2.0)).unwrap();
+        let offset = circle.offset(length(0.5), None).unwrap();
+        let AnalyticCurve::Circle { radius, .. } = offset else {
+            panic!("expected an offset circle to remain a Circle");
+        };
+        assert!((radius.magnitude - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn circle_offset_rejects_a_non_positive_resulting_radius() {
+        let circle = AnalyticCurve::circle(Point3::ORIGIN, Direction3::Z, length(1.0)).unwrap();
+        assert_eq!(
+            circle.offset(length(-2.0), None).unwrap_err(),
+            CurveOperationError::DegenerateResult
+        );
+    }
+
+    #[test]
+    fn line_offset_translates_perpendicular_to_its_own_direction() {
+        let line = AnalyticCurve::line(Point3::ORIGIN, Direction3::X);
+        let offset = line.offset(length(3.0), Some(Direction3::Z)).unwrap();
+        let AnalyticCurve::Line { origin, direction } = offset else {
+            panic!("expected an offset line to remain a Line");
+        };
+        // direction x Z = -Y (right-handed): X.cross(Z) = -Y.
+        assert_point_eq(origin, Point3::new(0.0, -3.0, 0.0));
+        assert_eq!(direction, Direction3::X);
+    }
+
+    #[test]
+    fn line_offset_requires_a_normal() {
+        let line = AnalyticCurve::line(Point3::ORIGIN, Direction3::X);
+        assert_eq!(
+            line.offset(length(1.0), None).unwrap_err(),
+            CurveOperationError::DegenerateDirection
+        );
+    }
+
+    #[test]
+    fn ellipse_offset_is_unsupported() {
+        let ellipse = AnalyticCurve::ellipse(
+            Point3::ORIGIN,
+            Direction3::Z,
+            Direction3::X,
+            length(2.0),
+            length(1.0),
+        )
+        .unwrap();
+        assert_eq!(
+            ellipse.offset(length(0.1), None).unwrap_err(),
+            CurveOperationError::UnsupportedFamily
+        );
+    }
+
+    // --- AICAD-111: closest_point ---
+
+    fn one_closest_point(outcome: QueryOutcome<ClosestPointResult>) -> ClosestPointResult {
+        match outcome {
+            QueryOutcome::Solutions(mut solutions) if solutions.len() == 1 => {
+                solutions.pop().unwrap()
+            }
+            other => panic!("expected exactly one closest-point solution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closest_point_on_a_line_is_the_exact_orthogonal_projection() {
+        let line = AnalyticCurve::line(Point3::ORIGIN, Direction3::X);
+        let result = one_closest_point(line.closest_point(Point3::new(5.0, 3.0, 0.0)));
+        assert_point_eq(result.point, Point3::new(5.0, 0.0, 0.0));
+        assert!((result.parameter - 5.0).abs() < 1e-9);
+        assert!((result.distance.magnitude - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn closest_point_on_a_circle_is_the_exact_radial_projection() {
+        let circle = AnalyticCurve::circle(Point3::ORIGIN, Direction3::Z, length(1.0)).unwrap();
+        let result = one_closest_point(circle.closest_point(Point3::new(5.0, 0.0, 0.0)));
+        assert_point_eq(result.point, Point3::new(1.0, 0.0, 0.0));
+        assert!((result.distance.magnitude - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn closest_point_on_a_circle_from_its_own_center_is_degenerate() {
+        let circle = AnalyticCurve::circle(Point3::ORIGIN, Direction3::Z, length(1.0)).unwrap();
+        assert_eq!(
+            circle.closest_point(Point3::ORIGIN),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn closest_point_on_an_ellipse_from_its_own_center_has_two_symmetric_solutions() {
+        // The two points nearest an ellipse's own center are its two
+        // minor-axis vertices — a genuine, exact two-solution case.
+        let ellipse = AnalyticCurve::ellipse(
+            Point3::ORIGIN,
+            Direction3::Z,
+            Direction3::X,
+            length(2.0),
+            length(1.0),
+        )
+        .unwrap();
+        let QueryOutcome::Solutions(mut solutions) = ellipse.closest_point(Point3::ORIGIN) else {
+            panic!("expected two closest-point solutions");
+        };
+        assert_eq!(solutions.len(), 2);
+        solutions.sort_by(|a, b| a.point.y.partial_cmp(&b.point.y).unwrap());
+        assert!((solutions[0].point.y - -1.0).abs() < 1e-4);
+        assert!((solutions[1].point.y - 1.0).abs() < 1e-4);
+        for s in &solutions {
+            assert!((s.distance.magnitude - 1.0).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn closest_point_on_an_ellipse_at_the_major_vertex_matches_the_known_point() {
+        let ellipse = AnalyticCurve::ellipse(
+            Point3::ORIGIN,
+            Direction3::Z,
+            Direction3::X,
+            length(2.0),
+            length(1.0),
+        )
+        .unwrap();
+        // Far beyond the major-axis vertex: by symmetry, the closest point
+        // is the vertex itself (u = 0) — checked to a looser tolerance
+        // than the other exact tests here, since golden-section search
+        // near a numerically flat minimum (the squared-distance function
+        // is locally quadratic at u=0) cannot resolve the parameter below
+        // roughly sqrt(f64 epsilon), a known, expected limit of any
+        // value-comparison-only numerical minimizer, not a correctness
+        // defect.
+        let result = one_closest_point(ellipse.closest_point(Point3::new(10.0, 0.0, 0.0)));
+        assert!((result.point.x - 2.0).abs() < 1e-6);
+        assert!(result.point.y.abs() < 1e-6);
+    }
+
+    // --- AICAD-111: interpolate ---
+
+    fn loose_tolerance() -> ApproximationTolerance {
+        ApproximationTolerance::new(1e-6, 1e-6).unwrap()
+    }
+
+    #[test]
+    fn interpolate_rejects_too_few_points() {
+        let points = vec![Point3::ORIGIN, Point3::new(1.0, 0.0, 0.0)];
+        assert_eq!(
+            interpolate(&points, loose_tolerance()).unwrap_err(),
+            CurveOperationError::TooFewPoints
+        );
+    }
+
+    #[test]
+    fn interpolate_rejects_duplicate_consecutive_points() {
+        let points = vec![
+            Point3::ORIGIN,
+            Point3::ORIGIN,
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+        assert_eq!(
+            interpolate(&points, loose_tolerance()).unwrap_err(),
+            CurveOperationError::DuplicatePoints
+        );
+    }
+
+    #[test]
+    fn interpolate_passes_through_every_input_point_exactly() {
+        let points = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+            Point3::new(3.0, 3.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(5.0, -1.0, 0.0),
+        ];
+        let curve = interpolate(&points, loose_tolerance()).unwrap();
+        assert!(matches!(curve, AnalyticCurve::BSpline { degree: 3, .. }));
+
+        // Re-derive the same chord-length parameter values the algorithm
+        // itself used, and confirm the curve reproduces every input point
+        // at its own parameter.
+        let mut chord = vec![0.0; points.len() - 1];
+        let mut total = 0.0;
+        for i in 0..points.len() - 1 {
+            let d = points[i + 1] - points[i];
+            chord[i] = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
+            total += chord[i];
+        }
+        let mut u = vec![0.0; points.len()];
+        let mut acc = 0.0;
+        for i in 1..points.len() - 1 {
+            acc += chord[i - 1];
+            u[i] = acc / total;
+        }
+        *u.last_mut().unwrap() = 1.0;
+
+        for (k, &uk) in u.iter().enumerate() {
+            let sample = solution(curve.evaluate(uk));
+            assert_point_eq(sample.point, points[k]);
+        }
+    }
+
+    #[test]
+    fn interpolate_endpoints_are_the_first_and_last_input_points() {
+        let points = vec![
+            Point3::new(-2.0, 1.0, 0.0),
+            Point3::new(0.0, 3.0, 1.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(4.0, 2.0, -1.0),
+        ];
+        let curve = interpolate(&points, loose_tolerance()).unwrap();
+        assert_point_eq(solution(curve.evaluate(0.0)).point, points[0]);
+        assert_point_eq(solution(curve.evaluate(1.0)).point, *points.last().unwrap());
+    }
+
+    #[test]
+    fn interpolate_is_deterministic_across_repeated_calls() {
+        let points = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(2.0, -1.0, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+        ];
+        let a = interpolate(&points, loose_tolerance()).unwrap();
+        let b = interpolate(&points, loose_tolerance()).unwrap();
+        assert_eq!(a, b);
     }
 }

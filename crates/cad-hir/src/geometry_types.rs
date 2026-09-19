@@ -54,7 +54,10 @@
 //! `AICAD-109` (Stage 5) added the `CurveEvaluation` declaration above —
 //! `evaluate_curve`'s own return shape (a curve-evaluation point plus
 //! tangent vector), the identical "ordinary struct, no new grammar" pattern
-//! as every other type in this module.
+//! as every other type in this module. `AICAD-111` added
+//! `ClosestPointResult` the same way — `closest_point_on_curve`'s own
+//! per-solution element type (used as `List<ClosestPointResult>`, per
+//! `AICAD-110`'s own widened `List<T>`).
 //!
 //! `AICAD-076` wired the first real `RuntimeBuiltin` consumers
 //! (`extrude`/`revolve`/`hole`/`pocket`) through that boundary, and in
@@ -121,10 +124,16 @@ struct CurveEvaluation {
     point: Point3,
     tangent: Vector3<Float>,
 }
+
+struct ClosestPointResult {
+    parameter: Float,
+    point: Point3,
+    distance: Length,
+}
 ";
 
 /// Parses [`GEOMETRY_TYPES_SOURCE`] and returns a new [`Program`] whose
-/// items are these eight struct declarations followed by every item in
+/// items are these nine struct declarations followed by every item in
 /// `user_program`, in that order — see [`crate::prelude::with_prelude`]
 /// for the identical mechanism and rationale this mirrors exactly.
 ///
@@ -143,7 +152,7 @@ struct CurveEvaluation {
 /// lower::lower_program` at all — `crate::typeck::check_program` performs
 /// no seeding of its own). Calling it and relying on `lower_program`'s
 /// own seeding are **idempotent together**: `seed_standard_types` skips
-/// any of these eight names `user_program` already declares (by name, at
+/// any of these nine names `user_program` already declares (by name, at
 /// the AST level), so composing this function never produces two
 /// distinct `BindingId`s nominally named the same standard type.
 ///
@@ -187,15 +196,15 @@ mod tests {
     }
 
     #[test]
-    fn with_geometry_types_prepends_the_eight_declarations_before_user_items() {
+    fn with_geometry_types_prepends_the_nine_declarations_before_user_items() {
         let (user_program, diags) = cad_parser::parse_program("let x = 1;", "test.aicad");
         assert!(diags.is_empty(), "{diags:?}");
         let combined = with_geometry_types(&user_program);
-        assert_eq!(combined.items.len(), 9);
-        for item in &combined.items[..8] {
+        assert_eq!(combined.items.len(), 10);
+        for item in &combined.items[..9] {
             assert!(matches!(item, cad_ast::Item::Struct { .. }));
         }
-        assert!(matches!(combined.items[8], cad_ast::Item::Let { .. }));
+        assert!(matches!(combined.items[9], cad_ast::Item::Let { .. }));
     }
 
     #[test]
