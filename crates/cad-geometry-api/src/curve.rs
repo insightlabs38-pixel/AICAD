@@ -559,9 +559,16 @@ fn weights_are_valid(weights: Option<&[f64]>, expected_len: usize) -> bool {
 /// (weighted) B-spline/Bezier exactly via the *non-rational* de Boor
 /// algorithm: run it on these 4 components, then perspective-divide the
 /// result (`nurbs_evaluate`'s own job).
-type Homogeneous = [f64; 4];
+///
+/// `pub(crate)`, along with every free function down to
+/// [`derivative_control_points`] below: `AICAD-114`'s tensor-product
+/// B-spline/NURBS *surface* evaluation (`crate::surface::
+/// tensor_bspline_evaluate`) is exactly this same per-direction math,
+/// applied once per parametric direction — reused directly rather than
+/// re-implemented, so the two numerical cores cannot silently diverge.
+pub(crate) type Homogeneous = [f64; 4];
 
-fn to_homogeneous(points: &[Point3], weights: Option<&[f64]>) -> Vec<Homogeneous> {
+pub(crate) fn to_homogeneous(points: &[Point3], weights: Option<&[f64]>) -> Vec<Homogeneous> {
     points
         .iter()
         .enumerate()
@@ -575,7 +582,7 @@ fn to_homogeneous(points: &[Point3], weights: Option<&[f64]>) -> Vec<Homogeneous
 /// The fully-expanded (each distinct knot repeated by its own
 /// multiplicity), non-decreasing knot vector `AnalyticCurve::bspline`'s
 /// own `(knots, multiplicities)` pair describes.
-fn expand_knots(knots: &[f64], multiplicities: &[usize]) -> Vec<f64> {
+pub(crate) fn expand_knots(knots: &[f64], multiplicities: &[usize]) -> Vec<f64> {
     let mut expanded = Vec::with_capacity(multiplicities.iter().sum());
     for (&k, &m) in knots.iter().zip(multiplicities) {
         expanded.extend(std::iter::repeat_n(k, m));
@@ -587,7 +594,7 @@ fn expand_knots(knots: &[f64], multiplicities: &[usize]) -> Vec<f64> {
 /// curve of `degree` — a Bezier curve *is* the B-spline special case with
 /// no interior knots, `[0]` repeated `degree + 1` times followed by `[1]`
 /// repeated `degree + 1` times.
-fn clamped_bezier_knots(degree: usize) -> Vec<f64> {
+pub(crate) fn clamped_bezier_knots(degree: usize) -> Vec<f64> {
     std::iter::repeat_n(0.0, degree + 1)
         .chain(std::iter::repeat_n(1.0, degree + 1))
         .collect()
@@ -597,7 +604,12 @@ fn clamped_bezier_knots(degree: usize) -> Vec<f64> {
 /// index `i` such that `knot_vector[i] <= u < knot_vector[i + 1]` (clamped
 /// to the curve's own valid domain at either end, matching that
 /// algorithm's own standard convention for `u` exactly at the last knot).
-fn find_span(u: f64, degree: usize, knot_vector: &[f64], num_control_points: usize) -> usize {
+pub(crate) fn find_span(
+    u: f64,
+    degree: usize,
+    knot_vector: &[f64],
+    num_control_points: usize,
+) -> usize {
     if u >= knot_vector[num_control_points] {
         return num_control_points - 1;
     }
@@ -624,7 +636,7 @@ fn find_span(u: f64, degree: usize, knot_vector: &[f64], num_control_points: usi
 /// degenerates correctly with no special case (the `for r in 1..=0` loop
 /// below never runs, so this simply returns the one active control point)
 /// — relied on by [`derivative_control_points`]'s own degree-reduced call.
-fn de_boor(
+pub(crate) fn de_boor(
     degree: usize,
     control_points: &[Homogeneous],
     knot_vector: &[f64],
@@ -657,7 +669,7 @@ fn de_boor(
 /// last knot) by the caller, this is itself a well-formed degree-
 /// `(degree - 1)` B-spline whose value at `u` is the original curve's own
 /// derivative at `u` (exact, not a finite-difference approximation).
-fn derivative_control_points(
+pub(crate) fn derivative_control_points(
     degree: usize,
     control_points: &[Homogeneous],
     knot_vector: &[f64],

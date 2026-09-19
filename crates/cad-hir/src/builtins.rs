@@ -431,6 +431,30 @@ pub enum BuiltinFnId {
     /// `RuntimeError`, never a silently wrong point/normal. See
     /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
     EvaluateSurface,
+    /// `bezier_surface(control_points: List<List<Point3>>, weights:
+    /// List<List<Float>>) -> Surface` (`AICAD-114`). Builds a validated
+    /// `cad_geometry_api::surface::AnalyticSurface::Bezier`
+    /// (`AnalyticSurface::bezier`) — `control_points[i]` is one row along
+    /// `u`, `control_points[i][j]` the control point at `(i, j)`; rejects a
+    /// non-rectangular net, fewer than 2 rows/columns, or (when `weights`
+    /// is non-empty) a shape mismatch or a non-positive/non-finite weight.
+    /// An empty `weights` list means a plain (non-rational) surface,
+    /// mirroring [`BuiltinFnId::BezierCurve`]'s own "no optional-parameter
+    /// mechanism" convention. See [`BuiltinFnId::PlaneSurface`]'s own doc
+    /// comment for the category.
+    BezierSurface,
+    /// `bspline_surface(degree_u: Int, degree_v: Int, control_points:
+    /// List<List<Point3>>, knots_u: List<Float>, multiplicities_u:
+    /// List<Int>, knots_v: List<Float>, multiplicities_v: List<Int>,
+    /// weights: List<List<Float>>, periodic_u: Bool, periodic_v: Bool) ->
+    /// Surface` (`AICAD-114`). Builds a validated `AnalyticSurface::BSpline`
+    /// (`AnalyticSurface::bspline`) — see that constructor's own doc
+    /// comment for the full validation list, applied once per direction.
+    /// `periodic_u`/`periodic_v: true` is rejected
+    /// (`SurfaceConstructionError::UnsupportedPeriodic`), mirroring
+    /// [`BuiltinFnId::BSplineCurve`]'s own identical scope limitation. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    BSplineSurface,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -513,7 +537,9 @@ impl BuiltinFnId {
             | BuiltinFnId::ConeSurface
             | BuiltinFnId::SphereSurface
             | BuiltinFnId::TorusSurface
-            | BuiltinFnId::EvaluateSurface => BuiltinCategory::Value,
+            | BuiltinFnId::EvaluateSurface
+            | BuiltinFnId::BezierSurface
+            | BuiltinFnId::BSplineSurface => BuiltinCategory::Value,
         }
     }
 }
@@ -560,7 +586,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 37] = [
+    pub const ALL: [BuiltinFnId; 39] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -598,6 +624,8 @@ impl BuiltinFnId {
         BuiltinFnId::SphereSurface,
         BuiltinFnId::TorusSurface,
         BuiltinFnId::EvaluateSurface,
+        BuiltinFnId::BezierSurface,
+        BuiltinFnId::BSplineSurface,
     ];
 }
 
@@ -609,9 +637,17 @@ fn named(name: &str) -> HirTypeRef {
 }
 
 fn list_of(elem: &str) -> HirTypeRef {
+    list_of_ref(named(elem))
+}
+
+/// `List<elem>` for an already-built `elem` type reference (`AICAD-114`) —
+/// [`list_of`]'s own general form, needed for a nested `List<List<Point3>>`
+/// control-net/weight-grid parameter (`bezier_surface`/`bspline_surface`),
+/// which `list_of`'s `&str`-only signature cannot express.
+fn list_of_ref(elem: HirTypeRef) -> HirTypeRef {
     HirTypeRef::Generic {
         name: "List".to_string(),
-        args: vec![named(elem)],
+        args: vec![elem],
         span: Span::new(0, 0),
     }
 }
@@ -982,6 +1018,32 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
                 ("v", named("Float")),
             ],
             return_ty: named("SurfaceEvaluation"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BezierSurface,
+            name: "bezier_surface",
+            params: vec![
+                ("control_points", list_of_ref(list_of("Point3"))),
+                ("weights", list_of_ref(list_of("Float"))),
+            ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BSplineSurface,
+            name: "bspline_surface",
+            params: vec![
+                ("degree_u", named("Int")),
+                ("degree_v", named("Int")),
+                ("control_points", list_of_ref(list_of("Point3"))),
+                ("knots_u", list_of("Float")),
+                ("multiplicities_u", list_of("Int")),
+                ("knots_v", list_of("Float")),
+                ("multiplicities_v", list_of("Int")),
+                ("weights", list_of_ref(list_of("Float"))),
+                ("periodic_u", named("Bool")),
+                ("periodic_v", named("Bool")),
+            ],
+            return_ty: named("Surface"),
         },
     ]
 }

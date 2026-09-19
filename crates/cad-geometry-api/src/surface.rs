@@ -37,7 +37,13 @@ use std::fmt;
 
 /// One of the closed set of analytic surface families Stage 5 values may
 /// describe — see module doc comment.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Not `Copy` (unlike this enum's original `AICAD-108`/`AICAD-113`
+/// revision) — `AICAD-114`'s `Bezier`/`BSpline` variants carry `Vec<Vec<_>>`
+/// control-net data, which cannot be `Copy`. Every pre-existing call site
+/// that relied on an implicit copy now clones explicitly instead, mirroring
+/// [`crate::curve::AnalyticCurve`]'s own identical `AICAD-110` change.
+#[derive(Debug, Clone, PartialEq)]
 pub enum AnalyticSurface {
     /// An infinite plane through `origin` normal to `normal`.
     Plane { origin: Point3, normal: Direction3 },
@@ -56,11 +62,51 @@ pub enum AnalyticSurface {
         major_radius: Quantity,
         minor_radius: Quantity,
     },
+    /// A (possibly rational) tensor-product Bezier surface (`AICAD-114`) of
+    /// bidegree `(control_points.len() - 1, control_points[0].len() - 1)`,
+    /// parametrized by `(u, v)` in `[0, 1] x [0, 1]`. `control_points[i][j]`
+    /// — outer index `i` along `u`, inner index `j` along `v`; every row
+    /// must have the identical length (a rectangular control net).
+    /// `weights` follows [`crate::curve::AnalyticCurve::Bezier`]'s own
+    /// `None`-means-non-rational convention, shaped identically to
+    /// `control_points`. Evaluated as the equivalent clamped tensor-product
+    /// B-spline (see [`AnalyticSurface::evaluate`]'s own doc comment) —
+    /// exactly [`crate::curve::AnalyticCurve::Bezier`]'s own precedent,
+    /// applied once per parametric direction.
+    Bezier {
+        control_points: Vec<Vec<Point3>>,
+        weights: Option<Vec<Vec<f64>>>,
+    },
+    /// A (possibly rational) tensor-product B-spline/NURBS surface
+    /// (`AICAD-114`) of the given `degree_u`/`degree_v`, with independent
+    /// explicit knot vectors per direction (the [`crate::curve::
+    /// AnalyticCurve::bspline`] `(knots, multiplicities)` convention,
+    /// applied once per direction). `periodic_u`/`periodic_v: true` are
+    /// constructible-only-to-reject, mirroring [`crate::curve::
+    /// AnalyticCurve::BSpline::periodic`]'s own identical documented scope
+    /// limitation.
+    BSpline {
+        degree_u: usize,
+        degree_v: usize,
+        control_points: Vec<Vec<Point3>>,
+        knots_u: Vec<f64>,
+        multiplicities_u: Vec<usize>,
+        knots_v: Vec<f64>,
+        multiplicities_v: Vec<usize>,
+        weights: Option<Vec<Vec<f64>>>,
+        periodic_u: bool,
+        periodic_v: bool,
+    },
 }
 
 impl AnalyticSurface {
     /// This surface's own anchor point — a plane/sphere's own defining
-    /// point, or a cylinder/cone/torus's own axis origin.
+    /// point, a cylinder/cone/torus's own axis origin, or a Bezier/B-spline
+    /// surface's own first control point (`.first()` rather than indexing —
+    /// an empty control net is only reachable via direct struct-literal
+    /// construction bypassing [`AnalyticSurface::bezier`]/[`AnalyticSurface::
+    /// bspline`], mirroring [`crate::curve::AnalyticCurve::anchor`]'s
+    /// identical defensive convention).
     pub fn anchor(&self) -> Point3 {
         match self {
             AnalyticSurface::Plane { origin, .. } => *origin,
@@ -68,6 +114,12 @@ impl AnalyticSurface {
             | AnalyticSurface::Cone { axis, .. }
             | AnalyticSurface::Torus { axis, .. } => axis.origin,
             AnalyticSurface::Sphere { center, .. } => *center,
+            AnalyticSurface::Bezier { control_points, .. }
+            | AnalyticSurface::BSpline { control_points, .. } => control_points
+                .first()
+                .and_then(|row| row.first())
+                .copied()
+                .unwrap_or(Point3::ORIGIN),
         }
     }
 }
@@ -91,6 +143,38 @@ pub enum SurfaceConstructionError {
     /// [`crate::curve::CurveConstructionError::UnsupportedPeriodic`]'s own
     /// "constructible-only-to-reject" precedent.
     MinorNotLessThanMajor,
+    /// A Bezier/B-spline control net had fewer than 2 rows/columns (Bezier),
+    /// or fewer than `degree + 1` rows/columns for its own declared degree
+    /// (B-spline) — the surface-family counterpart of [`crate::curve::
+    /// CurveConstructionError::TooFewControlPoints`].
+    TooFewControlPoints,
+    /// A control net's rows did not all have the identical length (not
+    /// rectangular).
+    RaggedControlNet,
+    /// `weights` was given but its shape (row/column count) did not match
+    /// `control_points`.
+    MismatchedWeightShape,
+    /// A given weight was zero, negative, or non-finite.
+    NonPositiveWeight,
+    /// One direction's `knots`/`multiplicities` had different lengths.
+    MismatchedKnotArrays,
+    /// One direction's `knots` was not strictly increasing.
+    NonIncreasingKnots,
+    /// One direction's multiplicity was zero, or exceeded the bound
+    /// [`crate::curve::CurveConstructionError::InvalidMultiplicity`]
+    /// documents (`degree` for an interior knot, `degree + 1` for an end
+    /// knot).
+    InvalidMultiplicity,
+    /// One direction's expanded knot count did not equal `control net
+    /// extent along that direction + degree + 1` — the surface-family
+    /// counterpart of [`crate::curve::CurveConstructionError::
+    /// KnotControlPointCountMismatch`], checked independently per direction.
+    KnotControlPointCountMismatch,
+    /// `periodic_u`/`periodic_v: true` (a closed/wrapping B-spline surface
+    /// along that direction) was requested — mirrors [`crate::curve::
+    /// CurveConstructionError::UnsupportedPeriodic`]'s own documented scope
+    /// limitation exactly, per direction.
+    UnsupportedPeriodic,
 }
 
 impl fmt::Display for SurfaceConstructionError {
@@ -103,6 +187,34 @@ impl fmt::Display for SurfaceConstructionError {
             }
             SurfaceConstructionError::MinorNotLessThanMajor => {
                 "torus minor_radius must be strictly less than major_radius"
+            }
+            SurfaceConstructionError::TooFewControlPoints => {
+                "a surface needs at least 2 (Bezier) or degree + 1 (B-spline) control points \
+                 along each direction"
+            }
+            SurfaceConstructionError::RaggedControlNet => {
+                "every row of a control net must have the identical length"
+            }
+            SurfaceConstructionError::MismatchedWeightShape => {
+                "weights must have the same shape as control_points"
+            }
+            SurfaceConstructionError::NonPositiveWeight => {
+                "every weight must be positive and finite"
+            }
+            SurfaceConstructionError::MismatchedKnotArrays => {
+                "knots and multiplicities must have the same length"
+            }
+            SurfaceConstructionError::NonIncreasingKnots => "knots must be strictly increasing",
+            SurfaceConstructionError::InvalidMultiplicity => {
+                "a multiplicity must be at least 1, at most degree for an interior knot, and at \
+                 most degree + 1 for an end knot"
+            }
+            SurfaceConstructionError::KnotControlPointCountMismatch => {
+                "the expanded knot count must equal the control net's own extent along that \
+                 direction plus degree + 1"
+            }
+            SurfaceConstructionError::UnsupportedPeriodic => {
+                "periodic (closed/wrapping) B-spline surfaces are not yet supported"
             }
         };
         f.write_str(message)
@@ -183,6 +295,156 @@ impl AnalyticSurface {
             minor_radius,
         })
     }
+
+    /// Constructs a (possibly rational) tensor-product Bezier surface.
+    /// Rejects a non-rectangular control net, fewer than 2 rows/columns, or
+    /// (when `weights` is given) a shape mismatch or a non-positive/
+    /// non-finite weight.
+    pub fn bezier(
+        control_points: Vec<Vec<Point3>>,
+        weights: Option<Vec<Vec<f64>>>,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        let (nu, nv) = validate_rectangular_net(&control_points)?;
+        if nu < 2 || nv < 2 {
+            return Err(SurfaceConstructionError::TooFewControlPoints);
+        }
+        if let Some(w) = &weights {
+            validate_weight_shape(w, nu, nv)?;
+        }
+        Ok(AnalyticSurface::Bezier {
+            control_points,
+            weights,
+        })
+    }
+
+    /// Constructs a (possibly rational) tensor-product B-spline/NURBS
+    /// surface. Rejects `periodic_u`/`periodic_v: true`, a non-rectangular
+    /// control net, `degree_u`/`degree_v < 1` or too few rows/columns for
+    /// that degree, a `weights` shape mismatch or non-positive/non-finite
+    /// weight, or an invalid `knots_u`/`multiplicities_u`/`knots_v`/
+    /// `multiplicities_v` pair (per direction, exactly [`crate::curve::
+    /// AnalyticCurve::bspline`]'s own validation).
+    #[allow(clippy::too_many_arguments)] // one full knot/multiplicity/weight
+    // shape per direction, plus periodic flags — the tensor-product
+    // counterpart of `AnalyticCurve::bspline`'s own already-long signature,
+    // doubled, not an arbitrary parameter pile-up.
+    pub fn bspline(
+        degree_u: usize,
+        degree_v: usize,
+        control_points: Vec<Vec<Point3>>,
+        knots_u: Vec<f64>,
+        multiplicities_u: Vec<usize>,
+        knots_v: Vec<f64>,
+        multiplicities_v: Vec<usize>,
+        weights: Option<Vec<Vec<f64>>>,
+        periodic_u: bool,
+        periodic_v: bool,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        if periodic_u || periodic_v {
+            return Err(SurfaceConstructionError::UnsupportedPeriodic);
+        }
+        let (nu, nv) = validate_rectangular_net(&control_points)?;
+        if degree_u < 1 || nu < degree_u + 1 || degree_v < 1 || nv < degree_v + 1 {
+            return Err(SurfaceConstructionError::TooFewControlPoints);
+        }
+        if let Some(w) = &weights {
+            validate_weight_shape(w, nu, nv)?;
+        }
+        validate_knot_direction(degree_u, nu, &knots_u, &multiplicities_u)?;
+        validate_knot_direction(degree_v, nv, &knots_v, &multiplicities_v)?;
+        Ok(AnalyticSurface::BSpline {
+            degree_u,
+            degree_v,
+            control_points,
+            knots_u,
+            multiplicities_u,
+            knots_v,
+            multiplicities_v,
+            weights,
+            periodic_u,
+            periodic_v,
+        })
+    }
+}
+
+/// This control net's own `(row count, column count)` — rejects an empty
+/// net or one whose rows are not all the identical length (not
+/// rectangular). Shared by [`AnalyticSurface::bezier`]/[`AnalyticSurface::
+/// bspline`].
+fn validate_rectangular_net(
+    control_points: &[Vec<Point3>],
+) -> Result<(usize, usize), SurfaceConstructionError> {
+    let nu = control_points.len();
+    if nu == 0 {
+        return Err(SurfaceConstructionError::TooFewControlPoints);
+    }
+    let nv = control_points[0].len();
+    if nv == 0 || control_points.iter().any(|row| row.len() != nv) {
+        return Err(SurfaceConstructionError::RaggedControlNet);
+    }
+    Ok((nu, nv))
+}
+
+/// `weights`'s own shape/positivity validation against an already-validated
+/// `(nu, nv)` control-net extent. Shared by [`AnalyticSurface::bezier`]/
+/// [`AnalyticSurface::bspline`].
+fn validate_weight_shape(
+    weights: &[Vec<f64>],
+    nu: usize,
+    nv: usize,
+) -> Result<(), SurfaceConstructionError> {
+    if weights.len() != nu || weights.iter().any(|row| row.len() != nv) {
+        return Err(SurfaceConstructionError::MismatchedWeightShape);
+    }
+    for row in weights {
+        for &w in row {
+            if !w.is_finite() || w <= 0.0 {
+                return Err(SurfaceConstructionError::NonPositiveWeight);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One parametric direction's own `(knots, multiplicities)` validation —
+/// exactly [`crate::curve::AnalyticCurve::bspline`]'s own knot-vector
+/// validation, applied once per direction by [`AnalyticSurface::bspline`].
+fn validate_knot_direction(
+    degree: usize,
+    count: usize,
+    knots: &[f64],
+    multiplicities: &[usize],
+) -> Result<(), SurfaceConstructionError> {
+    if knots.len() != multiplicities.len() || knots.is_empty() {
+        return Err(SurfaceConstructionError::MismatchedKnotArrays);
+    }
+    for &k in knots {
+        if !k.is_finite() {
+            return Err(SurfaceConstructionError::NonFinite);
+        }
+    }
+    for pair in knots.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(SurfaceConstructionError::NonIncreasingKnots);
+        }
+    }
+    let last = multiplicities.len() - 1;
+    let mut total: usize = 0;
+    for (i, &m) in multiplicities.iter().enumerate() {
+        let max_allowed = if i == 0 || i == last {
+            degree + 1
+        } else {
+            degree
+        };
+        if m == 0 || m > max_allowed {
+            return Err(SurfaceConstructionError::InvalidMultiplicity);
+        }
+        total += m;
+    }
+    if total != count + degree + 1 {
+        return Err(SurfaceConstructionError::KnotControlPointCountMismatch);
+    }
+    Ok(())
 }
 
 /// One evaluated sample of an [`AnalyticSurface`] at a parameter pair
@@ -352,6 +614,88 @@ impl AnalyticSurface {
                 // defended, per this module's established convention.
                 Self::sample_or_degenerate(point, du, dv)
             }
+            AnalyticSurface::Bezier {
+                control_points,
+                weights,
+            } => {
+                let nu = control_points.len();
+                let nv = control_points.first().map_or(0, Vec::len);
+                if nu < 2 || nv < 2 || control_points.iter().any(|row| row.len() != nv) {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if !weights_shape_valid(weights.as_deref(), nu, nv) {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let degree_u = nu - 1;
+                let degree_v = nv - 1;
+                let knot_vector_u = crate::curve::clamped_bezier_knots(degree_u);
+                let knot_vector_v = crate::curve::clamped_bezier_knots(degree_v);
+                tensor_bspline_evaluate(
+                    degree_u,
+                    degree_v,
+                    control_points,
+                    &knot_vector_u,
+                    &knot_vector_v,
+                    weights.as_deref(),
+                    u,
+                    v,
+                )
+            }
+            AnalyticSurface::BSpline {
+                degree_u,
+                degree_v,
+                control_points,
+                knots_u,
+                multiplicities_u,
+                knots_v,
+                multiplicities_v,
+                weights,
+                periodic_u,
+                periodic_v,
+            } => {
+                if *periodic_u || *periodic_v {
+                    return QueryOutcome::Failed(QueryFailure::Unsupported);
+                }
+                let nu = control_points.len();
+                let nv = control_points.first().map_or(0, Vec::len);
+                if *degree_u < 1
+                    || nu < degree_u + 1
+                    || *degree_v < 1
+                    || nv < degree_v + 1
+                    || control_points.iter().any(|row| row.len() != nv)
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if !weights_shape_valid(weights.as_deref(), nu, nv) {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if knots_u.len() != multiplicities_u.len()
+                    || knots_u.is_empty()
+                    || knots_v.len() != multiplicities_v.len()
+                    || knots_v.is_empty()
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let knot_vector_u = crate::curve::expand_knots(knots_u, multiplicities_u);
+                let knot_vector_v = crate::curve::expand_knots(knots_v, multiplicities_v);
+                if knot_vector_u.iter().any(|k| !k.is_finite())
+                    || knot_vector_u.windows(2).any(|pair| pair[0] > pair[1])
+                    || knot_vector_v.iter().any(|k| !k.is_finite())
+                    || knot_vector_v.windows(2).any(|pair| pair[0] > pair[1])
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                tensor_bspline_evaluate(
+                    *degree_u,
+                    *degree_v,
+                    control_points,
+                    &knot_vector_u,
+                    &knot_vector_v,
+                    weights.as_deref(),
+                    u,
+                    v,
+                )
+            }
         }
     }
 
@@ -370,6 +714,145 @@ impl AnalyticSurface {
             None => QueryOutcome::Failed(QueryFailure::Degenerate),
         }
     }
+}
+
+/// [`AnalyticSurface::evaluate`]'s own boolean-returning shape/positivity
+/// check for a Bezier/B-spline surface's `weights` — the surface-family
+/// counterpart of [`crate::curve::weights_are_valid`] (private to that
+/// module, so duplicated here rather than exposed solely for this one
+/// reuse).
+fn weights_shape_valid(weights: Option<&[Vec<f64>]>, nu: usize, nv: usize) -> bool {
+    match weights {
+        None => true,
+        Some(w) => {
+            w.len() == nu
+                && w.iter()
+                    .all(|row| row.len() == nv && row.iter().all(|&x| x.is_finite() && x > 0.0))
+        }
+    }
+}
+
+/// Evaluates a (possibly rational) tensor-product B-spline surface of
+/// `(degree_u, degree_v)` at `(u, v)`, given both directions' already-
+/// expanded knot vectors — the shared evaluation core [`AnalyticSurface::
+/// Bezier`] (via [`crate::curve::clamped_bezier_knots`], once per direction)
+/// and [`AnalyticSurface::BSpline`] both reduce to, exactly mirroring
+/// [`crate::curve::nurbs_evaluate`]'s own role for curves.
+///
+/// # The tensor-product algorithm
+///
+/// A tensor-product surface is separable: holding `v` fixed, `S(u, v0)` is
+/// an ordinary B-spline *curve* in `u` whose control points are each
+/// control-net *row* evaluated in `v` at `v0`; holding `u` fixed
+/// symmetrically. This function computes exactly those two curves' worth of
+/// homogeneous data and reuses [`crate::curve::de_boor`]/
+/// [`crate::curve::derivative_control_points`] unchanged for each:
+///
+/// 1. `v_evaluated[i]` = row `i`'s own homogeneous point at `v` — the
+///    control points of the "evaluate at `u`" curve. `de_boor` on this
+///    (full `degree_u`/`knot_vector_u`/`span_u`) gives the surface point;
+///    [`crate::curve::derivative_control_points`] plus a second `de_boor`
+///    on the *reduced* `degree_u - 1` curve gives `du` (via the identical
+///    rational quotient rule [`crate::curve::nurbs_evaluate`] already uses
+///    for a plain curve's tangent).
+/// 2. `u_evaluated[j]` = column `j`'s own homogeneous point at `u` — the
+///    symmetric construction for `dv`.
+///
+/// Never panics: a degenerate degree/knot-vector shape (only reachable via
+/// direct struct-literal construction bypassing this module's validated
+/// constructors) reports [`QueryFailure::Degenerate`]; an out-of-domain
+/// `(u, v)` reports [`QueryFailure::OutOfDomain`].
+#[allow(clippy::too_many_arguments)] // one degree/knot-vector pair per
+// direction plus the shared control net/weights/(u, v) — the tensor-product
+// counterpart of `crate::curve::nurbs_evaluate`'s own already-several
+// parameters, doubled, not an arbitrary parameter pile-up.
+fn tensor_bspline_evaluate(
+    degree_u: usize,
+    degree_v: usize,
+    control_points: &[Vec<Point3>],
+    knot_vector_u: &[f64],
+    knot_vector_v: &[f64],
+    weights: Option<&[Vec<f64>]>,
+    u: f64,
+    v: f64,
+) -> QueryOutcome<SurfaceSample> {
+    use crate::curve::{
+        Homogeneous, de_boor, derivative_control_points, find_span, to_homogeneous,
+    };
+
+    let nu = control_points.len();
+    let nv = control_points.first().map_or(0, Vec::len);
+    if degree_u == 0
+        || degree_v == 0
+        || nu == 0
+        || nv == 0
+        || knot_vector_u.len() != nu + degree_u + 1
+        || knot_vector_v.len() != nv + degree_v + 1
+    {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    if u < knot_vector_u[degree_u]
+        || u > knot_vector_u[nu]
+        || v < knot_vector_v[degree_v]
+        || v > knot_vector_v[nv]
+    {
+        return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+    }
+
+    let h: Vec<Vec<Homogeneous>> = control_points
+        .iter()
+        .enumerate()
+        .map(|(i, row)| to_homogeneous(row, weights.map(|w| w[i].as_slice())))
+        .collect();
+
+    let span_u = find_span(u, degree_u, knot_vector_u, nu);
+    let span_v = find_span(v, degree_v, knot_vector_v, nv);
+
+    let v_evaluated: Vec<Homogeneous> = h
+        .iter()
+        .map(|row| de_boor(degree_v, row, knot_vector_v, span_v, v))
+        .collect();
+    let point_h = de_boor(degree_u, &v_evaluated, knot_vector_u, span_u, u);
+    let w = point_h[3];
+    if !w.is_finite() || w.abs() < 1e-12 {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    let point = Point3::new(point_h[0] / w, point_h[1] / w, point_h[2] / w);
+
+    let du_h = {
+        let deriv_cp = derivative_control_points(degree_u, &v_evaluated, knot_vector_u);
+        let deriv_knots = &knot_vector_u[1..knot_vector_u.len() - 1];
+        let deriv_span = find_span(u, degree_u - 1, deriv_knots, nu - 1);
+        de_boor(degree_u - 1, &deriv_cp, deriv_knots, deriv_span, u)
+    };
+
+    let u_evaluated: Vec<Homogeneous> = (0..nv)
+        .map(|j| {
+            let column: Vec<Homogeneous> = h.iter().map(|row| row[j]).collect();
+            de_boor(degree_u, &column, knot_vector_u, span_u, u)
+        })
+        .collect();
+    let dv_h = {
+        let deriv_cp = derivative_control_points(degree_v, &u_evaluated, knot_vector_v);
+        let deriv_knots = &knot_vector_v[1..knot_vector_v.len() - 1];
+        let deriv_span = find_span(v, degree_v - 1, deriv_knots, nv - 1);
+        de_boor(degree_v - 1, &deriv_cp, deriv_knots, deriv_span, v)
+    };
+
+    // The rational-curve quotient rule ([`crate::curve::nurbs_evaluate`]'s
+    // own identical formula), applied independently per direction: exact
+    // for the non-rational case too, since `w == 1`/`dw == 0` then.
+    let rational_tangent = |deriv_h: Homogeneous| -> Vector3 {
+        Vector3::new(
+            (deriv_h[0] * w - point_h[0] * deriv_h[3]) / (w * w),
+            (deriv_h[1] * w - point_h[1] * deriv_h[3]) / (w * w),
+            (deriv_h[2] * w - point_h[2] * deriv_h[3]) / (w * w),
+        )
+    };
+    let du = rational_tangent(du_h);
+    let dv = rational_tangent(dv_h);
+
+    AnalyticSurface::sample_or_degenerate(point, du, dv)
 }
 
 #[cfg(test)]
@@ -694,5 +1177,204 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- AICAD-114: Bezier/B-spline/NURBS surface construction/evaluation ---
+
+    /// A bidegree-(1,1) control net whose corners exactly define
+    /// `point(u, v) = (u, v, u*v)` — bilinear interpolation is *exact* for
+    /// this function, so both the Bezier and the equivalent-clamped
+    /// B-spline path can be checked against a hand-derived closed form,
+    /// including derivatives.
+    fn hyperbolic_paraboloid_net() -> Vec<Vec<Point3>> {
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0)],
+        ]
+    }
+
+    #[test]
+    fn bezier_surface_evaluates_a_known_bilinear_point_and_derivatives() {
+        let surface = AnalyticSurface::bezier(hyperbolic_paraboloid_net(), None).unwrap();
+        let QueryOutcome::Solutions(mut s) = surface.evaluate(0.5, 0.5) else {
+            panic!("a validated bidegree-(1,1) Bezier surface is never degenerate")
+        };
+        let sample = s.pop().unwrap();
+        // point(u, v) = (u, v, u*v)
+        assert_point_close(sample.point, Point3::new(0.5, 0.5, 0.25), 1e-12);
+        // du = (1, 0, v); dv = (0, 1, u)
+        assert_close(sample.du.x, 1.0, 1e-9);
+        assert_close(sample.du.y, 0.0, 1e-9);
+        assert_close(sample.du.z, 0.5, 1e-9);
+        assert_close(sample.dv.x, 0.0, 1e-9);
+        assert_close(sample.dv.y, 1.0, 1e-9);
+        assert_close(sample.dv.z, 0.5, 1e-9);
+    }
+
+    #[test]
+    fn bezier_surface_passes_through_every_corner_control_point() {
+        let net = hyperbolic_paraboloid_net();
+        let surface = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        for (u, v, expected) in [
+            (0.0, 0.0, net[0][0]),
+            (1.0, 0.0, net[1][0]),
+            (0.0, 1.0, net[0][1]),
+            (1.0, 1.0, net[1][1]),
+        ] {
+            let QueryOutcome::Solutions(mut s) = surface.evaluate(u, v) else {
+                panic!("corner evaluation is never degenerate")
+            };
+            assert_point_close(s.pop().unwrap().point, expected, 1e-12);
+        }
+    }
+
+    #[test]
+    fn bezier_surface_with_uniform_weights_reproduces_the_non_rational_result() {
+        // A uniform (equal-everywhere) weight cancels in the rational
+        // quotient rule, so the result must be bit-for-bit identical to the
+        // non-rational evaluation — a strong correctness check on the
+        // rational tensor-product derivative formula, independent of
+        // hand-deriving a new rational closed form.
+        let net = hyperbolic_paraboloid_net();
+        let plain = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        let weighted =
+            AnalyticSurface::bezier(net, Some(vec![vec![2.0, 2.0], vec![2.0, 2.0]])).unwrap();
+        let QueryOutcome::Solutions(mut a) = plain.evaluate(0.3, 0.7) else {
+            panic!("plain evaluation is never degenerate")
+        };
+        let QueryOutcome::Solutions(mut b) = weighted.evaluate(0.3, 0.7) else {
+            panic!("uniformly-weighted evaluation is never degenerate")
+        };
+        let (sa, sb) = (a.pop().unwrap(), b.pop().unwrap());
+        assert_point_close(sa.point, sb.point, 1e-12);
+        assert_close((sa.du - sb.du).length(), 0.0, 1e-9);
+        assert_close((sa.dv - sb.dv).length(), 0.0, 1e-9);
+    }
+
+    #[test]
+    fn bspline_surface_bidegree_one_matches_the_equivalent_bezier_surface() {
+        let net = hyperbolic_paraboloid_net();
+        let bezier = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        let bspline = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2, 2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        for (u, v) in [(0.0, 0.0), (0.5, 0.5), (0.2, 0.9), (1.0, 1.0)] {
+            let QueryOutcome::Solutions(mut a) = bezier.evaluate(u, v) else {
+                panic!("bezier evaluation is never degenerate")
+            };
+            let QueryOutcome::Solutions(mut b) = bspline.evaluate(u, v) else {
+                panic!("the equivalent clamped B-spline evaluation is never degenerate")
+            };
+            assert_point_close(a.pop().unwrap().point, b.pop().unwrap().point, 1e-9);
+        }
+    }
+
+    #[test]
+    fn bspline_surface_rejects_periodic() {
+        let net = hyperbolic_paraboloid_net();
+        let err = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2, 2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err, SurfaceConstructionError::UnsupportedPeriodic);
+    }
+
+    #[test]
+    fn bezier_surface_rejects_a_ragged_control_net() {
+        let net = vec![
+            vec![Point3::ORIGIN, Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0)],
+        ];
+        assert_eq!(
+            AnalyticSurface::bezier(net, None),
+            Err(SurfaceConstructionError::RaggedControlNet)
+        );
+    }
+
+    #[test]
+    fn bezier_surface_rejects_too_few_control_points_along_a_direction() {
+        let net = vec![vec![Point3::ORIGIN, Point3::new(0.0, 1.0, 0.0)]];
+        assert_eq!(
+            AnalyticSurface::bezier(net, None),
+            Err(SurfaceConstructionError::TooFewControlPoints)
+        );
+    }
+
+    #[test]
+    fn bezier_surface_rejects_a_weight_shape_mismatch() {
+        let net = hyperbolic_paraboloid_net();
+        assert_eq!(
+            AnalyticSurface::bezier(net, Some(vec![vec![1.0, 1.0]])),
+            Err(SurfaceConstructionError::MismatchedWeightShape)
+        );
+    }
+
+    #[test]
+    fn bspline_surface_rejects_mismatched_knot_arrays() {
+        let net = hyperbolic_paraboloid_net();
+        let err = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err, SurfaceConstructionError::MismatchedKnotArrays);
+    }
+
+    #[test]
+    fn bspline_surface_evaluation_outside_its_own_domain_is_out_of_domain() {
+        let net = hyperbolic_paraboloid_net();
+        let bspline = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2, 2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            bspline.evaluate(1.5, 0.5),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+    }
+
+    #[test]
+    fn bezier_and_bspline_surfaces_are_debug_printable_and_compare_by_value() {
+        let net = hyperbolic_paraboloid_net();
+        let a = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        let b = AnalyticSurface::bezier(net, None).unwrap();
+        assert_eq!(a, b);
+        assert!(!format!("{a:?}").is_empty());
     }
 }

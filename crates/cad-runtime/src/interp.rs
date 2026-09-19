@@ -1993,6 +1993,8 @@ impl<'a> Interpreter<'a> {
                 | BuiltinFnId::SphereSurface
                 | BuiltinFnId::TorusSurface
                 | BuiltinFnId::EvaluateSurface
+                | BuiltinFnId::BezierSurface
+                | BuiltinFnId::BSplineSurface
         ) {
             return self.dispatch_surface_builtin(id, name, params, frame, span);
         }
@@ -2267,7 +2269,9 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::ConeSurface
             | BuiltinFnId::SphereSurface
             | BuiltinFnId::TorusSurface
-            | BuiltinFnId::EvaluateSurface => unreachable!(
+            | BuiltinFnId::EvaluateSurface
+            | BuiltinFnId::BezierSurface
+            | BuiltinFnId::BSplineSurface => unreachable!(
                 "surface builtins return early above, before this Construction-only match"
             ),
         };
@@ -2611,7 +2615,84 @@ impl<'a> Interpreter<'a> {
         };
         let surface = |value: &Value| -> EvalResult<AnalyticSurface> {
             match value {
-                Value::Surface(s) => Ok(**s),
+                Value::Surface(s) => Ok((**s).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `AICAD-114`: `List<List<Point3>>`/`List<List<Float>>` control-net/
+        // weight-grid arguments, one level of `spatial_point`/plain-`Float`
+        // conversion per element — the tensor-product counterpart of
+        // `dispatch_curve_builtin`'s own `point_list`/`float_list` closures.
+        let point_grid = |value: &Value| -> EvalResult<Vec<Vec<Point3>>> {
+            match value {
+                Value::List(rows) => rows
+                    .iter()
+                    .map(|row| match row {
+                        Value::List(items) => items.iter().map(spatial_point).collect(),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let float_list = |value: &Value| -> EvalResult<Vec<f64>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `None` for an empty outer list — mirrors `dispatch_curve_builtin`'s
+        // own `optional_weights` "empty list means absent" convention.
+        let optional_weight_grid = |value: &Value| -> EvalResult<Option<Vec<Vec<f64>>>> {
+            match value {
+                Value::List(rows) if rows.is_empty() => Ok(None),
+                Value::List(rows) => {
+                    let grid: Vec<Vec<f64>> =
+                        rows.iter()
+                            .map(|row| match row {
+                                Value::List(items) => items
+                                    .iter()
+                                    .map(|item| match item {
+                                        Value::Number(n) => Ok(n.magnitude),
+                                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }
+                                            .into()),
+                                    })
+                                    .collect(),
+                                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                            })
+                            .collect::<EvalResult<Vec<Vec<f64>>>>()?;
+                    Ok(Some(grid))
+                }
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_list = |value: &Value| -> EvalResult<Vec<usize>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude.round() as usize),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let bool_value = |value: &Value| -> EvalResult<bool> {
+            match value {
+                Value::Bool(b) => Ok(*b),
                 _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
             }
         };
@@ -2654,6 +2735,35 @@ impl<'a> Interpreter<'a> {
                 let major_radius = quantity(arg(1)?)?;
                 let minor_radius = quantity(arg(2)?)?;
                 surface_construction(AnalyticSurface::torus(axis, major_radius, minor_radius))
+            }
+            BuiltinFnId::BezierSurface => {
+                let control_points = point_grid(arg(0)?)?;
+                let weights = optional_weight_grid(arg(1)?)?;
+                surface_construction(AnalyticSurface::bezier(control_points, weights))
+            }
+            BuiltinFnId::BSplineSurface => {
+                let degree_u = usize_value(arg(0)?)?;
+                let degree_v = usize_value(arg(1)?)?;
+                let control_points = point_grid(arg(2)?)?;
+                let knots_u = float_list(arg(3)?)?;
+                let multiplicities_u = usize_list(arg(4)?)?;
+                let knots_v = float_list(arg(5)?)?;
+                let multiplicities_v = usize_list(arg(6)?)?;
+                let weights = optional_weight_grid(arg(7)?)?;
+                let periodic_u = bool_value(arg(8)?)?;
+                let periodic_v = bool_value(arg(9)?)?;
+                surface_construction(AnalyticSurface::bspline(
+                    degree_u,
+                    degree_v,
+                    control_points,
+                    knots_u,
+                    multiplicities_u,
+                    knots_v,
+                    multiplicities_v,
+                    weights,
+                    periodic_u,
+                    periodic_v,
+                ))
             }
             BuiltinFnId::EvaluateSurface => {
                 let s = surface(arg(0)?)?;
@@ -3752,6 +3862,8 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::SphereSurface => "sphere_surface",
         BuiltinFnId::TorusSurface => "torus_surface",
         BuiltinFnId::EvaluateSurface => "evaluate_surface",
+        BuiltinFnId::BezierSurface => "bezier_surface",
+        BuiltinFnId::BSplineSurface => "bspline_surface",
     }
 }
 
@@ -7906,5 +8018,113 @@ mod tests {
              evaluate_surface() must not add spurious entries"
         );
         assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+    }
+
+    // --- AICAD-114: Bezier/B-spline/NURBS surface construction/evaluation ---
+
+    #[test]
+    fn bezier_surface_and_evaluate_surface_reproduce_a_known_bilinear_point() {
+        let source = "fn f() -> Length { \
+                 let s = bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+                 let e = evaluate_surface(s, 0.5, 0.5); \
+                 return e.point.z; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // z(u, v) = 10mm * u * v -> z(0.5, 0.5) = 2.5mm.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0025);
+    }
+
+    #[test]
+    fn bspline_surface_bidegree_one_matches_the_equivalent_bezier_surface() {
+        let source = "\
+            fn bezier() -> Length { \
+                let s = bezier_surface( \
+                    control_points = [ \
+                        [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                        [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                    ], \
+                    weights = [], \
+                ); \
+                let e = evaluate_surface(s, 0.3, 0.8); \
+                return e.point.z; \
+            } \
+            fn bspline() -> Length { \
+                let s = bspline_surface( \
+                    degree_u = 1, \
+                    degree_v = 1, \
+                    control_points = [ \
+                        [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                        [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                    ], \
+                    knots_u = [0.0, 1.0], \
+                    multiplicities_u = [2, 2], \
+                    knots_v = [0.0, 1.0], \
+                    multiplicities_v = [2, 2], \
+                    weights = [], \
+                    periodic_u = false, \
+                    periodic_v = false, \
+                ); \
+                let e = evaluate_surface(s, 0.3, 0.8); \
+                return e.point.z; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let bezier_z = interp.call_by_name("bezier", vec![]).unwrap();
+        let bspline_z = interp.call_by_name("bspline", vec![]).unwrap();
+        match (bezier_z, bspline_z) {
+            (Value::Number(a), Value::Number(b)) => {
+                assert!((a.magnitude - b.magnitude).abs() < 1e-9)
+            }
+            other => panic!("expected two Numbers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bspline_surface_rejects_periodic() {
+        let source = "fn f() -> Surface { \
+                 return bspline_surface( \
+                     degree_u = 1, \
+                     degree_v = 1, \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                     ], \
+                     knots_u = [0.0, 1.0], \
+                     multiplicities_u = [2, 2], \
+                     knots_v = [0.0, 1.0], \
+                     multiplicities_v = [2, 2], \
+                     weights = [], \
+                     periodic_u = true, \
+                     periodic_v = false, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    #[test]
+    fn bezier_surface_rejects_a_ragged_control_net() {
+        let source = "fn f() -> Surface { \
+                 return bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
     }
 }
