@@ -3640,7 +3640,7 @@ tasks:
 - id: AICAD-112
   stage: 5
   title: 'Checkpoint A: curves, runtime/query foundations, abstraction provenance, and examples'
-  status: todo
+  status: done
   depends_on:
   - AICAD-107
   - AICAD-111

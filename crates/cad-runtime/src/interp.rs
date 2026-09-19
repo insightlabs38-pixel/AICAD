@@ -7518,4 +7518,46 @@ mod tests {
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E134");
     }
+
+    // --- AICAD-112 Checkpoint A: D25 re-audit ---
+
+    /// `project/DECISION_LOG.md#DL-27` (D25) re-audit for `AICAD-109`-`111`:
+    /// a program mixing real `Geometry`-producing calls with `Curve`-typed
+    /// construction/evaluation, both reached through a helper function,
+    /// must trace *only* the `Geometry` call — curves stay correctly
+    /// invisible to the feature-trace system (they are pure values, never
+    /// a `GeometryGraph` node — see `cad_geometry_api::curve`'s own module
+    /// doc comment), with no spurious entry and no interference with the
+    /// real box's own trace, exactly matching `AICAD-107`'s established
+    /// `is_geometry_type_ref` gate applied generically, not curve-specific
+    /// logic.
+    #[test]
+    fn curve_construction_stays_invisible_to_the_feature_trace_alongside_real_geometry() {
+        let source = "\
+            fn make_geometry() -> Geometry { \
+                return box(1mm, 1mm, 1mm); \
+            } \
+            fn make_curve() -> Curve { \
+                return circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 1mm, \
+                ); \
+            } \
+            let base = make_geometry(); \
+            let profile = make_curve(); \
+            let sample = evaluate_curve(profile, 0.0); \
+        ";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "only the real Geometry-producing box() call should be traced; circle_curve()/\
+             evaluate_curve() must not add spurious entries"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+    }
 }

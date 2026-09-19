@@ -1,0 +1,31 @@
+param bend_radius: Length = 12mm;
+
+part CableRoutingPath {
+    // A 90-degree rounded bend, represented as an exact rational quadratic
+    // Bezier arc (the same construction NURBS-based CAD kernels use
+    // internally to represent a circular arc exactly, rather than
+    // approximating it).
+    let bend: Curve = bezier_curve(
+        control_points = [
+            Point3(x = bend_radius, y = 0mm, z = 0mm),
+            Point3(x = bend_radius, y = bend_radius, z = 0mm),
+            Point3(x = 0mm, y = bend_radius, z = 0mm),
+        ],
+        weights = [1.0, 0.70710678118, 1.0],
+    );
+    let bend_midpoint: CurveEvaluation = evaluate_curve(bend, 0.5);
+
+    // The straight lead-in/lead-out runs either side of the bend.
+    let lead_in: Curve = line_curve(
+        origin = Point3(x = bend_radius, y = 0mm - 40mm, z = 0mm),
+        direction = Vector3(x = 0.0, y = 1.0, z = 0.0),
+    );
+    let lead_out: Curve = line_curve(
+        origin = Point3(x = 0mm, y = bend_radius, z = 0mm),
+        direction = Vector3(x = -1.0, y = 0.0, z = 0.0),
+    );
+
+    // A fixed obstacle's nearest clearance point against the lead-in run.
+    let obstacle: Point3 = Point3(x = bend_radius + 8mm, y = 0mm - 20mm, z = 0mm);
+    let clearance_points: List<ClosestPointResult> = closest_point_on_curve(lead_in, obstacle);
+}

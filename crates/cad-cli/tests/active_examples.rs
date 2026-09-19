@@ -24,6 +24,8 @@ const ACTIVE: &[&str] = &[
     "examples/references/hole_wall_reference.aicad",
     "examples/references/ambiguous_reference.aicad",
     "examples/references/broken_reference.aicad",
+    "examples/curves/circle_curve_basics.aicad",
+    "examples/curves/cable_routing_path.aicad",
 ];
 
 fn example_source(relative: &str) -> String {

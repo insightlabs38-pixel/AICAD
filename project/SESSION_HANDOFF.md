@@ -60,66 +60,68 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Batch `S5-02` is complete** on `claude/aicad-stage5-dev` (`S5-00`/`S5-01`
-were completed and handed off previously — see git history /
-`project/reports/AICAD-101.md` through `AICAD-106.md` for those batches'
-own record; this section now reflects `S5-02`'s completion):
+**Batch `S5-03` is complete** on `claude/aicad-stage5-dev` (`S5-00`
+through `S5-02` were completed and handed off previously — see
+`project/reports/AICAD-101.md` through `AICAD-108.md`; this section now
+reflects `S5-03`'s completion, batches `S5-00`-`S5-02`'s own summaries
+retired from this file per its own "current state, not an appended diary"
+convention):
 
-- `AICAD-107` (resolved `DL-27`: geometry built through a user function
-  call, a taken `if`/`match` branch, or a loop iteration now stays visible
-  to the feature/dependency/provenance system. New `cad_runtime::
-  feature_trace` — `CallPath`/`TraceEntry` — records every Geometry-
-  returning `RuntimeBuiltin` call at its own dynamic call-instance
-  identity as the interpreter runs, with `binding_refs` resolved *through*
-  any number of function-call argument-passing levels back to real
-  top-level/`param` bindings. New `cad_feature_graph::trace_graph::
-  TraceFeatureGraph` turns a completed trace into a real dependency graph
-  reusing the Stage-3 `dirty_set` contract unchanged. `cad-cli::
-  ParametricBuildSession::rebuild` — the one production dirty-propagation/
-  lineage path — now builds this trace graph from the real interpreter run
-  instead of the old purely-static top-level-only `FeatureGraph`. A real
-  regression (part-nested named-binding resolution) was found and fixed
-  during production wiring, caught by the full `cargo test -p cad-cli` run
-  before this task was reported done) — `project/reports/AICAD-107.md`.
-- `AICAD-108` (surveyed D22's four geometry-identity tiers first: kernel-
-  native object, raw/unsafe handle, persistent reference, and safe value
-  all already existed with no gap — `cad_references::raw_handle::
-  RawHandle<T>` (`AICAD-093`) already generically covers Stage-5's own raw
-  topology tier, so no new raw-handle type was needed. Added the value
-  families that genuinely were missing, all pure data, no kernel/source
-  wiring: `cad_geometry_api::curve::AnalyticCurve`, `::surface::
-  AnalyticSurface`, `::query_result::{QueryOutcome<T>, QueryFailure}`
-  (zero/one/many results, numerical failure never silently absorbed into
-  an empty result), `::operation_report::OperationReport<T>` (a `'ctx`-
-  independent created/modified/deleted/split/merged evidence snapshot),
-  `::adoption::{AdoptionOutcome<T>, AdoptionEvidence, AdoptionRejection}`
-  (D22's explicit raw-to-safe promotion contract); `cad_kernel_api::
-  topology::{TopologyKind, ClassifiedShape}`. Every family's own doc
-  comment names exactly which later Stage-5 task owns wiring it) —
-  `project/reports/AICAD-108.md`.
+- `AICAD-109` (analytic curve families — Line/Circle/Arc/Ellipse — wired
+  end to end: validated constructors plus exact closed-form evaluation on
+  `cad_geometry_api::curve::AnalyticCurve` (`AICAD-108`), reached from real
+  `.aicad` source via `line_curve`/`circle_curve`/`arc_curve`/
+  `ellipse_curve`/`evaluate_curve` through a new third
+  `BuiltinCategory::Value` — pure value computation, no `GeometryGraph`
+  node, no kernel call at all, since every family's evaluation is
+  closed-form) — `project/reports/AICAD-109.md`.
+- `AICAD-110` (extended the same enum with Bezier/B-spline/NURBS, sharing
+  one exact de Boor's-algorithm evaluation core in homogeneous coordinates
+  — a Bezier curve evaluates as the equivalent clamped B-spline, not a
+  separate implementation. Widened `cad_hir::typeck::CheckedType::List`
+  from a `Value`-only element type to any `CheckedType` (contained to one
+  file), needed for `List<Point3>` control-point arguments — recorded as
+  an architecture decision for independent review, judged non-escalating)
+  — `project/reports/AICAD-110.md`.
+- `AICAD-111` (curve-local operations: trim (generic domain-restriction
+  wrapper), offset (exact for Line/Circle/Arc, honest
+  `UnsupportedFamily` elsewhere), closest-point (exact for Line/Circle,
+  golden-section search elsewhere, reporting every local minimum found,
+  never an arbitrary one), and exact global cubic B-spline interpolation
+  via a Gaussian-elimination linear solve, checked against its own
+  achieved residual) — `project/reports/AICAD-111.md`.
+- `AICAD-112` (Checkpoint A — passed, no architecture conflict: a
+  production-path vertical slice reproduces an exact textbook geometric
+  identity with direct evidence of zero kernel calls; D21/D23/D24/D25
+  re-audited with new targeted tests, not merely re-cited; two new ACTIVE
+  examples; native OCCT CMake+CTest run directly, 18/18) —
+  `project/reports/AICAD-112.md`.
 
 All required checks pass: `cargo fmt`, `cargo clippy -D warnings`, the full
-`cargo test --workspace` (82 test-result blocks, 0 failed), the frozen
-`stage4_resolver_execution` corpus (11/11, unchanged), and the semantic-
-reference harness `validate`/`self-test` (both `ok`). Automatic
-geometry-fingerprint recovery remains disabled.
+`cargo test --workspace` (83 test-result blocks, 0 failed), the frozen
+`stage4_resolver_execution` corpus (11/11, unchanged), the semantic-
+reference harness `validate`/`self-test` (both `ok`), and the native OCCT
+bridge CMake build + CTest suite (18/18). Automatic geometry-fingerprint
+recovery remains disabled.
 
 Known, explicitly-disclosed limitations carried forward (see each task's
-own report for full detail): `AICAD-107`'s `provenance_of` conservative
-nested-call approximation (can over-invalidate, never under-invalidate)
-and `match`-arm whole-scrutinee provenance attribution; a `param` default
-expression's `TraceEntry`s always report an empty `part` scope
-(`ParamModel` does not track a `param`'s own enclosing part path).
-`AICAD-105`'s `OcctQueryExecutor` dispatches the whole accumulated graph
-per query call, not the tightest "minimum required upstream geometry"
-subset; the simpler non-incremental `cad_cli::build::build_source` path is
-not wired to a real query executor. `AICAD-106`'s `ApproximationTolerance`
-has no default constructor. `AICAD-108`'s new value families are
-deliberately unwired (no `GeometryOp`/`GeometryQuery` variant, no `.aicad`
-source, no kernel dispatch) — each later Stage-5 task's own job per its
-own module doc comment.
+own report for full detail): `AICAD-107`'s conservative nested-call
+provenance approximation; `AICAD-105`'s full-graph query redispatch;
+`AICAD-106`'s `ApproximationTolerance` has no default constructor;
+`AICAD-108`'s value families remain progressively wired by each dependent
+task. New this batch: `AICAD-109`'s arcs cannot wrap through angle zero;
+`AICAD-110`'s B-splines cannot be periodic (closed/wrapping), and
+`weights`/other plan-spelled optional parameters are mandatory
+(empty-list-means-absent) since the catalogue has no optional-parameter
+mechanism; `AICAD-111`'s `offset_curve` is exact only for Line/Circle/Arc,
+`closest_point`'s numerical branch resolves to only `~sqrt(f64 epsilon)`
+near a flat minimum (an inherent numerical-method limit), and
+`interpolate_curve` is fixed at degree 3 with no tangent/periodic option.
+No `make_edge`/topology-construction path from a `Curve` exists yet —
+curves remain pure values until a later Stage-5 topology task bridges
+them.
 
-Per the fixed batch order, the next invocation begins `S5-03`
-(`AICAD-109..112`, curves + Checkpoint A).
+Per the fixed batch order, the next invocation begins `S5-04`
+(`AICAD-113..116`, surfaces).
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

@@ -13,6 +13,8 @@ Every file listed as **ACTIVE** below uses current supported `.aicad` syntax and
 | ACTIVE | `references/hole_wall_reference.aicad` | Scoped persistent reference; replayed after a parameter edit |
 | ACTIVE | `references/ambiguous_reference.aicad` | Expected fail-closed ambiguity |
 | ACTIVE | `references/broken_reference.aicad` | Expected fail-closed broken reference |
+| ACTIVE | `curves/circle_curve_basics.aicad` | Minimal analytic curve construction/evaluation |
+| ACTIVE | `curves/cable_routing_path.aicad` | Realistic curve use: rational-Bezier fillet arc, line segments, closest-point clearance check |
 
 Historical `stage2_*` / `stage3_*` filenames are retained for evidence/test compatibility; ACTIVE means they still represent current supported syntax.
 
