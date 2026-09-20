@@ -83,17 +83,67 @@ part TopologyConstructionBasics {
         [],
     );
 
-    // Shell/solid: a structural container only (no sewing/gap-closing --
-    // AICAD-120's job), so this shell built from one standalone face is
-    // open, and the solid built from it is correspondingly reported
-    // invalid by `is_valid`/`validate` -- construction success is never
-    // silently treated as proof of a valid exact B-rep. See
-    // `crates/cad-cli/tests/stage5_topology_construction.rs` for this
-    // exact evidence checked against the real kernel.
+    // Shell/solid: `make_shell` is a structural container only (no
+    // sewing/gap-closing -- that is `sew`'s own job, below), so this
+    // shell built from one standalone face is open, and the solid built
+    // from it is correspondingly reported invalid by `is_valid`/
+    // `validate` -- construction success is never silently treated as
+    // proof of a valid exact B-rep. See `crates/cad-cli/tests/
+    // stage5_topology_construction.rs` for this exact evidence checked
+    // against the real kernel.
     let open_shell: Geometry = make_shell([square_face]);
     let open_solid: Geometry = make_solid(open_shell, []);
 
     // Compound: groups any mix of already-built kinds with no closure
     // requirement to fail.
     let bundle: Geometry = compound([corner, quarter_arc]);
+
+    // Sewing (AICAD-120): a second square, edge-adjacent to the first,
+    // built independently (its own edges, not sharing the first square's
+    // own edge objects). `sew` merges their coincident boundary within
+    // `tolerance`, unlike `make_shell` above -- see
+    // `crates/cad-cli/tests/stage5_sewing_healing.rs` for the exact
+    // resulting 2-square area this produces.
+    let adjacent_bottom: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 10mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 1.0, y = 0.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_right: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 20mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = 1.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_top: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 20mm, y = 10mm, z = 0mm),
+            direction = Vector3(x = -1.0, y = 0.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_left: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 10mm, y = 10mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = -1.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_square: Geometry = make_wire([adjacent_bottom, adjacent_right, adjacent_top, adjacent_left]);
+    let adjacent_face: Geometry = make_face(adjacent_square);
+    let sewed_pair: Geometry = sew([square_face, adjacent_face], 0.000001mm);
+
+    // Healing (AICAD-120): repairs `sewed_pair` at the same tolerance
+    // domain. Healing never invents missing geometry -- an unclosable
+    // shape can be silently demoted to a lesser topological kind by the
+    // underlying kernel call (see `cad_occt_bridge::HealReport::
+    // kind_changed`'s own doc comment, and `crates/cad-occt-bridge/src/
+    // lib.rs`'s own `healing_an_unclosable_solid_reports_valid_after_
+    // only_alongside_kind_changed` test for the exact discovered case);
+    // `sewed_pair` is already a valid open sheet, so this is a genuine
+    // no-op repair, not that disclosed case.
+    let healed_pair: Geometry = heal(sewed_pair, 0.000001mm);
 }

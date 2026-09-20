@@ -2365,6 +2365,21 @@ impl<'a> Interpreter<'a> {
             BuiltinFnId::Compound => push_op(GeometryOp::Compound {
                 shapes: geometry_list(arg(0)?)?,
             })?,
+            // `sew(shapes, tolerance)` (`AICAD-120`): merges/relabels
+            // coincident boundaries among `shapes` — never proves
+            // validity on its own, see `BuiltinFnId::Sew`'s own doc
+            // comment.
+            BuiltinFnId::Sew => push_op(GeometryOp::Sew {
+                shapes: geometry_list(arg(0)?)?,
+                tolerance: quantity(arg(1)?)?,
+            })?,
+            // `heal(shape, tolerance)` (`AICAD-120`): repairs `shape` —
+            // never invents missing geometry, see `BuiltinFnId::Heal`'s
+            // own doc comment.
+            BuiltinFnId::Heal => push_op(GeometryOp::Heal {
+                shape: geometry(arg(0)?)?,
+                tolerance: quantity(arg(1)?)?,
+            })?,
             BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
                 unreachable!(
                     "query builtins return early above, before this Construction-only match"
@@ -4389,6 +4404,8 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::MakeShell => "make_shell",
         BuiltinFnId::MakeSolid => "make_solid",
         BuiltinFnId::Compound => "compound",
+        BuiltinFnId::Sew => "sew",
+        BuiltinFnId::Heal => "heal",
     }
 }
 
@@ -9325,5 +9342,38 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "GEOM-E004");
+    }
+
+    // --- AICAD-120: sewing/healing ---
+
+    #[test]
+    fn sew_of_a_box_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let b = box(dx = 1mm, dy = 1mm, dz = 1mm); \
+                 return sew([b], 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn sew_rejects_an_empty_shape_list() {
+        let source = "fn f() -> Geometry { return sew([], 0.000001mm); }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "GEOM-E004");
+    }
+
+    #[test]
+    fn heal_of_a_box_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let b = box(dx = 1mm, dy = 1mm, dz = 1mm); \
+                 return heal(b, 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
     }
 }

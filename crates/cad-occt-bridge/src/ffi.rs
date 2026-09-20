@@ -550,6 +550,24 @@ unsafe extern "C" {
         shape_count: usize,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+
+    // --- AICAD-120: sewing/healing ---
+    pub fn aicad_occt_sew(
+        context: *mut aicad_occt_context_t,
+        shapes: *const aicad_shape_handle_t,
+        shape_count: usize,
+        tolerance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+        out_lineage: *mut aicad_lineage_handle_t,
+        out_report: *mut aicad_sew_report_t,
+    ) -> c_int;
+    pub fn aicad_occt_heal(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        tolerance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+        out_report: *mut aicad_heal_report_t,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t
@@ -576,4 +594,28 @@ pub struct aicad_validation_report_t {
     pub invalid_face_count: usize,
     pub invalid_shell_count: usize,
     pub invalid_solid_count: usize,
+}
+
+/// Mirrors `aicad_sew_report_t` field-for-field: `int changed; int
+/// is_valid; size_t free_edge_count; size_t multiple_edge_count; size_t
+/// degenerated_shape_count;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_sew_report_t {
+    pub changed: c_int,
+    pub is_valid: c_int,
+    pub free_edge_count: usize,
+    pub multiple_edge_count: usize,
+    pub degenerated_shape_count: usize,
+}
+
+/// Mirrors `aicad_heal_report_t` field-for-field: `int changed; int
+/// is_valid_before; int is_valid_after; int kind_changed;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_heal_report_t {
+    pub changed: c_int,
+    pub is_valid_before: c_int,
+    pub is_valid_after: c_int,
+    pub kind_changed: c_int,
 }

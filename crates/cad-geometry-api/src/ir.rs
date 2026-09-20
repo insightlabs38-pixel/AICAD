@@ -396,6 +396,23 @@ pub enum GeometryOp {
     /// Groups `shapes` (any kind, any mix) into one compound (`AICAD-119`,
     /// `OcctContext::make_compound`). `shapes` must be non-empty.
     Compound { shapes: Vec<GeomId> },
+    /// Sews `shapes` together at `tolerance` (`AICAD-120`,
+    /// `OcctContext::sew`) — a modeling/construction-domain `Length`
+    /// (`project/DECISION_LOG.md#DL-24` domain 2; see
+    /// `cad_validation::RepairPolicy` for the caller-facing typed policy
+    /// this value is expected to come from). `shapes` must be non-empty.
+    Sew {
+        shapes: Vec<GeomId>,
+        tolerance: Quantity,
+    },
+    /// Repairs `shape` at `tolerance` (`AICAD-120`, `Shape::heal`) — same
+    /// tolerance domain as [`GeometryOp::Sew`]. Healing never invents
+    /// missing geometry: an unclosable input can be silently demoted to a
+    /// lesser topological kind (e.g. Solid -> Shell) by the underlying
+    /// `ShapeFix_Shape` call, which is exactly why this op's own dispatch
+    /// evidence (`cad_occt_bridge::HealReport::kind_changed`) must never
+    /// be discarded when consumed.
+    Heal { shape: GeomId, tolerance: Quantity },
 }
 
 /// A property/validation query against an already-constructed geometry
@@ -812,6 +829,15 @@ impl GeometryGraph {
             GeometryOp::Compound { shapes } => {
                 Self::check_non_empty(shapes, "Compound.shapes", span)?;
                 self.check_geometry_operands(shapes, span)?;
+            }
+            GeometryOp::Sew { shapes, tolerance } => {
+                Self::check_non_empty(shapes, "Sew.shapes", span)?;
+                self.check_geometry_operands(shapes, span)?;
+                Self::check_dimension(tolerance, Dimension::Length, "Sew.tolerance", span)?;
+            }
+            GeometryOp::Heal { shape, tolerance } => {
+                self.check_geometry_operand(*shape, span)?;
+                Self::check_dimension(tolerance, Dimension::Length, "Heal.tolerance", span)?;
             }
         }
         let id = self.next_id();
@@ -1716,5 +1742,101 @@ mod tests {
             )
             .unwrap();
         assert!(graph.get(compound).unwrap().kind.produces_geometry());
+    }
+
+    // --- AICAD-120: sewing/healing ---
+
+    #[test]
+    fn sew_rejects_an_empty_shape_list_and_a_wrong_dimension_tolerance() {
+        let mut graph = GeometryGraph::new();
+        let empty_err = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: vec![],
+                    tolerance: length(0.001),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            empty_err,
+            GeometryIrError::EmptyOperandList { .. }
+        ));
+
+        let wire = a_wire(&mut graph);
+        let dim_err = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: vec![wire],
+                    tolerance: angle(0.001),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(dim_err, GeometryIrError::DimensionMismatch { .. }));
+    }
+
+    #[test]
+    fn sew_accepts_a_non_empty_list_of_valid_shapes() {
+        let mut graph = GeometryGraph::new();
+        let a = a_wire(&mut graph);
+        let b = a_wire(&mut graph);
+        let sewed = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: vec![a, b],
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(sewed).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn heal_rejects_an_unbuilt_operand_and_a_wrong_dimension_tolerance() {
+        let mut graph = GeometryGraph::new();
+        let not_yet_built = GeomId(0);
+        let operand_err = graph
+            .push_op(
+                GeometryOp::Heal {
+                    shape: not_yet_built,
+                    tolerance: length(0.001),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            operand_err,
+            GeometryIrError::InvalidOperand { .. }
+        ));
+
+        let wire = a_wire(&mut graph);
+        let dim_err = graph
+            .push_op(
+                GeometryOp::Heal {
+                    shape: wire,
+                    tolerance: angle(0.001),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(dim_err, GeometryIrError::DimensionMismatch { .. }));
+    }
+
+    #[test]
+    fn heal_accepts_a_valid_operand() {
+        let mut graph = GeometryGraph::new();
+        let wire = a_wire(&mut graph);
+        let healed = graph
+            .push_op(
+                GeometryOp::Heal {
+                    shape: wire,
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(healed).unwrap().kind.produces_geometry());
     }
 }

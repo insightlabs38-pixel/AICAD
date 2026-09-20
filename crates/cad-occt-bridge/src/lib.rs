@@ -405,6 +405,74 @@ impl OcctContext {
             id: handle_to_id(handle),
         })
     }
+
+    /// Sews `shapes` together (`AICAD-120`, `BRepBuilderAPI_Sewing`) at
+    /// `tolerance` (a modeling/construction-domain length, canonical
+    /// metres, `> 0` -- `project/DECISION_LOG.md#DL-24` domain 2). Also
+    /// captures Generated/Modified/IsDeleted lineage for every unique
+    /// face/edge of each input against the sewing operation itself, in
+    /// the exact same [`Lineage`] type/table `Shape::union_with_lineage`
+    /// (`AICAD-086`) already uses -- consumable identically. Returns the
+    /// sewed shape, its lineage, and a [`SewReport`] structured evidence
+    /// summary; `shapes` must be non-empty. Never sews beyond what
+    /// `BRepBuilderAPI_Sewing` itself reports -- `SewReport::is_valid`/
+    /// `free_edge_count` are the required evidence, not this call's own
+    /// success.
+    pub fn sew<'ctx>(
+        &'ctx self,
+        shapes: &[&Shape<'ctx>],
+        tolerance: f64,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>, SewReport)> {
+        if shapes.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            shapes.iter().map(|shape| id_to_handle(shape.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut report = ffi::aicad_sew_report_t::default();
+        // SAFETY: `handles` is a valid, live, contiguous array for the
+        // duration of this call; `self.raw`/`&mut handle`/
+        // `&mut lineage_handle` as in `boolean_with_lineage`; `&mut report`
+        // is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_sew(
+                self.raw,
+                handles.as_ptr(),
+                handles.len(),
+                tolerance,
+                &mut handle,
+                &mut lineage_handle,
+                &mut report,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self,
+                handle: lineage_handle,
+            },
+            SewReport {
+                changed: report.changed != 0,
+                is_valid: report.is_valid != 0,
+                free_edge_count: report.free_edge_count,
+                multiple_edge_count: report.multiple_edge_count,
+                degenerated_shape_count: report.degenerated_shape_count,
+            },
+        ))
+    }
 }
 
 impl Drop for OcctContext {
@@ -862,6 +930,53 @@ impl<'ctx> Shape<'ctx> {
             context: self.context,
             id: handle_to_id(handle),
         })
+    }
+
+    /// Repairs this shape (`AICAD-120`, `ShapeFix_Shape`) at `tolerance`
+    /// (same modeling/construction tolerance domain as
+    /// [`OcctContext::sew`], `> 0`). Returns the repaired shape and a
+    /// [`HealReport`]. Verified empirically, not assumed: this can and
+    /// does return `HealReport::is_valid_after == true` for a shape that
+    /// was NOT genuinely repaired -- an unclosable Solid (e.g. built from
+    /// far fewer faces than it needs) is silently demoted to a bare Shell
+    /// by `ShapeFix_Shape` (a Shell has no closure requirement, so it
+    /// trivially validates). [`HealReport::kind_changed`] is what
+    /// distinguishes this from a genuine repair; `is_valid_after` must
+    /// never be read as "healing succeeded" on its own. Healing never
+    /// invents missing geometry, and this call has no per-entity lineage
+    /// (see [`HealReport`]'s own doc comment for why).
+    pub fn heal(&self, tolerance: f64) -> KernelResult<(Shape<'ctx>, HealReport)> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut report = ffi::aicad_heal_report_t::default();
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`; `&mut report` is a valid out-param
+        // per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_heal(
+                self.context.raw,
+                self.raw_handle(),
+                tolerance,
+                &mut handle,
+                &mut report,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            HealReport {
+                changed: report.changed != 0,
+                is_valid_before: report.is_valid_before != 0,
+                is_valid_after: report.is_valid_after != 0,
+                kind_changed: report.kind_changed != 0,
+            },
+        ))
     }
 
     /// Linearly extrudes this planar face by `distance` along `direction`
@@ -2288,6 +2403,49 @@ pub struct ValidationReport {
     pub invalid_face_count: usize,
     pub invalid_shell_count: usize,
     pub invalid_solid_count: usize,
+}
+
+/// Structured sewing evidence, as returned by [`OcctContext::sew`]
+/// (`AICAD-120`). `free_edge_count`/`multiple_edge_count`/
+/// `degenerated_shape_count` are `BRepBuilderAPI_Sewing`'s own residual-
+/// defect counts on the *result* (a free edge remains unshared by any
+/// second face; a multiple edge is shared by more than 2, itself a
+/// non-manifold defect neither this nor `AICAD-119`'s bare `make_shell`
+/// silently repairs). `is_valid` mirrors a full [`Shape::validate`] call
+/// against the sewed result exactly (`BRepCheck_Analyzer`); `changed` is
+/// true iff at least one input face/edge was actually merged/relabeled
+/// (an already-fully-connected input, e.g. a real solid's own faces,
+/// reports `changed: false`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SewReport {
+    pub changed: bool,
+    pub is_valid: bool,
+    pub free_edge_count: usize,
+    pub multiple_edge_count: usize,
+    pub degenerated_shape_count: usize,
+}
+
+/// Structured healing evidence, as returned by [`Shape::heal`]
+/// (`AICAD-120`). **`is_valid_after` alone is never sufficient evidence
+/// that healing succeeded** -- see `kind_changed`'s own doc comment,
+/// which is exactly why this task added it. `changed` mirrors
+/// `ShapeFix_Shape::Perform`'s own return value (whether it did anything
+/// at all, coarse and not per-entity -- see [`Shape::heal`]'s own doc
+/// comment for why no finer-grained lineage is offered here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HealReport {
+    pub changed: bool,
+    pub is_valid_before: bool,
+    pub is_valid_after: bool,
+    /// Whether `ShapeFix_Shape` returned a shape of a different top-level
+    /// topological kind than its input -- verified empirically (not
+    /// assumed) to happen for an unclosable Solid, which gets silently
+    /// demoted to a bare Shell (trivially valid, since a Shell has no
+    /// closure requirement). `is_valid_after == true` together with
+    /// `kind_changed == true` means healing gave up on the shape it was
+    /// asked to fix and returned a different, lesser kind instead -- not
+    /// a genuine repair, and must not be presented as one.
+    pub kind_changed: bool,
 }
 
 /// A flat-shaded triangle-soup mesh, as returned by [`Shape::tessellate`]
@@ -3757,6 +3915,121 @@ mod tests {
             unit_square_wire(&context)
                 .make_face_on_cone(&[], axis, std::f64::consts::FRAC_PI_4, false)
                 .is_ok()
+        );
+    }
+
+    // --- AICAD-120: sewing/healing ---
+
+    #[test]
+    fn sewing_an_already_connected_solids_own_faces_is_a_deterministic_no_op() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let faces: Vec<Shape> = (0..6).map(|i| box_shape.get_face(i).unwrap()).collect();
+        let face_refs: Vec<&Shape> = faces.iter().collect();
+        let (sewed, _lineage, report) = context.sew(&face_refs, 1e-6).unwrap();
+        assert!(!report.changed);
+        assert!(report.is_valid);
+        assert_eq!(report.free_edge_count, 0);
+        assert_eq!(report.multiple_edge_count, 0);
+        assert!((sewed.volume().unwrap() - 1.0).abs() < 1e-9);
+
+        // Deterministic repeated behavior: sewing the same faces again
+        // produces the identical report.
+        let (_sewed2, _lineage2, report2) = context.sew(&face_refs, 1e-6).unwrap();
+        assert_eq!(report, report2);
+    }
+
+    #[test]
+    fn sewing_two_edge_adjacent_squares_merges_them_and_reports_the_perimeter() {
+        let context = OcctContext::new().unwrap();
+        let e0 = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let e1 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let e2 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0))
+            .unwrap();
+        let e3 = context
+            .make_line_edge(Point3::new(0.0, 1.0, 0.0), Point3::new(0.0, 0.0, 0.0))
+            .unwrap();
+        let wire1 = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        let face1 = wire1
+            .make_face_on_plane(&[], Point3::ORIGIN, Direction3::Z, false)
+            .unwrap();
+
+        let f0 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0))
+            .unwrap();
+        let f1 = context
+            .make_line_edge(Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 1.0, 0.0))
+            .unwrap();
+        let f2 = context
+            .make_line_edge(Point3::new(2.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let f3 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let wire2 = context.make_wire_from_edges(&[&f0, &f1, &f2, &f3]).unwrap();
+        let face2 = wire2
+            .make_face_on_plane(&[], Point3::ORIGIN, Direction3::Z, false)
+            .unwrap();
+
+        let (sewed, _lineage, report) = context.sew(&[&face1, &face2], 1e-6).unwrap();
+        assert!(report.changed);
+        assert!(report.is_valid);
+        // Two unit squares glued along one shared edge -> a 1x2 rectangle,
+        // whose own perimeter is 6 unique boundary edges.
+        assert_eq!(report.free_edge_count, 6);
+        assert!((sewed.area().unwrap() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sew_rejects_an_empty_shape_list() {
+        let context = OcctContext::new().unwrap();
+        assert_eq!(
+            context.sew(&[], 1e-6).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn healing_an_already_valid_box_reports_unchanged() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let (healed, report) = box_shape.heal(1e-6).unwrap();
+        assert!(!report.changed);
+        assert!(report.is_valid_before);
+        assert!(report.is_valid_after);
+        assert!(!report.kind_changed);
+        assert!((healed.volume().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn healing_an_unclosable_solid_reports_valid_after_only_alongside_kind_changed() {
+        // AICAD-120's own central discovery: ShapeFix_Shape cannot invent
+        // the 5 missing faces a solid built from a single standalone face
+        // would need to actually close, so it silently demotes the Solid
+        // to a bare Shell -- which trivially validates (no closure
+        // requirement). `is_valid_after` alone would misrepresent this as
+        // a successful repair; `kind_changed` is the required evidence
+        // that stops that misreading.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let single_face = box_shape.get_face(0).unwrap();
+        let open_shell = context.make_shell(&[&single_face]).unwrap();
+        let open_solid = open_shell.make_solid(&[]).unwrap();
+        assert!(!open_solid.validate().unwrap().is_valid);
+
+        let (_healed, report) = open_solid.heal(1e-6).unwrap();
+        assert!(report.changed);
+        assert!(!report.is_valid_before);
+        assert!(report.is_valid_after);
+        assert!(
+            report.kind_changed,
+            "a bare 'is_valid_after: true' here would silently misrepresent an unclosable \
+             solid demoted to a Shell as a genuine repair"
         );
     }
 

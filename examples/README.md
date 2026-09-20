@@ -17,7 +17,7 @@ Every file listed as **ACTIVE** below uses current supported `.aicad` syntax and
 | ACTIVE | `curves/cable_routing_path.aicad` | Realistic curve use: rational-Bezier fillet arc, line segments, closest-point clearance check |
 | ACTIVE | `surfaces/surface_query_basics.aicad` | Minimal surface/surface intersection and point-to-surface projection |
 | ACTIVE | `surfaces/pipe_clearance_check.aicad` | Realistic surface-query use: curve-to-surface clearance distance and curve/surface crossing point |
-| ACTIVE | `topology/topology_construction_basics.aicad` | Vertex/edge/wire/face/face-on-surface/shell/solid/compound construction, and the shell/solid "construction success is not validity" contract |
+| ACTIVE | `topology/topology_construction_basics.aicad` | Vertex/edge/wire/face/face-on-surface/shell/solid/compound/sew/heal construction, and the "construction success is not validity" contract |
 
 Historical `stage2_*` / `stage3_*` filenames are retained for evidence/test compatibility; ACTIVE means they still represent current supported syntax.
 

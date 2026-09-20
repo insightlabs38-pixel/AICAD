@@ -1194,6 +1194,83 @@ aicad_occt_status_t aicad_occt_make_compound(aicad_occt_context_t* context,
                                               size_t shape_count,
                                               aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-120: sewing/healing with an explicit, bounded modeling/
+ * construction tolerance policy (`project/DECISION_LOG.md#DL-24` domain
+ * 2). Neither sews/heals silently beyond what `BRepBuilderAPI_Sewing`/
+ * `ShapeFix_Shape` themselves report -- `aicad_sew_report_t`/
+ * `aicad_heal_report_t` are the required structured evidence a caller
+ * must consult before trusting the result; a non-`AICAD_OCCT_OK` status
+ * means the C++ call itself failed, never "the result is invalid" (Stage-1
+ * kernel policy #14, matching every other construction function in this
+ * header, applied here in its starkest form: `aicad_occt_heal` can and
+ * does return `AICAD_OCCT_OK` with `is_valid_after == 0`). --- */
+
+typedef struct aicad_sew_report {
+  int changed;
+  int is_valid;
+  size_t free_edge_count;
+  size_t multiple_edge_count;
+  size_t degenerated_shape_count;
+} aicad_sew_report_t;
+
+/* Sews `shapes` together (`BRepBuilderAPI_Sewing`) at `tolerance` (a
+ * modeling/construction-domain Length, canonical metres, > 0). Also
+ * captures Generated/Modified/IsDeleted lineage for every unique face/
+ * edge of each input against the sewing operation itself, in the SAME
+ * lineage table `aicad_occt_boolean_union_lineage` (`AICAD-086`) uses --
+ * `out_lineage` is consumable by the same `aicad_occt_lineage_*` query
+ * functions. Sewing never deletes an entity outright (it merges/relabels
+ * coincident boundaries) and never generates one with no traceable
+ * input, so every captured entry's own `deleted`/`generated` are always
+ * false/empty; `modified` holds at most one entry
+ * (`BRepBuilderAPI_Sewing::Modified`'s own single-result shape).
+ * `shape_count` must be >= 1. */
+aicad_occt_status_t aicad_occt_sew(aicad_occt_context_t* context,
+                                    const aicad_shape_handle_t* shapes,
+                                    size_t shape_count,
+                                    double tolerance,
+                                    aicad_shape_handle_t* out_handle,
+                                    aicad_lineage_handle_t* out_lineage,
+                                    aicad_sew_report_t* out_report);
+
+typedef struct aicad_heal_report {
+  int changed;
+  int is_valid_before;
+  int is_valid_after;
+  /* Whether `ShapeFix_Shape` returned a shape of a DIFFERENT top-level
+   * TopAbs kind than its input (e.g. an unclosable Solid silently
+   * demoted to a bare Shell). Verified empirically, not assumed: a
+   * Solid built from a single standalone Face (missing 5 of 6 faces, no
+   * possible legitimate closure) reports `is_valid_after == 1` from
+   * `BRepCheck_Analyzer` alone, because `ShapeFix_Shape` gave up closing
+   * it and returned a Shell instead -- a bare Shell has no closure
+   * requirement to fail, so it trivially validates. `is_valid_after`
+   * must NEVER be read as "healing succeeded" without also checking
+   * `kind_changed == 0`: healing never invents missing geometry to
+   * close a shape, and this field is what stops that silent kind-
+   * downgrade from being mistaken for success (the batch's own
+   * "healing is never an invisible fallback" acceptance requirement, in
+   * its sharpest concrete form). */
+  int kind_changed;
+} aicad_heal_report_t;
+
+/* Repairs `handle`'s shape (`ShapeFix_Shape`) at `tolerance` (same domain
+ * as `aicad_occt_sew`, > 0). Verified empirically, not assumed:
+ * `ShapeFix_Shape`'s own history-tracking (`ShapeBuild_ReShape::
+ * History()`) does not reliably populate for common fixes (an
+ * orientation-only correction never populates it, confirmed empirically
+ * against a hand-built inconsistently-oriented shell) -- this function
+ * therefore reports only the coarse `changed`/before/after validity
+ * evidence plus `kind_changed` (see that field's own doc comment)
+ * `aicad_heal_report_t` holds, not per-entity lineage; see
+ * `project/reports/AICAD-120.md` for the investigation and why finer-
+ * grained heal lineage is deferred rather than faked. */
+aicad_occt_status_t aicad_occt_heal(aicad_occt_context_t* context,
+                                     aicad_shape_handle_t handle,
+                                     double tolerance,
+                                     aicad_shape_handle_t* out_handle,
+                                     aicad_heal_report_t* out_report);
+
 #ifdef __cplusplus
 }
 #endif

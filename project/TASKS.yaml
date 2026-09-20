@@ -3924,7 +3924,7 @@ tasks:
 - id: AICAD-120
   stage: 5
   title: Implement topology sewing and healing with explicit bounded policy
-  status: todo
+  status: done
   depends_on:
   - AICAD-119
   - AICAD-106

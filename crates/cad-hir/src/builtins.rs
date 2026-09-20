@@ -599,6 +599,33 @@ pub enum BuiltinFnId {
     /// (vertex/edge/wire/face/shell/solid) with no closure/connectivity
     /// requirement to fail.
     Compound,
+    /// `sew(shapes: List<Geometry>, tolerance: Length) -> Geometry`
+    /// (`AICAD-120`). Pushes `GeometryOp::Sew` — merges/relabels
+    /// coincident boundaries among `shapes` at `tolerance` (a modeling/
+    /// construction-domain length, `project/DECISION_LOG.md#DL-24` domain
+    /// 2; see `cad_validation::RepairPolicy`). Deliberately narrower than
+    /// `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own
+    /// `sew(shapes, tolerance, non_manifold=false)` signature: no
+    /// `non_manifold` override yet (mirrors `Transform`'s own "escalate
+    /// rather than guess an ambiguous signature" precedent). This op alone
+    /// never proves validity — `is_valid`/`area`/`volume` on its result
+    /// are the required separate evidence, exactly like every `AICAD-119`
+    /// construction op.
+    Sew,
+    /// `heal(shape: Geometry, tolerance: Length) -> Geometry` (`AICAD-120`).
+    /// Pushes `GeometryOp::Heal` — same tolerance domain as
+    /// [`BuiltinFnId::Sew`]. Deliberately narrower than `docs/plan/
+    /// 05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own `heal(shape, profile,
+    /// tolerance?, max_tolerance?)` signature: no healing-profile/max-
+    /// tolerance parameters yet. Healing never invents missing geometry;
+    /// an unclosable input can be silently demoted to a lesser
+    /// topological kind by the underlying kernel call, so `is_valid` on
+    /// this op's own result is never sufficient evidence alone that
+    /// healing produced a genuine repair of the ORIGINAL shape's own
+    /// kind — see `cad_occt_bridge::HealReport::kind_changed`'s own doc
+    /// comment (not yet source-exposed; call `is_valid` before and after
+    /// as the source-level substitute for now).
+    Heal,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -669,7 +696,9 @@ impl BuiltinFnId {
             | BuiltinFnId::MakeFaceOnSurface
             | BuiltinFnId::MakeShell
             | BuiltinFnId::MakeSolid
-            | BuiltinFnId::Compound => BuiltinCategory::Construction,
+            | BuiltinFnId::Compound
+            | BuiltinFnId::Sew
+            | BuiltinFnId::Heal => BuiltinCategory::Construction,
             BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
                 BuiltinCategory::Query
             }
@@ -747,7 +776,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 56] = [
+    pub const ALL: [BuiltinFnId; 58] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -804,6 +833,8 @@ impl BuiltinFnId {
         BuiltinFnId::MakeShell,
         BuiltinFnId::MakeSolid,
         BuiltinFnId::Compound,
+        BuiltinFnId::Sew,
+        BuiltinFnId::Heal,
     ];
 }
 
@@ -1344,6 +1375,21 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             id: BuiltinFnId::Compound,
             name: "compound",
             params: vec![("shapes", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Sew,
+            name: "sew",
+            params: vec![
+                ("shapes", list_of("Geometry")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Heal,
+            name: "heal",
+            params: vec![("shape", named("Geometry")), ("tolerance", named("Length"))],
             return_ty: named("Geometry"),
         },
     ]

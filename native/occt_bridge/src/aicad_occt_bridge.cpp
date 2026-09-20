@@ -20,6 +20,7 @@
 #include <BRepBuilderAPI_MakeSolid.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
@@ -47,6 +48,7 @@
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <STEPControl_Writer.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
@@ -3626,6 +3628,140 @@ aicad_occt_status_t aicad_occt_make_compound(aicad_occt_context_t* context,
       builder.Add(compound, *member);
     }
     *out_handle = context->shapes.Insert(context->id, compound);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
+
+namespace {
+
+// AICAD-120: captures Generated/Modified/IsDeleted lineage for every
+// unique face/edge of each input shape against a completed sewing
+// operation -- the sewing-specific analogue of `CaptureLineage<Builder>`
+// above, needed because `BRepBuilderAPI_Sewing`'s own API shape differs
+// from `BRepAlgoAPI_BooleanOperation`'s (`IsModified`/`Modified` return a
+// single `Standard_Boolean`/`TopoDS_Shape&`, not a `TopTools_ListOfShape`,
+// and there is no `IsDeleted` at all -- sewing merges/relabels coincident
+// boundaries, it never deletes an entity outright or generates one with
+// no traceable input, so `deleted`/`generated` are always false/empty
+// here, by construction, not by omission).
+std::vector<LineageEntry> CaptureSewLineage(const BRepBuilderAPI_Sewing& sewing,
+                                             const std::vector<const TopoDS_Shape*>& inputs) {
+  std::vector<LineageEntry> entries;
+  for (const TopoDS_Shape* input : inputs) {
+    for (TopAbs_ShapeEnum kind : {TopAbs_FACE, TopAbs_EDGE}) {
+      TopTools_IndexedMapOfShape subshapes;
+      TopExp::MapShapes(*input, kind, subshapes);
+      for (Standard_Integer i = 1; i <= subshapes.Extent(); ++i) {
+        LineageEntry entry;
+        entry.input = subshapes.FindKey(i);
+        if (sewing.IsModified(entry.input)) {
+          entry.modified.push_back(sewing.Modified(entry.input));
+        }
+        entries.push_back(std::move(entry));
+      }
+    }
+  }
+  return entries;
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_sew(aicad_occt_context_t* context,
+                                    const aicad_shape_handle_t* shapes,
+                                    size_t shape_count,
+                                    double tolerance,
+                                    aicad_shape_handle_t* out_handle,
+                                    aicad_lineage_handle_t* out_lineage,
+                                    aicad_sew_report_t* out_report) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (shapes == nullptr || out_handle == nullptr || out_lineage == nullptr ||
+      out_report == nullptr || shape_count == 0 || !std::isfinite(tolerance) ||
+      tolerance <= 0.0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  std::vector<const TopoDS_Shape*> inputs;
+  inputs.reserve(shape_count);
+  for (size_t i = 0; i < shape_count; ++i) {
+    const TopoDS_Shape* shape = nullptr;
+    status = LookupAnyKind(context, shapes[i], &shape);
+    if (status != AICAD_OCCT_OK) {
+      return status;
+    }
+    inputs.push_back(shape);
+  }
+  try {
+    BRepBuilderAPI_Sewing sewing(tolerance);
+    for (const TopoDS_Shape* shape : inputs) {
+      sewing.Add(*shape);
+    }
+    sewing.Perform();
+    TopoDS_Shape result = sewing.SewedShape();
+    BRepCheck_Analyzer analyzer(result);
+    out_report->is_valid = analyzer.IsValid() ? 1 : 0;
+    out_report->free_edge_count = static_cast<size_t>(sewing.NbFreeEdges());
+    out_report->multiple_edge_count = static_cast<size_t>(sewing.NbMultipleEdges());
+    out_report->degenerated_shape_count = static_cast<size_t>(sewing.NbDegeneratedShapes());
+    std::vector<LineageEntry> entries = CaptureSewLineage(sewing, inputs);
+    bool changed = false;
+    for (const LineageEntry& entry : entries) {
+      if (!entry.modified.empty()) {
+        changed = true;
+        break;
+      }
+    }
+    out_report->changed = changed ? 1 : 0;
+    *out_handle = context->shapes.Insert(context->id, result);
+    *out_lineage = context->lineages.Insert(context->id, std::move(entries));
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_heal(aicad_occt_context_t* context,
+                                     aicad_shape_handle_t handle,
+                                     double tolerance,
+                                     aicad_shape_handle_t* out_handle,
+                                     aicad_heal_report_t* out_report) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr || out_report == nullptr || !std::isfinite(tolerance) ||
+      tolerance <= 0.0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepCheck_Analyzer before(*shape);
+    out_report->is_valid_before = before.IsValid() ? 1 : 0;
+    TopAbs_ShapeEnum kind_before = shape->ShapeType();
+    ShapeFix_Shape fixer(*shape);
+    fixer.SetPrecision(tolerance);
+    Standard_Boolean changed = fixer.Perform();
+    TopoDS_Shape fixed = fixer.Shape();
+    BRepCheck_Analyzer after(fixed);
+    out_report->changed = changed ? 1 : 0;
+    out_report->is_valid_after = after.IsValid() ? 1 : 0;
+    out_report->kind_changed = (fixed.ShapeType() != kind_before) ? 1 : 0;
+    *out_handle = context->shapes.Insert(context->id, fixed);
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

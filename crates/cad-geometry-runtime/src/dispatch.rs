@@ -432,6 +432,27 @@ fn dispatch_op<'ctx>(
             let member_shapes = shape_operands(results, id, shapes, span)?;
             kernel_op(id, span, "Compound", ctx.make_compound(&member_shapes))?
         }
+        GeometryOp::Sew { shapes, tolerance } => {
+            let member_shapes = shape_operands(results, id, shapes, span)?;
+            kernel_op(
+                id,
+                span,
+                "Sew",
+                ctx.sew(&member_shapes, mag(tolerance))
+                    .map(|(shape, _lineage, _report)| shape),
+            )?
+        }
+        GeometryOp::Heal { shape, tolerance } => {
+            let target_shape = shape_operand(results, id, *shape, span)?;
+            kernel_op(
+                id,
+                span,
+                "Heal",
+                target_shape
+                    .heal(mag(tolerance))
+                    .map(|(shape, _report)| shape),
+            )?
+        }
     };
     Ok(NodeResult::Shape(shape))
 }
@@ -575,6 +596,8 @@ fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
             ids
         }
         GeometryOp::Compound { shapes } => shapes.clone(),
+        GeometryOp::Sew { shapes, .. } => shapes.clone(),
+        GeometryOp::Heal { shape, .. } => vec![*shape],
     }
 }
 
@@ -773,6 +796,12 @@ fn dispatch_op_with_lineage<'ctx>(
                 "Chamfer",
                 target_shape.chamfer_with_lineage(&edge_refs, mag(distance)),
             )?;
+            Ok((NodeResult::Shape(shape), Some(lineage)))
+        }
+        GeometryOp::Sew { shapes, tolerance } => {
+            let member_shapes = shape_operands(results, id, shapes, span)?;
+            let (shape, lineage, _report) =
+                kernel_op(id, span, "Sew", ctx.sew(&member_shapes, mag(tolerance)))?;
             Ok((NodeResult::Shape(shape), Some(lineage)))
         }
         other => {
@@ -2247,6 +2276,198 @@ mod tests {
         match &results[valid_q.index() as usize] {
             NodeResult::Bool(valid) => assert!(*valid),
             other => panic!("expected Bool, got {other:?}"),
+        }
+    }
+
+    // --- AICAD-120: sewing/healing dispatch ---
+
+    #[test]
+    fn sewing_two_edge_adjacent_planar_faces_dispatches_to_the_merged_area() {
+        let mut graph = GeometryGraph::new();
+        let outer1 = unit_square_wire(&mut graph);
+        let face1 = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: cad_kernel_api::Direction3::Z,
+                    },
+                    outer: outer1,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let e0 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(1.0, 0.0, 0.0),
+                    end: Point3::new(2.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let e1 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(2.0, 0.0, 0.0),
+                    end: Point3::new(2.0, 1.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let e2 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(2.0, 1.0, 0.0),
+                    end: Point3::new(1.0, 1.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let e3 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(1.0, 1.0, 0.0),
+                    end: Point3::new(1.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let outer2 = graph
+            .push_op(
+                GeometryOp::WireFromEdges {
+                    edges: vec![e0, e1, e2, e3],
+                },
+                span(),
+            )
+            .unwrap();
+        let face2 = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: cad_kernel_api::Direction3::Z,
+                    },
+                    outer: outer2,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let sewed = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: vec![face1, face2],
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        let area_q = graph
+            .push_query(GeometryQuery::Area(sewed), span())
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(sewed), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => assert!((*area - 2.0).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
+        }
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sewing_a_solids_own_already_connected_faces_dispatches_with_lineage_captured() {
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let faces: Vec<GeomId> = (0..6)
+            .map(|i| {
+                graph
+                    .push_op(
+                        GeometryOp::GetFace {
+                            target: source_box,
+                            face: FaceIndex(i),
+                        },
+                        span(),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        let sewed = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: faces,
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results, _stats, lineage_table) =
+            dispatch_graph_incremental_with_lineage(&graph, &ctx, None, &HashSet::new())
+                .expect("dispatch should succeed");
+        assert!(
+            lineage_table.iter().any(|(id, _)| *id == sewed),
+            "Sew must capture lineage"
+        );
+        match &results[sewed.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!((shape.volume().unwrap() - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn healing_an_already_valid_solid_dispatches_unchanged() {
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let healed = graph
+            .push_op(
+                GeometryOp::Heal {
+                    shape: source_box,
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        let volume_q = graph
+            .push_query(GeometryQuery::Volume(healed), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[volume_q.index() as usize] {
+            NodeResult::Number(volume) => assert!((*volume - 1.0).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
         }
     }
 }
