@@ -580,6 +580,36 @@ unsafe extern "C" {
         handle: aicad_shape_handle_t,
         out_is_forward: *mut c_int,
     ) -> c_int;
+
+    // --- AICAD-123: functional raw topology editing ---
+    pub fn aicad_occt_remove_face(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        faces_to_remove: *const aicad_shape_handle_t,
+        face_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_replace_face(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        old_face_handle: aicad_shape_handle_t,
+        new_face_handle: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_split_edge(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        params: *const f64,
+        param_count: usize,
+        out_handles: *mut aicad_shape_handle_t,
+        out_handle_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_merge_faces(
+        context: *mut aicad_occt_context_t,
+        faces: *const aicad_shape_handle_t,
+        face_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t

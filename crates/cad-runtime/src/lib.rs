@@ -80,6 +80,7 @@ pub mod feature_trace;
 pub mod interp;
 pub mod params;
 pub mod query_exec;
+pub mod raw_exec;
 pub mod spatial;
 pub mod value;
 
@@ -88,5 +89,6 @@ pub use feature_trace::{CallPath, PathFrame, TraceEntry};
 pub use interp::Interpreter;
 pub use params::{ParamDecl, ParamId, ParamModel, ParamModelError, ParamOverrides};
 pub use query_exec::{KernelQueryError, KernelQueryExecutor, QueryOutcome};
+pub use raw_exec::{RawEditError, RawEditExecutor, RawEditOp, RawEditOutcome, RawEditResult};
 pub use spatial::SpatialValueError;
 pub use value::{NumberValue, RangeValue, Value, VariantPayload};

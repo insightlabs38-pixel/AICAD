@@ -47,6 +47,8 @@
 pub mod bridge;
 pub mod dispatch;
 pub mod query_bridge;
+pub mod raw_exec;
+pub mod raw_registry;
 pub mod sketch_lowering;
 
 pub use bridge::number_value_to_quantity;
@@ -55,4 +57,6 @@ pub use dispatch::{
     dispatch_graph_incremental, dispatch_graph_incremental_with_lineage,
 };
 pub use query_bridge::OcctQueryExecutor;
+pub use raw_exec::OcctRawEditExecutor;
+pub use raw_registry::RawShapeRegistry;
 pub use sketch_lowering::{LoweredFace, SketchLoweringError, lower_profile_to_face};

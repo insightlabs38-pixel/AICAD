@@ -611,6 +611,18 @@ pub enum RuntimeError {
         span: Span,
         reason: String,
     },
+    /// A configured [`crate::raw_exec::RawEditExecutor`] genuinely failed
+    /// to perform a raw-tier edit (`AICAD-123`) -- a real kernel-side
+    /// error (e.g. an out-of-range face index, a degenerate edge with no
+    /// underlying curve, an unsupported input shape). Distinct from
+    /// [`RuntimeError::RawTierUnavailable`] (no executor configured at
+    /// all), mirroring [`RuntimeError::KernelQueryFailed`]'s own identical
+    /// split for the query executor.
+    RawEditFailed {
+        name: &'static str,
+        span: Span,
+        message: String,
+    },
 }
 
 impl RuntimeError {
@@ -670,6 +682,7 @@ impl RuntimeError {
             RuntimeError::UnsupportedTopologyConstruction { .. } => "RUNTIME-E143".to_string(),
             RuntimeError::RawTierUnavailable { .. } => "RUNTIME-E144".to_string(),
             RuntimeError::RawHandleStale { .. } => "RUNTIME-E145".to_string(),
+            RuntimeError::RawEditFailed { .. } => "RUNTIME-E146".to_string(),
         }
     }
 
@@ -739,7 +752,8 @@ impl RuntimeError {
             | RuntimeError::GeometricQueryFailed { span, .. }
             | RuntimeError::UnsupportedTopologyConstruction { span, .. }
             | RuntimeError::RawTierUnavailable { span, .. }
-            | RuntimeError::RawHandleStale { span, .. } => *span,
+            | RuntimeError::RawHandleStale { span, .. }
+            | RuntimeError::RawEditFailed { span, .. } => *span,
         }
     }
 
@@ -799,6 +813,7 @@ impl RuntimeError {
             }
             RuntimeError::RawTierUnavailable { .. } => "RAW_TIER_UNAVAILABLE",
             RuntimeError::RawHandleStale { .. } => "RAW_HANDLE_STALE",
+            RuntimeError::RawEditFailed { .. } => "RAW_EDIT_FAILED",
         }
     }
 
@@ -960,6 +975,9 @@ impl RuntimeError {
             ),
             RuntimeError::RawHandleStale { name, reason, .. } => {
                 format!("'{name}' received a stale raw handle: {reason}")
+            }
+            RuntimeError::RawEditFailed { name, message, .. } => {
+                format!("'{name}' failed: {message}")
             }
         }
     }

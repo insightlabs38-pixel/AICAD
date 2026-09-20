@@ -167,6 +167,7 @@
 use crate::error::RuntimeError;
 use crate::feature_trace::{CallPath, PathFrame, TraceEntry};
 use crate::query_exec::{KernelQueryExecutor, QueryOutcome};
+use crate::raw_exec::{RawEditExecutor, RawEditOp, RawEditResult};
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
 use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
@@ -182,7 +183,7 @@ use cad_hir::hir::{
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::{HirType, HirTypeRef};
-use cad_kernel_api::topology::TopologyKind;
+use cad_kernel_api::topology::{ClassifiedShape, TopologyKind};
 use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Point3, Transform, Vector3};
 use cad_types::{AffineKind, Dimension, PrimitiveType};
 use cad_units::{
@@ -328,6 +329,16 @@ pub struct Interpreter<'a> {
     /// D22's own "explicitly invalid once its owning context/epoch is
     /// invalid" guarantee.
     epoch_counter: Option<&'a EpochCounter>,
+    /// The real raw-tier editing dispatcher (`AICAD-123`) `remove_face`/
+    /// `replace_face`/`split_edge`/`merge_faces` demand-dispatch through —
+    /// see [`crate::raw_exec`]'s own module doc comment for why this crate
+    /// takes a trait object here rather than depending on
+    /// `cad-geometry-runtime` directly (identical reasoning to
+    /// [`Interpreter::query_executor`]). `None` (the default) for every
+    /// interpreter that never needs real raw-edit results, in which case a
+    /// raw-editing builtin call fails cleanly with
+    /// `RuntimeError::RawTierUnavailable`.
+    raw_edit_executor: Option<&'a dyn RawEditExecutor>,
     /// The current dynamic call/loop-iteration nesting (`AICAD-107`,
     /// `project/DECISION_LOG.md#DL-27`) — the live stack a `RuntimeBuiltin`
     /// geometry call's own [`CallPath`] is built from at the moment it
@@ -545,6 +556,7 @@ impl<'a> Interpreter<'a> {
             query_executor: None,
             queries_consumed: 0,
             epoch_counter: None,
+            raw_edit_executor: None,
             call_path_stack: Vec::new(),
             binding_provenance: HashMap::new(),
             trace: Vec::new(),
@@ -572,6 +584,18 @@ impl<'a> Interpreter<'a> {
     /// unaffected.
     pub fn with_epoch_counter(mut self, counter: &'a EpochCounter) -> Self {
         self.epoch_counter = Some(counter);
+        self
+    }
+
+    /// Configures the real raw-tier editing dispatcher (`AICAD-123`)
+    /// `remove_face`/`replace_face`/`split_edge`/`merge_faces` demand-
+    /// dispatch through — see [`Interpreter::raw_edit_executor`]'s own doc
+    /// comment. A builder method, for the identical reason
+    /// [`Interpreter::with_query_executor`]/[`Interpreter::
+    /// with_epoch_counter`] are: every existing call site that never
+    /// touches raw editing is unaffected.
+    pub fn with_raw_edit_executor(mut self, executor: &'a dyn RawEditExecutor) -> Self {
+        self.raw_edit_executor = Some(executor);
         self
     }
 
@@ -2144,6 +2168,21 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Str(classified.kind.to_string()));
         }
 
+        // The raw/unsafe geometry tier's own editing builtins (`AICAD-123`)
+        // — unlike `RawTopologyKindOf` above, these dispatch a real kernel
+        // call through the already-materialized handle(s), so they are
+        // factored into their own method for the identical reason
+        // `Interpreter::dispatch_curve_builtin`'s own doc comment gives.
+        if matches!(
+            id,
+            BuiltinFnId::RemoveFace
+                | BuiltinFnId::ReplaceFace
+                | BuiltinFnId::SplitEdge
+                | BuiltinFnId::MergeFaces
+        ) {
+            return self.dispatch_raw_edit_builtin(id, name, params, frame, span);
+        }
+
         // Pushes one `GeometryOp` node onto this run's own accumulated
         // `Interpreter::geometry` graph — every builtin arm below ends in
         // one or more calls to this, per this function's own doc comment
@@ -2553,7 +2592,11 @@ impl<'a> Interpreter<'a> {
                     "query builtins return early above, before this Construction-only match"
                 )
             }
-            BuiltinFnId::RawTopologyKindOf => unreachable!(
+            BuiltinFnId::RawTopologyKindOf
+            | BuiltinFnId::RemoveFace
+            | BuiltinFnId::ReplaceFace
+            | BuiltinFnId::SplitEdge
+            | BuiltinFnId::MergeFaces => unreachable!(
                 "raw-tier builtins return early above, before this Construction-only match"
             ),
             BuiltinFnId::LineCurve
@@ -2592,6 +2635,143 @@ impl<'a> Interpreter<'a> {
             ),
         };
         Ok(Value::Geometry(node))
+    }
+
+    /// The `AICAD-123` raw-tier editing half of [`Interpreter::
+    /// dispatch_builtin`] (`BuiltinFnId::RemoveFace`/`ReplaceFace`/
+    /// `SplitEdge`/`MergeFaces`) — factored into its own method for the
+    /// identical reason [`Interpreter::dispatch_curve_builtin`]'s own doc
+    /// comment gives (keeps every other `dispatch_builtin` call's own stack
+    /// frame free of these locals). Every `Value::Raw` argument is
+    /// epoch-checked against `self.epoch_counter` before use (D22: a stale
+    /// or foreign-session handle must never reach a real kernel call), and
+    /// every result is minted at the *current* epoch — never the input
+    /// handle's own — matching `enter_raw`'s identical minting convention.
+    /// Charges [`Interpreter::consume_query_budget`] exactly like a
+    /// `Query`-category builtin: a raw edit is a real, potentially
+    /// expensive kernel call, the same resource-budget rationale
+    /// `RuntimeError::QueryBudgetExceeded`'s own doc comment gives.
+    fn dispatch_raw_edit_builtin(
+        &mut self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let counter = self
+            .epoch_counter
+            .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+        let raw_shape = |value: &Value| -> EvalResult<ClassifiedShape> {
+            match value {
+                Value::Raw(handle) => handle.get(counter).copied().map_err(|stale| {
+                    RuntimeError::RawHandleStale {
+                        name,
+                        span,
+                        reason: stale.to_string(),
+                    }
+                    .into()
+                }),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_list = |value: &Value| -> EvalResult<Vec<usize>> {
+            match value {
+                Value::List(items) => items.iter().map(usize_value).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let float_list = |value: &Value| -> EvalResult<Vec<f64>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let bool_value = |value: &Value| -> EvalResult<bool> {
+            match value {
+                Value::Bool(b) => Ok(*b),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let tolerance = |value: &Value| -> EvalResult<f64> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+
+        let op = match id {
+            BuiltinFnId::RemoveFace => RawEditOp::RemoveFace {
+                shape: raw_shape(arg(0)?)?,
+                faces: usize_list(arg(1)?)?,
+                heal: bool_value(arg(2)?)?,
+                tolerance: tolerance(arg(3)?)?,
+            },
+            BuiltinFnId::ReplaceFace => RawEditOp::ReplaceFace {
+                shape: raw_shape(arg(0)?)?,
+                face_index: usize_value(arg(1)?)?,
+                replacement: raw_shape(arg(2)?)?,
+                heal: bool_value(arg(3)?)?,
+                tolerance: tolerance(arg(4)?)?,
+            },
+            BuiltinFnId::SplitEdge => RawEditOp::SplitEdge {
+                edge: raw_shape(arg(0)?)?,
+                params: float_list(arg(1)?)?,
+            },
+            BuiltinFnId::MergeFaces => RawEditOp::MergeFaces {
+                shape: raw_shape(arg(0)?)?,
+                faces: usize_list(arg(1)?)?,
+            },
+            _ => unreachable!("guarded by dispatch_builtin's own matches! before delegating here"),
+        };
+
+        self.consume_query_budget(span)?;
+        let executor = self
+            .raw_edit_executor
+            .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+        let outcome = executor
+            .execute(op)
+            .map_err(|err| RuntimeError::RawEditFailed {
+                name,
+                span,
+                message: err.message,
+            })?;
+        match outcome.result {
+            RawEditResult::Single(classified) => Ok(Value::Raw(counter.mint(classified))),
+            RawEditResult::Multiple(classified_list) => Ok(Value::List(
+                classified_list
+                    .into_iter()
+                    .map(|c| Value::Raw(counter.mint(c)))
+                    .collect(),
+            )),
+        }
     }
 
     /// The `AICAD-109` curve-construction/evaluation half of
@@ -4631,6 +4811,10 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::ClassifyPoint => "classify_point",
         BuiltinFnId::EnterRaw => "enter_raw",
         BuiltinFnId::RawTopologyKindOf => "raw_topology_kind_of",
+        BuiltinFnId::RemoveFace => "remove_face",
+        BuiltinFnId::ReplaceFace => "replace_face",
+        BuiltinFnId::SplitEdge => "split_edge",
+        BuiltinFnId::MergeFaces => "merge_faces",
     }
 }
 

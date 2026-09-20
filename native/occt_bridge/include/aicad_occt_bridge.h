@@ -1308,6 +1308,78 @@ aicad_occt_status_t aicad_occt_shape_is_forward_oriented(aicad_occt_context_t* c
                                                           aicad_shape_handle_t handle,
                                                           int* out_is_forward);
 
+/* --- AICAD-123: functional raw topology editing (`project/DECISION_LOG.md
+ * #DL-24` (D22)). Every entity argument is a handle the caller already
+ * resolved by raw index against a live shape (e.g. via
+ * `aicad_occt_shape_get_face`) -- none of these functions resolves an
+ * index itself, mirroring `aicad_occt_shell`'s own `faces_to_remove`
+ * convention. As with every other construction function in this header, a
+ * non-`AICAD_OCCT_OK` status means the C++ call itself failed; it never
+ * means "the result is invalid" -- callers must separately consult
+ * `aicad_occt_shape_is_valid`/`aicad_occt_shape_validate` (Stage-1 kernel
+ * policy #14). Optional healing after an edit is the caller's own
+ * separate `aicad_occt_heal` call, not built into these functions --
+ * keeps each edit's own native surface minimal and reuses the existing,
+ * already-tested healing primitive rather than duplicating it. --- */
+
+/* Removes `faces_to_remove` (>= 1, each obtained from `shape_handle`
+ * itself) from `shape_handle` via `BRepTools_ReShape::Remove`+`Apply` --
+ * an explicit deletion, distinct from `aicad_occt_shell`'s thickening/
+ * offsetting removal. The result is commonly an open shape (removing a
+ * boundary face necessarily opens the shape there); validity is the
+ * caller's own separate concern, per this section's own doc comment. */
+aicad_occt_status_t aicad_occt_remove_face(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t shape_handle,
+                                            const aicad_shape_handle_t* faces_to_remove,
+                                            size_t face_count,
+                                            aicad_shape_handle_t* out_handle);
+
+/* Replaces `old_face_handle` (a subshape of `shape_handle`) with
+ * `new_face_handle` throughout `shape_handle`
+ * (`BRepTools_ReShape::Replace`+`Apply`). If `old_face_handle` does not
+ * actually occur within `shape_handle`'s own subshape tree, `Apply`
+ * silently returns `shape_handle` unchanged (an OCCT `ReShape` property,
+ * not a bug in this wrapper) -- callers needing to detect that should
+ * compare the result's own entity count/kind against the input, not
+ * assume this call's `AICAD_OCCT_OK` status alone proves a real edit
+ * happened. */
+aicad_occt_status_t aicad_occt_replace_face(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t shape_handle,
+                                             aicad_shape_handle_t old_face_handle,
+                                             aicad_shape_handle_t new_face_handle,
+                                             aicad_shape_handle_t* out_handle);
+
+/* Splits `edge_handle`'s own underlying curve at `params` (strictly
+ * increasing, each strictly interior to the edge's own parameter range --
+ * a param at or beyond either end is rejected as
+ * `AICAD_OCCT_ERR_INVALID_ARGUMENT` rather than producing a degenerate
+ * zero-length segment), producing `param_count + 1` new edges
+ * (`BRepBuilderAPI_MakeEdge` per segment) written into the caller-owned
+ * `out_handles` buffer (which must hold at least `param_count + 1`
+ * entries) in ascending-parameter order; `*out_handle_count` is always set
+ * to `param_count + 1` on success. Fails with
+ * `AICAD_OCCT_ERR_OPERATION_FAILED` for a degenerate edge with no
+ * underlying 3D curve (`BRep_Tool::Curve` returns null). */
+aicad_occt_status_t aicad_occt_split_edge(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t edge_handle,
+                                           const double* params,
+                                           size_t param_count,
+                                           aicad_shape_handle_t* out_handles,
+                                           size_t* out_handle_count);
+
+/* Merges `faces` (>= 2, same-domain adjacent faces expected) into as few
+ * faces as their shared underlying geometry allows
+ * (`ShapeUpgrade_UnifySameDomain` over a compound of `faces`). The result
+ * may collapse to a single Face (full merge), or remain a Compound/Shell
+ * of more than one Face if not every input pair is actually same-domain
+ * adjacent -- callers distinguish the two by classifying the result's own
+ * top-level kind (`aicad_occt_shape_kind`), not by this call's status
+ * alone. */
+aicad_occt_status_t aicad_occt_merge_faces(aicad_occt_context_t* context,
+                                            const aicad_shape_handle_t* faces,
+                                            size_t face_count,
+                                            aicad_shape_handle_t* out_handle);
+
 #ifdef __cplusplus
 }
 #endif

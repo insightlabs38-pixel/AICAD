@@ -60,106 +60,76 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Batch `S5-06` is complete** on `claude/aicad-stage5-dev` (`S5-00`
-through `S5-05` were completed and handed off previously — see
-`project/reports/AICAD-101.md` through `AICAD-118.md`; this section now
-reflects `S5-06`'s completion, earlier batches' own summaries retired from
-this file per its own "current state, not an appended diary" convention):
+**Batch `S5-06` (`AICAD-119..121`, topology construction/healing/
+inspection) is complete** — see `project/reports/AICAD-119.md` through
+`AICAD-121.md` for full detail (retired from this file per its own
+"current state, not an appended diary" convention now that `S5-07` is the
+active batch). Carried-forward disclosed limitations from `S5-00`-`S5-06`
+(see each task's own report, not repeated here): `AICAD-105`'s full-graph
+query redispatch; `AICAD-107`'s conservative nested-call provenance
+approximation; `AICAD-109`'s arcs cannot wrap through angle zero;
+`AICAD-110`'s B-splines cannot be periodic; `AICAD-111`'s `offset_curve`
+exact only for Line/Circle/Arc; `AICAD-113`'s ring-torus-only scope;
+`AICAD-114`'s B-spline surfaces cannot be periodic; `AICAD-115`'s trim
+loops must already be one closed curve; `AICAD-116`'s offset is
+`UnsupportedFamily` for freeform/trimmed surfaces; `AICAD-117`'s
+`intersect_surfaces` exact only for Plane-Plane/Plane-Sphere/
+Sphere-Sphere; `AICAD-119`'s hand-built independent faces cannot be
+assembled into a `BRepCheck`-valid shell by sharing raw edge handles
+alone; `AICAD-120`'s heal has no per-entity lineage and its `sew`/`heal`
+builtins return only `Geometry`, not the full report; `AICAD-121`'s
+`topology_wire_at` is not source-exposed and `is_forward_oriented`
+collapses 4 orientation values to a bool.
 
-- `AICAD-119` (general topology construction — `make_vertex`/`make_edge`/
-  `make_wire`/`make_face`/`make_face_on_surface`/`make_shell`/`make_solid`/
-  `compound`, plus exact `ValidationReport` validity evidence extended
-  with `invalid_shell_count`/`invalid_solid_count`; established the
-  "construction success is never proof of validity" evidence pattern this
-  whole batch follows) — `project/reports/AICAD-119.md`.
-- `AICAD-120` (sewing/healing — `sew`/`heal` with an explicit
-  modeling/construction tolerance policy (`RepairPolicy`,
-  `project/DECISION_LOG.md#DL-24` domain 2); discovered and disclosed a
-  critical finding, that `ShapeFix_Shape` can silently demote an
-  unclosable Solid to a trivially-valid Shell, fixed by adding
-  `HealReport::kind_changed` evidence rather than trusting bare
-  `is_valid_after`) — `project/reports/AICAD-120.md`.
-- `AICAD-121` (deterministic topology traversal/inspection —
-  `topology_kind_of`, six `*_count` entity-count builtins, four raw-index
-  selectors (`topology_face_at`/`topology_edge_at`/`topology_vertex_at`/
-  `adjacent_face_at`, the last built on a new `adjacent_face_count`),
-  `is_outer_wire`/`is_same_entity`/`is_forward_oriented`/`vertex_point`/
-  `classify_point`. Query-category dispatch cannot mint new `GeomId`
-  nodes, which rules out a literal `docs/plan`-shaped
-  `topology_faces(shape) -> Iterator<FaceRef>`; resolved by pairing a
-  Query-category count with Construction-category indexed access instead
-  — every enumerable entity kind is still source-reachable, just via two
-  primitives instead of one iterator type) — `project/reports/AICAD-121.md`.
+**`S5-07` (`AICAD-122..124`, raw/unsafe geometry tier) is in progress —
+`AICAD-122` and `AICAD-123` are done, `AICAD-124` remains:**
 
-All required checks pass: `cargo fmt --all -- --check`, `cargo clippy
---workspace --all-targets --all-features -- -D warnings`, the full `cargo
-test --workspace` (1738 passed, 0 failed across every crate), and the
-native OCCT bridge CMake build plus CTest (18/18). `cad-query`'s own suite
-(98 tests) is unaffected. Automatic geometry-fingerprint recovery remains
-disabled.
+- `AICAD-122` (controlled raw/unsafe geometry tier with epoch-bound
+  handles) — `cad_geometry_api::raw::RawGeometry`
+  (`RawHandle<ClassifiedShape>`, reusing `AICAD-093`'s/`108`'s existing
+  epoch/classification primitives with no new mechanism), a fourth opaque
+  `CheckedType::Raw`, `enter_raw` (the sole entry point) and
+  `raw_topology_kind_of`. Adversarial evidence: stale-epoch, wrong-context,
+  dropped/rebuilt-owner, handle-reuse rejection; type-level rejection of
+  `Raw`/`Geometry` cross-use. See `project/reports/AICAD-122.md`.
+- `AICAD-123` (functional raw topology editing with lineage/change
+  evidence) — 4 new native ops (`remove_face`/`replace_face`/`split_edge`/
+  `merge_faces`, `BRepTools_ReShape`/`ShapeUpgrade_UnifySameDomain`-backed)
+  and matching builtins (`BuiltinCategory::Raw`, extending `AICAD-122`'s
+  own category). **Found and fixed a real bug along the way**: `enter_raw`'s
+  own minted handle was already stale by the time any later kernel call
+  tried to resolve it (a call-local `GraphResults` table released its own
+  native slot the instant `OcctQueryExecutor::execute` returned) — fixed by
+  a new `cad_geometry_runtime::raw_registry::RawShapeRegistry`, owned by
+  `ParametricBuildSession` for a whole rebuild round and cleared alongside
+  `EpochCounter::advance`, that both `OcctQueryExecutor` and the new
+  `OcctRawEditExecutor` retain every result shape through. Real
+  `OperationReport<ClassifiedShape>` evidence per operation (not yet
+  source-exposed, matching `AICAD-120`'s own disclosed precedent). See
+  `project/reports/AICAD-123.md`.
 
-Known, explicitly-disclosed limitations carried forward from `S5-00`-`S5-05`
-(see each task's own report): `AICAD-107`'s conservative nested-call
-provenance approximation; `AICAD-105`'s full-graph query redispatch;
-`AICAD-106`'s `ApproximationTolerance` has no default constructor;
-`AICAD-109`'s arcs cannot wrap through angle zero; `AICAD-110`'s B-splines
-cannot be periodic; `AICAD-111`'s `offset_curve` is exact only for
-Line/Circle/Arc; `AICAD-113`'s ring-torus-only scope; `AICAD-114`'s
-B-spline surfaces cannot be periodic; `AICAD-115`'s trim loops must already
-be one closed curve; `AICAD-116`'s offset is `UnsupportedFamily` for
-freeform/trimmed surfaces; `AICAD-117`'s `intersect_surfaces` is exact only
-for `Plane`-`Plane`/`Plane`-`Sphere`/`Sphere`-`Sphere`. New this batch:
-`AICAD-119`'s hand-built independent faces cannot be assembled into a
-`BRepCheck`-valid shell by sharing raw edge handles alone (disclosed, not
-solved — the box-reassembly-via-`GetFace` case is the positive-path
-evidence instead), and `make_face_on_surface` on a quadric can construct
-successfully but be geometrically degenerate (zero area) for a wire with
-no extent along the surface's own free parameter; `AICAD-120`'s heal has
-no per-entity lineage (`ShapeFix_Shape`'s own `History()` does not
-reliably populate) and its `sew`/`heal` builtins return only `Geometry`,
-not the full `SewReport`/`HealReport`; `AICAD-121`'s `topology_wire_at` is
-not source-exposed (the underlying `GetWire` op exists and is tested),
-`is_forward_oriented` collapses 4 `TopAbs_Orientation` values to a bool,
-and no dedicated fixture exercises a face-with-a-hole's own traversal
-counts.
+Neither task modified `examples/topology/topology_construction_basics.aicad`:
+every raw-tier builtin needs a real kernel call, and `AICAD-121` already
+established that such builtins are proven in a dedicated
+`crates/cad-cli/tests/` file (`stage5_raw_geometry.rs`,
+`stage5_raw_editing.rs`), not the structurally-only-built ACTIVE example.
 
-`S5-07` is in progress: `AICAD-122` (controlled raw/unsafe geometry tier
-with epoch-bound handles) is done —
-`cad_geometry_api::raw::RawGeometry` (`RawHandle<ClassifiedShape>`, reusing
-`AICAD-093`'s/`108`'s existing epoch/classification primitives with no new
-mechanism), a fourth opaque `CheckedType::Raw` alongside `Geometry`/`Curve`/
-`Surface`, two new builtins (`enter_raw`, the sole entry point, `Query`-
-category; `raw_topology_kind_of`, a new `BuiltinCategory::Raw` — epoch-
-checked data access, no kernel call), and `Interpreter::epoch_counter`/
-`with_epoch_counter` wired into `ParametricBuildSession::rebuild` alongside
-the existing query executor. Adversarial evidence: stale-epoch, wrong-
-context, dropped/rebuilt-owner, and handle-reuse rejection, all proven
-against real `EpochCounter`s (unit + `cad-cli` production-path tests using
-two independent real `OcctContext`/`ParametricBuildSession` pairs and two
-real rebuild rounds); type-level rejection of passing `Raw` where
-`Geometry` is expected (and vice versa) proven in `cad-hir`. No native
-bridge changes were needed (`Shape::handle()`/`topology_kind()` already
-existed). `enter_raw`/`raw_topology_kind_of` are deliberately **not** added
-to `examples/topology/topology_construction_basics.aicad` — that file only
-structurally builds with no real kernel context, and `AICAD-121` already
-established the identical boundary for its own `Query`-category builtins,
-proven instead in a dedicated `crates/cad-cli/tests/` file
-(`stage5_raw_geometry.rs`, mirroring `stage5_topology_inspection.rs`). See
-`project/reports/AICAD-122.md`.
-
-All required checks pass: `cargo fmt --all -- --check`, `cargo clippy
---workspace --all-targets --all-features -- -D warnings`, `cargo test -p
-cad-references -p cad-kernel-api -p cad-occt-bridge -p cad-runtime -p
-cad-cli`, and the full `cargo test --workspace` (1751 passed, 0 failed).
-The native OCCT bridge CMake/CTest suite was not re-run (no native source
-touched by this task).
+All required checks pass as of `AICAD-123`: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+`cargo test -p cad-kernel-api -p cad-occt-bridge -p cad-geometry-runtime
+-p cad-references` (and `AICAD-122`'s own `-p cad-references -p
+cad-kernel-api -p cad-occt-bridge -p cad-runtime -p cad-cli`), the full
+`cargo test --workspace` (1778 passed, 0 failed), and a standalone native
+OCCT bridge CMake build (all targets) + CTest (18/18, pre-existing native
+suite, unaffected).
 
 Per the fixed batch order, the next invocation resumes `S5-07` at
-`AICAD-123` (functional raw topology editing with lineage/change
-evidence — deletion/replacement/split/merge, `docs/plan/
-05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`), followed by `AICAD-124`
-(raw-to-safe adoption). Both depend on `AICAD-122` (satisfied) and are
-expected to need real native OCCT bridge additions for the edit operations
-themselves, unlike `AICAD-122`.
+`AICAD-124` (explicit raw-to-safe validation and adoption — depends on
+`AICAD-123`, satisfied), completing the batch. It reuses
+`cad_geometry_api::adoption::{AdoptionOutcome, AdoptionEvidence,
+AdoptionRejection}` (`AICAD-108`, already defined, not yet wired to real
+validation) and `Shape::resolve`/`RawShapeRegistry` (`AICAD-122`/`123`).
+After `AICAD-124`, `S5-07` is complete and the next invocation begins
+`S5-08` (`AICAD-125..126`: lineage/reference integrity + Checkpoint C).
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

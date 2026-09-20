@@ -94,7 +94,8 @@ use std::ops::Range;
 use cad_diagnostics::{Diagnostic, Severity};
 use cad_feature_graph::TraceFeatureGraph;
 use cad_geometry_runtime::{
-    GraphResults, IncrementalStats, OcctQueryExecutor, dispatch_graph_incremental_with_lineage,
+    GraphResults, IncrementalStats, OcctQueryExecutor, OcctRawEditExecutor, RawShapeRegistry,
+    dispatch_graph_incremental_with_lineage,
 };
 use cad_hir::ids::BindingId;
 use cad_hir::lower::LowerResult;
@@ -424,6 +425,15 @@ pub struct ParametricBuildSession<'ctx> {
     /// this is the real integration `AICAD-093`'s own report named as
     /// this task's job.
     epoch: EpochCounter,
+    /// Keeps every raw/unsafe-tier shape (`AICAD-123`) this session has
+    /// minted or edited so far alive against `ctx`, past whatever
+    /// call-local dispatch produced it — see
+    /// `cad_geometry_runtime::raw_registry`'s own module doc comment for
+    /// the real bug this fixes. Cleared at the start of every
+    /// [`ParametricBuildSession::rebuild`] round, alongside `self.epoch`'s
+    /// own advance: every raw handle minted before that point is about to
+    /// become epoch-stale anyway.
+    raw_shapes: RawShapeRegistry<'ctx>,
     /// Real per-round `Face` lineage evidence (`AICAD-094`) — see
     /// `crate::reference_replay`'s own module doc comment for exactly
     /// which features this covers and why.
@@ -494,6 +504,7 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             prior_results: None,
             last_globals: HashMap::new(),
             epoch: EpochCounter::new(),
+            raw_shapes: RawShapeRegistry::new(),
             feature_lineage: FeatureLineageIndex::new(),
             queries: HashMap::new(),
             source_references: Vec::new(),
@@ -578,6 +589,11 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         // alive via reuse -- see `crate::reference_replay`'s own module
         // doc comment and `EpochCounter::advance`'s doc comment.
         self.epoch.advance();
+        // Every raw shape this registry retained before this point was
+        // minted in an epoch that just became stale -- release their
+        // native slots now rather than leaking them across an unbounded
+        // number of future rebuild rounds (`AICAD-123`).
+        self.raw_shapes.clear();
 
         let empty_outcome = || RebuildOutcome {
             dirty_feature_names: Vec::new(),
@@ -610,7 +626,11 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         // query result and this round's own final build results always
         // agree. `query_executor` only needs to outlive `interp` (both
         // local to this call), never stored as a session field.
-        let query_executor = OcctQueryExecutor::new(self.ctx);
+        let query_executor = OcctQueryExecutor::new(self.ctx, &self.raw_shapes);
+        // `AICAD-123`: raw-tier editing builtins demand-dispatch through
+        // this exact `self.ctx`/`self.raw_shapes` pair too, for the
+        // identical reason `query_executor` does.
+        let raw_edit_executor = OcctRawEditExecutor::new(self.ctx, &self.raw_shapes);
         let mut interp = Interpreter::new(
             &self.lowered.program,
             &self.lowered.bindings,
@@ -618,7 +638,8 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             &self.source,
         )
         .with_query_executor(&query_executor)
-        .with_epoch_counter(&self.epoch);
+        .with_epoch_counter(&self.epoch)
+        .with_raw_edit_executor(&raw_edit_executor);
         if let Err(diagnostic) = interp.run_top_level_parametric(
             &self.lowered.program,
             &model,

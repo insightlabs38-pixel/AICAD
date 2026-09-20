@@ -36,6 +36,7 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepTools.hxx>
+#include <BRepTools_ReShape.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
@@ -43,12 +44,14 @@
 #include <GProp_GProps.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
+#include <Geom_Curve.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <STEPControl_Writer.hxx>
 #include <ShapeFix_Shape.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_Failure.hxx>
 #include <TopAbs_ShapeEnum.hxx>
 #include <TopExp.hxx>
@@ -3834,6 +3837,189 @@ aicad_occt_status_t aicad_occt_shape_is_forward_oriented(aicad_occt_context_t* c
   }
   try {
     *out_is_forward = (shape->Orientation() == TopAbs_FORWARD) ? 1 : 0;
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+// --- AICAD-123: functional raw topology editing (BRepTools_ReShape/
+// ShapeUpgrade_UnifySameDomain-backed remove/replace/split/merge). Every
+// entity argument here is a handle the caller (cad-geometry-runtime)
+// already resolved by raw index against a live shape -- these functions
+// perform no index resolution of their own, mirroring aicad_occt_shell's
+// own faces_to_remove convention exactly. ---
+
+aicad_occt_status_t aicad_occt_remove_face(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t shape_handle,
+                                            const aicad_shape_handle_t* faces_to_remove,
+                                            size_t face_count,
+                                            aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (faces_to_remove == nullptr || out_handle == nullptr || face_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* base_shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &base_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepTools_ReShape reshape;
+    for (size_t i = 0; i < face_count; ++i) {
+      const TopoDS_Shape* face_shape = nullptr;
+      status = LookupTyped(context, faces_to_remove[i], TopAbs_FACE, &face_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      reshape.Remove(*face_shape);
+    }
+    TopoDS_Shape result = reshape.Apply(*base_shape);
+    *out_handle = context->shapes.Insert(context->id, result);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_replace_face(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t shape_handle,
+                                             aicad_shape_handle_t old_face_handle,
+                                             aicad_shape_handle_t new_face_handle,
+                                             aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* base_shape = nullptr;
+  status = LookupAnyKind(context, shape_handle, &base_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* old_face = nullptr;
+  status = LookupTyped(context, old_face_handle, TopAbs_FACE, &old_face);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  const TopoDS_Shape* new_face = nullptr;
+  status = LookupTyped(context, new_face_handle, TopAbs_FACE, &new_face);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepTools_ReShape reshape;
+    reshape.Replace(*old_face, *new_face);
+    TopoDS_Shape result = reshape.Apply(*base_shape);
+    *out_handle = context->shapes.Insert(context->id, result);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_split_edge(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t edge_handle,
+                                           const double* params,
+                                           size_t param_count,
+                                           aicad_shape_handle_t* out_handles,
+                                           size_t* out_handle_count) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (params == nullptr || out_handles == nullptr || out_handle_count == nullptr ||
+      param_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* edge_shape = nullptr;
+  status = LookupTyped(context, edge_handle, TopAbs_EDGE, &edge_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    Standard_Real first = 0.0;
+    Standard_Real last = 0.0;
+    Handle(Geom_Curve) curve = BRep_Tool::Curve(TopoDS::Edge(*edge_shape), first, last);
+    if (curve.IsNull()) {
+      // A degenerate edge (no underlying 3D curve) has nothing to split.
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    // Every split parameter must be strictly increasing and strictly
+    // interior to the edge's own [first, last] range -- a param at or
+    // beyond either end would produce a degenerate (zero-length) segment,
+    // which this function rejects explicitly rather than constructing.
+    double previous = first;
+    for (size_t i = 0; i < param_count; ++i) {
+      if (!std::isfinite(params[i]) || params[i] <= previous || params[i] >= last) {
+        return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+      }
+      previous = params[i];
+    }
+    std::vector<double> breakpoints;
+    breakpoints.reserve(param_count + 2);
+    breakpoints.push_back(first);
+    for (size_t i = 0; i < param_count; ++i) {
+      breakpoints.push_back(params[i]);
+    }
+    breakpoints.push_back(last);
+    for (size_t i = 0; i + 1 < breakpoints.size(); ++i) {
+      BRepBuilderAPI_MakeEdge make_edge(curve, breakpoints[i], breakpoints[i + 1]);
+      if (!make_edge.IsDone()) {
+        return AICAD_OCCT_ERR_OPERATION_FAILED;
+      }
+      out_handles[i] = context->shapes.Insert(context->id, make_edge.Edge());
+    }
+    *out_handle_count = breakpoints.size() - 1;
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_merge_faces(aicad_occt_context_t* context,
+                                            const aicad_shape_handle_t* faces,
+                                            size_t face_count,
+                                            aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (faces == nullptr || out_handle == nullptr || face_count < 2) {
+    // Merging fewer than 2 faces is not a meaningful edit -- explicit
+    // rejection rather than a silent no-op copy.
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    BRep_Builder builder;
+    TopoDS_Compound group;
+    builder.MakeCompound(group);
+    for (size_t i = 0; i < face_count; ++i) {
+      const TopoDS_Shape* face_shape = nullptr;
+      status = LookupTyped(context, faces[i], TopAbs_FACE, &face_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      builder.Add(group, *face_shape);
+    }
+    ShapeUpgrade_UnifySameDomain unifier(group, /*UnifyEdges=*/Standard_True,
+                                          /*UnifyFaces=*/Standard_True,
+                                          /*ConcatBSplines=*/Standard_False);
+    unifier.Build();
+    *out_handle = context->shapes.Insert(context->id, unifier.Shape());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

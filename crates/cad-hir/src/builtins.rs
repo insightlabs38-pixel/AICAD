@@ -755,6 +755,42 @@ pub enum BuiltinFnId {
     /// reading it back is pure epoch-checked data access — see
     /// [`BuiltinCategory::Raw`]'s own doc comment.
     RawTopologyKindOf,
+    /// `remove_face(raw: Raw, face_indices: List<Int>, heal: Bool,
+    /// tolerance: Length) -> Raw` (`AICAD-123`, `project/DECISION_LOG.md
+    /// #DL-24` (D22); `project/DECISION_LOG.md#DL-2` D2 functional/value
+    /// semantics). Deletes the faces at `face_indices` (raw 0-based
+    /// indices into `raw`'s own face list) from `raw`, optionally healing
+    /// the result at `tolerance` afterward. `raw` is unchanged; a
+    /// genuinely new `Raw` value is returned, minted at the calling
+    /// session's current epoch. `BuiltinCategory::Raw`: a real kernel call
+    /// happens through the already-materialized handle (see
+    /// `BuiltinCategory::Raw`'s own doc comment), never a
+    /// `GeometryGraph`/`GeometryQuery` node.
+    RemoveFace,
+    /// `replace_face(raw: Raw, face_index: Int, replacement: Raw, heal:
+    /// Bool, tolerance: Length) -> Raw` (`AICAD-123`). Replaces the face
+    /// at `face_index` (a raw 0-based index into `raw`'s own face list)
+    /// with `replacement` (itself a Face-kind `Raw` value, independently
+    /// entered via `enter_raw`) throughout `raw`, optionally healing the
+    /// result afterward. Both `raw` and `replacement` are unchanged.
+    ReplaceFace,
+    /// `split_edge(raw: Raw, params: List<Float>) -> List<Raw>`
+    /// (`AICAD-123`). Splits `raw`'s own underlying curve at `params`
+    /// (strictly increasing, each strictly interior to the edge's own
+    /// parameter range), producing `params.len() + 1` new `Raw` edge
+    /// values in ascending-parameter order. `raw` must address a shape of
+    /// exactly kind Edge.
+    SplitEdge,
+    /// `merge_faces(raw: Raw, face_indices: List<Int>) -> List<Raw>`
+    /// (`AICAD-123`). Merges the faces at `face_indices` (raw 0-based
+    /// indices into `raw`'s own face list, at least 2) into as few faces
+    /// as their shared underlying geometry allows, returning every
+    /// resulting face as its own `Raw` value (one element if the inputs
+    /// fully merged; more than one if they did not). A `List<Raw>` return
+    /// — not a single `Raw` — specifically because the merged result's own
+    /// top-level container (commonly a Compound) is not itself a
+    /// classifiable `TopologyKind`; each individual resulting Face is.
+    MergeFaces,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -860,7 +896,11 @@ impl BuiltinFnId {
             | BuiltinFnId::VertexPoint
             | BuiltinFnId::ClassifyPoint
             | BuiltinFnId::EnterRaw => BuiltinCategory::Query,
-            BuiltinFnId::RawTopologyKindOf => BuiltinCategory::Raw,
+            BuiltinFnId::RawTopologyKindOf
+            | BuiltinFnId::RemoveFace
+            | BuiltinFnId::ReplaceFace
+            | BuiltinFnId::SplitEdge
+            | BuiltinFnId::MergeFaces => BuiltinCategory::Raw,
             BuiltinFnId::LineCurve
             | BuiltinFnId::CircleCurve
             | BuiltinFnId::ArcCurve
@@ -935,7 +975,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 77] = [
+    pub const ALL: [BuiltinFnId; 81] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -1013,6 +1053,10 @@ impl BuiltinFnId {
         BuiltinFnId::ClassifyPoint,
         BuiltinFnId::EnterRaw,
         BuiltinFnId::RawTopologyKindOf,
+        BuiltinFnId::RemoveFace,
+        BuiltinFnId::ReplaceFace,
+        BuiltinFnId::SplitEdge,
+        BuiltinFnId::MergeFaces,
     ];
 }
 
@@ -1691,6 +1735,41 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "raw_topology_kind_of",
             params: vec![("raw", named("Raw"))],
             return_ty: named("String"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::RemoveFace,
+            name: "remove_face",
+            params: vec![
+                ("raw", named("Raw")),
+                ("face_indices", list_of("Int")),
+                ("heal", named("Bool")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ReplaceFace,
+            name: "replace_face",
+            params: vec![
+                ("raw", named("Raw")),
+                ("face_index", named("Int")),
+                ("replacement", named("Raw")),
+                ("heal", named("Bool")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::SplitEdge,
+            name: "split_edge",
+            params: vec![("raw", named("Raw")), ("params", list_of("Float"))],
+            return_ty: list_of("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MergeFaces,
+            name: "merge_faces",
+            params: vec![("raw", named("Raw")), ("face_indices", list_of("Int"))],
+            return_ty: list_of("Raw"),
         },
     ]
 }

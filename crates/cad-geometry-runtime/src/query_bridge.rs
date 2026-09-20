@@ -7,12 +7,27 @@
 //! backed by a live `cad_occt_bridge::OcctContext`, that a caller owning a
 //! kernel context (today, `cad-cli`'s `ParametricBuildSession`) injects
 //! back into an `Interpreter` via `Interpreter::with_query_executor`.
+//!
+//! # Retaining `enter_raw`'s own result (`AICAD-123`)
+//!
+//! [`dispatch_graph`] builds a `GraphResults` table local to one
+//! [`OcctQueryExecutor::execute`] call, dropped (releasing every `Shape`'s
+//! own native slot) when that call returns — correct for every ordinary
+//! scalar [`QueryOutcome`] (`Bool`/`Number`/`Point`/`Text`), but not for
+//! `QueryOutcome::Classified` (`enter_raw`'s own result): that handle must
+//! remain resolvable for the rest of the calling session's current epoch,
+//! well past this one call. See [`crate::raw_registry`]'s own module doc
+//! comment for the full story (a real bug this fixes, found during
+//! `AICAD-123`) — this executor retains `EnterRaw`'s own *target* shape
+//! (still alive in `results` at this point) into its own
+//! [`RawShapeRegistry`] before that table drops.
 
-use cad_geometry_api::{GeomId, GeometryGraph};
+use cad_geometry_api::{GeomId, GeometryGraph, GeometryNodeKind, GeometryQuery};
 use cad_occt_bridge::OcctContext;
 use cad_runtime::{KernelQueryError, KernelQueryExecutor, QueryOutcome};
 
 use crate::dispatch::{NodeResult, dispatch_graph};
+use crate::raw_registry::RawShapeRegistry;
 
 /// Dispatches the *whole* `graph` given to
 /// [`OcctQueryExecutor::execute`] against a real `OcctContext` on every
@@ -20,17 +35,30 @@ use crate::dispatch::{NodeResult, dispatch_graph};
 /// "Demand materialization (`DL-25`)", for why this is a conservative,
 /// documented-limitation superset of "the minimum required upstream
 /// geometry" rather than the tightest possible one.
-pub struct OcctQueryExecutor<'ctx> {
+///
+/// Two independent lifetime parameters, not one — `'a` is how long this
+/// executor itself is borrowed for (an ordinary reference-to-registry
+/// lifetime), `'ctx` is the kernel context's own lifetime (which every
+/// `Shape<'ctx>` the registry ever holds is tied to). Collapsing these
+/// into a single `'ctx` (as an earlier draft did) is unsound: it forces
+/// the registry's own local binding to be borrowed for exactly as long as
+/// `ctx` itself, while simultaneously requiring the registry to still be
+/// a live, distinct binding at its own drop point (when its retained
+/// `Shape`s release their slots) — a contradiction the borrow checker
+/// correctly rejects. Found empirically (a genuine `E0597` compile error
+/// on the very first draft), not designed around speculatively.
+pub struct OcctQueryExecutor<'a, 'ctx> {
     ctx: &'ctx OcctContext,
+    raw_shapes: &'a RawShapeRegistry<'ctx>,
 }
 
-impl<'ctx> OcctQueryExecutor<'ctx> {
-    pub fn new(ctx: &'ctx OcctContext) -> Self {
-        OcctQueryExecutor { ctx }
+impl<'a, 'ctx> OcctQueryExecutor<'a, 'ctx> {
+    pub fn new(ctx: &'ctx OcctContext, raw_shapes: &'a RawShapeRegistry<'ctx>) -> Self {
+        OcctQueryExecutor { ctx, raw_shapes }
     }
 }
 
-impl KernelQueryExecutor for OcctQueryExecutor<'_> {
+impl KernelQueryExecutor for OcctQueryExecutor<'_, '_> {
     fn execute(
         &self,
         graph: &GeometryGraph,
@@ -44,7 +72,37 @@ impl KernelQueryExecutor for OcctQueryExecutor<'_> {
             Some(NodeResult::Number(n)) => Ok(QueryOutcome::Number(*n)),
             Some(NodeResult::Point(p)) => Ok(QueryOutcome::Point(*p)),
             Some(NodeResult::Text(t)) => Ok(QueryOutcome::Text(t.clone())),
-            Some(NodeResult::Classified(c)) => Ok(QueryOutcome::Classified(*c)),
+            Some(NodeResult::Classified(_)) => {
+                let target = match graph.get(node).map(|n| &n.kind) {
+                    Some(GeometryNodeKind::Query(GeometryQuery::EnterRaw(target))) => *target,
+                    _ => {
+                        return Err(KernelQueryError {
+                            message: format!(
+                                "query node {node} produced a Classified result but is not an \
+                                 EnterRaw query node -- a cad-geometry-api/cad-runtime dispatch \
+                                 mismatch"
+                            ),
+                        });
+                    }
+                };
+                let live_shape = match results.get(target.index() as usize) {
+                    Some(NodeResult::Shape(shape)) => shape,
+                    _ => {
+                        return Err(KernelQueryError {
+                            message: format!(
+                                "EnterRaw's own target node {target} did not dispatch to a Shape"
+                            ),
+                        });
+                    }
+                };
+                let classified = self
+                    .raw_shapes
+                    .retain_classified(live_shape)
+                    .map_err(|err| KernelQueryError {
+                        message: err.to_string(),
+                    })?;
+                Ok(QueryOutcome::Classified(classified))
+            }
             Some(other) => Err(KernelQueryError {
                 message: format!(
                     "query node {node} produced a non-scalar kernel result ({other:?}); only \
@@ -77,7 +135,8 @@ mod tests {
     #[test]
     fn is_valid_and_volume_dispatch_against_a_real_kernel_context() {
         let ctx = OcctContext::new().unwrap();
-        let executor = OcctQueryExecutor::new(&ctx);
+        let raw_shapes = RawShapeRegistry::new();
+        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes);
 
         let mut graph = GeometryGraph::new();
         let solid = graph
@@ -115,7 +174,8 @@ mod tests {
     #[test]
     fn a_non_scalar_query_result_is_a_clean_error() {
         let ctx = OcctContext::new().unwrap();
-        let executor = OcctQueryExecutor::new(&ctx);
+        let raw_shapes = RawShapeRegistry::new();
+        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes);
 
         let mut graph = GeometryGraph::new();
         let solid = graph
@@ -141,5 +201,42 @@ mod tests {
 
         let err = executor.execute(&graph, mesh_node).unwrap_err();
         assert!(err.message.contains("non-scalar"));
+    }
+
+    /// Regression for the bug `AICAD-123` found (see `crate::raw_registry`'s
+    /// own module doc comment): before `RawShapeRegistry` existed, the
+    /// `KernelShape` inside `QueryOutcome::Classified` addressed a slot
+    /// that was released the instant this very `execute` call returned,
+    /// making `enter_raw` unusable for any later real kernel operation.
+    #[test]
+    fn enter_raw_produces_a_classified_handle_that_survives_this_call_returning() {
+        let ctx = OcctContext::new().unwrap();
+        let raw_shapes = RawShapeRegistry::new();
+        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes);
+
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(0.02),
+                    dy: length(0.02),
+                    dz: length(0.02),
+                },
+                span(),
+            )
+            .unwrap();
+        let raw_node = graph
+            .push_query(GeometryQuery::EnterRaw(solid), span())
+            .unwrap();
+
+        let classified = match executor.execute(&graph, raw_node).unwrap() {
+            QueryOutcome::Classified(c) => c,
+            other => panic!("expected QueryOutcome::Classified, got {other:?}"),
+        };
+        // `execute` has already returned (its own local `GraphResults`
+        // table, and every `Shape` it owned, has already dropped) -- the
+        // handle must still resolve to a real, live shape.
+        let resolved = cad_occt_bridge::Shape::resolve(&ctx, classified.shape).unwrap();
+        assert!((resolved.volume().unwrap() - 0.02_f64.powi(3)).abs() < 1e-9);
     }
 }
