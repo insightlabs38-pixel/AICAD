@@ -568,6 +568,18 @@ unsafe extern "C" {
         out_handle: *mut aicad_shape_handle_t,
         out_report: *mut aicad_heal_report_t,
     ) -> c_int;
+
+    // --- AICAD-121: safe topology inspection ---
+    pub fn aicad_occt_shape_kind(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_kind: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_is_forward_oriented(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_is_forward: *mut c_int,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t

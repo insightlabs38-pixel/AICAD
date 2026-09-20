@@ -173,6 +173,7 @@ use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
 use cad_geometry_api::{
     AnalyticCurve, AnalyticSurface, CurveConstructionError, CurveOperationError, EdgeIndex,
     FaceIndex, FaceOrientation, GeomId, GeometryOp, GeometryQuery, Quantity, SurfaceSpec, TrimLoop,
+    VertexIndex,
 };
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
@@ -181,6 +182,7 @@ use cad_hir::hir::{
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
 use cad_hir::types::{HirType, HirTypeRef};
+use cad_kernel_api::topology::TopologyKind;
 use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Point3, Transform, Vector3};
 use cad_types::{AffineKind, Dimension, PrimitiveType};
 use cad_units::{
@@ -1929,22 +1931,94 @@ impl<'a> Interpreter<'a> {
             }
             Ok(count as u32)
         };
+        // A plain, non-negative raw index (`AICAD-121`: `edge_index`/
+        // `adjacent_index`/enumeration `index`) — `Value::Number` shape is
+        // already guaranteed by `cad_hir::typeck`; unlike `pattern_count`
+        // there is no `>= 1` floor (index `0` is the common case).
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
         // Kernel-backed query builtins (`AICAD-105`, `project/
         // DECISION_LOG.md#DL-25`) are handled separately, before
         // `push_op` below: they push a `GeometryQuery` node (not a
-        // `GeometryOp`) and return a scalar `Value` (`Bool`/`Volume`/
-        // `Area`), never a `Value::Geometry`, so they cannot share this
-        // function's own "every arm produces a `GeomId`, wrapped in
-        // `Value::Geometry` at the end" shape below.
+        // `GeometryOp`) and return a scalar/struct `Value`
+        // (`Bool`/`Number`/`String`/`Point3`), never a `Value::Geometry`,
+        // so they cannot share this function's own "every arm produces a
+        // `GeomId`, wrapped in `Value::Geometry` at the end" shape below.
         if matches!(
             id,
-            BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area
+            BuiltinFnId::IsValid
+                | BuiltinFnId::Volume
+                | BuiltinFnId::Area
+                | BuiltinFnId::TopologyKindOf
+                | BuiltinFnId::FaceCount
+                | BuiltinFnId::EdgeCount
+                | BuiltinFnId::VertexCount
+                | BuiltinFnId::WireCount
+                | BuiltinFnId::ShellCount
+                | BuiltinFnId::SolidCount
+                | BuiltinFnId::AdjacentFaceCount
+                | BuiltinFnId::IsOuterWire
+                | BuiltinFnId::IsSameEntity
+                | BuiltinFnId::IsForwardOriented
+                | BuiltinFnId::VertexPoint
+                | BuiltinFnId::ClassifyPoint
         ) {
-            let target = geometry(arg(0)?)?;
             let query = match id {
-                BuiltinFnId::IsValid => GeometryQuery::IsValid(target),
-                BuiltinFnId::Volume => GeometryQuery::Volume(target),
-                BuiltinFnId::Area => GeometryQuery::Area(target),
+                BuiltinFnId::IsValid => GeometryQuery::IsValid(geometry(arg(0)?)?),
+                BuiltinFnId::Volume => GeometryQuery::Volume(geometry(arg(0)?)?),
+                BuiltinFnId::Area => GeometryQuery::Area(geometry(arg(0)?)?),
+                BuiltinFnId::TopologyKindOf => GeometryQuery::TopologyKindOf(geometry(arg(0)?)?),
+                BuiltinFnId::FaceCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Face,
+                },
+                BuiltinFnId::EdgeCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Edge,
+                },
+                BuiltinFnId::VertexCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Vertex,
+                },
+                BuiltinFnId::WireCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Wire,
+                },
+                BuiltinFnId::ShellCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Shell,
+                },
+                BuiltinFnId::SolidCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Solid,
+                },
+                BuiltinFnId::AdjacentFaceCount => GeometryQuery::AdjacentFaceCount {
+                    target: geometry(arg(0)?)?,
+                    edge: EdgeIndex(usize_value(arg(1)?)?),
+                },
+                BuiltinFnId::IsOuterWire => GeometryQuery::IsOuterWire {
+                    face: geometry(arg(0)?)?,
+                    wire: geometry(arg(1)?)?,
+                },
+                BuiltinFnId::IsSameEntity => GeometryQuery::IsSameEntity {
+                    a: geometry(arg(0)?)?,
+                    b: geometry(arg(1)?)?,
+                },
+                BuiltinFnId::IsForwardOriented => {
+                    GeometryQuery::IsForwardOriented(geometry(arg(0)?)?)
+                }
+                BuiltinFnId::VertexPoint => GeometryQuery::VertexPoint(geometry(arg(0)?)?),
+                BuiltinFnId::ClassifyPoint => GeometryQuery::ClassifyPoint {
+                    solid: geometry(arg(0)?)?,
+                    point: crate::spatial::point3_from_value(arg(1)?).map_err(|reason| {
+                        RuntimeError::InvalidSpatialArgument { name, span, reason }
+                    })?,
+                    tolerance: quantity(arg(2)?)?,
+                },
                 _ => unreachable!("guarded by the outer matches! above"),
             };
             let query_node = self
@@ -2380,7 +2454,49 @@ impl<'a> Interpreter<'a> {
                 shape: geometry(arg(0)?)?,
                 tolerance: quantity(arg(1)?)?,
             })?,
-            BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
+            // `topology_face_at(shape, index)` (`AICAD-121`): the first
+            // standalone traversal exposure of `GeometryOp::GetFace`
+            // (`AICAD-076`), previously only reachable internally via
+            // `extrude`/`revolve`.
+            BuiltinFnId::TopologyFaceAt => push_op(GeometryOp::GetFace {
+                target: geometry(arg(0)?)?,
+                face: FaceIndex(usize_value(arg(1)?)?),
+            })?,
+            // `topology_edge_at(shape, index)` (`AICAD-121`): the new
+            // `GeometryOp::GetEdge`.
+            BuiltinFnId::TopologyEdgeAt => push_op(GeometryOp::GetEdge {
+                target: geometry(arg(0)?)?,
+                edge: EdgeIndex(usize_value(arg(1)?)?),
+            })?,
+            // `topology_vertex_at(shape, index)` (`AICAD-121`): the new
+            // `GeometryOp::GetVertex`.
+            BuiltinFnId::TopologyVertexAt => push_op(GeometryOp::GetVertex {
+                target: geometry(arg(0)?)?,
+                vertex: VertexIndex(usize_value(arg(1)?)?),
+            })?,
+            // `adjacent_face_at(shape, edge_index, adjacent_index)`
+            // (`AICAD-121`): the new `GeometryOp::GetAdjacentFace`.
+            BuiltinFnId::AdjacentFaceAt => push_op(GeometryOp::GetAdjacentFace {
+                target: geometry(arg(0)?)?,
+                edge: EdgeIndex(usize_value(arg(1)?)?),
+                adjacent: usize_value(arg(2)?)?,
+            })?,
+            BuiltinFnId::IsValid
+            | BuiltinFnId::Volume
+            | BuiltinFnId::Area
+            | BuiltinFnId::TopologyKindOf
+            | BuiltinFnId::FaceCount
+            | BuiltinFnId::EdgeCount
+            | BuiltinFnId::VertexCount
+            | BuiltinFnId::WireCount
+            | BuiltinFnId::ShellCount
+            | BuiltinFnId::SolidCount
+            | BuiltinFnId::AdjacentFaceCount
+            | BuiltinFnId::IsOuterWire
+            | BuiltinFnId::IsSameEntity
+            | BuiltinFnId::IsForwardOriented
+            | BuiltinFnId::VertexPoint
+            | BuiltinFnId::ClassifyPoint => {
                 unreachable!(
                     "query builtins return early above, before this Construction-only match"
                 )
@@ -3258,10 +3374,39 @@ impl<'a> Interpreter<'a> {
                 magnitude,
                 ty: OperandType::dimensional(Dimension::Area, None),
             }),
+            // `AICAD-121`: entity counts are plain (dimensionless) `Int`s
+            // -- every runtime numeric scalar collapses to `PrimitiveType::
+            // Float` regardless of its source-declared Int/Float type (see
+            // `crate::value`'s own module doc comment, "Deliberate
+            // simplification").
+            (
+                BuiltinFnId::FaceCount
+                | BuiltinFnId::EdgeCount
+                | BuiltinFnId::VertexCount
+                | BuiltinFnId::WireCount
+                | BuiltinFnId::ShellCount
+                | BuiltinFnId::SolidCount
+                | BuiltinFnId::AdjacentFaceCount,
+                QueryOutcome::Number(magnitude),
+            ) => Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::Scalar(PrimitiveType::Float),
+            }),
+            (
+                BuiltinFnId::TopologyKindOf | BuiltinFnId::ClassifyPoint,
+                QueryOutcome::Text(text),
+            ) => Value::Str(text),
+            (
+                BuiltinFnId::IsOuterWire
+                | BuiltinFnId::IsSameEntity
+                | BuiltinFnId::IsForwardOriented,
+                QueryOutcome::Bool(b),
+            ) => Value::Bool(b),
+            (BuiltinFnId::VertexPoint, QueryOutcome::Point(p)) => self.point3_value(p, span)?,
             (other, outcome) => unreachable!(
                 "KernelQueryExecutor outcome {outcome:?} does not match query builtin {other:?} \
-                 -- every real implementation must return QueryOutcome::Bool for IsValid and \
-                 QueryOutcome::Number for Volume/Area"
+                 -- every real implementation must return the exact QueryOutcome shape each \
+                 query-category BuiltinFnId's own doc comment declares"
             ),
         };
         Ok(value)
@@ -4406,6 +4551,23 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::Compound => "compound",
         BuiltinFnId::Sew => "sew",
         BuiltinFnId::Heal => "heal",
+        BuiltinFnId::TopologyKindOf => "topology_kind_of",
+        BuiltinFnId::FaceCount => "face_count",
+        BuiltinFnId::EdgeCount => "edge_count",
+        BuiltinFnId::VertexCount => "vertex_count",
+        BuiltinFnId::WireCount => "wire_count",
+        BuiltinFnId::ShellCount => "shell_count",
+        BuiltinFnId::SolidCount => "solid_count",
+        BuiltinFnId::TopologyFaceAt => "topology_face_at",
+        BuiltinFnId::TopologyEdgeAt => "topology_edge_at",
+        BuiltinFnId::TopologyVertexAt => "topology_vertex_at",
+        BuiltinFnId::AdjacentFaceCount => "adjacent_face_count",
+        BuiltinFnId::AdjacentFaceAt => "adjacent_face_at",
+        BuiltinFnId::IsOuterWire => "is_outer_wire",
+        BuiltinFnId::IsSameEntity => "is_same_entity",
+        BuiltinFnId::IsForwardOriented => "is_forward_oriented",
+        BuiltinFnId::VertexPoint => "vertex_point",
+        BuiltinFnId::ClassifyPoint => "classify_point",
     }
 }
 
@@ -9375,5 +9537,184 @@ mod tests {
         let lowered = compiled(source);
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    // --- AICAD-121: deterministic topology traversal/inspection --------
+
+    #[test]
+    fn topology_face_at_edge_at_vertex_at_and_adjacent_face_at_build_geometry_values() {
+        let sources = [
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return topology_face_at(b, 0); }",
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return topology_edge_at(b, 0); }",
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return topology_vertex_at(b, 0); }",
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return adjacent_face_at(b, 0, 0); }",
+        ];
+        for source in sources {
+            let lowered = compiled(source);
+            let mut interp =
+                Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+            assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+        }
+    }
+
+    #[test]
+    fn topology_kind_of_returns_the_executors_real_string() {
+        let source = "fn f() -> String { let b = box(1mm, 1mm, 1mm); return topology_kind_of(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Text("Solid".to_string()));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Str("Solid".to_string())
+        );
+    }
+
+    #[test]
+    fn face_count_edge_count_vertex_count_wire_count_shell_count_and_solid_count_return_plain_numbers()
+     {
+        let cases = [
+            ("face_count", 6.0),
+            ("edge_count", 12.0),
+            ("vertex_count", 8.0),
+            ("wire_count", 6.0),
+            ("shell_count", 1.0),
+            ("solid_count", 1.0),
+        ];
+        for (builtin, expected) in cases {
+            let source =
+                format!("fn f() -> Int {{ let b = box(1mm, 1mm, 1mm); return {builtin}(b); }}");
+            let lowered = compiled(&source);
+            let executor = FakeQueryExecutor::returning(QueryOutcome::Number(expected));
+            let mut interp =
+                Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", &source)
+                    .with_query_executor(&executor);
+            assert_eq!(
+                interp.call_by_name("f", vec![]).unwrap(),
+                number(expected),
+                "builtin {builtin} did not return the expected plain count"
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_face_count_returns_a_plain_number() {
+        let source = "fn f() -> Int { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 return adjacent_face_count(b, 0); \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Number(2.0));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_eq!(interp.call_by_name("f", vec![]).unwrap(), number(2.0));
+    }
+
+    #[test]
+    fn is_outer_wire_is_same_entity_and_is_forward_oriented_return_the_executors_real_bool() {
+        let source_outer = "fn f() -> Bool { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let face = topology_face_at(b, 0); \
+                 let wire = topology_edge_at(b, 0); \
+                 return is_outer_wire(face, wire); \
+             }";
+        let lowered = compiled(source_outer);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp = Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source_outer,
+        )
+        .with_query_executor(&executor);
+        assert_eq!(interp.call_by_name("f", vec![]).unwrap(), Value::Bool(true));
+
+        let source_same = "fn f() -> Bool { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let f0 = topology_face_at(b, 0); \
+                 let f1 = topology_face_at(b, 0); \
+                 return is_same_entity(f0, f1); \
+             }";
+        let lowered = compiled(source_same);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(false));
+        let mut interp = Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source_same,
+        )
+        .with_query_executor(&executor);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Bool(false)
+        );
+
+        let source_forward = "fn f() -> Bool { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 return is_forward_oriented(b); \
+             }";
+        let lowered = compiled(source_forward);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp = Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source_forward,
+        )
+        .with_query_executor(&executor);
+        assert_eq!(interp.call_by_name("f", vec![]).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn vertex_point_returns_a_real_point3_struct() {
+        let source = "fn f() -> Point3 { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let v = topology_vertex_at(b, 0); \
+                 return vertex_point(v); \
+             }";
+        let lowered = compiled(source);
+        let executor =
+            FakeQueryExecutor::returning(QueryOutcome::Point(Point3::new(0.001, 0.002, 0.003)));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        match interp.call_by_name("f", vec![]).unwrap() {
+            Value::Struct { fields, .. } => {
+                assert_eq!(fields.len(), 3);
+                assert_number_eq(fields[0].1.clone(), 0.001);
+                assert_number_eq(fields[1].1.clone(), 0.002);
+                assert_number_eq(fields[2].1.clone(), 0.003);
+            }
+            other => panic!("expected Value::Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_point_returns_the_executors_real_classification_string() {
+        let source = "fn f() -> String { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 return classify_point(b, Point3(x = 0.5mm, y = 0.5mm, z = 0.5mm), 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Text("Inside".to_string()));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Str("Inside".to_string())
+        );
+    }
+
+    #[test]
+    fn topology_kind_of_without_a_configured_executor_fails_cleanly() {
+        let source = "fn f() -> String { let b = box(1mm, 1mm, 1mm); return topology_kind_of(b); }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E130");
     }
 }

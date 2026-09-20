@@ -626,6 +626,113 @@ pub enum BuiltinFnId {
     /// comment (not yet source-exposed; call `is_valid` before and after
     /// as the source-level substitute for now).
     Heal,
+    /// `topology_kind_of(shape: Geometry) -> String` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::TopologyKindOf` — one of `"Vertex"`/
+    /// `"Edge"`/`"Wire"`/`"Face"`/`"Shell"`/`"Solid"`, kernel-neutral
+    /// (never an OCCT `TopAbs_ShapeEnum` value). A `Compound`/
+    /// `CompSolid`/generic-`Shape` argument is `RuntimeError::
+    /// KernelQueryFailed`, not a guessed answer — it has no single
+    /// classifiable entity kind.
+    TopologyKindOf,
+    /// `face_count(shape: Geometry) -> Int` (`AICAD-121`). Dispatches
+    /// `GeometryQuery::EntityCount { kind: TopologyKind::Face, .. }`. See
+    /// [`BuiltinFnId::TopologyKindOf`]'s own doc comment for the category.
+    FaceCount,
+    /// `edge_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    EdgeCount,
+    /// `vertex_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    VertexCount,
+    /// `wire_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    WireCount,
+    /// `shell_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    ShellCount,
+    /// `solid_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    SolidCount,
+    /// `topology_face_at(shape: Geometry, index: Int) -> Geometry`
+    /// (`AICAD-121`). Pushes `GeometryOp::GetFace` — this exact op has
+    /// existed since `AICAD-076` (used internally by `extrude`/
+    /// `revolve`), never under its own standalone traversal name until
+    /// now. `index` is a raw, epoch-bound kernel-enumeration-order index
+    /// (`docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md` §6: "Indices
+    /// are permitted only when an algorithm intentionally depends on the
+    /// current transient topology enumeration") — `face_count`'s own
+    /// result is `[0, face_count(shape))`'s exclusive upper bound.
+    /// Deterministic/repeatable for one shape instance, but not a
+    /// promised canonical/geometric order (`is_same_entity` is the
+    /// intended way to recognize a specific face across independent
+    /// enumerations, not index stability).
+    TopologyFaceAt,
+    /// `topology_edge_at(shape: Geometry, index: Int) -> Geometry`
+    /// (`AICAD-121`). Pushes the new `GeometryOp::GetEdge` — see
+    /// [`BuiltinFnId::TopologyFaceAt`]'s own doc comment.
+    TopologyEdgeAt,
+    /// `topology_vertex_at(shape: Geometry, index: Int) -> Geometry`
+    /// (`AICAD-121`). Pushes the new `GeometryOp::GetVertex` — see
+    /// [`BuiltinFnId::TopologyFaceAt`]'s own doc comment. `wire`
+    /// enumeration is deliberately not given an indexed-access twin here
+    /// (only `wire_count`) — a smaller, symmetric follow-up if a future
+    /// task needs it; not a missing kernel capability
+    /// (`Shape::get_wire` already exists and is used internally, e.g. by
+    /// `is_outer_wire`'s own dispatch).
+    TopologyVertexAt,
+    /// `adjacent_face_count(shape: Geometry, edge_index: Int) -> Int`
+    /// (`AICAD-121`). Dispatches `GeometryQuery::AdjacentFaceCount` —
+    /// reports how many faces are adjacent to (bounded by) `shape`'s own
+    /// edge `edge_index` before one is selected by
+    /// [`BuiltinFnId::AdjacentFaceAt`]'s own raw index.
+    AdjacentFaceCount,
+    /// `adjacent_face_at(shape: Geometry, edge_index: Int,
+    /// adjacent_index: Int) -> Geometry` (`AICAD-121`). Pushes the new
+    /// `GeometryOp::GetAdjacentFace` — the construction counterpart of
+    /// [`BuiltinFnId::AdjacentFaceCount`].
+    AdjacentFaceAt,
+    /// `is_outer_wire(face: Geometry, wire: Geometry) -> Bool`
+    /// (`AICAD-121`). Dispatches `GeometryQuery::IsOuterWire` — the
+    /// `boundary(outer|inner)` predicate `docs/plan/
+    /// 06_REFERENCES_QUERIES_FEATURE_DAG.md` §6 names, at the low-level
+    /// layer. False for any of `face`'s own inner (hole) wires, and false
+    /// if `wire` does not bound `face` at all.
+    IsOuterWire,
+    /// `is_same_entity(a: Geometry, b: Geometry) -> Bool` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::IsSameEntity` — whether `a`/`b` address
+    /// the SAME underlying topological entity (`TShape` + `Location`,
+    /// ignoring `Orientation`), never comparing raw handle identity. The
+    /// safe mechanism every traversal builtin in this batch needs: each
+    /// independently-obtained ephemeral handle
+    /// (`topology_face_at`/`topology_edge_at`/.../`adjacent_face_at`) can
+    /// be recognized as "the same entity as an earlier one" without ever
+    /// exposing a native handle as durable identity.
+    IsSameEntity,
+    /// `is_forward_oriented(shape: Geometry) -> Bool` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::IsForwardOriented` — `true` for a
+    /// top-level `TopAbs_Orientation` of FORWARD; REVERSED, INTERNAL, and
+    /// EXTERNAL (the latter two rare seam/degenerate-edge markers) all
+    /// report `false`, a deliberate, disclosed simplification (see
+    /// `cad_occt_bridge::Shape::is_forward_oriented`'s own doc comment)
+    /// rather than a full 4-way orientation result.
+    IsForwardOriented,
+    /// `vertex_point(vertex: Geometry) -> Point3` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::VertexPoint` — `vertex` must address a
+    /// shape of exactly kind Vertex. The first `Query`-category builtin
+    /// whose result is a struct (`Point3`), not `Bool`/`Number`/`String`
+    /// — widens `cad_runtime::query_exec::QueryOutcome` with a new
+    /// `Point` variant.
+    VertexPoint,
+    /// `classify_point(solid: Geometry, point: Point3, tolerance: Length)
+    /// -> String` (`AICAD-121`). Dispatches `GeometryQuery::
+    /// ClassifyPoint` — one of `"Inside"`/`"Outside"`/`"OnBoundary"`
+    /// (`cad_occt_bridge::PointClassification`'s own `Debug` rendering).
+    /// `solid` must address a shape containing at least one Solid;
+    /// `tolerance` is the classifier's own boundary tolerance (a
+    /// representation/validity-domain length, `project/DECISION_LOG.md
+    /// #DL-24` domain 1 — distinct from `Sew`/`Heal`'s modeling/
+    /// construction-domain tolerance).
+    ClassifyPoint,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -698,10 +805,27 @@ impl BuiltinFnId {
             | BuiltinFnId::MakeSolid
             | BuiltinFnId::Compound
             | BuiltinFnId::Sew
-            | BuiltinFnId::Heal => BuiltinCategory::Construction,
-            BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
-                BuiltinCategory::Query
-            }
+            | BuiltinFnId::Heal
+            | BuiltinFnId::TopologyFaceAt
+            | BuiltinFnId::TopologyEdgeAt
+            | BuiltinFnId::TopologyVertexAt
+            | BuiltinFnId::AdjacentFaceAt => BuiltinCategory::Construction,
+            BuiltinFnId::IsValid
+            | BuiltinFnId::Volume
+            | BuiltinFnId::Area
+            | BuiltinFnId::TopologyKindOf
+            | BuiltinFnId::FaceCount
+            | BuiltinFnId::EdgeCount
+            | BuiltinFnId::VertexCount
+            | BuiltinFnId::WireCount
+            | BuiltinFnId::ShellCount
+            | BuiltinFnId::SolidCount
+            | BuiltinFnId::AdjacentFaceCount
+            | BuiltinFnId::IsOuterWire
+            | BuiltinFnId::IsSameEntity
+            | BuiltinFnId::IsForwardOriented
+            | BuiltinFnId::VertexPoint
+            | BuiltinFnId::ClassifyPoint => BuiltinCategory::Query,
             BuiltinFnId::LineCurve
             | BuiltinFnId::CircleCurve
             | BuiltinFnId::ArcCurve
@@ -776,7 +900,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 58] = [
+    pub const ALL: [BuiltinFnId; 75] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -835,6 +959,23 @@ impl BuiltinFnId {
         BuiltinFnId::Compound,
         BuiltinFnId::Sew,
         BuiltinFnId::Heal,
+        BuiltinFnId::TopologyKindOf,
+        BuiltinFnId::FaceCount,
+        BuiltinFnId::EdgeCount,
+        BuiltinFnId::VertexCount,
+        BuiltinFnId::WireCount,
+        BuiltinFnId::ShellCount,
+        BuiltinFnId::SolidCount,
+        BuiltinFnId::TopologyFaceAt,
+        BuiltinFnId::TopologyEdgeAt,
+        BuiltinFnId::TopologyVertexAt,
+        BuiltinFnId::AdjacentFaceCount,
+        BuiltinFnId::AdjacentFaceAt,
+        BuiltinFnId::IsOuterWire,
+        BuiltinFnId::IsSameEntity,
+        BuiltinFnId::IsForwardOriented,
+        BuiltinFnId::VertexPoint,
+        BuiltinFnId::ClassifyPoint,
     ];
 }
 
@@ -1391,6 +1532,116 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "heal",
             params: vec![("shape", named("Geometry")), ("tolerance", named("Length"))],
             return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyKindOf,
+            name: "topology_kind_of",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("String"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::FaceCount,
+            name: "face_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EdgeCount,
+            name: "edge_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::VertexCount,
+            name: "vertex_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::WireCount,
+            name: "wire_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ShellCount,
+            name: "shell_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::SolidCount,
+            name: "solid_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyFaceAt,
+            name: "topology_face_at",
+            params: vec![("shape", named("Geometry")), ("index", named("Int"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyEdgeAt,
+            name: "topology_edge_at",
+            params: vec![("shape", named("Geometry")), ("index", named("Int"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyVertexAt,
+            name: "topology_vertex_at",
+            params: vec![("shape", named("Geometry")), ("index", named("Int"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::AdjacentFaceCount,
+            name: "adjacent_face_count",
+            params: vec![("shape", named("Geometry")), ("edge_index", named("Int"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::AdjacentFaceAt,
+            name: "adjacent_face_at",
+            params: vec![
+                ("shape", named("Geometry")),
+                ("edge_index", named("Int")),
+                ("adjacent_index", named("Int")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsOuterWire,
+            name: "is_outer_wire",
+            params: vec![("face", named("Geometry")), ("wire", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsSameEntity,
+            name: "is_same_entity",
+            params: vec![("a", named("Geometry")), ("b", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsForwardOriented,
+            name: "is_forward_oriented",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::VertexPoint,
+            name: "vertex_point",
+            params: vec![("vertex", named("Geometry"))],
+            return_ty: named("Point3"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ClassifyPoint,
+            name: "classify_point",
+            params: vec![
+                ("solid", named("Geometry")),
+                ("point", named("Point3")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("String"),
         },
     ]
 }

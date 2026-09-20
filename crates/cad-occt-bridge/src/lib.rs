@@ -14,6 +14,7 @@
 
 mod ffi;
 
+use cad_kernel_api::topology::TopologyKind;
 use cad_kernel_api::{
     Axis3, Direction3, KernelError, KernelId, KernelResult, KernelShape, Plane3, Point3, Transform,
 };
@@ -2134,6 +2135,54 @@ impl<'ctx> Shape<'ctx> {
         Ok(PointClassification::from_raw(classification))
     }
 
+    /// This shape's own top-level topological kind (`AICAD-121`) —
+    /// kernel-neutral (`cad_kernel_api::topology::TopologyKind`), never an
+    /// OCCT `TopAbs_ShapeEnum` value. Fails with
+    /// [`KernelError::OperationFailed`] for a Compound/CompSolid/generic-
+    /// Shape top-level kind, which has no single classifiable entity kind.
+    pub fn topology_kind(&self) -> KernelResult<TopologyKind> {
+        let mut kind: c_int = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut kind` is a valid
+        // out-param per the header's contract.
+        let status =
+            unsafe { ffi::aicad_occt_shape_kind(self.context.raw, self.raw_handle(), &mut kind) };
+        status_result(status)?;
+        match kind {
+            0 => Ok(TopologyKind::Vertex),
+            1 => Ok(TopologyKind::Edge),
+            2 => Ok(TopologyKind::Wire),
+            3 => Ok(TopologyKind::Face),
+            4 => Ok(TopologyKind::Shell),
+            5 => Ok(TopologyKind::Solid),
+            // The native side only ever returns AICAD_OCCT_OK alongside
+            // one of the six values above (anything else is
+            // AICAD_OCCT_ERR_OPERATION_FAILED, already mapped by
+            // `status_result` above) -- an unrecognized value here would
+            // be a bridge defect, not an expected outcome.
+            _ => Err(KernelError::Internal),
+        }
+    }
+
+    /// Whether this shape's own top-level `TopAbs_Orientation` is FORWARD
+    /// (`AICAD-121`) -- REVERSED, INTERNAL, and EXTERNAL (the latter two
+    /// are rare seam/degenerate-edge markers) all report `false`. A
+    /// deliberate, disclosed simplification -- see
+    /// `aicad_occt_shape_is_forward_oriented`'s own doc comment.
+    pub fn is_forward_oriented(&self) -> KernelResult<bool> {
+        let mut is_forward: c_int = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut is_forward` is a
+        // valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_is_forward_oriented(
+                self.context.raw,
+                self.raw_handle(),
+                &mut is_forward,
+            )
+        };
+        status_result(status)?;
+        Ok(is_forward != 0)
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -4031,6 +4080,58 @@ mod tests {
             "a bare 'is_valid_after: true' here would silently misrepresent an unclosable \
              solid demoted to a Shell as a genuine repair"
         );
+    }
+
+    // --- AICAD-121: safe topology inspection ---
+
+    #[test]
+    fn topology_kind_classifies_every_concrete_entity_kind() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(box_shape.topology_kind().unwrap(), TopologyKind::Solid);
+
+        let face = box_shape.get_face(0).unwrap();
+        assert_eq!(face.topology_kind().unwrap(), TopologyKind::Face);
+
+        let wire = face.get_wire(0).unwrap();
+        assert_eq!(wire.topology_kind().unwrap(), TopologyKind::Wire);
+
+        let edge = face.get_edge(0).unwrap();
+        assert_eq!(edge.topology_kind().unwrap(), TopologyKind::Edge);
+
+        let vertex = face.get_vertex(0).unwrap();
+        assert_eq!(vertex.topology_kind().unwrap(), TopologyKind::Vertex);
+
+        let shell = context.make_shell(&[&face]).unwrap();
+        assert_eq!(shell.topology_kind().unwrap(), TopologyKind::Shell);
+    }
+
+    #[test]
+    fn topology_kind_rejects_a_compound_as_unclassifiable() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        let compound = context.make_compound(&[&face]).unwrap();
+        assert_eq!(
+            compound.topology_kind().unwrap_err(),
+            KernelError::OperationFailed
+        );
+    }
+
+    #[test]
+    fn is_forward_oriented_is_deterministic_across_repeated_calls() {
+        // Not every face of a real solid is FORWARD-oriented relative to
+        // the solid's own topology -- verified empirically (box face 0 is
+        // REVERSED) -- so this asserts determinism/repeatability, not a
+        // specific expected orientation (matching this task's own
+        // acceptance line: tests must not rely on a specific kernel
+        // enumeration/orientation outcome, only that it is stable).
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        let first = face.is_forward_oriented().unwrap();
+        let second = face.is_forward_oriented().unwrap();
+        assert_eq!(first, second);
     }
 
     // --- AICAD-032: display tessellation output ---

@@ -60,48 +60,45 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Batch `S5-05` is complete** on `claude/aicad-stage5-dev` (`S5-00`
-through `S5-04` were completed and handed off previously — see
-`project/reports/AICAD-101.md` through `AICAD-116.md`; this section now
-reflects `S5-05`'s completion, earlier batches' own summaries retired from
+**Batch `S5-06` is complete** on `claude/aicad-stage5-dev` (`S5-00`
+through `S5-05` were completed and handed off previously — see
+`project/reports/AICAD-101.md` through `AICAD-118.md`; this section now
+reflects `S5-06`'s completion, earlier batches' own summaries retired from
 this file per its own "current state, not an appended diary" convention):
 
-- `AICAD-117` (multi-solution curve/curve, curve/surface, surface/surface
-  intersection, point-to-surface projection, and distance queries —
-  `cad_geometry_api::query` (new module) plus a new `AnalyticSurface::
-  project_point`. Exact closed forms where cheap and structurally possible
-  (Line-Line; Line vs. Plane/Sphere/Cylinder/Cone; Plane-Plane/Plane-
-  Sphere/Sphere-Sphere for `intersect_surfaces` — the only surface pairs
-  whose intersection curve `AnalyticCurve`'s closed family set can even
-  represent); one general bounded-numerical-search composition
-  (`AnalyticCurve::closest_point`/`AnalyticSurface::project_point` reused
-  as the "distance from a swept point" objective, bracket-scanned for every
-  local minimum) covering every other curve/curve and curve/surface pair,
-  and `distance_surface_surface` whenever either side has a bounded
-  `(u, v)` domain. A coincident/overlapping or tangent configuration is
-  `QueryFailure::Degenerate` (deliberately not a new tagged-union payload
-  type — see that module's own doc comment); genuinely zero solutions is a
-  real, successful empty list, never an error) — `project/reports/
-  AICAD-117.md`.
-- `AICAD-118` (Checkpoint B — new `crates/cad-cli/tests/
-  stage5_queries_checkpoint.rs` proves the real production path
-  (`ParametricBuildSession`) with independent exact checks and direct
-  "never touches the kernel" evidence; two new ACTIVE examples
-  (`examples/surfaces/surface_query_basics.aicad`,
-  `examples/surfaces/pipe_clearance_check.aicad`); the ambiguity/
-  cardinality campaign is `AICAD-117`'s own 61 new unit tests, each family
-  covering unique/zero/multiple/tangent/coincident/unsupported cases with
-  independently-computed expected values) — `project/reports/AICAD-118.md`.
+- `AICAD-119` (general topology construction — `make_vertex`/`make_edge`/
+  `make_wire`/`make_face`/`make_face_on_surface`/`make_shell`/`make_solid`/
+  `compound`, plus exact `ValidationReport` validity evidence extended
+  with `invalid_shell_count`/`invalid_solid_count`; established the
+  "construction success is never proof of validity" evidence pattern this
+  whole batch follows) — `project/reports/AICAD-119.md`.
+- `AICAD-120` (sewing/healing — `sew`/`heal` with an explicit
+  modeling/construction tolerance policy (`RepairPolicy`,
+  `project/DECISION_LOG.md#DL-24` domain 2); discovered and disclosed a
+  critical finding, that `ShapeFix_Shape` can silently demote an
+  unclosable Solid to a trivially-valid Shell, fixed by adding
+  `HealReport::kind_changed` evidence rather than trusting bare
+  `is_valid_after`) — `project/reports/AICAD-120.md`.
+- `AICAD-121` (deterministic topology traversal/inspection —
+  `topology_kind_of`, six `*_count` entity-count builtins, four raw-index
+  selectors (`topology_face_at`/`topology_edge_at`/`topology_vertex_at`/
+  `adjacent_face_at`, the last built on a new `adjacent_face_count`),
+  `is_outer_wire`/`is_same_entity`/`is_forward_oriented`/`vertex_point`/
+  `classify_point`. Query-category dispatch cannot mint new `GeomId`
+  nodes, which rules out a literal `docs/plan`-shaped
+  `topology_faces(shape) -> Iterator<FaceRef>`; resolved by pairing a
+  Query-category count with Construction-category indexed access instead
+  — every enumerable entity kind is still source-reachable, just via two
+  primitives instead of one iterator type) — `project/reports/AICAD-121.md`.
 
 All required checks pass: `cargo fmt --all -- --check`, `cargo clippy
 --workspace --all-targets --all-features -- -D warnings`, the full `cargo
-test --workspace` (0 failed across every crate), the native OCCT bridge
-CMake build plus CTest (18/18), the Stage-4 resolver production-path
-regression suite (11/11, unchanged), and `scripts/ci/semantic_ref_harness.py
-validate`/`self-test`. `cad-query`'s own suite (98 tests) is unaffected.
-Automatic geometry-fingerprint recovery remains disabled.
+test --workspace` (1738 passed, 0 failed across every crate), and the
+native OCCT bridge CMake build plus CTest (18/18). `cad-query`'s own suite
+(98 tests) is unaffected. Automatic geometry-fingerprint recovery remains
+disabled.
 
-Known, explicitly-disclosed limitations carried forward from `S5-00`-`S5-04`
+Known, explicitly-disclosed limitations carried forward from `S5-00`-`S5-05`
 (see each task's own report): `AICAD-107`'s conservative nested-call
 provenance approximation; `AICAD-105`'s full-graph query redispatch;
 `AICAD-106`'s `ApproximationTolerance` has no default constructor;
@@ -110,18 +107,23 @@ cannot be periodic; `AICAD-111`'s `offset_curve` is exact only for
 Line/Circle/Arc; `AICAD-113`'s ring-torus-only scope; `AICAD-114`'s
 B-spline surfaces cannot be periodic; `AICAD-115`'s trim loops must already
 be one closed curve; `AICAD-116`'s offset is `UnsupportedFamily` for
-freeform/trimmed surfaces. New this batch: `AICAD-117`'s
-`intersect_surfaces` is exact only for `Plane`-`Plane`/`Plane`-`Sphere`/
-`Sphere`-`Sphere` (a structural limit — no other pair's intersection curve
-is representable by `AnalyticCurve` at all); `distance_curve_surface`/
-`intersect_curve_surface` for a non-intersecting `Line` vs. `Cone` is
-`Unsupported` (the general skew-line-to-cone minimum-distance closed form
-was not derived); any query touching `AnalyticSurface::Trimmed`, or a
-`Line` vs. `Torus`/`Bezier`/`BSpline`, is `Unsupported`. No `make_face`/
-topology-construction path from a `Surface` exists yet — surfaces remain
-pure values until `AICAD-119`+ bridges them, exactly like curves.
+freeform/trimmed surfaces; `AICAD-117`'s `intersect_surfaces` is exact only
+for `Plane`-`Plane`/`Plane`-`Sphere`/`Sphere`-`Sphere`. New this batch:
+`AICAD-119`'s hand-built independent faces cannot be assembled into a
+`BRepCheck`-valid shell by sharing raw edge handles alone (disclosed, not
+solved — the box-reassembly-via-`GetFace` case is the positive-path
+evidence instead), and `make_face_on_surface` on a quadric can construct
+successfully but be geometrically degenerate (zero area) for a wire with
+no extent along the surface's own free parameter; `AICAD-120`'s heal has
+no per-entity lineage (`ShapeFix_Shape`'s own `History()` does not
+reliably populate) and its `sew`/`heal` builtins return only `Geometry`,
+not the full `SewReport`/`HealReport`; `AICAD-121`'s `topology_wire_at` is
+not source-exposed (the underlying `GetWire` op exists and is tested),
+`is_forward_oriented` collapses 4 `TopAbs_Orientation` values to a bool,
+and no dedicated fixture exercises a face-with-a-hole's own traversal
+counts.
 
-Per the fixed batch order, the next invocation begins `S5-06`
-(`AICAD-119..121`: topology construction/healing/inspection).
+Per the fixed batch order, the next invocation begins `S5-07`
+(`AICAD-122..124`: controlled raw geometry/edit/adoption).
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

@@ -89,6 +89,7 @@
 
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SourceSpan};
+use cad_kernel_api::topology::TopologyKind;
 use cad_kernel_api::{Axis3, Direction3, Plane3, Point3, Transform};
 use cad_types::Dimension;
 use cad_units::OperandType;
@@ -184,6 +185,16 @@ pub struct EdgeIndex(pub usize);
 /// A raw, epoch-bound face selector, analogous to [`EdgeIndex`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FaceIndex(pub usize);
+
+/// A raw, epoch-bound vertex selector, analogous to [`EdgeIndex`]
+/// (`AICAD-121`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VertexIndex(pub usize);
+
+/// A raw, epoch-bound wire selector, analogous to [`EdgeIndex`]
+/// (`AICAD-121`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WireIndex(pub usize);
 
 /// The elementary quadric surface families [`GeometryOp::MakeFaceOnSurface`]
 /// (`AICAD-119`) can build a kernel face on, expressed as pure kernel-
@@ -413,6 +424,34 @@ pub enum GeometryOp {
     /// evidence (`cad_occt_bridge::HealReport::kind_changed`) must never
     /// be discarded when consumed.
     Heal { shape: GeomId, tolerance: Quantity },
+    /// Selects one edge of `target` by raw, epoch-bound kernel-
+    /// enumeration-order index (`Shape::get_edge`), producing it as its
+    /// own new geometry value (`AICAD-121`) — the standalone-traversal
+    /// counterpart of [`GeometryOp::GetFace`], which this op's own doc
+    /// comment's precedent already established (`Fillet`/`Chamfer`'s raw-
+    /// index selection). Like every other index-selection variant, this
+    /// is raw and epoch-bound, never a durable semantic reference.
+    GetEdge { target: GeomId, edge: EdgeIndex },
+    /// Selects one vertex of `target` by raw, epoch-bound index
+    /// (`Shape::get_vertex`, `AICAD-121`). See [`GeometryOp::GetEdge`]'s
+    /// own doc comment.
+    GetVertex { target: GeomId, vertex: VertexIndex },
+    /// Selects one wire of `target` by raw, epoch-bound index
+    /// (`Shape::get_wire`, `AICAD-121`). See [`GeometryOp::GetEdge`]'s
+    /// own doc comment.
+    GetWire { target: GeomId, wire: WireIndex },
+    /// Selects one face adjacent to `target`'s own edge `edge`, by raw,
+    /// epoch-bound `adjacent` index among that edge's own adjacent faces
+    /// (`Shape::edge_adjacent_face`, `AICAD-121`) — the construction
+    /// counterpart of [`GeometryQuery::AdjacentFaceCount`], which reports
+    /// how many adjacent faces exist before one is selected here. See
+    /// [`GeometryOp::GetEdge`]'s own doc comment for the raw-index
+    /// convention.
+    GetAdjacentFace {
+        target: GeomId,
+        edge: EdgeIndex,
+        adjacent: usize,
+    },
 }
 
 /// A property/validation query against an already-constructed geometry
@@ -449,6 +488,58 @@ pub enum GeometryQuery {
     },
     /// `Shape::export_step`.
     ExportStep { target: GeomId, path: PathBuf },
+    /// `target`'s own top-level topological kind (`Shape::topology_kind`,
+    /// `AICAD-121`) — kernel-neutral (`cad_kernel_api::topology::
+    /// TopologyKind`), never an OCCT `TopAbs_ShapeEnum` value. Fails
+    /// (rather than guessing) for a Compound/CompSolid/generic-Shape
+    /// kind, which has no single classifiable entity kind.
+    TopologyKindOf(GeomId),
+    /// The number of unique subshapes of `target` of kind `kind`
+    /// (`Shape::{vertex,edge,wire,face,shell,solid}_count`, `AICAD-121`)
+    /// — one combined variant covering all six kinds rather than six
+    /// near-duplicate ones, dispatched by matching `kind`.
+    EntityCount { target: GeomId, kind: TopologyKind },
+    /// The number of faces adjacent to (bounded by) `target`'s own edge
+    /// `edge` (`Shape::edge_adjacent_face_count`, `AICAD-121`) — reports
+    /// how many adjacent faces exist before one is selected by
+    /// [`GeometryOp::GetAdjacentFace`]'s own raw index.
+    AdjacentFaceCount { target: GeomId, edge: EdgeIndex },
+    /// Whether `wire` is `face`'s own designated OUTER wire
+    /// (`Shape::is_outer_wire`, `AICAD-121`) — false for any of `face`'s
+    /// inner (hole) wires, and false if `wire` does not bound `face` at
+    /// all. The `boundary(outer|inner)` predicate `docs/plan/
+    /// 06_REFERENCES_QUERIES_FEATURE_DAG.md` §6 names, at the low-level
+    /// layer.
+    IsOuterWire { face: GeomId, wire: GeomId },
+    /// Whether `a` and `b` address the SAME underlying topological entity
+    /// (`Shape::is_same`, `AICAD-121`, `TShape` + `Location`, ignoring
+    /// `Orientation`) — the safe mechanism this batch's own traversal ops
+    /// (`GetFace`/`GetEdge`/`GetVertex`/`GetWire`/`GetAdjacentFace`) need:
+    /// each independently-obtained ephemeral handle can be compared for
+    /// "same entity" without ever exposing a native handle as durable
+    /// identity.
+    IsSameEntity { a: GeomId, b: GeomId },
+    /// Whether `target`'s own top-level `TopAbs_Orientation` is FORWARD
+    /// (`Shape::is_forward_oriented`, `AICAD-121`) — REVERSED, INTERNAL,
+    /// and EXTERNAL (the latter two are rare seam/degenerate-edge
+    /// markers) all report `false`; see that method's own doc comment
+    /// for why this collapse is a deliberate, disclosed simplification
+    /// rather than a full 4-way orientation result.
+    IsForwardOriented(GeomId),
+    /// `target`'s own coordinate (`Shape::vertex_point`, `AICAD-121`).
+    /// `target` must address a shape of exactly kind Vertex.
+    VertexPoint(GeomId),
+    /// Exact point-vs-solid classification of `point` against `solid`
+    /// (`Shape::classify_point`, `AICAD-121`) — `tolerance` is the
+    /// classifier's own boundary tolerance (a representation/validity-
+    /// domain `Length`, `project/DECISION_LOG.md#DL-24` domain 1, not the
+    /// modeling/construction domain `Sew`/`Heal` use). `solid` must
+    /// address a shape containing at least one Solid.
+    ClassifyPoint {
+        solid: GeomId,
+        point: Point3,
+        tolerance: Quantity,
+    },
 }
 
 /// Distinguishes a node that produces a new geometry value (usable as a
@@ -839,6 +930,18 @@ impl GeometryGraph {
                 self.check_geometry_operand(*shape, span)?;
                 Self::check_dimension(tolerance, Dimension::Length, "Heal.tolerance", span)?;
             }
+            GeometryOp::GetEdge { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
+            }
+            GeometryOp::GetVertex { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
+            }
+            GeometryOp::GetWire { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
+            }
+            GeometryOp::GetAdjacentFace { target, .. } => {
+                self.check_geometry_operand(*target, span)?;
+            }
         }
         let id = self.next_id();
         self.nodes.push(GeometryNode {
@@ -887,6 +990,32 @@ impl GeometryGraph {
             }
             GeometryQuery::ExportStep { target, .. } => {
                 self.check_geometry_operand(*target, span)?;
+            }
+            GeometryQuery::TopologyKindOf(target)
+            | GeometryQuery::EntityCount { target, .. }
+            | GeometryQuery::AdjacentFaceCount { target, .. }
+            | GeometryQuery::IsForwardOriented(target)
+            | GeometryQuery::VertexPoint(target) => {
+                self.check_geometry_operand(*target, span)?;
+            }
+            GeometryQuery::IsOuterWire { face, wire } => {
+                self.check_geometry_operand(*face, span)?;
+                self.check_geometry_operand(*wire, span)?;
+            }
+            GeometryQuery::IsSameEntity { a, b } => {
+                self.check_geometry_operand(*a, span)?;
+                self.check_geometry_operand(*b, span)?;
+            }
+            GeometryQuery::ClassifyPoint {
+                solid, tolerance, ..
+            } => {
+                self.check_geometry_operand(*solid, span)?;
+                Self::check_dimension(
+                    tolerance,
+                    Dimension::Length,
+                    "ClassifyPoint.tolerance",
+                    span,
+                )?;
             }
         }
         let id = self.next_id();
@@ -1838,5 +1967,262 @@ mod tests {
             )
             .unwrap();
         assert!(graph.get(healed).unwrap().kind.produces_geometry());
+    }
+
+    // --- AICAD-121: deterministic topology traversal/inspection --------
+
+    #[test]
+    fn get_edge_get_vertex_get_wire_and_get_adjacent_face_reject_an_unbuilt_target() {
+        let mut graph = GeometryGraph::new();
+        let not_yet_built = GeomId(0);
+
+        let err = graph
+            .push_op(
+                GeometryOp::GetEdge {
+                    target: not_yet_built,
+                    edge: EdgeIndex(0),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_op(
+                GeometryOp::GetVertex {
+                    target: not_yet_built,
+                    vertex: VertexIndex(0),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_op(
+                GeometryOp::GetWire {
+                    target: not_yet_built,
+                    wire: WireIndex(0),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_op(
+                GeometryOp::GetAdjacentFace {
+                    target: not_yet_built,
+                    edge: EdgeIndex(0),
+                    adjacent: 0,
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+    }
+
+    #[test]
+    fn get_edge_get_vertex_get_wire_and_get_adjacent_face_accept_a_built_target() {
+        let mut graph = GeometryGraph::new();
+        let wire = a_wire(&mut graph);
+
+        let edge = graph
+            .push_op(
+                GeometryOp::GetEdge {
+                    target: wire,
+                    edge: EdgeIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(edge).unwrap().kind.produces_geometry());
+
+        let vertex = graph
+            .push_op(
+                GeometryOp::GetVertex {
+                    target: wire,
+                    vertex: VertexIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(vertex).unwrap().kind.produces_geometry());
+
+        let inner_wire = graph
+            .push_op(
+                GeometryOp::GetWire {
+                    target: wire,
+                    wire: WireIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(inner_wire).unwrap().kind.produces_geometry());
+
+        let adjacent = graph
+            .push_op(
+                GeometryOp::GetAdjacentFace {
+                    target: wire,
+                    edge: EdgeIndex(0),
+                    adjacent: 0,
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(adjacent).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn topology_kind_of_entity_count_and_is_forward_oriented_reject_an_unbuilt_target() {
+        let mut graph = GeometryGraph::new();
+        let not_yet_built = GeomId(0);
+
+        let err = graph
+            .push_query(GeometryQuery::TopologyKindOf(not_yet_built), span())
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_query(
+                GeometryQuery::EntityCount {
+                    target: not_yet_built,
+                    kind: TopologyKind::Face,
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_query(GeometryQuery::IsForwardOriented(not_yet_built), span())
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_query(GeometryQuery::VertexPoint(not_yet_built), span())
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+    }
+
+    #[test]
+    fn entity_count_and_adjacent_face_count_accept_a_built_target() {
+        let mut graph = GeometryGraph::new();
+        let wire = a_wire(&mut graph);
+
+        let count = graph
+            .push_query(
+                GeometryQuery::EntityCount {
+                    target: wire,
+                    kind: TopologyKind::Edge,
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(!graph.get(count).unwrap().kind.produces_geometry());
+
+        let adjacent_count = graph
+            .push_query(
+                GeometryQuery::AdjacentFaceCount {
+                    target: wire,
+                    edge: EdgeIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(!graph.get(adjacent_count).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn is_outer_wire_and_is_same_entity_reject_either_unbuilt_operand() {
+        let mut graph = GeometryGraph::new();
+        let wire = a_wire(&mut graph);
+        let not_yet_built = GeomId(999);
+
+        let err = graph
+            .push_query(
+                GeometryQuery::IsOuterWire {
+                    face: not_yet_built,
+                    wire,
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_query(
+                GeometryQuery::IsOuterWire {
+                    face: wire,
+                    wire: not_yet_built,
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let err = graph
+            .push_query(
+                GeometryQuery::IsSameEntity {
+                    a: not_yet_built,
+                    b: wire,
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let same = graph
+            .push_query(GeometryQuery::IsSameEntity { a: wire, b: wire }, span())
+            .unwrap();
+        assert!(!graph.get(same).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn classify_point_rejects_an_unbuilt_solid_and_a_wrong_dimension_tolerance() {
+        let mut graph = GeometryGraph::new();
+        let not_yet_built = GeomId(0);
+
+        let err = graph
+            .push_query(
+                GeometryQuery::ClassifyPoint {
+                    solid: not_yet_built,
+                    point: Point3::ORIGIN,
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+
+        let wire = a_wire(&mut graph);
+        let err = graph
+            .push_query(
+                GeometryQuery::ClassifyPoint {
+                    solid: wire,
+                    point: Point3::ORIGIN,
+                    tolerance: angle(0.001),
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::DimensionMismatch { .. }));
+    }
+
+    #[test]
+    fn classify_point_accepts_a_built_solid_and_a_length_tolerance() {
+        let mut graph = GeometryGraph::new();
+        let wire = a_wire(&mut graph);
+        let classification = graph
+            .push_query(
+                GeometryQuery::ClassifyPoint {
+                    solid: wire,
+                    point: Point3::ORIGIN,
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(!graph.get(classification).unwrap().kind.produces_geometry());
     }
 }

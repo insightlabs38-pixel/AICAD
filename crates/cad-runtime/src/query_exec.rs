@@ -49,6 +49,7 @@
 //! mechanics ... exact cache representation" explicit deferral.
 
 use cad_geometry_api::{GeomId, GeometryGraph};
+use cad_kernel_api::Point3;
 
 /// A kernel-backed query's real, typed result — deliberately not an OCCT/
 /// native object (`DL-25`: "Query outputs are ordinary AICAD values; no
@@ -56,10 +57,22 @@ use cad_geometry_api::{GeomId, GeometryGraph};
 /// Interpreter::execute_kernel_query` is the only place this is converted
 /// into a `crate::value::Value`, and only into the exact `Value` kind the
 /// requesting `BuiltinFnId` declares as its return type.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Point`/`Text` were added by `AICAD-121` (topology inspection: a
+/// vertex's own coordinate, and a topology-kind/point-classification tag)
+/// — the first two variants beyond the original `Bool`/`Number` this
+/// enum shipped with (`AICAD-105`). `Text` carries a plain `String`
+/// tag, never an OCCT/native enum value re-exported directly (matching
+/// every other kernel-neutral classification result in this codebase,
+/// e.g. `cad_occt_bridge::SurfaceKind`/`PointClassification`). No longer
+/// `Copy` (a `String` isn't) — every existing call site already consumed
+/// its `QueryOutcome` by value once, so this is a non-breaking widening.
+#[derive(Debug, Clone, PartialEq)]
 pub enum QueryOutcome {
     Bool(bool),
     Number(f64),
+    Point(Point3),
+    Text(String),
 }
 
 /// Why a [`KernelQueryExecutor`] could not produce a result — never a

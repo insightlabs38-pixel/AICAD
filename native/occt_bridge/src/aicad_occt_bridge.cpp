@@ -3770,4 +3770,76 @@ aicad_occt_status_t aicad_occt_heal(aicad_occt_context_t* context,
   }
 }
 
+aicad_occt_status_t aicad_occt_shape_kind(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           int* out_kind) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_kind == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    switch (shape->ShapeType()) {
+      case TopAbs_VERTEX:
+        *out_kind = AICAD_TOPOLOGY_VERTEX;
+        return AICAD_OCCT_OK;
+      case TopAbs_EDGE:
+        *out_kind = AICAD_TOPOLOGY_EDGE;
+        return AICAD_OCCT_OK;
+      case TopAbs_WIRE:
+        *out_kind = AICAD_TOPOLOGY_WIRE;
+        return AICAD_OCCT_OK;
+      case TopAbs_FACE:
+        *out_kind = AICAD_TOPOLOGY_FACE;
+        return AICAD_OCCT_OK;
+      case TopAbs_SHELL:
+        *out_kind = AICAD_TOPOLOGY_SHELL;
+        return AICAD_OCCT_OK;
+      case TopAbs_SOLID:
+        *out_kind = AICAD_TOPOLOGY_SOLID;
+        return AICAD_OCCT_OK;
+      default:
+        // Compound/CompSolid/generic Shape: no single classifiable
+        // entity kind to report.
+        return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_shape_is_forward_oriented(aicad_occt_context_t* context,
+                                                          aicad_shape_handle_t handle,
+                                                          int* out_is_forward) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_is_forward == nullptr) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* shape = nullptr;
+  status = LookupAnyKind(context, handle, &shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    *out_is_forward = (shape->Orientation() == TopAbs_FORWARD) ? 1 : 0;
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
 }  // extern "C"

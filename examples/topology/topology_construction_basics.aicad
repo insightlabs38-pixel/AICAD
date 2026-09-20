@@ -146,4 +146,15 @@ part TopologyConstructionBasics {
     // `sewed_pair` is already a valid open sheet, so this is a genuine
     // no-op repair, not that disclosed case.
     let healed_pair: Geometry = heal(sewed_pair, 0.000001mm);
+
+    // Deterministic topology traversal (AICAD-121): raw-index selection
+    // is Construction-category (it mints a new geometry node), so it
+    // builds here with no kernel context; the paired Query-category
+    // inspection (`face_count`/`topology_kind_of`/`is_same_entity`/etc.)
+    // requires a real kernel executor and is exercised instead in
+    // `crates/cad-cli/tests/stage5_topology_inspection.rs`.
+    let reselected_face: Geometry = topology_face_at(open_solid, 0);
+    let square_edge: Geometry = topology_edge_at(square_face, 0);
+    let square_corner: Geometry = topology_vertex_at(square_face, 0);
+    let far_side_of_the_seam: Geometry = adjacent_face_at(healed_pair, 0, 0);
 }

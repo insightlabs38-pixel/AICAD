@@ -46,7 +46,7 @@ pub use curve::{
 };
 pub use ir::{
     EdgeIndex, FaceIndex, FaceOrientation, GeomId, GeometryGraph, GeometryIrError, GeometryNode,
-    GeometryNodeKind, GeometryOp, GeometryQuery, Quantity, SurfaceSpec,
+    GeometryNodeKind, GeometryOp, GeometryQuery, Quantity, SurfaceSpec, VertexIndex, WireIndex,
 };
 pub use operation_report::OperationReport;
 pub use query::{

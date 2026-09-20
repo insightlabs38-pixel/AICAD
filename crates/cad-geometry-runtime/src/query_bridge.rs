@@ -42,10 +42,12 @@ impl KernelQueryExecutor for OcctQueryExecutor<'_> {
         match results.get(node.index() as usize) {
             Some(NodeResult::Bool(b)) => Ok(QueryOutcome::Bool(*b)),
             Some(NodeResult::Number(n)) => Ok(QueryOutcome::Number(*n)),
+            Some(NodeResult::Point(p)) => Ok(QueryOutcome::Point(*p)),
+            Some(NodeResult::Text(t)) => Ok(QueryOutcome::Text(t.clone())),
             Some(other) => Err(KernelQueryError {
                 message: format!(
                     "query node {node} produced a non-scalar kernel result ({other:?}); only \
-                     Bool/Number query outcomes are supported by cad_runtime::query_exec"
+                     Bool/Number/Point/Text query outcomes are supported by cad_runtime::query_exec"
                 ),
             }),
             None => Err(KernelQueryError {

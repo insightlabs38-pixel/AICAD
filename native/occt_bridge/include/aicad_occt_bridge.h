@@ -1271,6 +1271,43 @@ aicad_occt_status_t aicad_occt_heal(aicad_occt_context_t* context,
                                      aicad_shape_handle_t* out_handle,
                                      aicad_heal_report_t* out_report);
 
+/* --- AICAD-121: safe topology inspection (entity-kind classification and
+ * orientation) -- the two accessors no earlier task added: every other
+ * enumeration/adjacency/point/classification primitive this batch's own
+ * Rust wrapper needs already existed (AICAD-027..034, AICAD-082..084). --- */
+
+/* This ABI's own stable, kernel-neutral encoding of the six concrete
+ * topological entity kinds -- deliberately NOT TopAbs_ShapeEnum's own
+ * numbering (Stage-1 kernel policy #2-3: no OCCT enum crosses this
+ * header). */
+typedef enum aicad_topology_kind {
+  AICAD_TOPOLOGY_VERTEX = 0,
+  AICAD_TOPOLOGY_EDGE = 1,
+  AICAD_TOPOLOGY_WIRE = 2,
+  AICAD_TOPOLOGY_FACE = 3,
+  AICAD_TOPOLOGY_SHELL = 4,
+  AICAD_TOPOLOGY_SOLID = 5,
+} aicad_topology_kind_t;
+
+/* Classifies `handle`'s own top-level topological kind
+ * (`TopoDS_Shape::ShapeType()`), as one of `aicad_topology_kind_t`'s six
+ * values. Fails with `AICAD_OCCT_ERR_OPERATION_FAILED` for a Compound/
+ * CompSolid/generic-Shape top-level kind, which has no single
+ * classifiable entity kind to report. */
+aicad_occt_status_t aicad_occt_shape_kind(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           int* out_kind);
+
+/* Reports `handle`'s own top-level `TopAbs_Orientation`, collapsed to a
+ * bool: true for FORWARD, false for REVERSED/INTERNAL/EXTERNAL. The
+ * latter two are rare seam/degenerate-edge markers this ABI does not
+ * distinguish further from REVERSED -- a deliberate, disclosed
+ * simplification (see `project/reports/AICAD-121.md`), not an
+ * unconsidered omission. */
+aicad_occt_status_t aicad_occt_shape_is_forward_oriented(aicad_occt_context_t* context,
+                                                          aicad_shape_handle_t handle,
+                                                          int* out_is_forward);
+
 #ifdef __cplusplus
 }
 #endif
