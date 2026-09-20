@@ -123,7 +123,43 @@ not source-exposed (the underlying `GetWire` op exists and is tested),
 and no dedicated fixture exercises a face-with-a-hole's own traversal
 counts.
 
-Per the fixed batch order, the next invocation begins `S5-07`
-(`AICAD-122..124`: controlled raw geometry/edit/adoption).
+`S5-07` is in progress: `AICAD-122` (controlled raw/unsafe geometry tier
+with epoch-bound handles) is done —
+`cad_geometry_api::raw::RawGeometry` (`RawHandle<ClassifiedShape>`, reusing
+`AICAD-093`'s/`108`'s existing epoch/classification primitives with no new
+mechanism), a fourth opaque `CheckedType::Raw` alongside `Geometry`/`Curve`/
+`Surface`, two new builtins (`enter_raw`, the sole entry point, `Query`-
+category; `raw_topology_kind_of`, a new `BuiltinCategory::Raw` — epoch-
+checked data access, no kernel call), and `Interpreter::epoch_counter`/
+`with_epoch_counter` wired into `ParametricBuildSession::rebuild` alongside
+the existing query executor. Adversarial evidence: stale-epoch, wrong-
+context, dropped/rebuilt-owner, and handle-reuse rejection, all proven
+against real `EpochCounter`s (unit + `cad-cli` production-path tests using
+two independent real `OcctContext`/`ParametricBuildSession` pairs and two
+real rebuild rounds); type-level rejection of passing `Raw` where
+`Geometry` is expected (and vice versa) proven in `cad-hir`. No native
+bridge changes were needed (`Shape::handle()`/`topology_kind()` already
+existed). `enter_raw`/`raw_topology_kind_of` are deliberately **not** added
+to `examples/topology/topology_construction_basics.aicad` — that file only
+structurally builds with no real kernel context, and `AICAD-121` already
+established the identical boundary for its own `Query`-category builtins,
+proven instead in a dedicated `crates/cad-cli/tests/` file
+(`stage5_raw_geometry.rs`, mirroring `stage5_topology_inspection.rs`). See
+`project/reports/AICAD-122.md`.
+
+All required checks pass: `cargo fmt --all -- --check`, `cargo clippy
+--workspace --all-targets --all-features -- -D warnings`, `cargo test -p
+cad-references -p cad-kernel-api -p cad-occt-bridge -p cad-runtime -p
+cad-cli`, and the full `cargo test --workspace` (1751 passed, 0 failed).
+The native OCCT bridge CMake/CTest suite was not re-run (no native source
+touched by this task).
+
+Per the fixed batch order, the next invocation resumes `S5-07` at
+`AICAD-123` (functional raw topology editing with lineage/change
+evidence — deletion/replacement/split/merge, `docs/plan/
+05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`), followed by `AICAD-124`
+(raw-to-safe adoption). Both depend on `AICAD-122` (satisfied) and are
+expected to need real native OCCT bridge additions for the edit operations
+themselves, unlike `AICAD-122`.
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

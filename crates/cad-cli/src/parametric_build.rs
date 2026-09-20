@@ -617,7 +617,8 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             &self.file,
             &self.source,
         )
-        .with_query_executor(&query_executor);
+        .with_query_executor(&query_executor)
+        .with_epoch_counter(&self.epoch);
         if let Err(diagnostic) = interp.run_top_level_parametric(
             &self.lowered.program,
             &model,

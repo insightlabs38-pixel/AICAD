@@ -243,6 +243,17 @@ pub enum CheckedType {
     /// name `"Surface"` the identical way and kept distinct from both
     /// `Curve` and `Geometry` for the same reason.
     Surface,
+    /// A raw/unsafe geometry handle (`AICAD-122`, `project/DECISION_LOG.md
+    /// #DL-24` (D22); `cad_geometry_api::raw::RawGeometry`) — a fourth
+    /// single opaque nominal type, resolved from the bare source name
+    /// `"Raw"` the identical way `Geometry`/`Curve`/`Surface` are. Kept
+    /// strictly distinct from [`CheckedType::Geometry`]: a `Raw` value is
+    /// epoch-bound and carries no `GeomId`, so a program passing one where
+    /// a `Geometry`-typed parameter is declared (or vice versa) is a type
+    /// error at this layer, never a silent reinterpretation — the D22
+    /// "never treat a raw handle as... a Stage-4 semantic reference"
+    /// boundary enforced structurally, not merely documented.
+    Raw,
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -447,6 +458,7 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::Geometry, CheckedType::Geometry) => true,
         (CheckedType::Curve, CheckedType::Curve) => true,
         (CheckedType::Surface, CheckedType::Surface) => true,
+        (CheckedType::Raw, CheckedType::Raw) => true,
         // Nominal, not structural (`AICAD-057D`): the same declaring
         // struct/enum `base`, with every type argument pairwise
         // compatible in declared order.
@@ -601,6 +613,7 @@ impl<'a> Checker<'a> {
             CheckedType::Geometry => "Geometry".to_string(),
             CheckedType::Curve => "Curve".to_string(),
             CheckedType::Surface => "Surface".to_string(),
+            CheckedType::Raw => "Raw".to_string(),
         }
     }
 
@@ -763,6 +776,10 @@ impl<'a> Checker<'a> {
                 // `Surface` (`AICAD-113`): the identical pattern again.
                 if name == "Surface" {
                     return Some(CheckedType::Surface);
+                }
+                // `Raw` (`AICAD-122`): the identical pattern again.
+                if name == "Raw" {
+                    return Some(CheckedType::Raw);
                 }
                 if let Some(prim) = PrimitiveType::from_name(name) {
                     return Some(CheckedType::Value(HirType::Scalar(prim)));
@@ -5017,6 +5034,27 @@ mod tests {
     #[test]
     fn union_called_with_a_non_geometry_argument_is_reported() {
         let (_lowered, checked) = check("let s = union(box(1mm, 1mm, 1mm), 5mm);");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
+    }
+
+    /// `AICAD-122`, D22: a `Raw` value must never be silently accepted
+    /// where a `Geometry`-typed parameter is declared -- the raw/unsafe
+    /// tier's own opacity is enforced structurally by `CheckedType::Raw`
+    /// being a distinct nominal type, not merely documented.
+    #[test]
+    fn a_raw_value_cannot_be_passed_where_geometry_is_expected() {
+        let (_lowered, checked) =
+            check("let b = box(1mm, 1mm, 1mm); let r = enter_raw(b); let bad = is_valid(r);");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
+    }
+
+    /// The converse of the test above: a `Geometry` value must never be
+    /// silently accepted where a `Raw`-typed parameter is declared --
+    /// `enter_raw` is the only sanctioned entry point into the raw tier.
+    #[test]
+    fn a_geometry_value_cannot_be_passed_where_raw_is_expected() {
+        let (_lowered, checked) =
+            check("let b = box(1mm, 1mm, 1mm); let bad = raw_topology_kind_of(b);");
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
     }
 

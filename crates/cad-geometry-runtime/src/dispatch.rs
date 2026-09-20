@@ -47,7 +47,7 @@ use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryNode
 use cad_geometry_api::{FaceOrientation, GeometryOp, GeometryQuery, Quantity, SurfaceSpec};
 use cad_kernel_api::KernelError;
 use cad_kernel_api::Point3;
-use cad_kernel_api::topology::TopologyKind;
+use cad_kernel_api::topology::{ClassifiedShape, TopologyKind};
 use cad_occt_bridge::{BoundingBox, Lineage, OcctContext, Shape, TriangleMesh, ValidationReport};
 use std::collections::HashSet;
 
@@ -72,6 +72,12 @@ pub enum NodeResult<'ctx> {
     /// `ExportStep`'s result: the operation is a side effect (writing a
     /// file), not a value.
     Unit,
+    /// `EnterRaw`'s result (`AICAD-122`): a lifetime-free, kernel-neutral
+    /// classified handle, ready to be minted into a
+    /// `cad_geometry_api::raw::RawGeometry` by the query-executor caller
+    /// (`crate::query_bridge::OcctQueryExecutor`), which alone knows the
+    /// owning session's `EpochCounter`.
+    Classified(ClassifiedShape),
 }
 
 /// The full per-node result table for one dispatched graph, indexed by
@@ -640,6 +646,11 @@ fn dispatch_query<'ctx>(
             )?;
             NodeResult::Text(format!("{classification:?}"))
         }
+        GeometryQuery::EnterRaw(target) => {
+            let shape = shape_operand(results, id, *target, span)?;
+            let kind = kernel_op(id, span, "EnterRaw", shape.topology_kind())?;
+            NodeResult::Classified(ClassifiedShape::new(kind, shape.handle()))
+        }
     };
     Ok(result)
 }
@@ -735,6 +746,7 @@ fn query_input_ids(query: &GeometryQuery) -> Vec<GeomId> {
         | GeometryQuery::AdjacentFaceCount { target, .. }
         | GeometryQuery::IsForwardOriented(target)
         | GeometryQuery::VertexPoint(target)
+        | GeometryQuery::EnterRaw(target)
         | GeometryQuery::ClassifyPoint { solid: target, .. } => vec![*target],
         GeometryQuery::IsOuterWire { face, wire } => vec![*face, *wire],
         GeometryQuery::IsSameEntity { a, b } => vec![*a, *b],

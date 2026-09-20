@@ -172,8 +172,8 @@ use cad_ast::Span;
 use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
 use cad_geometry_api::{
     AnalyticCurve, AnalyticSurface, CurveConstructionError, CurveOperationError, EdgeIndex,
-    FaceIndex, FaceOrientation, GeomId, GeometryOp, GeometryQuery, Quantity, SurfaceSpec, TrimLoop,
-    VertexIndex,
+    EpochCounter, FaceIndex, FaceOrientation, GeomId, GeometryOp, GeometryQuery, Quantity,
+    SurfaceSpec, TrimLoop, VertexIndex,
 };
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
@@ -316,6 +316,18 @@ pub struct Interpreter<'a> {
     /// far, charged against [`ResourceBudget::max_kernel_queries`] — see
     /// [`Interpreter::consume_query_budget`].
     queries_consumed: u64,
+    /// The owning session's raw-geometry epoch counter (`AICAD-122`,
+    /// `project/DECISION_LOG.md#DL-24` (D22)) — `enter_raw` mints every
+    /// `Value::Raw` it produces against `self.epoch_counter.current()`,
+    /// and `raw_topology_kind_of` re-checks a presented handle against the
+    /// same counter's *current* epoch before reading it. `None` (the
+    /// default) for every interpreter that never needs the raw tier —
+    /// both raw-tier builtins then fail cleanly with
+    /// `RuntimeError::RawTierUnavailable` rather than silently minting an
+    /// epoch-less (and therefore never-stale) handle, which would defeat
+    /// D22's own "explicitly invalid once its owning context/epoch is
+    /// invalid" guarantee.
+    epoch_counter: Option<&'a EpochCounter>,
     /// The current dynamic call/loop-iteration nesting (`AICAD-107`,
     /// `project/DECISION_LOG.md#DL-27`) — the live stack a `RuntimeBuiltin`
     /// geometry call's own [`CallPath`] is built from at the moment it
@@ -532,6 +544,7 @@ impl<'a> Interpreter<'a> {
             call_geom_ranges: HashMap::new(),
             query_executor: None,
             queries_consumed: 0,
+            epoch_counter: None,
             call_path_stack: Vec::new(),
             binding_provenance: HashMap::new(),
             trace: Vec::new(),
@@ -547,6 +560,18 @@ impl<'a> Interpreter<'a> {
     /// call site that never needs real kernel query results is unaffected.
     pub fn with_query_executor(mut self, executor: &'a dyn KernelQueryExecutor) -> Self {
         self.query_executor = Some(executor);
+        self
+    }
+
+    /// Configures the real raw-geometry epoch counter (`AICAD-122`) the
+    /// controlled raw/unsafe geometry tier's own builtins (`enter_raw`,
+    /// `raw_topology_kind_of`) check every `Value::Raw` handle against —
+    /// see [`Interpreter::epoch_counter`]'s own doc comment. A builder
+    /// method, for the identical reason [`Interpreter::with_query_executor`]
+    /// is one: every existing call site that never touches the raw tier is
+    /// unaffected.
+    pub fn with_epoch_counter(mut self, counter: &'a EpochCounter) -> Self {
+        self.epoch_counter = Some(counter);
         self
     }
 
@@ -1966,6 +1991,7 @@ impl<'a> Interpreter<'a> {
                 | BuiltinFnId::IsForwardOriented
                 | BuiltinFnId::VertexPoint
                 | BuiltinFnId::ClassifyPoint
+                | BuiltinFnId::EnterRaw
         ) {
             let query = match id {
                 BuiltinFnId::IsValid => GeometryQuery::IsValid(geometry(arg(0)?)?),
@@ -2019,6 +2045,7 @@ impl<'a> Interpreter<'a> {
                     })?,
                     tolerance: quantity(arg(2)?)?,
                 },
+                BuiltinFnId::EnterRaw => GeometryQuery::EnterRaw(geometry(arg(0)?)?),
                 _ => unreachable!("guarded by the outer matches! above"),
             };
             let query_node = self
@@ -2091,6 +2118,30 @@ impl<'a> Interpreter<'a> {
                 | BuiltinFnId::DistanceSurfaceSurface
         ) {
             return self.dispatch_geometric_query_builtin(id, name, params, frame, span);
+        }
+
+        // The raw/unsafe geometry tier's own post-entry builtins
+        // (`AICAD-122`, `BuiltinCategory::Raw`): read directly from an
+        // already-materialized `Value::Raw` handle, checked against this
+        // session's own `EpochCounter`. No `GeometryGraph`/`GeometryQuery`
+        // node and no kernel call — the classified kind was already
+        // captured in full when `enter_raw` minted the handle.
+        if id == BuiltinFnId::RawTopologyKindOf {
+            let raw = match arg(0)? {
+                Value::Raw(handle) => *handle,
+                _ => return Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            };
+            let counter = self
+                .epoch_counter
+                .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+            let classified = raw
+                .get(counter)
+                .map_err(|stale| RuntimeError::RawHandleStale {
+                    name,
+                    span,
+                    reason: stale.to_string(),
+                })?;
+            return Ok(Value::Str(classified.kind.to_string()));
         }
 
         // Pushes one `GeometryOp` node onto this run's own accumulated
@@ -2496,11 +2547,15 @@ impl<'a> Interpreter<'a> {
             | BuiltinFnId::IsSameEntity
             | BuiltinFnId::IsForwardOriented
             | BuiltinFnId::VertexPoint
-            | BuiltinFnId::ClassifyPoint => {
+            | BuiltinFnId::ClassifyPoint
+            | BuiltinFnId::EnterRaw => {
                 unreachable!(
                     "query builtins return early above, before this Construction-only match"
                 )
             }
+            BuiltinFnId::RawTopologyKindOf => unreachable!(
+                "raw-tier builtins return early above, before this Construction-only match"
+            ),
             BuiltinFnId::LineCurve
             | BuiltinFnId::CircleCurve
             | BuiltinFnId::ArcCurve
@@ -3403,6 +3458,12 @@ impl<'a> Interpreter<'a> {
                 QueryOutcome::Bool(b),
             ) => Value::Bool(b),
             (BuiltinFnId::VertexPoint, QueryOutcome::Point(p)) => self.point3_value(p, span)?,
+            (BuiltinFnId::EnterRaw, QueryOutcome::Classified(classified)) => {
+                let counter = self
+                    .epoch_counter
+                    .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+                Value::Raw(counter.mint(classified))
+            }
             (other, outcome) => unreachable!(
                 "KernelQueryExecutor outcome {outcome:?} does not match query builtin {other:?} \
                  -- every real implementation must return the exact QueryOutcome shape each \
@@ -4568,6 +4629,8 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::IsForwardOriented => "is_forward_oriented",
         BuiltinFnId::VertexPoint => "vertex_point",
         BuiltinFnId::ClassifyPoint => "classify_point",
+        BuiltinFnId::EnterRaw => "enter_raw",
+        BuiltinFnId::RawTopologyKindOf => "raw_topology_kind_of",
     }
 }
 
@@ -4609,6 +4672,8 @@ mod tests {
     use super::*;
     use cad_diagnostics::Diagnostic;
     use cad_hir::lower::LowerResult;
+    use cad_kernel_api::topology::ClassifiedShape;
+    use cad_kernel_api::{KernelId, KernelShape};
     use cad_types::Dimension;
 
     /// Parses, lowers, and type-checks `source`, asserting every phase is
@@ -9716,5 +9781,140 @@ mod tests {
             Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E130");
+    }
+
+    // --- AICAD-122: controlled raw/unsafe geometry tier -----------------
+
+    fn fake_classified_outcome() -> QueryOutcome {
+        QueryOutcome::Classified(ClassifiedShape::new(
+            TopologyKind::Solid,
+            KernelShape::from_id(KernelId {
+                context_id: 1,
+                slot: 0,
+                generation: 1,
+            }),
+        ))
+    }
+
+    #[test]
+    fn enter_raw_then_raw_topology_kind_of_round_trips_within_one_epoch() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let source = "fn f() -> String { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let r = enter_raw(b); \
+                 return raw_topology_kind_of(r); \
+             }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor)
+                .with_epoch_counter(&counter);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Str("Solid".to_string())
+        );
+    }
+
+    #[test]
+    fn enter_raw_without_a_configured_epoch_counter_fails_cleanly() {
+        let source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E144");
+    }
+
+    #[test]
+    fn enter_raw_without_a_configured_executor_fails_cleanly() {
+        let source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E130");
+    }
+
+    /// D22's "wrong context" case: a `Raw` handle minted by one session's
+    /// own `EpochCounter` is rejected outright by a *different* session's
+    /// counter, even though neither counter has ever advanced -- `Epoch`
+    /// equality is tagged with counter identity, not just generation
+    /// number (`cad_references::raw_handle`'s own established invariant,
+    /// re-proven here through `raw_topology_kind_of`'s real dispatch
+    /// wiring rather than only the underlying `RawHandle` primitive).
+    /// `call_by_name`'s own `Vec<Value>` argument list is what lets this
+    /// test inject a real `Value::Raw` produced by one interpreter run
+    /// directly into a second, independent run -- exactly the only way
+    /// two sessions could ever share a value in practice (never through
+    /// `.aicad` source itself, which has no way to persist a value across
+    /// separate top-level program runs).
+    #[test]
+    fn raw_topology_kind_of_rejects_a_handle_minted_by_a_different_epoch_counter() {
+        let counter_a = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let enter_source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered_enter = compiled(enter_source);
+        let mut interp_a = Interpreter::new(
+            &lowered_enter.program,
+            &lowered_enter.bindings,
+            "test.aicad",
+            enter_source,
+        )
+        .with_query_executor(&executor)
+        .with_epoch_counter(&counter_a);
+        let raw_value = interp_a.call_by_name("f", vec![]).unwrap();
+
+        let counter_b = EpochCounter::new();
+        let check_source = "fn f(r: Raw) -> String { return raw_topology_kind_of(r); }";
+        let lowered_check = compiled(check_source);
+        let mut interp_b = Interpreter::new(
+            &lowered_check.program,
+            &lowered_check.bindings,
+            "test.aicad",
+            check_source,
+        )
+        .with_epoch_counter(&counter_b);
+        let err = interp_b.call_by_name("f", vec![raw_value]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E145");
+    }
+
+    /// D22's "stale/dropped-and-rebuilt-owner" case: a `Raw` handle
+    /// minted by a session's own counter is rejected once *that same*
+    /// counter advances (a real regeneration round, mirroring
+    /// `ParametricBuildSession::rebuild`'s own `epoch.advance()` call) --
+    /// distinct from the previous test's "different counter identity"
+    /// case, this one proves the *generation* half of `Epoch` equality.
+    #[test]
+    fn raw_topology_kind_of_rejects_a_handle_after_its_own_counter_advances() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let enter_source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered_enter = compiled(enter_source);
+        let mut interp = Interpreter::new(
+            &lowered_enter.program,
+            &lowered_enter.bindings,
+            "test.aicad",
+            enter_source,
+        )
+        .with_query_executor(&executor)
+        .with_epoch_counter(&counter);
+        let raw_value = interp.call_by_name("f", vec![]).unwrap();
+
+        counter.advance();
+
+        let check_source = "fn f(r: Raw) -> String { return raw_topology_kind_of(r); }";
+        let lowered_check = compiled(check_source);
+        let mut interp2 = Interpreter::new(
+            &lowered_check.program,
+            &lowered_check.bindings,
+            "test.aicad",
+            check_source,
+        )
+        .with_epoch_counter(&counter);
+        let err = interp2.call_by_name("f", vec![raw_value]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E145");
     }
 }

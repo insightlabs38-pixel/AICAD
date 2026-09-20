@@ -540,6 +540,18 @@ pub enum GeometryQuery {
         point: Point3,
         tolerance: Quantity,
     },
+    /// Materializes `target` and classifies its own top-level
+    /// [`cad_kernel_api::topology::TopologyKind`] (`AICAD-122`,
+    /// `project/DECISION_LOG.md#DL-24` (D22)) — the sole entry point into
+    /// the controlled raw/unsafe geometry tier. Unlike every other
+    /// [`GeometryQuery`] variant, this query's own result
+    /// (`cad_kernel_api::topology::ClassifiedShape`) is not itself a
+    /// `Bool`/`Number`/`Point`/`String` scalar: `cad_runtime` mints it into
+    /// a `cad_geometry_api::raw::RawGeometry` bound to the owning session's
+    /// current epoch, never reusing `target`'s own `GeomId` as raw
+    /// identity. Fails (rather than guessing) for a Compound/CompSolid/
+    /// generic-Shape kind, exactly like `TopologyKindOf`.
+    EnterRaw(GeomId),
 }
 
 /// Distinguishes a node that produces a new geometry value (usable as a
@@ -995,7 +1007,8 @@ impl GeometryGraph {
             | GeometryQuery::EntityCount { target, .. }
             | GeometryQuery::AdjacentFaceCount { target, .. }
             | GeometryQuery::IsForwardOriented(target)
-            | GeometryQuery::VertexPoint(target) => {
+            | GeometryQuery::VertexPoint(target)
+            | GeometryQuery::EnterRaw(target) => {
                 self.check_geometry_operand(*target, span)?;
             }
             GeometryQuery::IsOuterWire { face, wire } => {

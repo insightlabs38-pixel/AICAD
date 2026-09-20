@@ -30,6 +30,13 @@
 //! - [`adoption`][]: [`adoption::AdoptionOutcome`]/[`adoption::
 //!   AdoptionEvidence`]/[`adoption::AdoptionRejection`] — D22's raw-to-safe
 //!   adoption outcome (`AICAD-122`-`124` wire the actual validation).
+//!
+//! `AICAD-122` adds [`raw`]: [`raw::RawGeometry`] — the concrete raw/unsafe
+//! geometry handle type flowing through `cad_runtime::value::Value::Raw`,
+//! built from `cad_references::raw_handle::RawHandle` (`AICAD-093`) and
+//! `cad_kernel_api::topology::ClassifiedShape` (`AICAD-108`) — see that
+//! module's own doc comment for why no new epoch/handle mechanism was
+//! needed.
 
 pub mod adoption;
 pub mod curve;
@@ -37,6 +44,7 @@ pub mod ir;
 pub mod operation_report;
 pub mod query;
 pub mod query_result;
+pub mod raw;
 pub mod surface;
 
 pub use adoption::{AdoptionEvidence, AdoptionOutcome, AdoptionRejection};
@@ -55,6 +63,7 @@ pub use query::{
     intersect_surfaces,
 };
 pub use query_result::{QueryFailure, QueryOutcome};
+pub use raw::{Epoch, EpochCounter, RawGeometry, StaleHandle};
 pub use surface::{
     AnalyticSurface, Orientation, SurfaceConstructionError, SurfaceOperationError,
     SurfaceProjectionResult, SurfaceSample, SurfaceTrimError, TrimError, TrimLoop,

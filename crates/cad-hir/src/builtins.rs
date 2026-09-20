@@ -733,6 +733,28 @@ pub enum BuiltinFnId {
     /// #DL-24` domain 1 — distinct from `Sew`/`Heal`'s modeling/
     /// construction-domain tolerance).
     ClassifyPoint,
+    /// `enter_raw(target: Geometry) -> Raw` (`AICAD-122`, `project/
+    /// DECISION_LOG.md#DL-24` (D22)). The sole, explicit, auditable entry
+    /// point into the controlled raw/unsafe geometry tier: materializes
+    /// `target`, classifies its own topological kind, and mints the result
+    /// into a `cad_geometry_api::raw::RawGeometry` bound to the calling
+    /// session's current epoch (`cad_references::raw_handle::EpochCounter`,
+    /// `AICAD-093`/`094`). A `Query`-category builtin (a real kernel call
+    /// happens now), even though its own result is not a plain scalar —
+    /// see [`BuiltinFnId::VertexPoint`]'s own precedent for a struct-typed
+    /// `Query` result.
+    EnterRaw,
+    /// `raw_topology_kind_of(raw: Raw) -> String` (`AICAD-122`). Reads the
+    /// topological kind `raw` was classified as at `enter_raw` time,
+    /// re-checking `raw`'s own minting epoch against the session's
+    /// *current* epoch first — a stale or foreign-session handle fails
+    /// explicitly (`RuntimeError::RawHandleStale`) rather than returning
+    /// topology that may no longer exist. Unlike `EnterRaw`, this makes no
+    /// further kernel call and pushes no `GeometryGraph`/`GeometryQuery`
+    /// node: the classified kind was already captured in full at entry, so
+    /// reading it back is pure epoch-checked data access — see
+    /// [`BuiltinCategory::Raw`]'s own doc comment.
+    RawTopologyKindOf,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -763,11 +785,22 @@ pub enum BuiltinFnId {
 ///   `cad_runtime::query_exec::KernelQueryExecutor` or the query budget —
 ///   `project/DECISION_LOG.md#DL-23`'s own "category... metadata" is
 ///   explicitly extensible for exactly this kind of scaling.
+/// - [`BuiltinCategory::Raw`] (`AICAD-122`, D22): reads directly from an
+///   already-materialized `cad_runtime::value::Value::Raw` handle, checked
+///   against the calling session's own `EpochCounter`. Distinct from
+///   `Query`: no `GeometryGraph`/`GeometryQuery` node is pushed and no
+///   further kernel call happens (the raw tier's own kernel-backed *entry*
+///   point, `BuiltinFnId::EnterRaw`, is itself `Query`-category — this
+///   category is for what happens *after* entry). `AICAD-123`/`124`
+///   (functional raw editing, raw-to-safe adoption) extend this category
+///   with further raw-handle operations, some of which do call into the
+///   kernel through the already-materialized handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinCategory {
     Construction,
     Query,
     Value,
+    Raw,
 }
 
 impl BuiltinFnId {
@@ -825,7 +858,9 @@ impl BuiltinFnId {
             | BuiltinFnId::IsSameEntity
             | BuiltinFnId::IsForwardOriented
             | BuiltinFnId::VertexPoint
-            | BuiltinFnId::ClassifyPoint => BuiltinCategory::Query,
+            | BuiltinFnId::ClassifyPoint
+            | BuiltinFnId::EnterRaw => BuiltinCategory::Query,
+            BuiltinFnId::RawTopologyKindOf => BuiltinCategory::Raw,
             BuiltinFnId::LineCurve
             | BuiltinFnId::CircleCurve
             | BuiltinFnId::ArcCurve
@@ -900,7 +935,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 75] = [
+    pub const ALL: [BuiltinFnId; 77] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -976,6 +1011,8 @@ impl BuiltinFnId {
         BuiltinFnId::IsForwardOriented,
         BuiltinFnId::VertexPoint,
         BuiltinFnId::ClassifyPoint,
+        BuiltinFnId::EnterRaw,
+        BuiltinFnId::RawTopologyKindOf,
     ];
 }
 
@@ -1643,6 +1680,18 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             ],
             return_ty: named("String"),
         },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EnterRaw,
+            name: "enter_raw",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::RawTopologyKindOf,
+            name: "raw_topology_kind_of",
+            params: vec![("raw", named("Raw"))],
+            return_ty: named("String"),
+        },
     ]
 }
 
@@ -1694,6 +1743,11 @@ mod tests {
                 BuiltinCategory::Value => assert!(
                     !is_geometry_return,
                     "'{}' is Value but returns Geometry",
+                    spec.name
+                ),
+                BuiltinCategory::Raw => assert!(
+                    !is_geometry_return,
+                    "'{}' is Raw but returns Geometry",
                     spec.name
                 ),
             }

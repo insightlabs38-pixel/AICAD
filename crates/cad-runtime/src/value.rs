@@ -165,6 +165,23 @@ pub enum Value {
     /// counterpart of [`Value::Curve`], for the identical reasons (pure
     /// backend-independent data, boxed to keep `Value` small).
     Surface(Box<cad_geometry_api::AnalyticSurface>),
+    /// A raw/unsafe geometry handle (`AICAD-122`, `project/DECISION_LOG.md
+    /// #DL-24` (D22)) — a `cad_geometry_api::raw::RawGeometry` minted by
+    /// `enter_raw` against the owning [`Interpreter`](crate::interp::
+    /// Interpreter) session's current epoch. Unlike [`Value::Geometry`],
+    /// this is not a `GeomId` into an accumulated `GeometryGraph` — it
+    /// already carries the classified kernel-neutral handle directly (a
+    /// `cad_kernel_api::topology::ClassifiedShape` plus the minting
+    /// `Epoch`), since the whole point of the raw tier is a real,
+    /// synchronously-materialized kernel result (`BuiltinFnId::EnterRaw`
+    /// is `Query`-category — see that variant's own doc comment). Reading
+    /// back through it (`raw_topology_kind_of`) always re-checks the
+    /// handle's own minted epoch against the session's *current*
+    /// `EpochCounter`, never trusting a previously-successful check.
+    /// `Copy`-sized (a `KernelId` triple plus a small tag, no heap
+    /// allocation) — no boxing needed, unlike [`Value::Curve`]/
+    /// [`Value::Surface`].
+    Raw(cad_geometry_api::RawGeometry),
     /// A struct-instance value (`AICAD-070`) — completes `AICAD-053`'s
     /// already-approved general struct declarations with an actual
     /// runtime representation (previously documented above as a genuine,
@@ -249,6 +266,7 @@ impl Value {
             Value::Geometry(_) => "Geometry",
             Value::Curve(_) => "Curve",
             Value::Surface(_) => "Surface",
+            Value::Raw(_) => "Raw",
             Value::Struct { .. } => "struct instance",
             Value::Part { .. } => "part instance",
         }
@@ -280,6 +298,7 @@ impl Value {
             | Value::Geometry(_)
             | Value::Curve(_)
             | Value::Surface(_)
+            | Value::Raw(_)
             | Value::Struct { .. }
             | Value::Part { .. } => None,
         }

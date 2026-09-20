@@ -50,6 +50,7 @@
 
 use cad_geometry_api::{GeomId, GeometryGraph};
 use cad_kernel_api::Point3;
+use cad_kernel_api::topology::ClassifiedShape;
 
 /// A kernel-backed query's real, typed result — deliberately not an OCCT/
 /// native object (`DL-25`: "Query outputs are ordinary AICAD values; no
@@ -73,6 +74,14 @@ pub enum QueryOutcome {
     Number(f64),
     Point(Point3),
     Text(String),
+    /// `enter_raw`'s own result (`AICAD-122`, `EnterRaw`'s own doc
+    /// comment): a lifetime-free, kernel-neutral classified handle.
+    /// `crate::interp::Interpreter::execute_kernel_query` is the only
+    /// place this is minted into a `cad_geometry_api::raw::RawGeometry`
+    /// (against this interpreter's own configured `EpochCounter`), since
+    /// `KernelQueryExecutor` implementations have no session-epoch access
+    /// of their own.
+    Classified(ClassifiedShape),
 }
 
 /// Why a [`KernelQueryExecutor`] could not produce a result — never a

@@ -583,6 +583,34 @@ pub enum RuntimeError {
         span: Span,
         reason: &'static str,
     },
+    /// `raw_topology_kind_of` (`AICAD-122`) was called on an
+    /// [`crate::interp::Interpreter`] with no [`cad_geometry_api::raw::
+    /// EpochCounter`] configured ([`crate::interp::Interpreter::
+    /// with_epoch_counter`]) — the default for every interpreter that
+    /// never needs raw-tier results (every existing call site before this
+    /// task, and most tests), mirroring [`RuntimeError::
+    /// KernelQueryUnavailable`]'s own "explicit failure, never a
+    /// placeholder" precedent for the query executor.
+    RawTierUnavailable {
+        name: &'static str,
+        span: Span,
+    },
+    /// A [`crate::value::Value::Raw`] handle was presented after its own
+    /// minting epoch no longer matches the calling session's *current*
+    /// [`cad_geometry_api::raw::EpochCounter`] (`AICAD-122`, D22) — either
+    /// because the underlying build regenerated since the handle was
+    /// minted (`enter_raw` re-run would produce a fresh one), or because
+    /// the handle was minted by a *different* session's counter entirely
+    /// (D22's "wrong context" case; `cad_references::raw_handle::Epoch`'s
+    /// own counter-identity tagging makes both cases indistinguishable to
+    /// the handle itself, and both are equally invalid to use). `reason`
+    /// is the wrapped `cad_references::raw_handle::StaleHandle`'s own
+    /// `Display` text, naming both epochs.
+    RawHandleStale {
+        name: &'static str,
+        span: Span,
+        reason: String,
+    },
 }
 
 impl RuntimeError {
@@ -640,6 +668,8 @@ impl RuntimeError {
             RuntimeError::SurfaceOperationFailed { .. } => "RUNTIME-E141".to_string(),
             RuntimeError::GeometricQueryFailed { .. } => "RUNTIME-E142".to_string(),
             RuntimeError::UnsupportedTopologyConstruction { .. } => "RUNTIME-E143".to_string(),
+            RuntimeError::RawTierUnavailable { .. } => "RUNTIME-E144".to_string(),
+            RuntimeError::RawHandleStale { .. } => "RUNTIME-E145".to_string(),
         }
     }
 
@@ -707,7 +737,9 @@ impl RuntimeError {
             | RuntimeError::InvalidToleranceMagnitude { span, .. }
             | RuntimeError::SurfaceOperationFailed { span, .. }
             | RuntimeError::GeometricQueryFailed { span, .. }
-            | RuntimeError::UnsupportedTopologyConstruction { span, .. } => *span,
+            | RuntimeError::UnsupportedTopologyConstruction { span, .. }
+            | RuntimeError::RawTierUnavailable { span, .. }
+            | RuntimeError::RawHandleStale { span, .. } => *span,
         }
     }
 
@@ -765,6 +797,8 @@ impl RuntimeError {
             RuntimeError::UnsupportedTopologyConstruction { .. } => {
                 "UNSUPPORTED_TOPOLOGY_CONSTRUCTION"
             }
+            RuntimeError::RawTierUnavailable { .. } => "RAW_TIER_UNAVAILABLE",
+            RuntimeError::RawHandleStale { .. } => "RAW_HANDLE_STALE",
         }
     }
 
@@ -919,6 +953,13 @@ impl RuntimeError {
             }
             RuntimeError::UnsupportedTopologyConstruction { name, reason, .. } => {
                 format!("'{name}' does not support this input: {reason}")
+            }
+            RuntimeError::RawTierUnavailable { name, .. } => format!(
+                "'{name}' requires a real raw-geometry epoch counter, but this interpreter has \
+                 none configured"
+            ),
+            RuntimeError::RawHandleStale { name, reason, .. } => {
+                format!("'{name}' received a stale raw handle: {reason}")
             }
         }
     }

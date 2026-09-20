@@ -44,10 +44,12 @@ impl KernelQueryExecutor for OcctQueryExecutor<'_> {
             Some(NodeResult::Number(n)) => Ok(QueryOutcome::Number(*n)),
             Some(NodeResult::Point(p)) => Ok(QueryOutcome::Point(*p)),
             Some(NodeResult::Text(t)) => Ok(QueryOutcome::Text(t.clone())),
+            Some(NodeResult::Classified(c)) => Ok(QueryOutcome::Classified(*c)),
             Some(other) => Err(KernelQueryError {
                 message: format!(
                     "query node {node} produced a non-scalar kernel result ({other:?}); only \
-                     Bool/Number/Point/Text query outcomes are supported by cad_runtime::query_exec"
+                     Bool/Number/Point/Text/Classified query outcomes are supported by \
+                     cad_runtime::query_exec"
                 ),
             }),
             None => Err(KernelQueryError {

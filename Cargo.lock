@@ -91,6 +91,7 @@ dependencies = [
  "cad-ast",
  "cad-diagnostics",
  "cad-kernel-api",
+ "cad-references",
  "cad-types",
  "cad-units",
 ]
