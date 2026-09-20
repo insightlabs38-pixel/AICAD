@@ -34,6 +34,19 @@
 //! active campaign brief: "Geometry IR must remain backend-independent...
 //! Do not bypass Geometry IR or invoke the native bridge directly").
 //!
+//! **One narrow, deliberate exception** (`AICAD-124`, `project/
+//! DECISION_LOG.md#DL-24` (D22)): [`GeometryOp::AdoptRaw`] carries a
+//! [`cad_kernel_api::KernelShape`] directly. This is not "dispatching into
+//! a kernel value" (the thing the paragraph above forbids) — it is the
+//! opposite direction: accepting an *already-materialized, already-
+//! epoch-checked* raw/unsafe-tier value (`cad_geometry_api::raw::
+//! RawGeometry`) as this one operation's own input, which is exactly D22's
+//! sanctioned raw-to-safe crossing point. `KernelShape` is reused rather
+//! than inventing a parallel handle type specifically because it is
+//! already the raw tier's own established kernel-neutral (not OCCT) opaque
+//! vocabulary (`AICAD-122`). No other `GeometryOp`/`GeometryQuery` variant
+//! gets this treatment.
+//!
 //! # Functional/SSA shape (DL-2)
 //!
 //! A [`GeometryGraph`] is an append-only sequence of [`GeometryNode`]s.
@@ -452,6 +465,18 @@ pub enum GeometryOp {
         edge: EdgeIndex,
         adjacent: usize,
     },
+    /// Adopts an already-materialized raw/unsafe-tier handle into safe
+    /// semantic geometry (`AICAD-124`, D22) — see this module's own doc
+    /// comment, "One narrow, deliberate exception", for why this variant
+    /// alone carries a `KernelShape`. No `GeomId` operand: the payload was
+    /// already fully resolved by `enter_raw`/a raw edit before adoption
+    /// was ever called, so there is nothing upstream in this graph to
+    /// reference. Dispatch (`crate_geometry_runtime::adoption::adopt_raw`)
+    /// re-resolves and *re-validates* the handle — unlike every other
+    /// `GeometryOp`, construction success here genuinely requires
+    /// validity; adoption exists specifically to reject an invalid input,
+    /// not merely to note it.
+    AdoptRaw(cad_kernel_api::KernelShape),
 }
 
 /// A property/validation query against an already-constructed geometry
@@ -954,6 +979,8 @@ impl GeometryGraph {
             GeometryOp::GetAdjacentFace { target, .. } => {
                 self.check_geometry_operand(*target, span)?;
             }
+            // No GeomId operand -- see this variant's own doc comment.
+            GeometryOp::AdoptRaw(_) => {}
         }
         let id = self.next_id();
         self.nodes.push(GeometryNode {

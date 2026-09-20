@@ -4058,7 +4058,7 @@ tasks:
 - id: AICAD-124
   stage: 5
   title: Implement explicit raw-to-safe validation and adoption
-  status: todo
+  status: done
   depends_on:
   - AICAD-123
   plan_references:

@@ -2193,6 +2193,27 @@ impl<'a> Interpreter<'a> {
                 .map_err(|err| RuntimeError::GeometryConstruction { err }.into())
         };
 
+        // `adopt` (`AICAD-124`): epoch-checks a `Raw` argument exactly like
+        // `dispatch_raw_edit_builtin`'s own identical closure -- eager
+        // extraction here, not deferred to dispatch time, since a stale/
+        // foreign-session handle must never even reach a `GeometryOp` node.
+        let raw_shape = |value: &Value| -> EvalResult<ClassifiedShape> {
+            let counter = self
+                .epoch_counter
+                .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+            match value {
+                Value::Raw(handle) => handle.get(counter).copied().map_err(|stale| {
+                    RuntimeError::RawHandleStale {
+                        name,
+                        span,
+                        reason: stale.to_string(),
+                    }
+                    .into()
+                }),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+
         // `AICAD-119`'s own extra argument shapes: a real `Point3` (per
         // `crate::spatial`'s established conversion boundary, mirroring
         // `dispatch_curve_builtin`'s identical closure exactly), an
@@ -2571,6 +2592,8 @@ impl<'a> Interpreter<'a> {
                 edge: EdgeIndex(usize_value(arg(1)?)?),
                 adjacent: usize_value(arg(2)?)?,
             })?,
+            // `adopt(raw)` (`AICAD-124`): the sole raw-to-safe exit.
+            BuiltinFnId::AdoptRaw => push_op(GeometryOp::AdoptRaw(raw_shape(arg(0)?)?.shape))?,
             BuiltinFnId::IsValid
             | BuiltinFnId::Volume
             | BuiltinFnId::Area
@@ -4815,6 +4838,7 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::ReplaceFace => "replace_face",
         BuiltinFnId::SplitEdge => "split_edge",
         BuiltinFnId::MergeFaces => "merge_faces",
+        BuiltinFnId::AdoptRaw => "adopt",
     }
 }
 
@@ -10100,5 +10124,77 @@ mod tests {
         .with_epoch_counter(&counter);
         let err = interp2.call_by_name("f", vec![raw_value]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E145");
+    }
+
+    // --- AICAD-124: explicit raw-to-safe adoption ---
+
+    #[test]
+    fn adopt_pushes_an_adopt_raw_node_carrying_the_epoch_checked_handle() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let source = "fn f() -> Geometry { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let r = enter_raw(b); \
+                 return adopt(r); \
+             }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor)
+                .with_epoch_counter(&counter);
+        let value = interp.call_by_name("f", vec![]).unwrap();
+        let geom_id = match value {
+            Value::Geometry(id) => id,
+            other => panic!("expected Value::Geometry, got {other:?}"),
+        };
+        let node = interp
+            .geometry_graph()
+            .get(geom_id)
+            .expect("adopt's own node must exist in the graph");
+        match &node.kind {
+            cad_geometry_api::GeometryNodeKind::Construct(
+                cad_geometry_api::GeometryOp::AdoptRaw(handle),
+            ) => {
+                let expected = match fake_classified_outcome() {
+                    QueryOutcome::Classified(c) => c.shape,
+                    _ => unreachable!(),
+                };
+                assert_eq!(*handle, expected);
+            }
+            other => panic!("expected GeometryOp::AdoptRaw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adopt_without_a_configured_epoch_counter_fails_cleanly() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        // `enter_raw` itself needs a configured counter to mint `r` in the
+        // first place -- isolate `adopt`'s own check by minting `r` in one
+        // interpreter (with a counter) and calling `adopt` in a second,
+        // counter-less one, mirroring `raw_topology_kind_of`'s own
+        // cross-interpreter test pattern.
+        let enter_source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered_enter = compiled(enter_source);
+        let mut interp_enter = Interpreter::new(
+            &lowered_enter.program,
+            &lowered_enter.bindings,
+            "test.aicad",
+            enter_source,
+        )
+        .with_query_executor(&executor)
+        .with_epoch_counter(&counter);
+        let raw_value = interp_enter.call_by_name("f", vec![]).unwrap();
+
+        let adopt_source = "fn f(r: Raw) -> Geometry { return adopt(r); }";
+        let lowered_adopt = compiled(adopt_source);
+        let mut interp_adopt = Interpreter::new(
+            &lowered_adopt.program,
+            &lowered_adopt.bindings,
+            "test.aicad",
+            adopt_source,
+        );
+        let err = interp_adopt.call_by_name("f", vec![raw_value]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E144");
     }
 }

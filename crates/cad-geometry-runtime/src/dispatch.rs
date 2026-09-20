@@ -490,6 +490,31 @@ fn dispatch_op<'ctx>(
                 target_shape.edge_adjacent_face(edge.0, *adjacent),
             )?
         }
+        GeometryOp::AdoptRaw(handle) => match crate::adoption::adopt_raw(ctx, *handle) {
+            cad_geometry_api::AdoptionOutcome::Adopted { value, .. } => value,
+            cad_geometry_api::AdoptionOutcome::Rejected(reason) => {
+                // `AdoptionRejection`'s own richer detail is real and
+                // tested in `crate::adoption`'s own unit tests; converted
+                // here into the ordinary `KernelError` vocabulary every
+                // other construction failure already reports through,
+                // matching `AICAD-120`'s identical `SewReport`/
+                // `HealReport` precedent (real evidence one layer down,
+                // not yet threaded through this ordinary path).
+                let source = match reason {
+                    cad_geometry_api::AdoptionRejection::StaleHandle => KernelError::StaleHandle,
+                    cad_geometry_api::AdoptionRejection::ValidationFailed { .. }
+                    | cad_geometry_api::AdoptionRejection::Unsupported { .. } => {
+                        KernelError::OperationFailed
+                    }
+                };
+                return Err(DispatchError::Kernel {
+                    node: id,
+                    span,
+                    operation: "AdoptRaw",
+                    source,
+                });
+            }
+        },
     };
     Ok(NodeResult::Shape(shape))
 }
@@ -687,7 +712,8 @@ fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
         | GeometryOp::ImportStep { .. }
         | GeometryOp::LineEdge { .. }
         | GeometryOp::CircleWire { .. }
-        | GeometryOp::ArcEdge { .. } => Vec::new(),
+        | GeometryOp::ArcEdge { .. }
+        | GeometryOp::AdoptRaw(_) => Vec::new(),
         GeometryOp::WireFromEdges { edges } => edges.clone(),
         GeometryOp::MakeFace { wire } => vec![*wire],
         GeometryOp::GetFace { target, .. } => vec![*target],
@@ -2966,6 +2992,41 @@ mod tests {
 
         let ctx = OcctContext::new().expect("context creation should succeed");
         let err = dispatch_graph(&graph, &ctx).expect_err("a compound has no classifiable kind");
+        assert!(matches!(err, DispatchError::Kernel { .. }));
+    }
+
+    // --- AICAD-124: explicit raw-to-safe adoption ---
+
+    #[test]
+    fn adopt_raw_dispatches_a_valid_handle_into_a_real_shape_node() {
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let box_shape = ctx.create_box(1.0, 1.0, 1.0).unwrap();
+        let handle = box_shape.handle();
+
+        let mut graph = GeometryGraph::new();
+        let adopted = graph.push_op(GeometryOp::AdoptRaw(handle), span()).unwrap();
+
+        let results = dispatch_graph(&graph, &ctx).expect("a valid handle should adopt cleanly");
+        match &results[adopted.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!((shape.volume().unwrap() - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected NodeResult::Shape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adopt_raw_rejects_an_invalid_shape_with_a_clean_dispatch_error() {
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let box_shape = ctx.create_box(1.0, 1.0, 1.0).unwrap();
+        let opened = box_shape.remove_face(&[0], false, 1e-6).unwrap();
+        let handle = opened.handle();
+
+        let mut graph = GeometryGraph::new();
+        graph.push_op(GeometryOp::AdoptRaw(handle), span()).unwrap();
+
+        let err = dispatch_graph(&graph, &ctx)
+            .expect_err("an open shell adopted as a solid must be rejected, not silently accepted");
         assert!(matches!(err, DispatchError::Kernel { .. }));
     }
 }

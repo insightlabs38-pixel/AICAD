@@ -791,6 +791,17 @@ pub enum BuiltinFnId {
     /// top-level container (commonly a Compound) is not itself a
     /// classifiable `TopologyKind`; each individual resulting Face is.
     MergeFaces,
+    /// `adopt(raw: Raw) -> Geometry` (`AICAD-124`, `project/DECISION_LOG.md
+    /// #DL-24` (D22)). The sole, explicit exit from the raw/unsafe tier
+    /// back into safe semantic geometry: resolves and **re-validates**
+    /// `raw` (`cad_geometry_runtime::adoption::adopt_raw`), producing a
+    /// genuinely new `Geometry` value (a new `GeomId`/kernel slot, never
+    /// the raw handle's own identity) on success. `Construction`-category
+    /// — unlike every other construction builtin, this one's own kernel
+    /// dispatch can and does fail for an unsupported/invalid input
+    /// (`RuntimeError::GeometryConstruction`), since D22 requires
+    /// adoption to reject rather than merely note invalidity.
+    AdoptRaw,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -878,7 +889,8 @@ impl BuiltinFnId {
             | BuiltinFnId::TopologyFaceAt
             | BuiltinFnId::TopologyEdgeAt
             | BuiltinFnId::TopologyVertexAt
-            | BuiltinFnId::AdjacentFaceAt => BuiltinCategory::Construction,
+            | BuiltinFnId::AdjacentFaceAt
+            | BuiltinFnId::AdoptRaw => BuiltinCategory::Construction,
             BuiltinFnId::IsValid
             | BuiltinFnId::Volume
             | BuiltinFnId::Area
@@ -975,7 +987,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 81] = [
+    pub const ALL: [BuiltinFnId; 82] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -1057,6 +1069,7 @@ impl BuiltinFnId {
         BuiltinFnId::ReplaceFace,
         BuiltinFnId::SplitEdge,
         BuiltinFnId::MergeFaces,
+        BuiltinFnId::AdoptRaw,
     ];
 }
 
@@ -1770,6 +1783,12 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "merge_faces",
             params: vec![("raw", named("Raw")), ("face_indices", list_of("Int"))],
             return_ty: list_of("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::AdoptRaw,
+            name: "adopt",
+            params: vec![("raw", named("Raw"))],
+            return_ty: named("Geometry"),
         },
     ]
 }
