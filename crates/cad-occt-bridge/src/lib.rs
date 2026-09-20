@@ -330,6 +330,81 @@ impl OcctContext {
             id: handle_to_id(handle),
         })
     }
+
+    /// Constructs a single-point vertex (`AICAD-119`,
+    /// `BRepBuilderAPI_MakeVertex`) -- the missing base case of the
+    /// vertex->edge->wire->face->shell->solid pipeline `make_line_edge`/
+    /// `make_circle_wire`/`make_arc_edge`/`make_wire_from_edges`/
+    /// `Shape::make_face` already cover.
+    pub fn make_vertex(&self, point: Point3) -> KernelResult<Shape<'_>> {
+        let p = [point.x, point.y, point.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `p` is a valid, live `[f64; 3]` for the duration of this
+        // call; `self.raw`/`&mut handle` as in `create_box`.
+        let status = unsafe { ffi::aicad_occt_make_vertex(self.raw, p.as_ptr(), &mut handle) };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Assembles `faces` (each owned by this context) into one shell
+    /// (`AICAD-119`, `BRep_Builder::MakeShell`/`Add`) -- a structural
+    /// container only, no sewing/gap-closing (`AICAD-120`'s job): a shell
+    /// built from faces that do not already share identical edges is
+    /// open/non-manifold under [`Shape::validate`], not silently repaired.
+    /// `faces` must be non-empty.
+    pub fn make_shell<'ctx>(&'ctx self, faces: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        if faces.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            faces.iter().map(|face| id_to_handle(face.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_wire_from_edges` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_shell(self.raw, handles.as_ptr(), handles.len(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Groups `shapes` (each owned by this context, any kind, any mix of
+    /// kinds) into one `TopoDS_Compound` (`AICAD-119`,
+    /// `BRep_Builder::MakeCompound`/`Add`). `shapes` must be non-empty.
+    pub fn make_compound<'ctx>(&'ctx self, shapes: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        if shapes.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            shapes.iter().map(|shape| id_to_handle(shape.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_wire_from_edges` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_compound(self.raw, handles.as_ptr(), handles.len(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
 }
 
 impl Drop for OcctContext {
@@ -533,6 +608,254 @@ impl<'ctx> Shape<'ctx> {
         // SAFETY: see `is_valid`'s SAFETY comment; identical argument.
         let status = unsafe {
             ffi::aicad_occt_make_face_from_wire(self.context.raw, self.raw_handle(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Builds a face bounded by this wire (`self`) on an explicit plane
+    /// through `origin` normal to `normal` (`AICAD-119`,
+    /// `BRepBuilderAPI_MakeFace(gp_Pln, wire, Inside)`) -- the
+    /// holes-and-orientation-capable counterpart of [`Shape::make_face`],
+    /// which infers its plane from a planar wire and supports neither.
+    /// `reversed` builds the face on `self.Reversed()` instead of `self`;
+    /// each of `holes` (each owned by this context) is added exactly as
+    /// given, with no orientation inferred or corrected -- see
+    /// `aicad_occt_make_face_on_plane`'s own doc comment. As with
+    /// `make_face`, construction success is not evidence of validity.
+    pub fn make_face_on_plane(
+        &self,
+        holes: &[&Shape<'ctx>],
+        origin: Point3,
+        normal: Direction3,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [origin.x, origin.y, origin.z];
+        let n = normal.as_vector3();
+        let normal = [n.x, n.y, n.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `origin`/`normal` are valid, live `[f64; 3]` arrays and
+        // `hole_handles` a valid, live, contiguous array for the duration
+        // of this call; `self.context.raw`/`self.raw_handle()`/`&mut
+        // handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_plane(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                normal.as_ptr(),
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a cylinder of `radius`
+    /// coaxial with `axis` (`AICAD-119`).
+    pub fn make_face_on_cylinder(
+        &self,
+        holes: &[&Shape<'ctx>],
+        axis: Axis3,
+        radius: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [axis.origin.x, axis.origin.y, axis.origin.z];
+        let d = axis.direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_cylinder(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                direction.as_ptr(),
+                radius,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a cone with apex at
+    /// `axis.origin`, opening along `axis.direction` at
+    /// `half_angle_radians` (`AICAD-119`).
+    pub fn make_face_on_cone(
+        &self,
+        holes: &[&Shape<'ctx>],
+        axis: Axis3,
+        half_angle_radians: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [axis.origin.x, axis.origin.y, axis.origin.z];
+        let d = axis.direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_cone(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                direction.as_ptr(),
+                half_angle_radians,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a sphere of `radius`
+    /// centered at `center` (`AICAD-119`).
+    pub fn make_face_on_sphere(
+        &self,
+        holes: &[&Shape<'ctx>],
+        center: Point3,
+        radius: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let center = [center.x, center.y, center.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_sphere(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                center.as_ptr(),
+                radius,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a torus coaxial with
+    /// `axis` (`major_radius` from the axis to the tube's own center
+    /// circle, `minor_radius` the tube's own cross-section radius)
+    /// (`AICAD-119`).
+    pub fn make_face_on_torus(
+        &self,
+        holes: &[&Shape<'ctx>],
+        axis: Axis3,
+        major_radius: f64,
+        minor_radius: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [axis.origin.x, axis.origin.y, axis.origin.z];
+        let d = axis.direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_torus(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                direction.as_ptr(),
+                major_radius,
+                minor_radius,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Builds a solid from this shell (`self`, `AICAD-119`,
+    /// `BRepBuilderAPI_MakeSolid`), adding each of `voids` (each owned by
+    /// this context) as an additional void/cavity shell. Verified
+    /// empirically, not assumed: OCCT's own `BRepBuilderAPI_MakeSolid`
+    /// does not require `self` to be closed -- it happily reports done for
+    /// an open shell, producing a structurally-real but invalid solid.
+    /// This call succeeding is therefore even less evidence of validity
+    /// than [`Shape::make_face`]'s own already-non-evidence success:
+    /// always call [`Shape::validate`]/[`Shape::is_valid`] separately.
+    pub fn make_solid(&self, voids: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        let void_handles: Vec<ffi::aicad_shape_handle_t> =
+            voids.iter().map(|void| id_to_handle(void.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `void_handles` is a valid, live, contiguous array for
+        // the duration of this call; `self.context.raw`/`self.raw_handle()`/
+        // `&mut handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_solid(
+                self.context.raw,
+                self.raw_handle(),
+                void_handles.as_ptr(),
+                void_handles.len(),
+                &mut handle,
+            )
         };
         status_result(status)?;
         Ok(Shape {
@@ -1348,6 +1671,8 @@ impl<'ctx> Shape<'ctx> {
             invalid_edge_count: report.invalid_edge_count,
             invalid_wire_count: report.invalid_wire_count,
             invalid_face_count: report.invalid_face_count,
+            invalid_shell_count: report.invalid_shell_count,
+            invalid_solid_count: report.invalid_solid_count,
         })
     }
 
@@ -1941,13 +2266,19 @@ pub struct BoundingBox {
 
 /// A normalized B-rep validation report, as reported by
 /// [`Shape::validate`] (AICAD-031). `is_valid` mirrors
-/// [`Shape::is_valid`]'s own bool for the same shape; the four
+/// [`Shape::is_valid`]'s own bool for the same shape; the six
 /// `invalid_*_count` fields break that down by topological kind, each
 /// counted over the shape's own *unique* subshapes (matching
 /// [`Shape::edge_count`]/[`Shape::face_count`]'s own de-duplication
-/// convention). A shape with `is_valid == false` always has at least one
-/// nonzero count; a shape with `is_valid == true` always has all four at
-/// zero.
+/// convention). `invalid_shell_count`/`invalid_solid_count` were added by
+/// `AICAD-119` alongside this batch's own [`OcctContext::make_shell`]/
+/// [`Shape::make_solid`] construction paths -- this is the primary
+/// validity-evidence mechanism those "construction success is not
+/// validity" doc comments point to (e.g. building a solid from a
+/// non-closed shell succeeds structurally, then reports here as
+/// `is_valid: false, invalid_solid_count: 1`). A shape with `is_valid ==
+/// false` always has at least one nonzero count; a shape with `is_valid ==
+/// true` always has all six at zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationReport {
     pub is_valid: bool,
@@ -1955,6 +2286,8 @@ pub struct ValidationReport {
     pub invalid_edge_count: usize,
     pub invalid_wire_count: usize,
     pub invalid_face_count: usize,
+    pub invalid_shell_count: usize,
+    pub invalid_solid_count: usize,
 }
 
 /// A flat-shaded triangle-soup mesh, as returned by [`Shape::tessellate`]
@@ -3259,6 +3592,8 @@ mod tests {
                 invalid_edge_count: 0,
                 invalid_wire_count: 0,
                 invalid_face_count: 0,
+                invalid_shell_count: 0,
+                invalid_solid_count: 0,
             }
         );
         assert_eq!(report.is_valid, box_shape.is_valid().unwrap());
@@ -3284,6 +3619,145 @@ mod tests {
         assert_eq!(report.invalid_vertex_count, 0);
         assert_eq!(report.invalid_edge_count, 0);
         assert_eq!(report.invalid_wire_count, 0);
+    }
+
+    // --- AICAD-119: general topology construction ---
+
+    fn unit_square_wire<'ctx>(context: &'ctx OcctContext) -> Shape<'ctx> {
+        let e0 = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let e1 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let e2 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0))
+            .unwrap();
+        let e3 = context
+            .make_line_edge(Point3::new(0.0, 1.0, 0.0), Point3::new(0.0, 0.0, 0.0))
+            .unwrap();
+        context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap()
+    }
+
+    #[test]
+    fn make_vertex_reports_exactly_its_own_point() {
+        let context = OcctContext::new().unwrap();
+        let vertex = context.make_vertex(Point3::new(1.0, 2.0, 3.0)).unwrap();
+        let point = vertex.vertex_point().unwrap();
+        assert_eq!(point, Point3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn make_face_on_plane_of_a_unit_square_wire_has_unit_area() {
+        let context = OcctContext::new().unwrap();
+        let wire = unit_square_wire(&context);
+        let face = wire
+            .make_face_on_plane(&[], Point3::ORIGIN, Direction3::Z, false)
+            .unwrap();
+        let report = face.validate().unwrap();
+        assert!(report.is_valid);
+        assert!((face.area().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn make_shell_then_make_solid_from_a_box_faces_matches_the_box_volume() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 2.0, 3.0).unwrap();
+        let faces: Vec<Shape> = (0..box_shape.face_count().unwrap())
+            .map(|i| box_shape.get_face(i).unwrap())
+            .collect();
+        let face_refs: Vec<&Shape> = faces.iter().collect();
+        let shell = context.make_shell(&face_refs).unwrap();
+        let shell_report = shell.validate().unwrap();
+        assert!(shell_report.is_valid);
+        assert_eq!(shell_report.invalid_shell_count, 0);
+
+        let solid = shell.make_solid(&[]).unwrap();
+        let solid_report = solid.validate().unwrap();
+        assert!(solid_report.is_valid);
+        assert_eq!(solid_report.invalid_solid_count, 0);
+        assert!((solid.volume().unwrap() - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn make_solid_from_a_non_closed_shell_succeeds_structurally_but_is_reported_invalid() {
+        // AICAD-119: verified empirically that BRepBuilderAPI_MakeSolid does
+        // not require its input shell to be closed -- this is Stage-1
+        // kernel policy #14 ("construction success is not evidence of
+        // validity") in its starkest form, and is exactly the behavior
+        // `Shape::make_solid`'s own doc comment describes.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let single_face = box_shape.get_face(0).unwrap();
+        let open_shell = context.make_shell(&[&single_face]).unwrap();
+        let solid = open_shell
+            .make_solid(&[])
+            .expect("construction itself succeeds even though the shell is open");
+        let report = solid.validate().unwrap();
+        assert!(!report.is_valid);
+        assert_eq!(report.invalid_solid_count, 1);
+    }
+
+    #[test]
+    fn make_shell_rejects_an_empty_face_list() {
+        let context = OcctContext::new().unwrap();
+        assert_eq!(
+            context.make_shell(&[]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_compound_rejects_an_empty_shape_list() {
+        let context = OcctContext::new().unwrap();
+        assert_eq!(
+            context.make_compound(&[]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_compound_groups_mixed_kind_shapes_without_error() {
+        let context = OcctContext::new().unwrap();
+        let vertex = context.make_vertex(Point3::ORIGIN).unwrap();
+        let wire = unit_square_wire(&context);
+        let compound = context.make_compound(&[&vertex, &wire]).unwrap();
+        assert!(compound.is_valid().unwrap());
+    }
+
+    #[test]
+    fn make_face_on_cylinder_of_a_planar_wire_is_structurally_real_but_not_required_to_be_valid() {
+        // A unit-square wire does not lie on the cylinder's own surface, so
+        // this documents the honest outcome (a structurally-built face that
+        // validate() may reject) rather than asserting a specific result --
+        // exactly [`Shape::make_face_on_plane`]'s own "construction success
+        // is not validity" contract, exercised on a non-planar surface.
+        let context = OcctContext::new().unwrap();
+        let wire = unit_square_wire(&context);
+        let axis = Axis3::new(Point3::ORIGIN, Direction3::Z);
+        let face = wire.make_face_on_cylinder(&[], axis, 0.5, false).unwrap();
+        let _ = face.validate().unwrap();
+    }
+
+    #[test]
+    fn make_face_on_sphere_torus_cone_construct_without_error() {
+        let context = OcctContext::new().unwrap();
+        let axis = Axis3::new(Point3::ORIGIN, Direction3::Z);
+        assert!(
+            unit_square_wire(&context)
+                .make_face_on_sphere(&[], Point3::ORIGIN, 2.0, false)
+                .is_ok()
+        );
+        assert!(
+            unit_square_wire(&context)
+                .make_face_on_torus(&[], axis, 2.0, 0.5, false)
+                .is_ok()
+        );
+        assert!(
+            unit_square_wire(&context)
+                .make_face_on_cone(&[], axis, std::f64::consts::FRAC_PI_4, false)
+                .is_ok()
+        );
     }
 
     // --- AICAD-032: display tessellation output ---

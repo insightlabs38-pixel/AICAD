@@ -530,6 +530,75 @@ pub enum BuiltinFnId {
     /// `RuntimeError::Unsupported` when both surfaces are unbounded
     /// (`Plane`/`Cylinder`/`Cone`) or either is `Surface::Trimmed`.
     DistanceSurfaceSurface,
+    /// `make_vertex(point: Point3) -> Geometry` (`AICAD-119`). Pushes a
+    /// `GeometryOp::MakeVertex` node — a [`BuiltinCategory::Construction`]
+    /// builtin, the base case of the vertex->edge->wire->face->shell->
+    /// solid pipeline this batch completes.
+    MakeVertex,
+    /// `make_edge(curve: Curve) -> Geometry` (`AICAD-119`). Materializes an
+    /// already-constructed `Curve` value into real kernel topology by
+    /// pushing the matching existing `GeometryOp` — `Line` must already be
+    /// `trim_curve`-bounded (an infinite `Line` has no two endpoints to
+    /// build an edge from) and maps to `GeometryOp::LineEdge`; `Arc` maps
+    /// to `GeometryOp::ArcEdge` (its 3 defining points obtained via
+    /// `AnalyticCurve::evaluate`, reusing that already-tested trigonometry
+    /// rather than re-deriving it here); a full `Circle` maps to
+    /// `GeometryOp::CircleWire`, producing a closed *wire* rather than an
+    /// open edge — disclosed here, not silently pretended uniform, since a
+    /// full circle has no natural single start/end point for OCCT's own
+    /// edge model. `Ellipse`/`Bezier`/`BSpline`/any other `Trimmed` base
+    /// is `RuntimeError::Unsupported` (no matching kernel construction op
+    /// exists yet for those families — a structural limit, not a missing
+    /// case check).
+    MakeEdge,
+    /// `make_wire(edges: List<Geometry>) -> Geometry` (`AICAD-119`).
+    /// Pushes `GeometryOp::WireFromEdges` — this exact op has existed since
+    /// `AICAD-022`; this is its first source-language exposure, following
+    /// [`BuiltinFnId::Plate`]'s own "domain-meaningful name over an
+    /// existing op" precedent (here, the op simply had no builtin name
+    /// yet at all).
+    MakeWire,
+    /// `make_face(wire: Geometry) -> Geometry` (`AICAD-119`). Pushes
+    /// `GeometryOp::MakeFace` — a *planar* face inferred from `wire`'s own
+    /// geometry, no holes, no explicit surface (see
+    /// [`BuiltinFnId::MakeFaceOnSurface`] for the holes-and-explicit-
+    /// surface-capable general form). Like [`BuiltinFnId::MakeWire`], this
+    /// exposes an op that has existed since `AICAD-023` under its first
+    /// source-language name.
+    MakeFace,
+    /// `make_face_on_surface(surface: Surface, outer: Geometry, holes:
+    /// List<Geometry>) -> Geometry` (`AICAD-119`). Materializes an
+    /// already-constructed `Surface` value into a new
+    /// `GeometryOp::MakeFaceOnSurface` node bounded by the already-real
+    /// kernel wire `outer` (plus `holes`) — bounded to the same 5
+    /// elementary quadric families `cad_geometry_api::ir::SurfaceSpec`
+    /// covers (`Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`);
+    /// `RuntimeError::Unsupported` for `Bezier`/`BSpline`/`Trimmed` (no
+    /// matching kernel construction op exists yet for those families,
+    /// mirroring [`BuiltinFnId::MakeEdge`]'s own identical structural
+    /// limit on the curve side). Always builds on `outer`'s forward
+    /// orientation — no source-level control over
+    /// `cad_geometry_api::ir::FaceOrientation::Reversed` yet (a narrower
+    /// scope than the underlying op, not a missing capability at the
+    /// kernel layer).
+    MakeFaceOnSurface,
+    /// `make_shell(faces: List<Geometry>) -> Geometry` (`AICAD-119`).
+    /// Pushes `GeometryOp::MakeShell` — a structural container only, no
+    /// sewing/gap-closing (`AICAD-120`'s job): faces that do not already
+    /// share identical edges produce an open/non-manifold shell under
+    /// `is_valid`, not a silently repaired one.
+    MakeShell,
+    /// `make_solid(shell: Geometry, voids: List<Geometry>) -> Geometry`
+    /// (`AICAD-119`). Pushes `GeometryOp::MakeSolid` — `shell` need not be
+    /// closed for this call to succeed; see that op's own doc comment for
+    /// why construction success here is even less evidence of validity
+    /// than usual (`is_valid`/`volume` afterward are the real evidence).
+    MakeSolid,
+    /// `compound(shapes: List<Geometry>) -> Geometry` (`AICAD-119`). Pushes
+    /// `GeometryOp::Compound` — groups any mix of already-built kinds
+    /// (vertex/edge/wire/face/shell/solid) with no closure/connectivity
+    /// requirement to fail.
+    Compound,
 }
 
 /// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
@@ -592,7 +661,15 @@ impl BuiltinFnId {
             | BuiltinFnId::Mirror
             | BuiltinFnId::LinearPattern
             | BuiltinFnId::RadialPattern
-            | BuiltinFnId::Shell => BuiltinCategory::Construction,
+            | BuiltinFnId::Shell
+            | BuiltinFnId::MakeVertex
+            | BuiltinFnId::MakeEdge
+            | BuiltinFnId::MakeWire
+            | BuiltinFnId::MakeFace
+            | BuiltinFnId::MakeFaceOnSurface
+            | BuiltinFnId::MakeShell
+            | BuiltinFnId::MakeSolid
+            | BuiltinFnId::Compound => BuiltinCategory::Construction,
             BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
                 BuiltinCategory::Query
             }
@@ -670,7 +747,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 48] = [
+    pub const ALL: [BuiltinFnId; 56] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -719,6 +796,14 @@ impl BuiltinFnId {
         BuiltinFnId::DistanceCurveCurve,
         BuiltinFnId::DistanceCurveSurface,
         BuiltinFnId::DistanceSurfaceSurface,
+        BuiltinFnId::MakeVertex,
+        BuiltinFnId::MakeEdge,
+        BuiltinFnId::MakeWire,
+        BuiltinFnId::MakeFace,
+        BuiltinFnId::MakeFaceOnSurface,
+        BuiltinFnId::MakeShell,
+        BuiltinFnId::MakeSolid,
+        BuiltinFnId::Compound,
     ];
 }
 
@@ -1208,6 +1293,58 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             name: "distance_surface_surface",
             params: vec![("a", named("Surface")), ("b", named("Surface"))],
             return_ty: list_of("DistanceResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeVertex,
+            name: "make_vertex",
+            params: vec![("point", named("Point3"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeEdge,
+            name: "make_edge",
+            params: vec![("curve", named("Curve"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeWire,
+            name: "make_wire",
+            params: vec![("edges", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeFace,
+            name: "make_face",
+            params: vec![("wire", named("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeFaceOnSurface,
+            name: "make_face_on_surface",
+            params: vec![
+                ("surface", named("Surface")),
+                ("outer", named("Geometry")),
+                ("holes", list_of("Geometry")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeShell,
+            name: "make_shell",
+            params: vec![("faces", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeSolid,
+            name: "make_solid",
+            params: vec![("shell", named("Geometry")), ("voids", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Compound,
+            name: "compound",
+            params: vec![("shapes", list_of("Geometry"))],
+            return_ty: named("Geometry"),
         },
     ]
 }

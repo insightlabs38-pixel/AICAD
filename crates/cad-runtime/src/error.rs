@@ -571,6 +571,18 @@ pub enum RuntimeError {
         span: Span,
         reason: cad_geometry_api::QueryFailure,
     },
+    /// `make_edge`/`make_face_on_surface` (`AICAD-119`) received a `Curve`/
+    /// `Surface` value from a family this batch's kernel construction does
+    /// not (yet) support materializing — e.g. an infinite (untrimmed)
+    /// `Line`, an `Ellipse`, a `Bezier`/`BSpline` curve or surface, or a
+    /// `Surface::Trimmed`. A structural limit (no matching `GeometryOp`
+    /// variant exists for these families), not a missing case check —
+    /// `reason` names exactly which.
+    UnsupportedTopologyConstruction {
+        name: &'static str,
+        span: Span,
+        reason: &'static str,
+    },
 }
 
 impl RuntimeError {
@@ -627,6 +639,7 @@ impl RuntimeError {
             RuntimeError::InvalidToleranceMagnitude { .. } => "RUNTIME-E140".to_string(),
             RuntimeError::SurfaceOperationFailed { .. } => "RUNTIME-E141".to_string(),
             RuntimeError::GeometricQueryFailed { .. } => "RUNTIME-E142".to_string(),
+            RuntimeError::UnsupportedTopologyConstruction { .. } => "RUNTIME-E143".to_string(),
         }
     }
 
@@ -693,7 +706,8 @@ impl RuntimeError {
             | RuntimeError::SurfaceTrimFailed { span, .. }
             | RuntimeError::InvalidToleranceMagnitude { span, .. }
             | RuntimeError::SurfaceOperationFailed { span, .. }
-            | RuntimeError::GeometricQueryFailed { span, .. } => *span,
+            | RuntimeError::GeometricQueryFailed { span, .. }
+            | RuntimeError::UnsupportedTopologyConstruction { span, .. } => *span,
         }
     }
 
@@ -748,6 +762,9 @@ impl RuntimeError {
             RuntimeError::InvalidToleranceMagnitude { .. } => "INVALID_TOLERANCE_MAGNITUDE",
             RuntimeError::SurfaceOperationFailed { .. } => "SURFACE_OPERATION_FAILED",
             RuntimeError::GeometricQueryFailed { .. } => "GEOMETRIC_QUERY_FAILED",
+            RuntimeError::UnsupportedTopologyConstruction { .. } => {
+                "UNSUPPORTED_TOPOLOGY_CONSTRUCTION"
+            }
         }
     }
 
@@ -899,6 +916,9 @@ impl RuntimeError {
             }
             RuntimeError::GeometricQueryFailed { name, reason, .. } => {
                 format!("'{name}' could not be evaluated: {reason}")
+            }
+            RuntimeError::UnsupportedTopologyConstruction { name, reason, .. } => {
+                format!("'{name}' does not support this input: {reason}")
             }
         }
     }

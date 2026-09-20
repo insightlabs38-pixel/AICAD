@@ -17,6 +17,8 @@
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -33,6 +35,7 @@
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GC_MakeArcOfCircle.hxx>
@@ -52,17 +55,22 @@
 #include <TopTools_IndexedMapOfShape.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax1.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Ax3.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
 #include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
 #include <gp_Sphere.hxx>
@@ -2421,16 +2429,20 @@ aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
   }
   try {
     BRepCheck_Analyzer analyzer(*shape);
-    TopTools_IndexedMapOfShape vertices, edges, wires, faces;
+    TopTools_IndexedMapOfShape vertices, edges, wires, faces, shells, solids;
     TopExp::MapShapes(*shape, TopAbs_VERTEX, vertices);
     TopExp::MapShapes(*shape, TopAbs_EDGE, edges);
     TopExp::MapShapes(*shape, TopAbs_WIRE, wires);
     TopExp::MapShapes(*shape, TopAbs_FACE, faces);
+    TopExp::MapShapes(*shape, TopAbs_SHELL, shells);
+    TopExp::MapShapes(*shape, TopAbs_SOLID, solids);
     out_report->is_valid = analyzer.IsValid() ? 1 : 0;
     out_report->invalid_vertex_count = CountInvalid(analyzer, vertices);
     out_report->invalid_edge_count = CountInvalid(analyzer, edges);
     out_report->invalid_wire_count = CountInvalid(analyzer, wires);
     out_report->invalid_face_count = CountInvalid(analyzer, faces);
+    out_report->invalid_shell_count = CountInvalid(analyzer, shells);
+    out_report->invalid_solid_count = CountInvalid(analyzer, solids);
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;
@@ -3311,6 +3323,309 @@ aicad_occt_status_t aicad_occt_lineage_modified_get(aicad_occt_context_t* contex
   }
   try {
     *out_handle = context->shapes.Insert(context->id, entry->modified[index]);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // extern "C"
+
+namespace {
+
+// AICAD-119: shared face-on-elementary-surface construction, used by
+// aicad_occt_make_face_on_plane/_cylinder/_cone/_sphere/_torus below. OCCT
+// provides an identical `BRepBuilderAPI_MakeFace(const Surface&, const
+// TopoDS_Wire&, Standard_Boolean Inside)` constructor for every one of
+// gp_Pln/gp_Cylinder/gp_Cone/gp_Sphere/gp_Torus, which is exactly what lets
+// this be a single template instead of 5 near-duplicate functions.
+// `outer_reversed` is applied to the outer wire only; each hole is added
+// exactly as given -- no orientation is inferred or corrected (see
+// aicad_occt_make_face_on_plane's own header doc comment).
+template <class Surface>
+aicad_occt_status_t MakeFaceOnSurface(aicad_occt_context_t* context,
+                                       const Surface& surface,
+                                       aicad_shape_handle_t outer_wire,
+                                       const aicad_shape_handle_t* holes,
+                                       size_t hole_count,
+                                       int outer_reversed,
+                                       aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr || (holes == nullptr && hole_count != 0)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* outer_shape = nullptr;
+  status = LookupTyped(context, outer_wire, TopAbs_WIRE, &outer_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    TopoDS_Wire outer = TopoDS::Wire(*outer_shape);
+    if (outer_reversed) {
+      outer = TopoDS::Wire(outer.Reversed());
+    }
+    BRepBuilderAPI_MakeFace make_face(surface, outer, /*Inside=*/Standard_True);
+    if (!make_face.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    for (size_t i = 0; i < hole_count; ++i) {
+      const TopoDS_Shape* hole_shape = nullptr;
+      status = LookupTyped(context, holes[i], TopAbs_WIRE, &hole_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      make_face.Add(TopoDS::Wire(*hole_shape));
+      if (!make_face.IsDone()) {
+        return AICAD_OCCT_ERR_OPERATION_FAILED;
+      }
+    }
+    *out_handle = context->shapes.Insert(context->id, make_face.Face());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+}  // namespace
+
+extern "C" {
+
+aicad_occt_status_t aicad_occt_make_vertex(aicad_occt_context_t* context,
+                                            const double point[3],
+                                            aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (point == nullptr || out_handle == nullptr || !IsFinite3(point)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    BRepBuilderAPI_MakeVertex make_vertex(ToPnt(point));
+    if (!make_vertex.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_vertex.Vertex());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_face_on_plane(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t outer_wire,
+                                                   const aicad_shape_handle_t* holes,
+                                                   size_t hole_count,
+                                                   const double origin[3],
+                                                   const double normal[3],
+                                                   int outer_reversed,
+                                                   aicad_shape_handle_t* out_handle) {
+  if (origin == nullptr || normal == nullptr || !IsFinite3(origin)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir dir;
+  if (!TryToDir(normal, &dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Pln plane(ToPnt(origin), dir);
+  return MakeFaceOnSurface(context, plane, outer_wire, holes, hole_count, outer_reversed,
+                            out_handle);
+}
+
+aicad_occt_status_t aicad_occt_make_face_on_cylinder(aicad_occt_context_t* context,
+                                                      aicad_shape_handle_t outer_wire,
+                                                      const aicad_shape_handle_t* holes,
+                                                      size_t hole_count,
+                                                      const double axis_origin[3],
+                                                      const double axis_direction[3],
+                                                      double radius,
+                                                      int outer_reversed,
+                                                      aicad_shape_handle_t* out_handle) {
+  if (axis_origin == nullptr || axis_direction == nullptr || !IsFinite3(axis_origin) ||
+      !std::isfinite(radius) || radius <= 0.0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir dir;
+  if (!TryToDir(axis_direction, &dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Ax3 axis(ToPnt(axis_origin), dir);
+  gp_Cylinder cylinder(axis, radius);
+  return MakeFaceOnSurface(context, cylinder, outer_wire, holes, hole_count, outer_reversed,
+                            out_handle);
+}
+
+aicad_occt_status_t aicad_occt_make_face_on_cone(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t outer_wire,
+                                                  const aicad_shape_handle_t* holes,
+                                                  size_t hole_count,
+                                                  const double axis_origin[3],
+                                                  const double axis_direction[3],
+                                                  double half_angle_radians,
+                                                  int outer_reversed,
+                                                  aicad_shape_handle_t* out_handle) {
+  const double kHalfPi = 2.0 * std::atan(1.0);
+  if (axis_origin == nullptr || axis_direction == nullptr || !IsFinite3(axis_origin) ||
+      !std::isfinite(half_angle_radians) || half_angle_radians <= 0.0 ||
+      half_angle_radians >= kHalfPi) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir dir;
+  if (!TryToDir(axis_direction, &dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Ax3 axis(ToPnt(axis_origin), dir);
+  gp_Cone cone(axis, half_angle_radians, /*Radius=*/0.0);
+  return MakeFaceOnSurface(context, cone, outer_wire, holes, hole_count, outer_reversed,
+                            out_handle);
+}
+
+aicad_occt_status_t aicad_occt_make_face_on_sphere(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t outer_wire,
+                                                    const aicad_shape_handle_t* holes,
+                                                    size_t hole_count,
+                                                    const double center[3],
+                                                    double radius,
+                                                    int outer_reversed,
+                                                    aicad_shape_handle_t* out_handle) {
+  if (center == nullptr || !IsFinite3(center) || !std::isfinite(radius) || radius <= 0.0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Ax3 axis(ToPnt(center), gp_Dir(0.0, 0.0, 1.0));
+  gp_Sphere sphere(axis, radius);
+  return MakeFaceOnSurface(context, sphere, outer_wire, holes, hole_count, outer_reversed,
+                            out_handle);
+}
+
+aicad_occt_status_t aicad_occt_make_face_on_torus(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t outer_wire,
+                                                   const aicad_shape_handle_t* holes,
+                                                   size_t hole_count,
+                                                   const double axis_origin[3],
+                                                   const double axis_direction[3],
+                                                   double major_radius,
+                                                   double minor_radius,
+                                                   int outer_reversed,
+                                                   aicad_shape_handle_t* out_handle) {
+  if (axis_origin == nullptr || axis_direction == nullptr || !IsFinite3(axis_origin) ||
+      !std::isfinite(major_radius) || major_radius <= 0.0 || !std::isfinite(minor_radius) ||
+      minor_radius <= 0.0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Dir dir;
+  if (!TryToDir(axis_direction, &dir)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  gp_Ax3 axis(ToPnt(axis_origin), dir);
+  gp_Torus torus(axis, major_radius, minor_radius);
+  return MakeFaceOnSurface(context, torus, outer_wire, holes, hole_count, outer_reversed,
+                            out_handle);
+}
+
+aicad_occt_status_t aicad_occt_make_shell(aicad_occt_context_t* context,
+                                           const aicad_shape_handle_t* faces,
+                                           size_t face_count,
+                                           aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (faces == nullptr || out_handle == nullptr || face_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    BRep_Builder builder;
+    TopoDS_Shell shell;
+    builder.MakeShell(shell);
+    for (size_t i = 0; i < face_count; ++i) {
+      const TopoDS_Shape* face_shape = nullptr;
+      status = LookupTyped(context, faces[i], TopAbs_FACE, &face_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      builder.Add(shell, TopoDS::Face(*face_shape));
+    }
+    *out_handle = context->shapes.Insert(context->id, shell);
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_solid(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t outer_shell,
+                                           const aicad_shape_handle_t* voids,
+                                           size_t void_count,
+                                           aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (out_handle == nullptr || (voids == nullptr && void_count != 0)) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  const TopoDS_Shape* outer_shape = nullptr;
+  status = LookupTyped(context, outer_shell, TopAbs_SHELL, &outer_shape);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  try {
+    BRepBuilderAPI_MakeSolid make_solid(TopoDS::Shell(*outer_shape));
+    for (size_t i = 0; i < void_count; ++i) {
+      const TopoDS_Shape* void_shape = nullptr;
+      status = LookupTyped(context, voids[i], TopAbs_SHELL, &void_shape);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      make_solid.Add(TopoDS::Shell(*void_shape));
+    }
+    if (!make_solid.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_solid.Solid());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_compound(aicad_occt_context_t* context,
+                                              const aicad_shape_handle_t* shapes,
+                                              size_t shape_count,
+                                              aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (shapes == nullptr || out_handle == nullptr || shape_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    BRep_Builder builder;
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+    for (size_t i = 0; i < shape_count; ++i) {
+      const TopoDS_Shape* member = nullptr;
+      status = LookupAnyKind(context, shapes[i], &member);
+      if (status != AICAD_OCCT_OK) {
+        return status;
+      }
+      builder.Add(compound, *member);
+    }
+    *out_handle = context->shapes.Insert(context->id, compound);
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;

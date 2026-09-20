@@ -44,7 +44,7 @@
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SourceSpan};
 use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryNodeKind};
-use cad_geometry_api::{GeometryOp, GeometryQuery, Quantity};
+use cad_geometry_api::{FaceOrientation, GeometryOp, GeometryQuery, Quantity, SurfaceSpec};
 use cad_kernel_api::KernelError;
 use cad_kernel_api::Point3;
 use cad_occt_bridge::{BoundingBox, Lineage, OcctContext, Shape, TriangleMesh, ValidationReport};
@@ -380,6 +380,58 @@ fn dispatch_op<'ctx>(
             let target_shape = shape_operand(results, id, *target, span)?;
             kernel_op(id, span, "Mirror", target_shape.mirror(*plane))?
         }
+        GeometryOp::MakeVertex { point } => {
+            kernel_op(id, span, "MakeVertex", ctx.make_vertex(*point))?
+        }
+        GeometryOp::MakeFaceOnSurface {
+            surface,
+            outer,
+            holes,
+            orientation,
+        } => {
+            let outer_shape = shape_operand(results, id, *outer, span)?;
+            let hole_shapes = shape_operands(results, id, holes, span)?;
+            let reversed = matches!(orientation, FaceOrientation::Reversed);
+            let result = match surface {
+                SurfaceSpec::Plane { origin, normal } => {
+                    outer_shape.make_face_on_plane(&hole_shapes, *origin, *normal, reversed)
+                }
+                SurfaceSpec::Cylinder { axis, radius } => {
+                    outer_shape.make_face_on_cylinder(&hole_shapes, *axis, mag(radius), reversed)
+                }
+                SurfaceSpec::Cone { axis, half_angle } => {
+                    outer_shape.make_face_on_cone(&hole_shapes, *axis, mag(half_angle), reversed)
+                }
+                SurfaceSpec::Sphere { center, radius } => {
+                    outer_shape.make_face_on_sphere(&hole_shapes, *center, mag(radius), reversed)
+                }
+                SurfaceSpec::Torus {
+                    axis,
+                    major_radius,
+                    minor_radius,
+                } => outer_shape.make_face_on_torus(
+                    &hole_shapes,
+                    *axis,
+                    mag(major_radius),
+                    mag(minor_radius),
+                    reversed,
+                ),
+            };
+            kernel_op(id, span, "MakeFaceOnSurface", result)?
+        }
+        GeometryOp::MakeShell { faces } => {
+            let face_shapes = shape_operands(results, id, faces, span)?;
+            kernel_op(id, span, "MakeShell", ctx.make_shell(&face_shapes))?
+        }
+        GeometryOp::MakeSolid { shell, voids } => {
+            let shell_shape = shape_operand(results, id, *shell, span)?;
+            let void_shapes = shape_operands(results, id, voids, span)?;
+            kernel_op(id, span, "MakeSolid", shell_shape.make_solid(&void_shapes))?
+        }
+        GeometryOp::Compound { shapes } => {
+            let member_shapes = shape_operands(results, id, shapes, span)?;
+            kernel_op(id, span, "Compound", ctx.make_compound(&member_shapes))?
+        }
     };
     Ok(NodeResult::Shape(shape))
 }
@@ -510,6 +562,19 @@ fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
         | GeometryOp::Offset { target, .. }
         | GeometryOp::Transform { target, .. }
         | GeometryOp::Mirror { target, .. } => vec![*target],
+        GeometryOp::MakeVertex { .. } => Vec::new(),
+        GeometryOp::MakeFaceOnSurface { outer, holes, .. } => {
+            let mut ids = vec![*outer];
+            ids.extend(holes.iter().copied());
+            ids
+        }
+        GeometryOp::MakeShell { faces } => faces.clone(),
+        GeometryOp::MakeSolid { shell, voids } => {
+            let mut ids = vec![*shell];
+            ids.extend(voids.iter().copied());
+            ids
+        }
+        GeometryOp::Compound { shapes } => shapes.clone(),
     }
 }
 
@@ -1971,5 +2036,217 @@ mod tests {
             .expect("rebuild should succeed");
         assert_eq!(stats2.recomputed, vec![a]);
         assert!(stats2.reused.is_empty());
+    }
+
+    // --- AICAD-119: general topology construction dispatch ---
+
+    fn unit_square_wire(graph: &mut GeometryGraph) -> GeomId {
+        let mut edge = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            graph
+                .push_op(
+                    GeometryOp::LineEdge {
+                        start: Point3::new(x0, y0, 0.0),
+                        end: Point3::new(x1, y1, 0.0),
+                    },
+                    span(),
+                )
+                .unwrap()
+        };
+        let e0 = edge(0.0, 0.0, 1.0, 0.0);
+        let e1 = edge(1.0, 0.0, 1.0, 1.0);
+        let e2 = edge(1.0, 1.0, 0.0, 1.0);
+        let e3 = edge(0.0, 1.0, 0.0, 0.0);
+        graph
+            .push_op(
+                GeometryOp::WireFromEdges {
+                    edges: vec![e0, e1, e2, e3],
+                },
+                span(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn vertex_through_edge_through_wire_through_face_on_plane_dispatches_to_a_valid_unit_face() {
+        let mut graph = GeometryGraph::new();
+        let outer = unit_square_wire(&mut graph);
+        let face = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: cad_kernel_api::Direction3::Z,
+                    },
+                    outer,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let area_q = graph.push_query(GeometryQuery::Area(face), span()).unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => assert!((*area - 1.0).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn box_faces_reassembled_through_shell_and_solid_reproduce_the_original_volume() {
+        const DX: f64 = 1.0;
+        const DY: f64 = 2.0;
+        const DZ: f64 = 3.0;
+
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(DX),
+                    dy: length(DY),
+                    dz: length(DZ),
+                },
+                span(),
+            )
+            .unwrap();
+        let faces: Vec<GeomId> = (0..6)
+            .map(|i| {
+                graph
+                    .push_op(
+                        GeometryOp::GetFace {
+                            target: source_box,
+                            face: FaceIndex(i),
+                        },
+                        span(),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        let shell = graph
+            .push_op(GeometryOp::MakeShell { faces }, span())
+            .unwrap();
+        let solid = graph
+            .push_op(
+                GeometryOp::MakeSolid {
+                    shell,
+                    voids: vec![],
+                },
+                span(),
+            )
+            .unwrap();
+        let validate_q = graph
+            .push_query(GeometryQuery::Validate(solid), span())
+            .unwrap();
+        let volume_q = graph
+            .push_query(GeometryQuery::Volume(solid), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[validate_q.index() as usize] {
+            NodeResult::Validation(report) => {
+                assert!(report.is_valid);
+                assert_eq!(report.invalid_solid_count, 0);
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+        match &results[volume_q.index() as usize] {
+            NodeResult::Number(volume) => assert!((*volume - DX * DY * DZ).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solid_from_a_single_reassembled_face_is_structurally_real_but_reported_invalid() {
+        // AICAD-119: the production-path counterpart of `cad-occt-bridge`'s
+        // own `make_solid_from_a_non_closed_shell_succeeds_structurally_
+        // but_is_reported_invalid` -- construction never silently rejects
+        // or "fixes" an open shell, and dispatch must surface that exact
+        // evidence through an ordinary `GeometryQuery::Validate` node, not
+        // a dispatch error.
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let single_face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target: source_box,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let open_shell = graph
+            .push_op(
+                GeometryOp::MakeShell {
+                    faces: vec![single_face],
+                },
+                span(),
+            )
+            .unwrap();
+        let solid = graph
+            .push_op(
+                GeometryOp::MakeSolid {
+                    shell: open_shell,
+                    voids: vec![],
+                },
+                span(),
+            )
+            .unwrap();
+        let validate_q = graph
+            .push_query(GeometryQuery::Validate(solid), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[validate_q.index() as usize] {
+            NodeResult::Validation(report) => {
+                assert!(!report.is_valid);
+                assert_eq!(report.invalid_solid_count, 1);
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compound_of_a_vertex_and_a_wire_dispatches_successfully() {
+        let mut graph = GeometryGraph::new();
+        let vertex = graph
+            .push_op(
+                GeometryOp::MakeVertex {
+                    point: Point3::new(1.0, 2.0, 3.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let wire = unit_square_wire(&mut graph);
+        let compound = graph
+            .push_op(
+                GeometryOp::Compound {
+                    shapes: vec![vertex, wire],
+                },
+                span(),
+            )
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(compound), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid),
+            other => panic!("expected Bool, got {other:?}"),
+        }
     }
 }

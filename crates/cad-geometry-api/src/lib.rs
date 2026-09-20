@@ -45,8 +45,8 @@ pub use curve::{
     interpolate,
 };
 pub use ir::{
-    EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryIrError, GeometryNode, GeometryNodeKind,
-    GeometryOp, GeometryQuery, Quantity,
+    EdgeIndex, FaceIndex, FaceOrientation, GeomId, GeometryGraph, GeometryIrError, GeometryNode,
+    GeometryNodeKind, GeometryOp, GeometryQuery, Quantity, SurfaceSpec,
 };
 pub use operation_report::OperationReport;
 pub use query::{

@@ -172,7 +172,7 @@ use cad_ast::Span;
 use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
 use cad_geometry_api::{
     AnalyticCurve, AnalyticSurface, CurveConstructionError, CurveOperationError, EdgeIndex,
-    FaceIndex, GeomId, GeometryOp, GeometryQuery, Quantity, TrimLoop,
+    FaceIndex, FaceOrientation, GeomId, GeometryOp, GeometryQuery, Quantity, SurfaceSpec, TrimLoop,
 };
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
@@ -2029,6 +2029,37 @@ impl<'a> Interpreter<'a> {
                 .map_err(|err| RuntimeError::GeometryConstruction { err }.into())
         };
 
+        // `AICAD-119`'s own extra argument shapes: a real `Point3` (per
+        // `crate::spatial`'s established conversion boundary, mirroring
+        // `dispatch_curve_builtin`'s identical closure exactly), an
+        // already-constructed `Curve`/`Surface` value (`make_edge`/
+        // `make_face_on_surface` materialize these into real kernel
+        // topology), and `List<Geometry>` (every other new builtin's
+        // plural operand list).
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let curve_value = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok((**c).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let surface_value = |value: &Value| -> EvalResult<AnalyticSurface> {
+            match value {
+                Value::Surface(s) => Ok((**s).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let geometry_list = |value: &Value| -> EvalResult<Vec<GeomId>> {
+            match value {
+                Value::List(items) => items.iter().map(geometry).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+
         let node = match id {
             BuiltinFnId::Box => push_op(GeometryOp::Box {
                 dx: quantity(arg(0)?)?,
@@ -2266,6 +2297,74 @@ impl<'a> Interpreter<'a> {
                     thickness: Quantity::new(-thickness.magnitude, thickness.ty),
                 })?
             }
+            // `make_vertex(point)` (`AICAD-119`): the base case of the
+            // vertex->edge->wire->face->shell->solid pipeline.
+            BuiltinFnId::MakeVertex => {
+                let point = spatial_point(arg(0)?)?;
+                push_op(GeometryOp::MakeVertex { point })?
+            }
+            // `make_edge(curve)` (`AICAD-119`): materializes an already-
+            // constructed `Curve` value into the matching existing kernel
+            // edge/wire op — see `BuiltinFnId::MakeEdge`'s own doc comment
+            // for the exact family coverage and the `Circle`-produces-a-
+            // wire disclosure.
+            BuiltinFnId::MakeEdge => {
+                let curve = curve_value(arg(0)?)?;
+                let op = curve_to_edge_op(&curve).map_err(|reason| {
+                    RuntimeError::UnsupportedTopologyConstruction { name, span, reason }
+                })?;
+                push_op(op)?
+            }
+            // `make_wire(edges)` (`AICAD-119`): `GeometryOp::WireFromEdges`'
+            // first source-language exposure (the op itself is `AICAD-022`).
+            BuiltinFnId::MakeWire => push_op(GeometryOp::WireFromEdges {
+                edges: geometry_list(arg(0)?)?,
+            })?,
+            // `make_face(wire)` (`AICAD-119`): `GeometryOp::MakeFace`'s
+            // first source-language exposure (the op itself is `AICAD-023`)
+            // — planar, no holes; see `make_face_on_surface` for the
+            // general form.
+            BuiltinFnId::MakeFace => push_op(GeometryOp::MakeFace {
+                wire: geometry(arg(0)?)?,
+            })?,
+            // `make_face_on_surface(surface, outer, holes)` (`AICAD-119`):
+            // materializes an already-constructed `Surface` value into a
+            // new `GeometryOp::MakeFaceOnSurface` node bounded by the
+            // already-real kernel wires `outer`/`holes` — see
+            // `BuiltinFnId::MakeFaceOnSurface`'s own doc comment for the
+            // exact family coverage.
+            BuiltinFnId::MakeFaceOnSurface => {
+                let surface_val = surface_value(arg(0)?)?;
+                let outer = geometry(arg(1)?)?;
+                let holes = geometry_list(arg(2)?)?;
+                let surface = surface_to_spec(&surface_val).map_err(|reason| {
+                    RuntimeError::UnsupportedTopologyConstruction { name, span, reason }
+                })?;
+                push_op(GeometryOp::MakeFaceOnSurface {
+                    surface,
+                    outer,
+                    holes,
+                    orientation: FaceOrientation::Forward,
+                })?
+            }
+            // `make_shell(faces)` (`AICAD-119`): a structural container
+            // only, no sewing/gap-closing (`AICAD-120`'s job).
+            BuiltinFnId::MakeShell => push_op(GeometryOp::MakeShell {
+                faces: geometry_list(arg(0)?)?,
+            })?,
+            // `make_solid(shell, voids)` (`AICAD-119`): `shell` need not be
+            // closed for this call to succeed — see `GeometryOp::MakeSolid`'s
+            // own doc comment for why construction success here is even
+            // less evidence of validity than usual.
+            BuiltinFnId::MakeSolid => push_op(GeometryOp::MakeSolid {
+                shell: geometry(arg(0)?)?,
+                voids: geometry_list(arg(1)?)?,
+            })?,
+            // `compound(shapes)` (`AICAD-119`): groups any mix of already-
+            // built kinds with no closure/connectivity requirement to fail.
+            BuiltinFnId::Compound => push_op(GeometryOp::Compound {
+                shapes: geometry_list(arg(0)?)?,
+            })?,
             BuiltinFnId::IsValid | BuiltinFnId::Volume | BuiltinFnId::Area => {
                 unreachable!(
                     "query builtins return early above, before this Construction-only match"
@@ -4127,6 +4226,105 @@ fn is_geometry_type_ref(ty: &HirTypeRef) -> bool {
     matches!(ty, HirTypeRef::Named { name, .. } if name == "Geometry")
 }
 
+/// Materializes an already-constructed [`AnalyticCurve`] into the existing
+/// kernel edge/wire construction op it maps to (`AICAD-119`, `make_edge`).
+/// `Err` names the reason for an unsupported family — see
+/// [`BuiltinFnId::MakeEdge`]'s own doc comment for the exact coverage.
+fn curve_to_edge_op(curve: &AnalyticCurve) -> Result<GeometryOp, &'static str> {
+    match curve {
+        AnalyticCurve::Circle {
+            center,
+            normal,
+            radius,
+        } => Ok(GeometryOp::CircleWire {
+            center: *center,
+            normal: *normal,
+            radius: *radius,
+        }),
+        AnalyticCurve::Arc {
+            start_angle,
+            end_angle,
+            ..
+        } => {
+            let mid_angle = (start_angle.magnitude + end_angle.magnitude) / 2.0;
+            let point_at = |u: f64| -> Option<Point3> {
+                match curve.evaluate(u) {
+                    CurveQueryOutcome::Solutions(samples) if samples.len() == 1 => {
+                        Some(samples[0].point)
+                    }
+                    _ => None,
+                }
+            };
+            match (
+                point_at(start_angle.magnitude),
+                point_at(mid_angle),
+                point_at(end_angle.magnitude),
+            ) {
+                (Some(start), Some(mid), Some(end)) => Ok(GeometryOp::ArcEdge { start, mid, end }),
+                _ => Err("'make_edge' could not evaluate this arc at its own endpoints"),
+            }
+        }
+        AnalyticCurve::Trimmed { base, u0, u1 } => match base.as_ref() {
+            AnalyticCurve::Line { origin, direction } => Ok(GeometryOp::LineEdge {
+                start: *origin + direction.as_vector3() * *u0,
+                end: *origin + direction.as_vector3() * *u1,
+            }),
+            _ => Err(
+                "'make_edge' only supports a trimmed Line (its trim range becomes the edge's \
+                 own start/end) among trimmed curve families",
+            ),
+        },
+        AnalyticCurve::Line { .. } => Err(
+            "'make_edge' requires a bounded Line — trim it first with 'trim_curve' so it has \
+             two endpoints",
+        ),
+        AnalyticCurve::Ellipse { .. }
+        | AnalyticCurve::Bezier { .. }
+        | AnalyticCurve::BSpline { .. } => {
+            Err("'make_edge' does not yet support this curve family")
+        }
+    }
+}
+
+/// Materializes an already-constructed [`AnalyticSurface`] into the
+/// [`cad_geometry_api::SurfaceSpec`] `make_face_on_surface` needs
+/// (`AICAD-119`) — the same 5 elementary quadric families
+/// `SurfaceSpec` covers. `Err` names the reason for an unsupported family.
+fn surface_to_spec(surface: &AnalyticSurface) -> Result<SurfaceSpec, &'static str> {
+    match surface {
+        AnalyticSurface::Plane { origin, normal } => Ok(SurfaceSpec::Plane {
+            origin: *origin,
+            normal: *normal,
+        }),
+        AnalyticSurface::Cylinder { axis, radius } => Ok(SurfaceSpec::Cylinder {
+            axis: *axis,
+            radius: *radius,
+        }),
+        AnalyticSurface::Cone { axis, half_angle } => Ok(SurfaceSpec::Cone {
+            axis: *axis,
+            half_angle: *half_angle,
+        }),
+        AnalyticSurface::Sphere { center, radius } => Ok(SurfaceSpec::Sphere {
+            center: *center,
+            radius: *radius,
+        }),
+        AnalyticSurface::Torus {
+            axis,
+            major_radius,
+            minor_radius,
+        } => Ok(SurfaceSpec::Torus {
+            axis: *axis,
+            major_radius: *major_radius,
+            minor_radius: *minor_radius,
+        }),
+        AnalyticSurface::Bezier { .. }
+        | AnalyticSurface::BSpline { .. }
+        | AnalyticSurface::Trimmed { .. } => {
+            Err("'make_face_on_surface' does not yet support this surface family")
+        }
+    }
+}
+
 /// The stable name one `BuiltinFnId` variant reports in a
 /// [`RuntimeError::BuiltinArgumentShape`] diagnostic — mirrors
 /// `cad_hir::builtins::catalogue`'s own `name` field exactly (kept as its
@@ -4183,6 +4381,14 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::DistanceCurveCurve => "distance_curve_curve",
         BuiltinFnId::DistanceCurveSurface => "distance_curve_surface",
         BuiltinFnId::DistanceSurfaceSurface => "distance_surface_surface",
+        BuiltinFnId::MakeVertex => "make_vertex",
+        BuiltinFnId::MakeEdge => "make_edge",
+        BuiltinFnId::MakeWire => "make_wire",
+        BuiltinFnId::MakeFace => "make_face",
+        BuiltinFnId::MakeFaceOnSurface => "make_face_on_surface",
+        BuiltinFnId::MakeShell => "make_shell",
+        BuiltinFnId::MakeSolid => "make_solid",
+        BuiltinFnId::Compound => "compound",
     }
 }
 
@@ -8870,5 +9076,254 @@ mod tests {
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
         let err = interp.call_by_name("f", vec![]).unwrap_err();
         assert_eq!(diag_code(&err), "RUNTIME-E142");
+    }
+
+    // --- AICAD-119: general topology construction ---
+
+    fn assert_is_geometry(value: Value) {
+        assert!(
+            matches!(value, Value::Geometry(_)),
+            "expected Value::Geometry, got {value:?}"
+        );
+    }
+
+    #[test]
+    fn make_vertex_builds_a_geometry_value_from_a_point3() {
+        let source = "fn f() -> Geometry { \
+                 return make_vertex(Point3(x = 1mm, y = 2mm, z = 3mm)); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_a_trimmed_line_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let c = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let bounded = trim_curve(c, 0.0, 0.01); \
+                 return make_edge(bounded); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_an_untrimmed_line_is_unsupported() {
+        let source = "fn f() -> Geometry { \
+                 let c = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E143");
+    }
+
+    #[test]
+    fn make_edge_from_an_arc_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let c = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_a_full_circle_builds_a_closed_wire_geometry_value() {
+        // A full circle has no natural single start/end point for OCCT's
+        // own edge model, so `make_edge` produces a closed wire here
+        // rather than an open edge -- disclosed in `BuiltinFnId::MakeEdge`'s
+        // own doc comment, not silently pretended uniform with the Arc/
+        // trimmed-Line cases above.
+        let source = "fn f() -> Geometry { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_an_ellipse_is_unsupported() {
+        let source = "fn f() -> Geometry { \
+                 let c = ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     major_radius = 2mm, \
+                     minor_radius = 1mm, \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E143");
+    }
+
+    #[test]
+    fn make_wire_then_make_face_builds_a_planar_face_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 return make_face(wire); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_face_on_surface_builds_a_face_on_a_cylinder() {
+        let source = "fn f() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0.001mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0.001mm, y = 0mm, z = 0.001mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = -1.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0.001mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 let cyl = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 5mm, \
+                 ); \
+                 return make_face_on_surface(cyl, wire, []); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_face_on_surface_rejects_a_bezier_surface() {
+        let source = "fn f() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0]); \
+                 let bez = bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 1mm, z = 0mm)], \
+                         [Point3(x = 1mm, y = 0mm, z = 0mm), Point3(x = 1mm, y = 1mm, z = 0mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+                 return make_face_on_surface(bez, wire, []); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E143");
+    }
+
+    #[test]
+    fn make_shell_make_solid_and_compound_build_geometry_values() {
+        let source = "fn build_shell() -> Geometry { \
+                 let v = make_vertex(Point3(x = 0mm, y = 0mm, z = 0mm)); \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 let face = make_face(wire); \
+                 let sh = make_shell([face]); \
+                 let c = compound([v, sh]); \
+                 return c; \
+             } \
+             fn solid_from_open_shell() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 let face = make_face(wire); \
+                 let sh = make_shell([face]); \
+                 return make_solid(sh, []); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("build_shell", vec![]).unwrap());
+        // `make_solid` itself succeeds structurally even from a single-face
+        // (open) shell -- `Shape::make_solid`'s own documented contract;
+        // validity is a separate, later evidence question (`is_valid`),
+        // not this call's own success.
+        assert_is_geometry(
+            interp
+                .call_by_name("solid_from_open_shell", vec![])
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn make_shell_rejects_an_empty_face_list() {
+        let source = "fn f() -> Geometry { return make_shell([]); }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "GEOM-E004");
+    }
+
+    #[test]
+    fn compound_rejects_an_empty_shape_list() {
+        let source = "fn f() -> Geometry { return compound([]); }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "GEOM-E004");
     }
 }

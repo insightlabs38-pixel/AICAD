@@ -185,6 +185,59 @@ pub struct EdgeIndex(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FaceIndex(pub usize);
 
+/// The elementary quadric surface families [`GeometryOp::MakeFaceOnSurface`]
+/// (`AICAD-119`) can build a kernel face on, expressed as pure kernel-
+/// neutral data — never `cad_geometry_api::surface::AnalyticSurface`
+/// itself, which also carries Bezier/B-spline/trimmed families this
+/// construction op does not (yet) support materializing (an
+/// `AnalyticSurface` value is converted into a `SurfaceSpec` at the
+/// interpreter dispatch boundary, `cad_runtime::interp`, which is also
+/// where an unsupported family is rejected — see that crate's own
+/// `dispatch_topology_builtin`). Field shapes deliberately mirror
+/// [`crate::surface::AnalyticSurface`]'s own `Plane`/`Cylinder`/`Cone`/
+/// `Sphere`/`Torus` variants exactly.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SurfaceSpec {
+    Plane {
+        origin: Point3,
+        normal: Direction3,
+    },
+    Cylinder {
+        axis: Axis3,
+        radius: Quantity,
+    },
+    Cone {
+        axis: Axis3,
+        half_angle: Quantity,
+    },
+    Sphere {
+        center: Point3,
+        radius: Quantity,
+    },
+    Torus {
+        axis: Axis3,
+        major_radius: Quantity,
+        minor_radius: Quantity,
+    },
+}
+
+/// Which side of a wire a face is built on (`AICAD-119`,
+/// `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md` §3's `make_face`
+/// `orientation` parameter). `Reversed` builds
+/// [`GeometryOp::MakeFaceOnSurface`]'s face on `outer.Reversed()` instead
+/// of `outer` — the one explicit orientation control this batch exposes;
+/// hole wires are always added exactly as given (see that variant's own
+/// doc comment). Named `FaceOrientation`, not `Orientation`, to avoid
+/// colliding with [`crate::surface::Orientation`] (trim-loop winding
+/// direction — an unrelated concept this crate already re-exports under
+/// the bare name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FaceOrientation {
+    #[default]
+    Forward,
+    Reversed,
+}
+
 /// One Geometry IR construction operation: consumes zero or more prior
 /// [`GeomId`]s (functional/SSA, `DL-2`) plus typed parameters, and
 /// produces one new geometry value. Mirrors exactly the domain-level
@@ -311,6 +364,38 @@ pub enum GeometryOp {
     /// invariant) -- see that module's doc comment for the full
     /// rationale.
     Mirror { target: GeomId, plane: Plane3 },
+    /// A single-point vertex (`AICAD-119`, `OcctContext::make_vertex`) —
+    /// the base case of the vertex->edge->wire->face->shell->solid
+    /// pipeline; every other stage already had a construction op
+    /// (`LineEdge`/`CircleWire`/`ArcEdge`, `WireFromEdges`, `MakeFace`)
+    /// before this batch.
+    MakeVertex { point: Point3 },
+    /// A face bounded by `outer` (and optionally `holes`) on an explicit
+    /// elementary quadric surface (`AICAD-119`, `Shape::make_face_on_*`).
+    /// Distinct from [`GeometryOp::MakeFace`], which infers its (always
+    /// planar) surface from a planar wire and supports neither an explicit
+    /// non-planar surface nor holes.
+    MakeFaceOnSurface {
+        surface: SurfaceSpec,
+        outer: GeomId,
+        holes: Vec<GeomId>,
+        orientation: FaceOrientation,
+    },
+    /// Assembles `faces` into one shell (`AICAD-119`,
+    /// `OcctContext::make_shell`) — a structural container only, no
+    /// sewing/gap-closing (`AICAD-120`'s job): faces that do not already
+    /// share identical edges produce an open/non-manifold shell, not a
+    /// silently repaired one. `faces` must be non-empty.
+    MakeShell { faces: Vec<GeomId> },
+    /// A solid built from `shell`, with each of `voids` added as an
+    /// additional void/cavity shell (`AICAD-119`, `Shape::make_solid`).
+    /// `shell` need not be closed for this op to succeed — see that
+    /// method's own doc comment for why construction success here is even
+    /// less evidence of validity than usual.
+    MakeSolid { shell: GeomId, voids: Vec<GeomId> },
+    /// Groups `shapes` (any kind, any mix) into one compound (`AICAD-119`,
+    /// `OcctContext::make_compound`). `shapes` must be non-empty.
+    Compound { shapes: Vec<GeomId> },
 }
 
 /// A property/validation query against an already-constructed geometry
@@ -660,6 +745,73 @@ impl GeometryGraph {
             }
             GeometryOp::Mirror { target, .. } => {
                 self.check_geometry_operand(*target, span)?;
+            }
+            GeometryOp::MakeVertex { .. } => {}
+            GeometryOp::MakeFaceOnSurface {
+                surface,
+                outer,
+                holes,
+                ..
+            } => {
+                self.check_geometry_operand(*outer, span)?;
+                self.check_geometry_operands(holes, span)?;
+                match surface {
+                    SurfaceSpec::Plane { .. } => {}
+                    SurfaceSpec::Cylinder { radius, .. } => {
+                        Self::check_dimension(
+                            radius,
+                            Dimension::Length,
+                            "MakeFaceOnSurface.surface.radius",
+                            span,
+                        )?;
+                    }
+                    SurfaceSpec::Cone { half_angle, .. } => {
+                        Self::check_dimension(
+                            half_angle,
+                            Dimension::Angle,
+                            "MakeFaceOnSurface.surface.half_angle",
+                            span,
+                        )?;
+                    }
+                    SurfaceSpec::Sphere { radius, .. } => {
+                        Self::check_dimension(
+                            radius,
+                            Dimension::Length,
+                            "MakeFaceOnSurface.surface.radius",
+                            span,
+                        )?;
+                    }
+                    SurfaceSpec::Torus {
+                        major_radius,
+                        minor_radius,
+                        ..
+                    } => {
+                        Self::check_dimension(
+                            major_radius,
+                            Dimension::Length,
+                            "MakeFaceOnSurface.surface.major_radius",
+                            span,
+                        )?;
+                        Self::check_dimension(
+                            minor_radius,
+                            Dimension::Length,
+                            "MakeFaceOnSurface.surface.minor_radius",
+                            span,
+                        )?;
+                    }
+                }
+            }
+            GeometryOp::MakeShell { faces } => {
+                Self::check_non_empty(faces, "MakeShell.faces", span)?;
+                self.check_geometry_operands(faces, span)?;
+            }
+            GeometryOp::MakeSolid { shell, voids } => {
+                self.check_geometry_operand(*shell, span)?;
+                self.check_geometry_operands(voids, span)?;
+            }
+            GeometryOp::Compound { shapes } => {
+                Self::check_non_empty(shapes, "Compound.shapes", span)?;
+                self.check_geometry_operands(shapes, span)?;
             }
         }
         let id = self.next_id();
@@ -1367,5 +1519,202 @@ mod tests {
             }
             other => panic!("expected a Tessellate query node, found {other:?}"),
         }
+    }
+
+    // --- AICAD-119: general topology construction ---
+
+    fn a_point() -> Point3 {
+        Point3::new(1.0, 2.0, 3.0)
+    }
+
+    fn a_wire(graph: &mut GeometryGraph) -> GeomId {
+        let e = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(0.0, 0.0, 0.0),
+                    end: Point3::new(1.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        graph
+            .push_op(GeometryOp::WireFromEdges { edges: vec![e] }, span())
+            .unwrap()
+    }
+
+    #[test]
+    fn make_vertex_never_fails_structurally_and_needs_no_operand() {
+        let mut graph = GeometryGraph::new();
+        let vertex = graph
+            .push_op(GeometryOp::MakeVertex { point: a_point() }, span())
+            .unwrap();
+        assert_eq!(vertex.index(), 0);
+    }
+
+    #[test]
+    fn make_face_on_surface_accepts_a_valid_outer_wire_and_holes() {
+        let mut graph = GeometryGraph::new();
+        let outer = a_wire(&mut graph);
+        let hole = a_wire(&mut graph);
+        let face = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: Direction3::Z,
+                    },
+                    outer,
+                    holes: vec![hole],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(face).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn make_face_on_surface_rejects_a_non_length_cylinder_radius() {
+        let mut graph = GeometryGraph::new();
+        let outer = a_wire(&mut graph);
+        let err = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Cylinder {
+                        axis: Axis3::new(Point3::ORIGIN, Direction3::Z),
+                        radius: angle(1.0),
+                    },
+                    outer,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::DimensionMismatch { .. }));
+    }
+
+    #[test]
+    fn make_face_on_surface_rejects_an_unbuilt_hole_operand() {
+        let mut graph = GeometryGraph::new();
+        let outer = a_wire(&mut graph);
+        let not_yet_built = GeomId(99);
+        let err = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: Direction3::Z,
+                    },
+                    outer,
+                    holes: vec![not_yet_built],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+    }
+
+    #[test]
+    fn make_shell_rejects_an_empty_face_list() {
+        let mut graph = GeometryGraph::new();
+        let err = graph
+            .push_op(GeometryOp::MakeShell { faces: vec![] }, span())
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::EmptyOperandList { .. }));
+    }
+
+    #[test]
+    fn make_shell_accepts_a_non_empty_list_of_valid_faces() {
+        let mut graph = GeometryGraph::new();
+        let outer = a_wire(&mut graph);
+        let face = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: Direction3::Z,
+                    },
+                    outer,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let shell = graph
+            .push_op(GeometryOp::MakeShell { faces: vec![face] }, span())
+            .unwrap();
+        assert!(graph.get(shell).unwrap().kind.produces_geometry());
+    }
+
+    #[test]
+    fn make_solid_accepts_zero_voids_and_rejects_an_unbuilt_void() {
+        let mut graph = GeometryGraph::new();
+        let outer = a_wire(&mut graph);
+        let face = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: Direction3::Z,
+                    },
+                    outer,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let shell = graph
+            .push_op(GeometryOp::MakeShell { faces: vec![face] }, span())
+            .unwrap();
+        graph
+            .push_op(
+                GeometryOp::MakeSolid {
+                    shell,
+                    voids: vec![],
+                },
+                span(),
+            )
+            .expect("zero voids is legal");
+
+        let err = graph
+            .push_op(
+                GeometryOp::MakeSolid {
+                    shell,
+                    voids: vec![GeomId(999)],
+                },
+                span(),
+            )
+            .unwrap_err();
+        assert!(matches!(err, GeometryIrError::InvalidOperand { .. }));
+    }
+
+    #[test]
+    fn compound_rejects_empty_and_accepts_a_mix_of_kinds() {
+        let mut graph = GeometryGraph::new();
+        let empty_err = graph
+            .push_op(GeometryOp::Compound { shapes: vec![] }, span())
+            .unwrap_err();
+        assert!(matches!(
+            empty_err,
+            GeometryIrError::EmptyOperandList { .. }
+        ));
+
+        let vertex = graph
+            .push_op(GeometryOp::MakeVertex { point: a_point() }, span())
+            .unwrap();
+        let wire = a_wire(&mut graph);
+        let compound = graph
+            .push_op(
+                GeometryOp::Compound {
+                    shapes: vec![vertex, wire],
+                },
+                span(),
+            )
+            .unwrap();
+        assert!(graph.get(compound).unwrap().kind.produces_geometry());
     }
 }

@@ -470,6 +470,86 @@ unsafe extern "C" {
         tolerance: f64,
         out_classification: *mut c_int,
     ) -> c_int;
+
+    // --- AICAD-119: general topology construction ---
+    pub fn aicad_occt_make_vertex(
+        context: *mut aicad_occt_context_t,
+        point: *const f64, // [f64; 3]
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_plane(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        origin: *const f64, // [f64; 3]
+        normal: *const f64, // [f64; 3]
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_cylinder(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        axis_origin: *const f64,    // [f64; 3]
+        axis_direction: *const f64, // [f64; 3]
+        radius: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_cone(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        axis_origin: *const f64,    // [f64; 3]
+        axis_direction: *const f64, // [f64; 3]
+        half_angle_radians: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_sphere(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        center: *const f64, // [f64; 3]
+        radius: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_torus(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        axis_origin: *const f64,    // [f64; 3]
+        axis_direction: *const f64, // [f64; 3]
+        major_radius: f64,
+        minor_radius: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_shell(
+        context: *mut aicad_occt_context_t,
+        faces: *const aicad_shape_handle_t,
+        face_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_solid(
+        context: *mut aicad_occt_context_t,
+        outer_shell: aicad_shape_handle_t,
+        voids: *const aicad_shape_handle_t,
+        void_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_compound(
+        context: *mut aicad_occt_context_t,
+        shapes: *const aicad_shape_handle_t,
+        shape_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t
@@ -482,7 +562,10 @@ pub struct aicad_tessellation_counts_t {
 
 /// Mirrors `aicad_validation_report_t` field-for-field: `int is_valid;
 /// size_t invalid_vertex_count; size_t invalid_edge_count; size_t
-/// invalid_wire_count; size_t invalid_face_count;`.
+/// invalid_wire_count; size_t invalid_face_count; size_t
+/// invalid_shell_count; size_t invalid_solid_count;`. The last two fields
+/// were added by `AICAD-119` alongside this batch's own shell/solid
+/// construction paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct aicad_validation_report_t {
@@ -491,4 +574,6 @@ pub struct aicad_validation_report_t {
     pub invalid_edge_count: usize,
     pub invalid_wire_count: usize,
     pub invalid_face_count: usize,
+    pub invalid_shell_count: usize,
+    pub invalid_solid_count: usize,
 }
