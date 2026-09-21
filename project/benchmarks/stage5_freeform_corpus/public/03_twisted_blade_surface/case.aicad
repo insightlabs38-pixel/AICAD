@@ -1,0 +1,32 @@
+// A simplified twisted-blade lateral surface: root chord (leading/trailing
+// edge) vs. a shorter, twisted, spanwise-offset tip chord, as a single
+// bilinear (degree_u = degree_v = 1) Bezier patch -- a real doubly-ruled,
+// non-planar ("twisted") freeform surface value, standing in for the
+// "custom impeller blade surface" corpus category (docs/plan/16 S5).
+// `make_face_on_surface` does not yet accept a Bezier/B-spline surface
+// (see this corpus's own README "Discovered capability gap"), so this
+// fixture proves the surface's own exact value-level construction, not a
+// kernel B-rep face.
+let root_le: Point3 = Point3(x = 0mm, y = 0mm, z = 0mm);
+let root_te: Point3 = Point3(x = 0mm, y = 40mm, z = 0mm);
+let tip_le: Point3 = Point3(x = 15mm, y = 25mm, z = 80mm);
+let tip_te: Point3 = Point3(x = 0mm - 5mm, y = 45mm, z = 80mm);
+
+let blade: Surface = bezier_surface(
+    control_points = [
+        [root_le, root_te],
+        [tip_le, tip_te],
+    ],
+    weights = [[1.0, 1.0], [1.0, 1.0]],
+);
+
+// Clamped-corner identity: evaluating a Bezier/B-spline surface at a
+// parameter corner reproduces the matching control point exactly.
+let corner_00: SurfaceEvaluation = evaluate_surface(blade, 0.0, 0.0);
+let corner_01: SurfaceEvaluation = evaluate_surface(blade, 0.0, 1.0);
+let corner_10: SurfaceEvaluation = evaluate_surface(blade, 1.0, 0.0);
+let corner_11: SurfaceEvaluation = evaluate_surface(blade, 1.0, 1.0);
+
+// Bilinear center identity: f(0.5, 0.5) is the exact average of all four
+// control corners.
+let center: SurfaceEvaluation = evaluate_surface(blade, 0.5, 0.5);

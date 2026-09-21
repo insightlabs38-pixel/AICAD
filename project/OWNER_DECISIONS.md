@@ -1489,3 +1489,29 @@ Stage 0 work but should stay visible:
   incorrect, not their behavior) and needed only doc corrections plus
   test coverage. See `project/DECISION_LOG.md#DL-36` and
   `project/reports/AICAD-101.md` for the full evidence.
+
+- **`make_edge`/`make_face_on_surface` topology construction only bridges
+  the original Stage-2 analytic curve/surface families into real kernel
+  B-rep topology — `AICAD-110`'s Bezier/B-spline curves, `AICAD-114`'s
+  Bezier/B-spline surfaces, and `AICAD-115`'s trimmed surfaces (even of
+  an analytic base) are all rejected with an explicit
+  `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` diagnostic** (found while building
+  `AICAD-127`'s own difficult-freeform corpus). `crates/cad-runtime/
+  src/interp.rs`'s `curve_to_edge_op` only matches `Circle`/`Arc`/a
+  trimmed `Line`; its own `surface_to_surface_spec` only matches
+  `Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`. Every rejection is a clean,
+  immediately-surfaced diagnostic, never a crash/hang/silent-wrong
+  result, so this is not a fail-closed-safety defect — but it does mean
+  the docs/plan/16 §6 target categories that fundamentally need a real
+  face or solid (not just an evaluable surface value) are unreachable
+  through the current public `.aicad` surface for anything beyond the
+  five analytic quadric families. `AICAD-127`'s own corpus
+  (`project/benchmarks/stage5_freeform_corpus/README.md`) proves the
+  affected freeform geometry's exact value-level math instead of a
+  face/solid it cannot yet construct, and turns the gap itself into
+  adversarial evidence (`held_out/06`/`07`) that the rejection is
+  explicit. Closing this gap is ordinary future implementation work
+  (wiring the two dispatch functions to OCCT's own matching
+  `Geom_BSplineCurve`/`Geom_BSplineSurface`/pcurve-trim constructors), not
+  an architecture decision — recorded here as a real, disclosed scope gap
+  so a later task does not rediscover it from scratch.

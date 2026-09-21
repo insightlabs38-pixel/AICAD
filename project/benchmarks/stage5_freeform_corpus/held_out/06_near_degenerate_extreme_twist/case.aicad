@@ -1,0 +1,34 @@
+// Adversarial: a near-degenerate freeform patch whose u=0 edge is only
+// 0.001mm long (a genuine, constructible, but extremely thin sliver --
+// not a literal zero-length edge, which `line_curve`/`trim_curve` cannot
+// express at all), bounded by a real wire and passed to
+// `make_face_on_surface`. Expected outcome, confirmed empirically (not
+// assumed): `make_face_on_surface` rejects *any* Bezier/B-spline surface
+// today with an explicit `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` diagnostic
+// (`crates/cad-runtime/src/interp.rs`'s own `surface_to_surface_spec`) --
+// so this near-degenerate case never reaches OCCT at all, and the
+// required evidence is "explicit structured rejection, never a
+// panic/hang/silent-wrong success," not a specific validity verdict. See
+// this corpus's own README "Discovered capability gap" section.
+let p: Point3 = Point3(x = 0mm, y = 0mm, z = 0mm);
+let p_prime: Point3 = Point3(x = 0.001mm, y = 0mm, z = 0mm);
+let q: Point3 = Point3(x = 50mm, y = 0mm, z = 0mm);
+let r: Point3 = Point3(x = 0mm, y = 50mm, z = 0mm);
+
+let sliver: Surface = bspline_surface(
+    degree_u = 1, degree_v = 1,
+    control_points = [[p, p_prime], [q, r]],
+    knots_u = [0.0, 1.0], multiplicities_u = [2, 2],
+    knots_v = [0.0, 1.0], multiplicities_v = [2, 2],
+    weights = [[1.0, 1.0], [1.0, 1.0]],
+    periodic_u = false, periodic_v = false,
+);
+
+let edge_a: Geometry = make_edge(trim_curve(line_curve(origin = p, direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.000001));
+let edge_b: Geometry = make_edge(trim_curve(line_curve(origin = p_prime, direction = Vector3(x = -0.000019999999996, y = 0.9999999998, z = 0.0)), 0.0, 0.050000000010000004));
+let edge_c: Geometry = make_edge(trim_curve(line_curve(origin = r, direction = Vector3(x = 0.7071067811865475, y = -0.7071067811865475, z = 0.0)), 0.0, 0.07071067811865475));
+let edge_d: Geometry = make_edge(trim_curve(line_curve(origin = q, direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.05));
+
+let sliver_wire: Geometry = make_wire([edge_a, edge_b, edge_c, edge_d]);
+let sliver_face: Geometry = make_face_on_surface(sliver, sliver_wire, []);
+let sliver_face_valid: Bool = is_valid(sliver_face);

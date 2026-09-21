@@ -4169,7 +4169,7 @@ tasks:
 - id: AICAD-127
   stage: 5
   title: Build and freeze a difficult freeform exact-geometry corpus
-  status: todo
+  status: done
   depends_on:
   - AICAD-126
   plan_references:

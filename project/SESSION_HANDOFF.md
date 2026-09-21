@@ -60,55 +60,47 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Batch `S5-08` (`AICAD-125..126`, lineage/reference integrity +
-Checkpoint C) is complete** — see `project/reports/AICAD-125.md`/
-`AICAD-126.md` for full detail (`S5-07` and earlier retired from this file
-per its own "current state, not an appended diary" convention). Summary:
+Batch `S5-08` (`AICAD-125..126`) is complete — see `project/reports/
+AICAD-125.md`/`AICAD-126.md` (superseded detail retired from this file per
+its own "current state, not an appended diary" convention).
 
-- `AICAD-125` threaded every Stage-5 topology-changing operation's own
-  already-captured evidence into the Stage-4 reference-resolution
-  machinery: `Sew` (multi-operand `lineage_operand_ids`, reusing its
-  already-captured native `Lineage`); a new `cad_geometry_runtime::
-  raw_lineage::RawLineageIndex` chain for `remove_face`/`replace_face`/
-  `split_edge`/`merge_faces`, classified once `adopt`ed by a new
-  `cad_query::feature_lineage::classify_raw_edit_lineage`; `Heal` and an
-  untracked raw handle continue to honestly report no evidence
-  (`Broken(InsufficientEvidence)`), never a guess. **Found and fixed a
-  real bug**: `enter_raw`'s own target dispatches through a *separate*,
-  independent kernel construction (`OcctQueryExecutor`'s own call-local
-  `dispatch_graph`, per `DL-25`'s demand-materialization contract) from
-  the round's own later final dispatch — two independent constructions of
-  "the same" geometry are `Shape::is_same` **false** with each other, so a
-  raw chain's own "prior entities" must be snapshotted at `enter_raw` time
-  from that same call-local dispatch, never re-derived later from the
-  round's own `results` table. Fixed in `raw_lineage.rs`'s own doc
-  comment/`record_origin` signature.
-- `AICAD-126` (Checkpoint C) proved the whole construct → sew → heal →
-  inspect → raw-edit → adopt → persistent-reference chain through one real
-  `ParametricBuildSession` (`stage5_lineage_checkpoint.rs`), confirmed no
-  architecture boundary was bypassed, re-ran the native CTest suite and
-  ACTIVE example suite, and recommended **PASS** (owner decision, not
-  granted by the agent).
+**Batch `S5-09` is in progress. `AICAD-127` is done; `AICAD-128`/`129` are
+next**, in that order (`AICAD-128` depends on `AICAD-127`; `AICAD-129`
+depends on both). See `project/reports/AICAD-127.md` for full detail.
+Summary:
 
-Known, explicitly-disclosed limitation carried forward: `replace_face`'s
-own `Modified` evidence has no known constructible *valid* `adopt`-through
-fixture (every replacement tried fails kernel/validity checks — `AICAD-
-123`'s own disclosed compatibility gap surfacing, not a new one);
-`merge_faces`/`split_edge`'s own `List<Raw>` results have no `.aicad`
-element-selection syntax to feed into `adopt` at all. The production-path
-`Modified` proof uses `Sew`'s own real edge-relabeling instead, exercising
-the identical consumer code path. See `AICAD-125.md`/`AICAD-126.md` for
-full detail.
+- `AICAD-127` froze `project/benchmarks/stage5_freeform_corpus/` (4
+  `public` + 3 `held_out` fixtures, each with declared exact/closed-form
+  checked evidence and tolerance domain), proven by
+  `crates/cad-cli/tests/stage5_freeform_corpus.rs` (7/7 passing).
+- **Central finding**: building the corpus's originally-planned
+  positive-path fixtures discovered that `make_edge`/
+  `make_face_on_surface` (topology construction, `AICAD-119`) only bridge
+  the original Stage-2 analytic families (`Circle`/`Arc`/trimmed-`Line`;
+  `Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`) into real kernel B-rep
+  topology — a Bezier/B-spline curve (`AICAD-110`) or surface
+  (`AICAD-114`), or any `trim_surface` result (`AICAD-115`), is rejected
+  with an explicit `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` diagnostic, never
+  silently. `AICAD-110`/`114`/`115` gave `.aicad` real freeform curve/
+  surface **values** (construction/evaluation/trim/intersection/
+  projection/distance, already kernel-free), but `AICAD-119`'s topology
+  dispatch was never extended to accept them. Recorded as a non-decision
+  item in `project/OWNER_DECISIONS.md` (ordinary future implementation
+  work, not an architecture ruling) and as this corpus's own README
+  "Discovered capability gap" section. Every `public/` fixture proves the
+  freeform geometry's exact value-level math instead of a face/solid it
+  cannot yet construct; `held_out/06`/`07` turn the gap itself into
+  adversarial evidence that the rejection is explicit.
 
-All required checks pass as of `AICAD-126`: `cargo fmt --all -- --check`,
+All required checks pass as of `AICAD-127`: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-the full `cargo test --workspace` (1811 passed, 0 failed), `python3
-scripts/ci/semantic_ref_harness.py validate`/`self-test` (both `ok`), a
-standalone native OCCT bridge CMake build + CTest (18/18), and the ACTIVE
-example suite (3/3, 14 examples).
+the full `cargo test --workspace` (1818 passed, 0 failed — 1811
+pre-existing + 7 new corpus tests).
 
-Per the fixed batch order, the next invocation begins `S5-09`
-(`AICAD-127..129`: realistic/adversarial/example campaign), which depends
-on `AICAD-126` (satisfied).
+Next: `AICAD-128` (numerical/robustness/determinism/resource adversarial
+campaign) — reuse the corpus's `public`/`held_out` split as a starting
+point; the discovered capability gap above should inform which
+degenerate/adversarial cases are actually reachable through topology
+construction today versus value-level-only.
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

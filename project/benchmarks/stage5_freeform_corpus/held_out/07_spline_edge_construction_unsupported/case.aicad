@@ -1,0 +1,21 @@
+// Adversarial (curve-side counterpart of `held_out/
+// 06_near_degenerate_extreme_twist`): `make_edge` rejects a Bezier/
+// B-spline curve family with an explicit `UNSUPPORTED_TOPOLOGY_
+// CONSTRUCTION` diagnostic (`crates/cad-runtime/src/interp.rs`'s own
+// `curve_to_edge_op`) -- confirmed empirically, not assumed. See this
+// corpus's own README "Discovered capability gap" section.
+let hook: Curve = bspline_curve(
+    degree = 3,
+    control_points = [
+        Point3(x = 0mm, y = 0mm, z = 0mm),
+        Point3(x = 0mm, y = 45mm, z = 0mm),
+        Point3(x = 25mm, y = 60mm, z = 0mm),
+        Point3(x = 45mm, y = 40mm, z = 0mm),
+        Point3(x = 30mm, y = 15mm, z = 0mm),
+    ],
+    knots = [0.0, 0.5, 1.0],
+    multiplicities = [4, 1, 4],
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0],
+    periodic = false,
+);
+let hook_edge: Geometry = make_edge(hook);

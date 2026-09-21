@@ -1,0 +1,80 @@
+// A twisted, variable-section lateral surface family: a 20mm square base
+// (z=0) ruled to a 10mm square top (z=30mm) rotated 45 degrees about the
+// z axis, standing in for a combined "variable-section sweep" + "twisted
+// loft" (no single sweep/loft builtin is exposed to .aicad, and
+// `make_face_on_surface`/topology construction does not yet accept a
+// Bezier/B-spline surface family at all -- see `held_out/
+// 06_freeform_surface_construction_unsupported` and this corpus's own
+// README "Discovered capability gap" section). Each `side*` is a genuine
+// doubly-curved (degree_u=1/degree_v=1 ruled) ".aicad Surface" value;
+// this fixture proves its exact bilinear evaluation identities. The
+// planar bottom/top caps use only the Line/Circle-family topology
+// construction that *is* wired up today, so they are built as real
+// kernel B-rep faces with checked area.
+let b0: Point3 = Point3(x = 10mm, y = 10mm, z = 0mm);
+let b1: Point3 = Point3(x = 0mm - 10mm, y = 10mm, z = 0mm);
+let b2: Point3 = Point3(x = 0mm - 10mm, y = 0mm - 10mm, z = 0mm);
+let b3: Point3 = Point3(x = 10mm, y = 0mm - 10mm, z = 0mm);
+let t0: Point3 = Point3(x = 0mm, y = 7.0710678118654755mm, z = 30mm);
+let t1: Point3 = Point3(x = 0mm - 7.0710678118654755mm, y = 0mm, z = 30mm);
+let t2: Point3 = Point3(x = 0mm, y = 0mm - 7.0710678118654755mm, z = 30mm);
+let t3: Point3 = Point3(x = 7.0710678118654755mm, y = 0mm, z = 30mm);
+
+let side0: Surface = bspline_surface(
+    degree_u = 1, degree_v = 1,
+    control_points = [[b0, b1], [t0, t1]],
+    knots_u = [0.0, 1.0], multiplicities_u = [2, 2],
+    knots_v = [0.0, 1.0], multiplicities_v = [2, 2],
+    weights = [[1.0, 1.0], [1.0, 1.0]],
+    periodic_u = false, periodic_v = false,
+);
+let side1: Surface = bspline_surface(
+    degree_u = 1, degree_v = 1,
+    control_points = [[b1, b2], [t1, t2]],
+    knots_u = [0.0, 1.0], multiplicities_u = [2, 2],
+    knots_v = [0.0, 1.0], multiplicities_v = [2, 2],
+    weights = [[1.0, 1.0], [1.0, 1.0]],
+    periodic_u = false, periodic_v = false,
+);
+let side2: Surface = bspline_surface(
+    degree_u = 1, degree_v = 1,
+    control_points = [[b2, b3], [t2, t3]],
+    knots_u = [0.0, 1.0], multiplicities_u = [2, 2],
+    knots_v = [0.0, 1.0], multiplicities_v = [2, 2],
+    weights = [[1.0, 1.0], [1.0, 1.0]],
+    periodic_u = false, periodic_v = false,
+);
+let side3: Surface = bspline_surface(
+    degree_u = 1, degree_v = 1,
+    control_points = [[b3, b0], [t3, t0]],
+    knots_u = [0.0, 1.0], multiplicities_u = [2, 2],
+    knots_v = [0.0, 1.0], multiplicities_v = [2, 2],
+    weights = [[1.0, 1.0], [1.0, 1.0]],
+    periodic_u = false, periodic_v = false,
+);
+
+// Bilinear evaluation identities (exact, independent of the kernel):
+// f(0.5, 0.5) is the average of all four control corners; f(0.0, 0.5) and
+// f(1.0, 0.5) are the exact midpoints of the bottom/top square edges.
+let side0_center: SurfaceEvaluation = evaluate_surface(side0, 0.5, 0.5);
+let side0_bottom_mid: SurfaceEvaluation = evaluate_surface(side0, 0.0, 0.5);
+let side0_top_mid: SurfaceEvaluation = evaluate_surface(side0, 1.0, 0.5);
+
+let bottom0: Geometry = make_edge(trim_curve(line_curve(origin = b0, direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.02));
+let bottom1: Geometry = make_edge(trim_curve(line_curve(origin = b1, direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.02));
+let bottom2: Geometry = make_edge(trim_curve(line_curve(origin = b2, direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.02));
+let bottom3: Geometry = make_edge(trim_curve(line_curve(origin = b3, direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.02));
+let top0: Geometry = make_edge(trim_curve(line_curve(origin = t0, direction = Vector3(x = -0.7071067811865475, y = -0.7071067811865475, z = 0.0)), 0.0, 0.01));
+let top1: Geometry = make_edge(trim_curve(line_curve(origin = t1, direction = Vector3(x = 0.7071067811865475, y = -0.7071067811865475, z = 0.0)), 0.0, 0.01));
+let top2: Geometry = make_edge(trim_curve(line_curve(origin = t2, direction = Vector3(x = 0.7071067811865475, y = 0.7071067811865475, z = 0.0)), 0.0, 0.01));
+let top3: Geometry = make_edge(trim_curve(line_curve(origin = t3, direction = Vector3(x = -0.7071067811865475, y = 0.7071067811865475, z = 0.0)), 0.0, 0.01));
+
+let bottom_wire: Geometry = make_wire([bottom0, bottom1, bottom2, bottom3]);
+let bottom_face: Geometry = make_face(bottom_wire);
+let bottom_face_valid: Bool = is_valid(bottom_face);
+let bottom_face_area: Area = area(bottom_face);
+
+let top_wire: Geometry = make_wire([top0, top1, top2, top3]);
+let top_face: Geometry = make_face(top_wire);
+let top_face_valid: Bool = is_valid(top_face);
+let top_face_area: Area = area(top_face);
