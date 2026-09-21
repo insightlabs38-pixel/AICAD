@@ -64,10 +64,9 @@ Batch `S5-08` (`AICAD-125..126`) is complete — see `project/reports/
 AICAD-125.md`/`AICAD-126.md` (superseded detail retired from this file per
 its own "current state, not an appended diary" convention).
 
-**Batch `S5-09` is in progress. `AICAD-127` is done; `AICAD-128`/`129` are
-next**, in that order (`AICAD-128` depends on `AICAD-127`; `AICAD-129`
-depends on both). See `project/reports/AICAD-127.md` for full detail.
-Summary:
+**Batch `S5-09` is in progress. `AICAD-127`/`128` are done; `AICAD-129` is
+next** (depends on both, satisfied). See `project/reports/AICAD-127.md`/
+`AICAD-128.md` for full detail. Summary:
 
 - `AICAD-127` froze `project/benchmarks/stage5_freeform_corpus/` (4
   `public` + 3 `held_out` fixtures, each with declared exact/closed-form
@@ -92,15 +91,31 @@ Summary:
   cannot yet construct; `held_out/06`/`07` turn the gap itself into
   adversarial evidence that the rejection is explicit.
 
-All required checks pass as of `AICAD-127`: `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-the full `cargo test --workspace` (1818 passed, 0 failed — 1811
-pre-existing + 7 new corpus tests).
+- `AICAD-128` ran 8 adversarial cases (`crates/cad-cli/tests/
+  stage5_adversarial_campaign.rs`) against the categories this task's
+  acceptance list names: near-degenerate + multi-scale circular faces
+  (1nm/1km radius, area exact to ~1e-16 relative error), tangent spheres
+  (`intersect_surfaces` fails the *whole build* explicitly with
+  `GeometricQueryFailed`, not an empty `List` — recorded precisely, not
+  assumed), periodic circle wraparound (exact past +/-2*pi), a sew
+  tolerance boundary (0.001mm gap merges to 7 edges/6 vertices; 0.1mm gap
+  stays at 8/8 — the tolerance is a real threshold), a self-intersecting
+  B-spline's closest-point query (one real inspectable `List`), a 64-edge
+  polygon (~30ms, exact area), two independent builds of `AICAD-127`'s
+  own `02` fixture (bit-identical areas — D5 Level 1/2 determinism), and
+  a malformed B-spline knot vector (rejected explicitly at construction,
+  never a panic). **No reproducible defect found** — every case is
+  either a correct positive result or an explicit structured failure;
+  two of the eight cases' initial assertions were themselves corrected
+  mid-task once real kernel behavior diverged from the initial
+  assumption (see `AICAD-128.md`'s own "Real findings" section).
 
-Next: `AICAD-128` (numerical/robustness/determinism/resource adversarial
-campaign) — reuse the corpus's `public`/`held_out` split as a starting
-point; the discovered capability gap above should inform which
-degenerate/adversarial cases are actually reachable through topology
-construction today versus value-level-only.
+All required checks pass as of `AICAD-128`: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+the full `cargo test --workspace` (1826 passed, 0 failed — 1818 after
+`AICAD-127` + 8 new adversarial tests).
+
+Next: `AICAD-129` (core-vs-library boundary, learnability/inspectability,
+maintained-examples audit) — depends on `AICAD-127`/`128` (satisfied).
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

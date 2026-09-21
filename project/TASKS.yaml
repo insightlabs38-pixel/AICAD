@@ -4202,7 +4202,7 @@ tasks:
 - id: AICAD-128
   stage: 5
   title: Run Stage-5 numerical, robustness, determinism, and resource adversarial campaign
-  status: todo
+  status: done
   depends_on:
   - AICAD-127
   plan_references:
