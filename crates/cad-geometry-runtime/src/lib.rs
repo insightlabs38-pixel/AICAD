@@ -49,6 +49,7 @@ pub mod bridge;
 pub mod dispatch;
 pub mod query_bridge;
 pub mod raw_exec;
+pub mod raw_lineage;
 pub mod raw_registry;
 pub mod sketch_lowering;
 
@@ -60,5 +61,6 @@ pub use dispatch::{
 };
 pub use query_bridge::OcctQueryExecutor;
 pub use raw_exec::OcctRawEditExecutor;
+pub use raw_lineage::{RawLineageChain, RawLineageIndex};
 pub use raw_registry::RawShapeRegistry;
 pub use sketch_lowering::{LoweredFace, SketchLoweringError, lower_profile_to_face};

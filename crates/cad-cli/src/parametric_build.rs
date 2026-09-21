@@ -94,8 +94,8 @@ use std::ops::Range;
 use cad_diagnostics::{Diagnostic, Severity};
 use cad_feature_graph::TraceFeatureGraph;
 use cad_geometry_runtime::{
-    GraphResults, IncrementalStats, OcctQueryExecutor, OcctRawEditExecutor, RawShapeRegistry,
-    dispatch_graph_incremental_with_lineage,
+    GraphResults, IncrementalStats, OcctQueryExecutor, OcctRawEditExecutor, RawLineageIndex,
+    RawShapeRegistry, dispatch_graph_incremental_with_lineage,
 };
 use cad_hir::ids::BindingId;
 use cad_hir::lower::LowerResult;
@@ -434,6 +434,14 @@ pub struct ParametricBuildSession<'ctx> {
     /// own advance: every raw handle minted before that point is about to
     /// become epoch-stale anyway.
     raw_shapes: RawShapeRegistry<'ctx>,
+    /// Real per-round raw-tier edit-chain evidence (`AICAD-125`), letting
+    /// `reference_replay::capture_named_feature_lineage` build real
+    /// `Face`/`Edge` lineage for a named feature whose own final op is
+    /// `AdoptRaw` — see `cad_geometry_runtime::raw_lineage`'s own module
+    /// doc comment. Cleared alongside `raw_shapes` (see that field's own
+    /// doc comment for why): no lifetime dependency on `'ctx`, unlike
+    /// `raw_shapes`.
+    raw_lineage: RawLineageIndex,
     /// Real per-round `Face` lineage evidence (`AICAD-094`) — see
     /// `crate::reference_replay`'s own module doc comment for exactly
     /// which features this covers and why.
@@ -505,6 +513,7 @@ impl<'ctx> ParametricBuildSession<'ctx> {
             last_globals: HashMap::new(),
             epoch: EpochCounter::new(),
             raw_shapes: RawShapeRegistry::new(),
+            raw_lineage: RawLineageIndex::new(),
             feature_lineage: FeatureLineageIndex::new(),
             queries: HashMap::new(),
             source_references: Vec::new(),
@@ -594,6 +603,7 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         // native slots now rather than leaking them across an unbounded
         // number of future rebuild rounds (`AICAD-123`).
         self.raw_shapes.clear();
+        self.raw_lineage.clear();
 
         let empty_outcome = || RebuildOutcome {
             dirty_feature_names: Vec::new(),
@@ -626,11 +636,12 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         // query result and this round's own final build results always
         // agree. `query_executor` only needs to outlive `interp` (both
         // local to this call), never stored as a session field.
-        let query_executor = OcctQueryExecutor::new(self.ctx, &self.raw_shapes);
+        let query_executor = OcctQueryExecutor::new(self.ctx, &self.raw_shapes, &self.raw_lineage);
         // `AICAD-123`: raw-tier editing builtins demand-dispatch through
         // this exact `self.ctx`/`self.raw_shapes` pair too, for the
         // identical reason `query_executor` does.
-        let raw_edit_executor = OcctRawEditExecutor::new(self.ctx, &self.raw_shapes);
+        let raw_edit_executor =
+            OcctRawEditExecutor::new(self.ctx, &self.raw_shapes, &self.raw_lineage);
         let mut interp = Interpreter::new(
             &self.lowered.program,
             &self.lowered.bindings,
@@ -800,9 +811,11 @@ impl<'ctx> ParametricBuildSession<'ctx> {
         };
 
         match reference_replay::capture_named_feature_lineage(
+            self.ctx,
             graph,
             &results,
             &lineage_table,
+            &self.raw_lineage,
             &named_feature_ranges,
         ) {
             Ok(captured) => self.feature_lineage.extend(captured),

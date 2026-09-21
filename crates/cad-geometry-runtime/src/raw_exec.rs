@@ -24,21 +24,25 @@
 //! "disclosed limitation over invented evidence" precedent `AICAD-120`'s
 //! own `HealReport` (no per-entity heal lineage) already established.
 //!
-//! # Retaining every result (`AICAD-123`)
+//! # Retaining every result *and* every evidence entry (`AICAD-123`/`125`)
 //!
 //! Exactly like [`crate::query_bridge::OcctQueryExecutor`]'s own
 //! `EnterRaw` handling — see [`crate::raw_registry`]'s own module doc
 //! comment for the full story — every shape this executor hands back as
 //! part of a [`RawEditResult`] is retained into this executor's own
-//! [`RawShapeRegistry`] before being classified, so its own native slot
-//! survives past this one `execute` call (needed for the result to remain
-//! resolvable by a *later*, possibly chained, raw operation — `AICAD-123`'s
-//! own "repeated deterministic edits" acceptance case). Evidence-only
-//! entries recorded in [`RawEditOutcome::report`] (e.g. `deleted`'s own
-//! removed-face handles) are deliberately **not** retained: nothing
-//! downstream ever resolves them, and retaining every intermediate
-//! selection shape as well as every result would keep native slots alive
-//! this executor's own real acceptance scope does not need.
+//! [`RawShapeRegistry`], so its own native slot survives past this one
+//! `execute` call (needed for the result to remain resolvable by a
+//! *later*, possibly chained, raw operation — `AICAD-123`'s own "repeated
+//! deterministic edits" acceptance case). Every evidence-only entry
+//! recorded in [`RawEditOutcome::report`] (e.g. `deleted`'s own removed-
+//! face handles, `split`/`merged`'s own "before" handle) is retained too,
+//! for the identical reason (`AICAD-125`): `cad_query::feature_lineage::
+//! classify_raw_edit_lineage` resolves and `is_same`-compares every one of
+//! them later, once this whole round's own `capture_named_feature_
+//! lineage` runs — well past this one `execute` call. An evidence handle
+//! that was never itself an executor *input* (a `RawEditOp::ReplaceFace`'s
+//! own `replacement` argument, already a caller-supplied, already-
+//! resolvable `ClassifiedShape`) needs no additional retention here.
 
 use cad_geometry_api::OperationReport;
 use cad_kernel_api::KernelError;
@@ -46,6 +50,7 @@ use cad_kernel_api::topology::ClassifiedShape;
 use cad_occt_bridge::{OcctContext, Shape};
 use cad_runtime::{RawEditError, RawEditExecutor, RawEditOp, RawEditOutcome, RawEditResult};
 
+use crate::raw_lineage::RawLineageIndex;
 use crate::raw_registry::RawShapeRegistry;
 
 /// Dispatches every [`RawEditOp`] against a real `OcctContext` — see
@@ -56,11 +61,23 @@ use crate::raw_registry::RawShapeRegistry;
 pub struct OcctRawEditExecutor<'a, 'ctx> {
     ctx: &'ctx OcctContext,
     raw_shapes: &'a RawShapeRegistry<'ctx>,
+    /// Propagates each edit's own real change evidence forward from its
+    /// input handle to its result handle(s) (`AICAD-125`) — see
+    /// [`crate::raw_lineage`]'s own module doc comment.
+    raw_lineage: &'a RawLineageIndex,
 }
 
 impl<'a, 'ctx> OcctRawEditExecutor<'a, 'ctx> {
-    pub fn new(ctx: &'ctx OcctContext, raw_shapes: &'a RawShapeRegistry<'ctx>) -> Self {
-        OcctRawEditExecutor { ctx, raw_shapes }
+    pub fn new(
+        ctx: &'ctx OcctContext,
+        raw_shapes: &'a RawShapeRegistry<'ctx>,
+        raw_lineage: &'a RawLineageIndex,
+    ) -> Self {
+        OcctRawEditExecutor {
+            ctx,
+            raw_shapes,
+            raw_lineage,
+        }
     }
 }
 
@@ -68,15 +85,6 @@ fn to_err(err: KernelError) -> RawEditError {
     RawEditError {
         message: err.to_string(),
     }
-}
-
-/// Classifies `shape` for an **evidence-only** `OperationReport` entry —
-/// never resolvable again afterward (see module doc comment). Distinct
-/// from [`OcctRawEditExecutor::retain`], which every actual result shape
-/// must go through instead.
-fn classify(shape: &Shape<'_>) -> Result<ClassifiedShape, RawEditError> {
-    let kind = shape.topology_kind().map_err(to_err)?;
-    Ok(ClassifiedShape::new(kind, shape.handle()))
 }
 
 impl<'a, 'ctx> OcctRawEditExecutor<'a, 'ctx> {
@@ -98,13 +106,25 @@ impl RawEditExecutor for OcctRawEditExecutor<'_, '_> {
                 let mut deleted = Vec::with_capacity(faces.len());
                 for &index in &faces {
                     let face = base.get_face(index).map_err(to_err)?;
-                    deleted.push(classify(&face)?);
+                    // Retained (`AICAD-125`), not merely classified: this
+                    // evidence entry must stay resolvable past this call
+                    // for `cad_query::feature_lineage::classify_raw_edit_
+                    // lineage`'s own later `Shape::resolve`/`is_same`
+                    // walk, once the round's own lineage capture runs
+                    // (see this module's own doc comment).
+                    deleted.push(self.retain(&face)?);
                 }
                 let result = base.remove_face(&faces, heal, tolerance).map_err(to_err)?;
                 let mut report = OperationReport::empty();
                 report.deleted = deleted;
+                let result_classified = self.retain(&result)?;
+                self.raw_lineage.record_step(
+                    shape.shape,
+                    &[result_classified.shape],
+                    report.clone(),
+                );
                 Ok(RawEditOutcome {
-                    result: RawEditResult::Single(self.retain(&result)?),
+                    result: RawEditResult::Single(result_classified),
                     report,
                 })
             }
@@ -117,7 +137,7 @@ impl RawEditExecutor for OcctRawEditExecutor<'_, '_> {
             } => {
                 let base = Shape::resolve(self.ctx, shape.shape).map_err(to_err)?;
                 let old_face = base.get_face(face_index).map_err(to_err)?;
-                let old_classified = classify(&old_face)?;
+                let old_classified = self.retain(&old_face)?;
                 let replacement_shape =
                     Shape::resolve(self.ctx, replacement.shape).map_err(to_err)?;
                 let result = base
@@ -131,6 +151,15 @@ impl RawEditExecutor for OcctRawEditExecutor<'_, '_> {
                 // Solid/Shell container, not the face-level evidence this
                 // field means).
                 report.modified.push((old_classified, replacement));
+                // Chained from `shape` (the base being edited) only —
+                // `replacement`'s own history, if any, belongs to its own
+                // independent raw value, never this chain (see
+                // `crate::raw_lineage`'s own module doc comment).
+                self.raw_lineage.record_step(
+                    shape.shape,
+                    &[result_classified.shape],
+                    report.clone(),
+                );
                 Ok(RawEditOutcome {
                     result: RawEditResult::Single(result_classified),
                     report,
@@ -138,7 +167,7 @@ impl RawEditExecutor for OcctRawEditExecutor<'_, '_> {
             }
             RawEditOp::SplitEdge { edge, params } => {
                 let base = Shape::resolve(self.ctx, edge.shape).map_err(to_err)?;
-                let original = classify(&base)?;
+                let original = self.retain(&base)?;
                 let pieces = base.split_edge(&params).map_err(to_err)?;
                 let mut classified_pieces = Vec::with_capacity(pieces.len());
                 for piece in &pieces {
@@ -146,6 +175,9 @@ impl RawEditExecutor for OcctRawEditExecutor<'_, '_> {
                 }
                 let mut report = OperationReport::empty();
                 report.split.push((original, classified_pieces.clone()));
+                let piece_handles: Vec<_> = classified_pieces.iter().map(|c| c.shape).collect();
+                self.raw_lineage
+                    .record_step(edge.shape, &piece_handles, report.clone());
                 Ok(RawEditOutcome {
                     result: RawEditResult::Multiple(classified_pieces),
                     report,
@@ -156,7 +188,7 @@ impl RawEditExecutor for OcctRawEditExecutor<'_, '_> {
                 let mut inputs = Vec::with_capacity(faces.len());
                 for &index in &faces {
                     let face = base.get_face(index).map_err(to_err)?;
-                    inputs.push(classify(&face)?);
+                    inputs.push(self.retain(&face)?);
                 }
                 let result = base.merge_faces(&faces).map_err(to_err)?;
                 // The merge's own result is commonly wrapped in a
@@ -174,6 +206,9 @@ impl RawEditExecutor for OcctRawEditExecutor<'_, '_> {
                 if classified_faces.len() == 1 {
                     report.merged.push((inputs, classified_faces[0]));
                 }
+                let face_handles: Vec<_> = classified_faces.iter().map(|c| c.shape).collect();
+                self.raw_lineage
+                    .record_step(shape.shape, &face_handles, report.clone());
                 Ok(RawEditOutcome {
                     result: RawEditResult::Multiple(classified_faces),
                     report,
@@ -201,9 +236,10 @@ mod tests {
     fn remove_face_reports_the_deleted_face_and_a_smaller_result() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
+        let raw_lineage = RawLineageIndex::new();
         let box_shape = ctx.create_box(1.0, 1.0, 1.0).unwrap();
         let solid = ClassifiedShape::new(TopologyKind::Solid, box_shape.handle());
-        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes);
+        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes, &raw_lineage);
         let outcome = executor
             .execute(RawEditOp::RemoveFace {
                 shape: solid,
@@ -228,12 +264,13 @@ mod tests {
     fn replace_face_reports_the_exact_old_new_pair() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
+        let raw_lineage = RawLineageIndex::new();
         let box_a = ctx.create_box(1.0, 1.0, 1.0).unwrap();
         let box_b = ctx.create_box(1.0, 1.0, 1.0).unwrap();
         let solid_a = ClassifiedShape::new(TopologyKind::Solid, box_a.handle());
         let replacement_face = box_b.get_face(0).unwrap();
         let replacement = ClassifiedShape::new(TopologyKind::Face, replacement_face.handle());
-        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes);
+        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes, &raw_lineage);
         let outcome = executor
             .execute(RawEditOp::ReplaceFace {
                 shape: solid_a,
@@ -252,11 +289,12 @@ mod tests {
     fn split_edge_reports_the_exact_split_pairing() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
+        let raw_lineage = RawLineageIndex::new();
         let edge_shape = ctx
             .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0))
             .unwrap();
         let edge = ClassifiedShape::new(TopologyKind::Edge, edge_shape.handle());
-        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes);
+        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes, &raw_lineage);
         let outcome = executor
             .execute(RawEditOp::SplitEdge {
                 edge,
@@ -280,6 +318,7 @@ mod tests {
     fn merge_faces_reports_a_real_merge_pairing_when_fully_merged() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
+        let raw_lineage = RawLineageIndex::new();
         let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
         let e0 = ctx.make_line_edge(p(0.0, 0.0), p(1.0, 0.0)).unwrap();
         let e1 = ctx.make_line_edge(p(1.0, 0.0), p(1.0, 1.0)).unwrap();
@@ -296,7 +335,7 @@ mod tests {
         let (sewn, _lineage, _report) = ctx.sew(&[&face1, &face2], 1e-6).unwrap();
         let shape = ClassifiedShape::new(TopologyKind::Shell, sewn.handle());
 
-        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes);
+        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes, &raw_lineage);
         let outcome = executor
             .execute(RawEditOp::MergeFaces {
                 shape,
@@ -315,9 +354,10 @@ mod tests {
     fn merge_faces_reports_no_pairing_when_inputs_do_not_merge() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
+        let raw_lineage = RawLineageIndex::new();
         let box_shape = ctx.create_box(1.0, 1.0, 1.0).unwrap();
         let shape = ClassifiedShape::new(TopologyKind::Solid, box_shape.handle());
-        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes);
+        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes, &raw_lineage);
         let outcome = executor
             .execute(RawEditOp::MergeFaces {
                 shape,
@@ -341,10 +381,11 @@ mod tests {
         // never silently dispatched against.
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
+        let raw_lineage = RawLineageIndex::new();
         let other_ctx = OcctContext::new().unwrap();
         let foreign_box = other_ctx.create_box(1.0, 1.0, 1.0).unwrap();
         let foreign = ClassifiedShape::new(TopologyKind::Solid, foreign_box.handle());
-        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes);
+        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes, &raw_lineage);
         let err = executor
             .execute(RawEditOp::RemoveFace {
                 shape: foreign,
@@ -363,9 +404,10 @@ mod tests {
         // later raw edit -- not merely readable once.
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
+        let raw_lineage = RawLineageIndex::new();
         let box_shape = ctx.create_box(1.0, 1.0, 1.0).unwrap();
         let solid = ClassifiedShape::new(TopologyKind::Solid, box_shape.handle());
-        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes);
+        let executor = OcctRawEditExecutor::new(&ctx, &raw_shapes, &raw_lineage);
         let first = executor
             .execute(RawEditOp::RemoveFace {
                 shape: solid,

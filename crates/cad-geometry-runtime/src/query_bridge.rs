@@ -27,6 +27,7 @@ use cad_occt_bridge::OcctContext;
 use cad_runtime::{KernelQueryError, KernelQueryExecutor, QueryOutcome};
 
 use crate::dispatch::{NodeResult, dispatch_graph};
+use crate::raw_lineage::RawLineageIndex;
 use crate::raw_registry::RawShapeRegistry;
 
 /// Dispatches the *whole* `graph` given to
@@ -50,11 +51,23 @@ use crate::raw_registry::RawShapeRegistry;
 pub struct OcctQueryExecutor<'a, 'ctx> {
     ctx: &'ctx OcctContext,
     raw_shapes: &'a RawShapeRegistry<'ctx>,
+    /// Records `EnterRaw`'s own target [`GeomId`] as the origin of the
+    /// raw handle it mints (`AICAD-125`) — see
+    /// [`crate::raw_lineage`]'s own module doc comment.
+    raw_lineage: &'a RawLineageIndex,
 }
 
 impl<'a, 'ctx> OcctQueryExecutor<'a, 'ctx> {
-    pub fn new(ctx: &'ctx OcctContext, raw_shapes: &'a RawShapeRegistry<'ctx>) -> Self {
-        OcctQueryExecutor { ctx, raw_shapes }
+    pub fn new(
+        ctx: &'ctx OcctContext,
+        raw_shapes: &'a RawShapeRegistry<'ctx>,
+        raw_lineage: &'a RawLineageIndex,
+    ) -> Self {
+        OcctQueryExecutor {
+            ctx,
+            raw_shapes,
+            raw_lineage,
+        }
     }
 }
 
@@ -101,6 +114,18 @@ impl KernelQueryExecutor for OcctQueryExecutor<'_, '_> {
                     .map_err(|err| KernelQueryError {
                         message: err.to_string(),
                     })?;
+                // Snapshots (retains) `live_shape`'s own Face/Edge
+                // entities *now*, from this exact call-local dispatch --
+                // never re-derived later from a separate dispatch of the
+                // same `target` (see `crate::raw_lineage`'s own module
+                // doc comment for the real cross-dispatch identity bug
+                // this avoids). A face/edge enumeration failure here is a
+                // real kernel error, not "no prior entities" -- surfaced
+                // like any other.
+                let prior_faces = retain_faces(self.raw_shapes, live_shape)?;
+                let prior_edges = retain_edges(self.raw_shapes, live_shape)?;
+                self.raw_lineage
+                    .record_origin(classified.shape, target, prior_faces, prior_edges);
                 Ok(QueryOutcome::Classified(classified))
             }
             Some(other) => Err(KernelQueryError {
@@ -115,6 +140,53 @@ impl KernelQueryExecutor for OcctQueryExecutor<'_, '_> {
             }),
         }
     }
+}
+
+/// Retains (`RawShapeRegistry::retain_classified`) every Face of `shape` —
+/// see [`OcctQueryExecutor::execute`]'s own `EnterRaw` handling, "Snapshots
+/// (retains)...". A `Shape` with no Face sub-entities (e.g. a bare Edge)
+/// simply yields an empty `Vec`, not an error.
+fn retain_faces<'ctx>(
+    registry: &RawShapeRegistry<'ctx>,
+    shape: &cad_occt_bridge::Shape<'ctx>,
+) -> Result<Vec<cad_kernel_api::topology::ClassifiedShape>, KernelQueryError> {
+    let count = shape.face_count().map_err(|err| KernelQueryError {
+        message: err.to_string(),
+    })?;
+    (0..count)
+        .map(|i| {
+            let face = shape.get_face(i).map_err(|err| KernelQueryError {
+                message: err.to_string(),
+            })?;
+            registry
+                .retain_classified(&face)
+                .map_err(|err| KernelQueryError {
+                    message: err.to_string(),
+                })
+        })
+        .collect()
+}
+
+/// The Edge-kind counterpart of [`retain_faces`].
+fn retain_edges<'ctx>(
+    registry: &RawShapeRegistry<'ctx>,
+    shape: &cad_occt_bridge::Shape<'ctx>,
+) -> Result<Vec<cad_kernel_api::topology::ClassifiedShape>, KernelQueryError> {
+    let count = shape.edge_count().map_err(|err| KernelQueryError {
+        message: err.to_string(),
+    })?;
+    (0..count)
+        .map(|i| {
+            let edge = shape.get_edge(i).map_err(|err| KernelQueryError {
+                message: err.to_string(),
+            })?;
+            registry
+                .retain_classified(&edge)
+                .map_err(|err| KernelQueryError {
+                    message: err.to_string(),
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -136,7 +208,8 @@ mod tests {
     fn is_valid_and_volume_dispatch_against_a_real_kernel_context() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
-        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes);
+        let raw_lineage = RawLineageIndex::new();
+        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes, &raw_lineage);
 
         let mut graph = GeometryGraph::new();
         let solid = graph
@@ -175,7 +248,8 @@ mod tests {
     fn a_non_scalar_query_result_is_a_clean_error() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
-        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes);
+        let raw_lineage = RawLineageIndex::new();
+        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes, &raw_lineage);
 
         let mut graph = GeometryGraph::new();
         let solid = graph
@@ -212,7 +286,8 @@ mod tests {
     fn enter_raw_produces_a_classified_handle_that_survives_this_call_returning() {
         let ctx = OcctContext::new().unwrap();
         let raw_shapes = RawShapeRegistry::new();
-        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes);
+        let raw_lineage = RawLineageIndex::new();
+        let executor = OcctQueryExecutor::new(&ctx, &raw_shapes, &raw_lineage);
 
         let mut graph = GeometryGraph::new();
         let solid = graph

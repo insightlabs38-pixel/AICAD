@@ -4092,7 +4092,7 @@ tasks:
 - id: AICAD-125
   stage: 5
   title: Integrate lineage and Stage-4 persistent-reference integrity across every Stage-5 topology change
-  status: todo
+  status: done
   depends_on:
   - AICAD-120
   - AICAD-123

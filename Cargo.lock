@@ -172,7 +172,10 @@ version = "0.0.0"
 name = "cad-query"
 version = "0.0.0"
 dependencies = [
+ "cad-ast",
  "cad-diagnostics",
+ "cad-geometry-api",
+ "cad-geometry-runtime",
  "cad-kernel-api",
  "cad-occt-bridge",
  "cad-references",

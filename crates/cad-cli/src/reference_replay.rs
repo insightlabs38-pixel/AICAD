@@ -42,12 +42,12 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use cad_geometry_api::{GeomId, GeometryGraph, GeometryNodeKind, GeometryOp};
-use cad_geometry_runtime::{GraphResults, LineageTable, NodeResult};
-use cad_occt_bridge::Shape;
+use cad_geometry_runtime::{GraphResults, LineageTable, NodeResult, RawLineageIndex};
+use cad_occt_bridge::{OcctContext, Shape};
 use cad_query::Candidate;
 use cad_query::feature_lineage::{
     FeatureLineageError, FeatureLineageReport, PriorEntityState, ResultEntityOrigin,
-    classify_feature_lineage,
+    classify_feature_lineage, classify_raw_edit_lineage,
 };
 use cad_references::{EntityKind, FeatureAnchor, LineageRole};
 
@@ -69,8 +69,8 @@ use cad_references::{EntityKind, FeatureAnchor, LineageRole};
 pub type FeatureLineageIndex<'ctx> =
     HashMap<(FeatureAnchor, EntityKind), FeatureLineageReport<'ctx>>;
 
-/// The [`GeomId`] operand a lineage-capable [`GeometryOp`] reads whose own
-/// pre-operation entities `classify_feature_lineage` needs as its
+/// The [`GeomId`] operand(s) a lineage-capable [`GeometryOp`] reads whose
+/// own pre-operation entities `classify_feature_lineage` needs as its
 /// `prior_entities` argument — for `Union`/`Cut`/`Intersect`, `lhs` only
 /// (the shape the operation is conceptually applied *to*), never `rhs`
 /// (the tool operand it is applied *with*) -- matching
@@ -82,15 +82,22 @@ pub type FeatureLineageIndex<'ctx> =
 /// would misclassify a genuinely new result face (e.g. a hole's own
 /// cylindrical wall, generated from the tool's lateral face) as an
 /// ordinary carry-forward of that tool face instead of `New` -- exactly
-/// the silent-misclassification bug this function exists to avoid. Every
-/// other op returns `None`, meaning "not lineage-capable," not "no
+/// the silent-misclassification bug this function exists to avoid.
+/// [`GeometryOp::Sew`] (`AICAD-125`) has no single "base" operand at
+/// all -- sewing has no notion of one shape being applied to another, it
+/// merges every one of its own `shapes` operands as equal peers -- so
+/// every one of them contributes its own prior faces/edges, concatenated.
+/// Every other op returns `None`, meaning "not lineage-capable," not "no
 /// operands."
-fn lineage_operand_id(op: &GeometryOp) -> Option<GeomId> {
+fn lineage_operand_ids(op: &GeometryOp) -> Option<Vec<GeomId>> {
     match op {
         GeometryOp::Union { lhs, .. }
         | GeometryOp::Cut { lhs, .. }
-        | GeometryOp::Intersect { lhs, .. } => Some(*lhs),
-        GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => Some(*target),
+        | GeometryOp::Intersect { lhs, .. } => Some(vec![*lhs]),
+        GeometryOp::Fillet { target, .. } | GeometryOp::Chamfer { target, .. } => {
+            Some(vec![*target])
+        }
+        GeometryOp::Sew { shapes, .. } => Some(shapes.clone()),
         _ => None,
     }
 }
@@ -131,14 +138,28 @@ fn enumerate_prior_entities<'ctx>(
 /// final node both (a) was actually recomputed this round (present in
 /// `lineage_table`, which — per `dispatch_graph_incremental_with_lineage`'s
 /// own contract — only ever contains recomputed nodes) and (b) is itself a
-/// lineage-capable op. Every other feature contributes nothing to the
-/// returned map (the caller merges this into its own longer-lived
-/// [`FeatureLineageIndex`], so an untouched feature simply keeps its own
-/// prior entry rather than losing it).
+/// lineage-capable op, plus real raw-tier lineage (`AICAD-125`) for the
+/// ones whose own final node is [`GeometryOp::AdoptRaw`] and whose own raw
+/// handle has a chain recorded in `raw_lineage` (see
+/// `cad_geometry_runtime::raw_lineage`'s own module doc comment). Every
+/// other feature contributes nothing to the returned map (the caller
+/// merges this into its own longer-lived [`FeatureLineageIndex`], so an
+/// untouched feature simply keeps its own prior entry rather than losing
+/// it) — in particular a feature whose final op is [`GeometryOp::Heal`]
+/// (no per-entity native history — `AICAD-120`'s own disclosed finding) or
+/// an [`GeometryOp::AdoptRaw`] whose own handle has no recorded chain (a
+/// raw value this session did not itself originate) contributes nothing,
+/// which is the intended "explicit insufficiency, never a guess" outcome:
+/// `generated_by`/`modified_by`/`descended_from` against such a feature
+/// report `None` ("no evidence"), which `cad_query::resolve` turns into
+/// `BrokenReason::InsufficientEvidence` — fail-closed, never silently
+/// skipped (`project/DECISION_LOG.md#DL-8`).
 pub(crate) fn capture_named_feature_lineage<'ctx>(
+    ctx: &'ctx OcctContext,
     graph: &GeometryGraph,
     results: &GraphResults<'ctx>,
     lineage_table: &LineageTable<'ctx>,
+    raw_lineage: &RawLineageIndex,
     named_features: &[(FeatureAnchor, Range<u32>)],
 ) -> Result<FeatureLineageIndex<'ctx>, FeatureLineageError> {
     let mut out = FeatureLineageIndex::new();
@@ -151,25 +172,76 @@ pub(crate) fn capture_named_feature_lineage<'ctx>(
             continue;
         };
         let node_id = node.id;
-        let Some((_, lineage)) = lineage_table.iter().find(|(id, _)| *id == node_id) else {
-            continue;
-        };
         let GeometryNodeKind::Construct(op) = &node.kind else {
-            continue;
-        };
-        let Some(operand_id) = lineage_operand_id(op) else {
-            continue;
-        };
-        let Some(NodeResult::Shape(operand_shape)) = results.get(operand_id.index() as usize)
-        else {
             continue;
         };
         let Some(NodeResult::Shape(result_shape)) = results.get(node_id.index() as usize) else {
             continue;
         };
 
+        if let GeometryOp::AdoptRaw(handle) = op {
+            let Some(chain) = raw_lineage.chain_for(*handle) else {
+                continue;
+            };
+            // `chain.prior_faces`/`prior_edges`, never `results.get(chain.
+            // origin...)` -- see `cad_geometry_runtime::raw_lineage`'s own
+            // module doc comment ("Why origin's own prior Face/Edge
+            // entities are snapshotted here"): `origin`'s own entry in
+            // `results` is a *separate*, independently-reconstructed
+            // dispatch of the same `GeomId`, never `Shape::is_same` the
+            // chain's own entities.
+            for (kind, prior_classified) in [
+                (EntityKind::Face, &chain.prior_faces),
+                (EntityKind::Edge, &chain.prior_edges),
+            ] {
+                let mut prior = Vec::with_capacity(prior_classified.len());
+                let mut every_prior_resolved = true;
+                for classified in prior_classified {
+                    match Shape::resolve(ctx, classified.shape) {
+                        Ok(shape) => prior.push(shape),
+                        Err(_) => {
+                            every_prior_resolved = false;
+                            break;
+                        }
+                    }
+                }
+                if !every_prior_resolved {
+                    continue;
+                }
+                let report =
+                    classify_raw_edit_lineage(ctx, kind, prior, result_shape, &chain.steps)?;
+                out.insert((anchor.clone(), kind), report);
+            }
+            continue;
+        }
+
+        let Some(operand_ids) = lineage_operand_ids(op) else {
+            continue;
+        };
+        let Some((_, lineage)) = lineage_table.iter().find(|(id, _)| *id == node_id) else {
+            continue;
+        };
+
+        let mut operand_shapes: Vec<&Shape<'ctx>> = Vec::with_capacity(operand_ids.len());
+        let mut every_operand_resolved = true;
+        for operand_id in &operand_ids {
+            match results.get(operand_id.index() as usize) {
+                Some(NodeResult::Shape(shape)) => operand_shapes.push(shape),
+                _ => {
+                    every_operand_resolved = false;
+                    break;
+                }
+            }
+        }
+        if !every_operand_resolved {
+            continue;
+        }
+
         for kind in [EntityKind::Face, EntityKind::Edge] {
-            let prior = enumerate_prior_entities(operand_shape, kind)?;
+            let mut prior = Vec::new();
+            for operand_shape in &operand_shapes {
+                prior.extend(enumerate_prior_entities(operand_shape, kind)?);
+            }
             let report = classify_feature_lineage(kind, prior, result_shape, lineage)?;
             out.insert((anchor.clone(), kind), report);
         }
