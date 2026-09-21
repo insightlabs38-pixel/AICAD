@@ -4131,7 +4131,7 @@ tasks:
 - id: AICAD-126
   stage: 5
   title: 'Checkpoint C: topology, raw tier, adoption, lineage, and reference-integrity gate'
-  status: todo
+  status: done
   depends_on:
   - AICAD-125
   plan_references:

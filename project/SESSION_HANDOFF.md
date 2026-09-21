@@ -60,79 +60,55 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Batch `S5-07` (`AICAD-122..124`, raw/unsafe geometry tier) is
-complete** — see `project/reports/AICAD-122.md`-`AICAD-124.md` for full
-detail (`S5-06` and earlier retired from this file per its own "current
-state, not an appended diary" convention). Summary:
+**Batch `S5-08` (`AICAD-125..126`, lineage/reference integrity +
+Checkpoint C) is complete** — see `project/reports/AICAD-125.md`/
+`AICAD-126.md` for full detail (`S5-07` and earlier retired from this file
+per its own "current state, not an appended diary" convention). Summary:
 
-- `AICAD-122` (controlled raw/unsafe geometry tier with epoch-bound
-  handles) — `cad_geometry_api::raw::RawGeometry`
-  (`RawHandle<ClassifiedShape>`, reusing `AICAD-093`'s/`108`'s existing
-  epoch/classification primitives with no new mechanism), a fourth opaque
-  `CheckedType::Raw`, `enter_raw` (the sole entry point) and
-  `raw_topology_kind_of`.
-- `AICAD-123` (functional raw topology editing with lineage/change
-  evidence) — 4 new native ops (`remove_face`/`replace_face`/`split_edge`/
-  `merge_faces`, `BRepTools_ReShape`/`ShapeUpgrade_UnifySameDomain`-backed)
-  and matching builtins (`BuiltinCategory::Raw`). **Found and fixed a real
-  bug**: `enter_raw`'s own minted handle was already stale by the time any
-  later kernel call tried to resolve it (a call-local `GraphResults` table
-  released its own native slot the instant `OcctQueryExecutor::execute`
-  returned) — fixed by `cad_geometry_runtime::raw_registry::
-  RawShapeRegistry`, owned by `ParametricBuildSession` for a whole rebuild
-  round and cleared alongside `EpochCounter::advance`, that both
-  `OcctQueryExecutor` and the new `OcctRawEditExecutor` retain every
-  result shape through.
-- `AICAD-124` (explicit raw-to-safe validation and adoption) —
-  `cad_geometry_runtime::adoption::adopt_raw` (the real policy
-  `AdoptionOutcome<T>`, `AICAD-108`, was defined for but never
-  implemented) and `GeometryOp::AdoptRaw(KernelShape)` — the one narrow,
-  documented exception to Geometry IR's own "never imports
-  `cad_kernel_api::KernelId`/`Kernel*`" rule, since this *is* the
-  sanctioned D22 raw-to-safe crossing point. The one construction op whose
-  own kernel dispatch genuinely rejects on invalidity, not merely notes
-  it.
+- `AICAD-125` threaded every Stage-5 topology-changing operation's own
+  already-captured evidence into the Stage-4 reference-resolution
+  machinery: `Sew` (multi-operand `lineage_operand_ids`, reusing its
+  already-captured native `Lineage`); a new `cad_geometry_runtime::
+  raw_lineage::RawLineageIndex` chain for `remove_face`/`replace_face`/
+  `split_edge`/`merge_faces`, classified once `adopt`ed by a new
+  `cad_query::feature_lineage::classify_raw_edit_lineage`; `Heal` and an
+  untracked raw handle continue to honestly report no evidence
+  (`Broken(InsufficientEvidence)`), never a guess. **Found and fixed a
+  real bug**: `enter_raw`'s own target dispatches through a *separate*,
+  independent kernel construction (`OcctQueryExecutor`'s own call-local
+  `dispatch_graph`, per `DL-25`'s demand-materialization contract) from
+  the round's own later final dispatch — two independent constructions of
+  "the same" geometry are `Shape::is_same` **false** with each other, so a
+  raw chain's own "prior entities" must be snapshotted at `enter_raw` time
+  from that same call-local dispatch, never re-derived later from the
+  round's own `results` table. Fixed in `raw_lineage.rs`'s own doc
+  comment/`record_origin` signature.
+- `AICAD-126` (Checkpoint C) proved the whole construct → sew → heal →
+  inspect → raw-edit → adopt → persistent-reference chain through one real
+  `ParametricBuildSession` (`stage5_lineage_checkpoint.rs`), confirmed no
+  architecture boundary was bypassed, re-ran the native CTest suite and
+  ACTIVE example suite, and recommended **PASS** (owner decision, not
+  granted by the agent).
 
-None of the three modified `examples/topology/topology_construction_
-basics.aicad`: every raw-tier builtin needs a real kernel call, and
-`AICAD-121` already established that such builtins are proven in
-dedicated `crates/cad-cli/tests/` files (`stage5_raw_geometry.rs`,
-`stage5_raw_editing.rs`, `stage5_raw_adoption.rs`) instead.
+Known, explicitly-disclosed limitation carried forward: `replace_face`'s
+own `Modified` evidence has no known constructible *valid* `adopt`-through
+fixture (every replacement tried fails kernel/validity checks — `AICAD-
+123`'s own disclosed compatibility gap surfacing, not a new one);
+`merge_faces`/`split_edge`'s own `List<Raw>` results have no `.aicad`
+element-selection syntax to feed into `adopt` at all. The production-path
+`Modified` proof uses `Sew`'s own real edge-relabeling instead, exercising
+the identical consumer code path. See `AICAD-125.md`/`AICAD-126.md` for
+full detail.
 
-Adversarial evidence across the whole batch: stale-epoch, wrong-context,
-dropped/rebuilt-owner, and handle-reuse rejection (proven for `enter_raw`,
-every raw-edit builtin, and `adopt`, each through real
-`OcctContext`/`ParametricBuildSession` pairs/rounds); type-level rejection
-of `Raw`/`Geometry` cross-use; invalid-input rejection at adoption; the
-adopted value's independence from the raw handle's own lifetime across a
-real rebuild.
-
-All required checks pass as of `AICAD-124`: `cargo fmt --all -- --check`,
+All required checks pass as of `AICAD-126`: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-`cargo test -p cad-validation -p cad-kernel-api -p cad-occt-bridge -p
-cad-feature-graph -p cad-references -p cad-cli` (and `AICAD-122`'s/
-`123`'s own narrower per-task check lists), the full `cargo test
---workspace` (1793 passed, 0 failed across every crate), and (for
-`AICAD-123`, the only one of the three that touched native source) a
-standalone native OCCT bridge CMake build (all targets) + CTest (18/18,
-pre-existing native suite, unaffected).
+the full `cargo test --workspace` (1811 passed, 0 failed), `python3
+scripts/ci/semantic_ref_harness.py validate`/`self-test` (both `ok`), a
+standalone native OCCT bridge CMake build + CTest (18/18), and the ACTIVE
+example suite (3/3, 14 examples).
 
-Known, explicitly-disclosed limitations from this batch (see each task's
-own report): `AICAD-122`'s `RawGeometry` wraps a whole classified shape
-only, no per-entity raw handle; `AICAD-123`'s `merge_faces` evidence is
-only populated for a full single-Face merge, and `replace_face` does not
-verify geometric compatibility between old/new faces; `AICAD-124`'s
-`AdoptionEvidence`/`OperationReport` richer detail is real and tested but
-not yet source-exposed (matching `AICAD-120`'s own precedent), and
-`adopt` has no configurable `ValidationLevel` yet.
-
-Per the fixed batch order, the next invocation begins `S5-08`
-(`AICAD-125..126`: integrate lineage and Stage-4 persistent-reference
-integrity across every Stage-5 topology change, then Checkpoint C).
-`AICAD-125` depends on `AICAD-120`/`123`/`124` (all satisfied) — its own
-job is threading the real `OperationReport`/`AdoptionEvidence` evidence
-this batch produced (but left source-unexposed) into the Stage-4
-reference-resolution machinery, and proving Stage-4 persistent references
-replay correctly across representative Stage-5 raw edits/adoptions.
+Per the fixed batch order, the next invocation begins `S5-09`
+(`AICAD-127..129`: realistic/adversarial/example campaign), which depends
+on `AICAD-126` (satisfied).
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.
