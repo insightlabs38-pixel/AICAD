@@ -50,6 +50,8 @@ None of these limitations requires reopening resolved Stage-6 semantic architect
 
 The provisional progression is preserved: prerequisites/identity; definitions/instances; frames/nesting; semantic references/interfaces; mate/joint semantics; solver-neutral realization; DOF/conflict/kinematics; configurations; suppression/replacement/external assets; BOM/interference; realistic/adversarial/tooling; final gate.
 
+The complete promoted queue is recorded both in `project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml` and canonically in `project/TASKS.yaml`. Canonical entries are `status: todo` and carry stage/batch membership, objective, dependencies, acceptance criteria, required checks/evidence, report path, and escalation conditions.
+
 ### Change from provisional planning
 
 The provisional `S6-001` task was transition-time evidence reconciliation. That reconciliation is complete here, so promoted **AICAD-131** instead codifies executable compatibility fixtures around the final Stage-5 contracts and known limitations. The remaining 29 tasks preserve their intended capability progression and dependencies, with local `S6-*` identifiers mapped one-to-one to AICAD-132..160.
@@ -85,10 +87,10 @@ The public surface is synchronized to the completed Stage-5 product:
 - root README status/capabilities/limitations/roadmap updated;
 - current user documentation links advanced geometry and current maturity/limitations;
 - modeling documentation includes the Stage-5 advanced geometry/topology/raw-safe boundary;
-- examples index exposes the maintained `advanced-geometry` category alongside getting-started, parametric, references, and realistic models;
+- maintained example categories remain current and expose getting-started, parametric, reference, advanced-geometry, and realistic-model coverage;
 - contribution and security-reporting guidance is concise and truthful.
 
-No historical task report is rewritten.
+No historical task report is rewritten and no Stage-6 example/product implementation is introduced.
 
 ## 7. Public-readiness findings
 
@@ -118,7 +120,18 @@ Any new public semantic choice discovered during execution must be escalated rat
 
 ## 10. Validation scope
 
-This transition changes planning/governance/documentation only. It does not change Rust product code or example source files. Generated Stage-6 YAML was reviewed for complete IDs, dependencies, batch membership, acceptance criteria, test/evidence requirements, and escalation conditions. Repository CI on the pushed transition commit remains the authoritative executable validation surface for formatting/build/test/example checks in the connected environment.
+This transition changes planning/governance/documentation only. It does not change Rust product code or example source files.
+
+Transition-time queue promotion validation proved that:
+
+- `project/TASKS.yaml` preserves AICAD-130 exactly once;
+- AICAD-131 through AICAD-160 each exist exactly once in the canonical queue;
+- every Stage-6 canonical entry carries stage, `status: todo`, batch, title, dependencies, objective, acceptance, required checks, report, and escalation fields;
+- no AICAD-161/Stage-7 global task was promoted;
+- `python3 scripts/ci/stage4_task_audit.py --check` remained green;
+- `git diff --check` passed before the canonical queue commit.
+
+Repository CI on the pushed transition head is the authoritative executable validation surface for formatting, clippy, workspace build/tests, native bridge tests, Stage-2/3/4 smoke coverage, and the ACTIVE example suite.
 
 ## 11. Exact next action
 
