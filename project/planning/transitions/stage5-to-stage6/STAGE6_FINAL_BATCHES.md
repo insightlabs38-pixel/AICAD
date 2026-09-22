@@ -6,11 +6,11 @@
 - **Task range:** AICAD-131 through AICAD-160
 - **Canonical queue detail:** `STAGE6_FINAL.yaml`
 
-The provisional Stage-6 decomposition is preserved. Global IDs are assigned immediately after AICAD-130. The only material task-content adjustment is AICAD-131: transition-time evidence reconciliation is now complete, so the former reconciliation task becomes an executable compatibility-fixture task that locks the Stage-5 contracts Stage 6 relies on.
+The provisional Stage-6 decomposition is preserved. Global IDs are assigned immediately after AICAD-130. The material task-content adjustment is AICAD-131: transition-time evidence reconciliation is complete, so the former reconciliation task becomes an executable compatibility-and-remediation task that locks the Stage-5 contracts Stage 6 relies on and closes the two known prerequisite gaps before assembly work begins.
 
 | Batch | Tasks | Focus | Terminal |
 | --- | --- | --- | --- |
-| S6-00 | AICAD-131 | Stage-5 compatibility fixtures and Stage-6 prerequisites | AICAD-131 |
+| S6-00 | AICAD-131 | Stage-5 compatibility fixtures; freeform/trimmed topology construction; `List<Geometry>` dependency/invalidation repair | AICAD-131 |
 | S6-01 | AICAD-132–133 | General interfaces/bounded generics; assembly identity foundations | AICAD-133 |
 | S6-02 | AICAD-134–136 | Definitions, logical instances, frames/poses, nesting graph | AICAD-136 |
 | S6-03 | AICAD-137–138 | Cross-instance semantic references; reusable mechanical interfaces | AICAD-138 |
@@ -37,8 +37,8 @@ The provisional Stage-6 decomposition is preserved. Global IDs are assigned imme
 ## Stage-5 evidence carried forward
 
 - Advanced curves, surfaces, trimmed geometry, queries, topology construction/healing/inspection, raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration, and maintained examples are established Stage-5 capabilities.
-- The generic freeform `List<Geometry>` path is not treated as a proven general B-rep construction path.
-- First-class invalidation through arbitrary generic `List<Geometry>` flows is not assumed; Stage-6 dependencies must be explicit and observable.
+- AICAD-131 must close the freeform/trimmed geometry-to-kernel-topology gap for supported `make_edge` / `make_face_on_surface` inputs before later Stage-6 tasks proceed.
+- AICAD-131 must make `List<Geometry>` inputs first-class in `geometry_inputs` and prove correct dirty-set/incremental invalidation in both `FeatureGraph` and `TraceFeatureGraph` before later Stage-6 tasks proceed.
 - Kernel non-convergence classes and host-resource observations remain bounded evidence, not universal guarantees.
 
 These are planning constraints, not reasons to redesign the resolved Stage-6 architecture.

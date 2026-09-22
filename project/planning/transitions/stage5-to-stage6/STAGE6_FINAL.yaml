@@ -45,16 +45,18 @@ tasks:
 - id: AICAD-131
   stage: 6
   batch: S6-00
-  title: Codify Stage-6 compatibility fixtures from final Stage-5 evidence
+  title: Stabilize Stage-5 compatibility and close prerequisite geometry/dependency gaps
   depends_on: []
-  objective: Freeze the Stage-5 spatial, query, reference, lineage, exact-geometry, and incremental-regeneration contracts Stage 6 relies on without reopening D26-D30.
+  objective: Freeze the Stage-5 spatial, query, reference, lineage, exact-geometry, and incremental-regeneration contracts Stage 6 relies on, and close the two known Stage-5 prerequisite gaps before assembly implementation begins, without reopening D26-D30.
   acceptance:
-    - Compatibility fixtures cover nested source identity, stable semantic references, pose-safe geometry subjects, lineage/adoption evidence, the explicit freeform-to-topology unsupported boundary, and the `List<Geometry>` dependency-tracking gap.
-    - Stage 6 does not depend on unsupported conversion of Bezier/B-spline curves/surfaces or trimmed surfaces into kernel topology; any such need must be surfaced as an explicit dependency rather than assumed.
-    - Any assembly dependency path introduced later must be first-class and observable rather than relying on the unverified generic List<Geometry> invalidation path.
-  required_tests: [focused Stage-5 compatibility fixtures, existing semantic-reference harness, existing active example suite]
+    - Compatibility fixtures cover nested source identity, stable semantic references, pose-safe geometry subjects, lineage/adoption evidence, exact-geometry behavior, and incremental regeneration before Stage-6 assembly semantics are layered on top.
+    - Bezier/B-spline curves and surfaces, plus trimmed surfaces, can be converted into real kernel topology through `make_edge` / `make_face_on_surface` for supported mathematically/topologically valid inputs; supported cases no longer return `UNSUPPORTED_TOPOLOGY_CONSTRUCTION`, while invalid inputs fail deterministically with structured diagnostics.
+    - `List<Geometry>` builtin parameters participate in `geometry_inputs` for both `FeatureGraph` and `TraceFeatureGraph`, and generic-list geometry dependencies drive correct dirty-set / incremental invalidation rather than remaining invisible.
+    - Focused regression fixtures prove the new freeform-to-topology and `List<Geometry>` dependency behavior without weakening existing Stage-4/5 fail-closed semantic-reference, lineage, exactness, or determinism guarantees.
+    - AICAD-132 and later Stage-6 work may rely on these two repaired prerequisite paths only after the AICAD-131 evidence and required tests pass.
+  required_tests: [focused Stage-5 compatibility fixtures, freeform-to-kernel-topology construction and invalid-input diagnostics, List<Geometry> geometry_inputs and dirty-set invalidation fixtures for FeatureGraph and TraceFeatureGraph, existing semantic-reference harness, existing active example suite]
   evidence: project/reports/AICAD-131.md
-  owner_escalation: [actual Stage-5 behavior contradicts D26-D30 or prevents cross-instance semantic references]
+  owner_escalation: [actual Stage-5 behavior contradicts D26-D30 or prevents cross-instance semantic references, either prerequisite fix requires new public semantics beyond approved Stage-5 contracts, either fix cannot be completed without weakening an existing invariant or gate]
 
 - id: AICAD-132
   stage: 6

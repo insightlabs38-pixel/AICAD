@@ -30,15 +30,15 @@ Final Stage-5 evidence supports the completed capability set used by Stage-6 pla
 
 The evidence does not contradict D26-D30 or the solver-independence requirement D11.
 
-### Material limitations carried forward
+### Material limitations entering Stage 6
 
-1. Bezier/B-spline curves and surfaces, plus trimmed surfaces, exist as Stage-5 semantic/runtime values but cannot yet become real kernel topology through `make_edge` / `make_face_on_surface`; those paths reject explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading.
-2. `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; dirty-set/incremental invalidation through that generic path is not independently proven. Stage-6 assembly dependencies must therefore be explicit and observable rather than assuming this path.
+1. Bezier/B-spline curves and surfaces, plus trimmed surfaces, exist as Stage-5 semantic/runtime values but cannot yet become real kernel topology through `make_edge` / `make_face_on_surface`; those paths reject explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading. **AICAD-131 is required to close this gap before later Stage-6 implementation begins.**
+2. `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; dirty-set/incremental invalidation through that generic path is not independently proven. **AICAD-131 is required to make this path first-class and prove correct dirty-set/incremental invalidation before later Stage-6 implementation begins.**
 3. Kernel numerical/non-convergence evidence is bounded by tested operation/failure classes, not exhaustive for every pathological model.
 4. Resource/performance observations are evidence from the exercised hosts/corpus, not universal machine guarantees.
 5. Existing bounded language/native ABI limitations that were intentionally deferred remain limitations unless a Stage-6 task actually requires them.
 
-None of these limitations requires reopening resolved Stage-6 semantic architecture.
+Items 1 and 2 are now explicit AICAD-131 remediation requirements and must be closed before AICAD-132/133. The remaining limitations do not require reopening resolved Stage-6 semantic architecture.
 
 ## 3. Stage-6 queue freeze
 
@@ -54,7 +54,7 @@ The complete promoted queue is recorded both in `project/planning/transitions/st
 
 ### Change from provisional planning
 
-The provisional `S6-001` task was transition-time evidence reconciliation. That reconciliation is complete here, so promoted **AICAD-131** instead codifies executable compatibility fixtures around the final Stage-5 contracts and known limitations. The remaining 29 tasks preserve their intended capability progression and dependencies, with local `S6-*` identifiers mapped one-to-one to AICAD-132..160.
+The provisional `S6-001` task was transition-time evidence reconciliation. That reconciliation is complete here, so promoted **AICAD-131** now combines executable compatibility fixtures with immediate remediation of the two known Stage-5 prerequisite gaps: freeform/trimmed geometry to real kernel topology construction and first-class `List<Geometry>` dependency/invalidation tracking. AICAD-132/133 remain blocked on AICAD-131. The remaining 29 tasks preserve their intended capability progression and dependencies, with local `S6-*` identifiers mapped one-to-one to AICAD-132..160.
 
 ## 4. Architectural invariants
 
@@ -110,7 +110,7 @@ No release SLA, support guarantee, organization infrastructure, or security cont
 
 ## 8. Remaining nonblocking limitations
 
-The Stage-5 limitations listed in Section 2 remain nonblocking. In addition, AICAD remains pre-1.0; direct sketch authoring and several broader product/UI/package-system surfaces remain incomplete or deferred. Stage-6 assemblies/configurations are planned next-stage work, not a current product claim.
+The first two Stage-5 limitations listed in Section 2 are blocking prerequisites assigned to AICAD-131 and must be fixed before AICAD-132/133. The remaining listed limitations are nonblocking for Stage-6 entry. In addition, AICAD remains pre-1.0; direct sketch authoring and several broader product/UI/package-system surfaces remain incomplete or deferred. Stage-6 assemblies/configurations are planned next-stage work, not a current product claim.
 
 ## 9. Unresolved owner decisions
 

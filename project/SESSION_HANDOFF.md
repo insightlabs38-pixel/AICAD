@@ -28,8 +28,8 @@ After owner merge of this transition:
 ## Evidence-sensitive carry-forwards
 
 - Stage-5 advanced curve/surface values and operations, trimmed geometry values, geometric queries, supported topology construction/healing/inspection, raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration, and maintained examples are established.
-- Bezier/B-spline curves and surfaces, plus trimmed surfaces, cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; unsupported construction fails explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading.
-- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; do not assume arbitrary generic-list flows provide first-class dirty-set invalidation. Stage-6 assembly dependencies must be explicit and observable.
+- Bezier/B-spline curves and surfaces, plus trimmed surfaces, cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; AICAD-131 must implement supported conversion paths while preserving deterministic structured failure for invalid inputs.
+- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; AICAD-131 must make them first-class geometry dependencies and prove dirty-set/incremental invalidation before later Stage-6 tasks rely on them.
 - Keep Stage-5 numerical/resource limitations explicit rather than generalizing tested evidence.
 
 ## Authoritative owner decisions
