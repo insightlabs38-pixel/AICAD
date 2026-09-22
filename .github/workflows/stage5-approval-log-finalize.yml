@@ -1,0 +1,127 @@
+name: Finalize Stage 5 owner approval logging
+
+on:
+  push:
+    branches:
+      - claude/aicad-stage6-transition
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    name: record Stage 5 approval in canonical governance files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Record and validate owner approval
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          decision_path = Path("project/DECISION_LOG.md")
+          decision = decision_path.read_text(encoding="utf-8")
+          marker = "## DL-38: Stage 5 passed — owner approval of the AICAD-130 PASS gate"
+          if marker not in decision:
+              entry = r'''
+
+---
+
+## DL-38: Stage 5 passed — owner approval of the AICAD-130 PASS gate
+
+- Date: 2026-09-22
+- Resolves: Stage-5 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: **Stage 5 has passed.** The owner reviewed and accepts
+  `project/gates/stage-5-gate.md` / `AICAD-130`'s PASS recommendation and
+  authorizes progression into the Stage-5 -> Stage-6 transition. The
+  approved Stage-5 implementation is merged to `main` at
+  `697847cb2f33f6ab75bdc71911bbbcdd993039ba`. This decision authorizes
+  transition planning/documentation only: Stage-6 implementation remains
+  unauthorized until the owner separately reviews and merges the
+  `claude/aicad-stage6-transition` branch. Stage 7 and later stages remain
+  provisional/non-executable.
+- Rationale: `AICAD-130` independently re-audited the complete Stage-5
+  queue and recommended PASS after clean workspace, native OCCT,
+  semantic-reference, adversarial/corpus, checkpoint, and maintained-example
+  evidence. Its disclosed limitations are retained as explicit
+  carry-forwards rather than hidden or converted into passing evidence;
+  none contradicts the resolved Stage-6 semantic decisions D26-D30.
+- Alternatives considered: withholding Stage-5 approval solely because of
+  the disclosed freeform-topology and `List<Geometry>` dependency gaps
+  (rejected — the gate records them as explicit, fail-closed/nonblocking
+  limitations and the transition promotes them into executable Stage-6
+  compatibility constraints rather than assuming them solved); authorizing
+  Stage-6 implementation in the same decision (rejected — the transition
+  itself must be owner-reviewed and merged first).
+- Affected RFCs/tasks: closes Stage 5 (`AICAD-101` through `AICAD-130`,
+  including `AICAD-104A`); authorizes only the Stage-5 -> Stage-6
+  reconciliation/transition; `AICAD-131` through `AICAD-160` remain
+  non-executable until the transition is owner-merged.
+- Supersedes: none (first Stage-5 pass ruling; does not reopen D25-D30 or
+  any other owner decision).
+'''
+              decision_path.write_text(decision.rstrip() + entry + "\n", encoding="utf-8")
+
+          approval_path = Path("project/approvals/STAGE5_OWNER_APPROVAL.md")
+          approval = approval_path.read_text(encoding="utf-8")
+          if "DECISION_LOG.md#DL-38" not in approval:
+              approval = approval.replace(
+                  "- **Owner:** insightlabs38-pixel\n",
+                  "- **Owner:** insightlabs38-pixel\n- **Decision-log record:** `project/DECISION_LOG.md#DL-38`\n",
+              )
+              approval_path.write_text(approval, encoding="utf-8")
+
+          current_path = Path("project/CURRENT_STAGE.md")
+          current = current_path.read_text(encoding="utf-8")
+          current = current.replace(
+              "- **Final Stage-5 gate:** PASS recommended; owner approval is recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md`.\n",
+              "- **Final Stage-5 gate:** PASS recommended; owner approval is recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.\n",
+          )
+          current_path.write_text(current, encoding="utf-8")
+
+          handoff_path = Path("project/SESSION_HANDOFF.md")
+          handoff = handoff_path.read_text(encoding="utf-8")
+          needle = "Stage 5 is complete, owner-approved, and merged to `main` at `697847cb2f33f6ab75bdc71911bbbcdd993039ba`. AICAD-130 is the final Stage-5 task and its gate recommends PASS.\n"
+          replacement = needle.rstrip("\n") + " Owner approval is durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.\n"
+          if "project/DECISION_LOG.md#DL-38" not in handoff:
+              handoff = handoff.replace(needle, replacement)
+          handoff_path.write_text(handoff, encoding="utf-8")
+
+          report_path = Path("project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md")
+          report = report_path.read_text(encoding="utf-8")
+          report = report.replace(
+              "- Owner approval: APPROVED and durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md`.\n",
+              "- Owner approval: APPROVED and durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.\n",
+          )
+          report_path.write_text(report, encoding="utf-8")
+          PY
+
+          grep -q '^## DL-38: Stage 5 passed' project/DECISION_LOG.md
+          grep -q 'DECISION_LOG.md#DL-38' project/approvals/STAGE5_OWNER_APPROVAL.md
+          grep -q 'DECISION_LOG.md#DL-38' project/CURRENT_STAGE.md
+          grep -q 'DECISION_LOG.md#DL-38' project/SESSION_HANDOFF.md
+          grep -q 'DECISION_LOG.md#DL-38' project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+          python3 scripts/ci/stage4_task_audit.py --check
+          git diff --check
+
+      - name: Commit canonical approval record and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "insightlabs38-pixel"
+          git config user.email "insightlabs38@gmail.com"
+          git rm .github/workflows/stage5-approval-log-finalize.yml
+          git add project/DECISION_LOG.md \
+                  project/approvals/STAGE5_OWNER_APPROVAL.md \
+                  project/CURRENT_STAGE.md \
+                  project/SESSION_HANDOFF.md \
+                  project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+          if git diff --cached --quiet; then
+            echo "No approval-log change required."
+            exit 0
+          fi
+          git commit -m "planning: record Stage 5 owner approval"
+          git push origin HEAD:claude/aicad-stage6-transition
