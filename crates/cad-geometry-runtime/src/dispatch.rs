@@ -44,9 +44,10 @@
 use cad_ast::Span;
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SourceSpan};
 use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryGraph, GeometryNodeKind};
-use cad_geometry_api::{GeometryOp, GeometryQuery, Quantity};
+use cad_geometry_api::{FaceOrientation, GeometryOp, GeometryQuery, Quantity, SurfaceSpec};
 use cad_kernel_api::KernelError;
 use cad_kernel_api::Point3;
+use cad_kernel_api::topology::{ClassifiedShape, TopologyKind};
 use cad_occt_bridge::{BoundingBox, Lineage, OcctContext, Shape, TriangleMesh, ValidationReport};
 use std::collections::HashSet;
 
@@ -63,9 +64,20 @@ pub enum NodeResult<'ctx> {
     BoundingBox(BoundingBox),
     Validation(ValidationReport),
     Mesh(TriangleMesh),
+    /// A plain kernel-neutral classification tag (`AICAD-121`):
+    /// `TopologyKindOf`'s `TopologyKind::to_string()`, or
+    /// `ClassifyPoint`'s `PointClassification` `Debug` rendering — never
+    /// an OCCT/native enum value re-exported directly.
+    Text(String),
     /// `ExportStep`'s result: the operation is a side effect (writing a
     /// file), not a value.
     Unit,
+    /// `EnterRaw`'s result (`AICAD-122`): a lifetime-free, kernel-neutral
+    /// classified handle, ready to be minted into a
+    /// `cad_geometry_api::raw::RawGeometry` by the query-executor caller
+    /// (`crate::query_bridge::OcctQueryExecutor`), which alone knows the
+    /// owning session's `EpochCounter`.
+    Classified(ClassifiedShape),
 }
 
 /// The full per-node result table for one dispatched graph, indexed by
@@ -380,6 +392,129 @@ fn dispatch_op<'ctx>(
             let target_shape = shape_operand(results, id, *target, span)?;
             kernel_op(id, span, "Mirror", target_shape.mirror(*plane))?
         }
+        GeometryOp::MakeVertex { point } => {
+            kernel_op(id, span, "MakeVertex", ctx.make_vertex(*point))?
+        }
+        GeometryOp::MakeFaceOnSurface {
+            surface,
+            outer,
+            holes,
+            orientation,
+        } => {
+            let outer_shape = shape_operand(results, id, *outer, span)?;
+            let hole_shapes = shape_operands(results, id, holes, span)?;
+            let reversed = matches!(orientation, FaceOrientation::Reversed);
+            let result = match surface {
+                SurfaceSpec::Plane { origin, normal } => {
+                    outer_shape.make_face_on_plane(&hole_shapes, *origin, *normal, reversed)
+                }
+                SurfaceSpec::Cylinder { axis, radius } => {
+                    outer_shape.make_face_on_cylinder(&hole_shapes, *axis, mag(radius), reversed)
+                }
+                SurfaceSpec::Cone { axis, half_angle } => {
+                    outer_shape.make_face_on_cone(&hole_shapes, *axis, mag(half_angle), reversed)
+                }
+                SurfaceSpec::Sphere { center, radius } => {
+                    outer_shape.make_face_on_sphere(&hole_shapes, *center, mag(radius), reversed)
+                }
+                SurfaceSpec::Torus {
+                    axis,
+                    major_radius,
+                    minor_radius,
+                } => outer_shape.make_face_on_torus(
+                    &hole_shapes,
+                    *axis,
+                    mag(major_radius),
+                    mag(minor_radius),
+                    reversed,
+                ),
+            };
+            kernel_op(id, span, "MakeFaceOnSurface", result)?
+        }
+        GeometryOp::MakeShell { faces } => {
+            let face_shapes = shape_operands(results, id, faces, span)?;
+            kernel_op(id, span, "MakeShell", ctx.make_shell(&face_shapes))?
+        }
+        GeometryOp::MakeSolid { shell, voids } => {
+            let shell_shape = shape_operand(results, id, *shell, span)?;
+            let void_shapes = shape_operands(results, id, voids, span)?;
+            kernel_op(id, span, "MakeSolid", shell_shape.make_solid(&void_shapes))?
+        }
+        GeometryOp::Compound { shapes } => {
+            let member_shapes = shape_operands(results, id, shapes, span)?;
+            kernel_op(id, span, "Compound", ctx.make_compound(&member_shapes))?
+        }
+        GeometryOp::Sew { shapes, tolerance } => {
+            let member_shapes = shape_operands(results, id, shapes, span)?;
+            kernel_op(
+                id,
+                span,
+                "Sew",
+                ctx.sew(&member_shapes, mag(tolerance))
+                    .map(|(shape, _lineage, _report)| shape),
+            )?
+        }
+        GeometryOp::Heal { shape, tolerance } => {
+            let target_shape = shape_operand(results, id, *shape, span)?;
+            kernel_op(
+                id,
+                span,
+                "Heal",
+                target_shape
+                    .heal(mag(tolerance))
+                    .map(|(shape, _report)| shape),
+            )?
+        }
+        GeometryOp::GetEdge { target, edge } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(id, span, "GetEdge", target_shape.get_edge(edge.0))?
+        }
+        GeometryOp::GetVertex { target, vertex } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(id, span, "GetVertex", target_shape.get_vertex(vertex.0))?
+        }
+        GeometryOp::GetWire { target, wire } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(id, span, "GetWire", target_shape.get_wire(wire.0))?
+        }
+        GeometryOp::GetAdjacentFace {
+            target,
+            edge,
+            adjacent,
+        } => {
+            let target_shape = shape_operand(results, id, *target, span)?;
+            kernel_op(
+                id,
+                span,
+                "GetAdjacentFace",
+                target_shape.edge_adjacent_face(edge.0, *adjacent),
+            )?
+        }
+        GeometryOp::AdoptRaw(handle) => match crate::adoption::adopt_raw(ctx, *handle) {
+            cad_geometry_api::AdoptionOutcome::Adopted { value, .. } => value,
+            cad_geometry_api::AdoptionOutcome::Rejected(reason) => {
+                // `AdoptionRejection`'s own richer detail is real and
+                // tested in `crate::adoption`'s own unit tests; converted
+                // here into the ordinary `KernelError` vocabulary every
+                // other construction failure already reports through,
+                // matching `AICAD-120`'s identical `SewReport`/
+                // `HealReport` precedent (real evidence one layer down,
+                // not yet threaded through this ordinary path).
+                let source = match reason {
+                    cad_geometry_api::AdoptionRejection::StaleHandle => KernelError::StaleHandle,
+                    cad_geometry_api::AdoptionRejection::ValidationFailed { .. }
+                    | cad_geometry_api::AdoptionRejection::Unsupported { .. } => {
+                        KernelError::OperationFailed
+                    }
+                };
+                return Err(DispatchError::Kernel {
+                    node: id,
+                    span,
+                    operation: "AdoptRaw",
+                    source,
+                });
+            }
+        },
     };
     Ok(NodeResult::Shape(shape))
 }
@@ -457,6 +592,90 @@ fn dispatch_query<'ctx>(
             kernel_op(id, span, "ExportStep", shape.export_step(path))?;
             NodeResult::Unit
         }
+        GeometryQuery::TopologyKindOf(target) => {
+            let shape = shape_operand(results, id, *target, span)?;
+            let kind = kernel_op(id, span, "TopologyKindOf", shape.topology_kind())?;
+            NodeResult::Text(kind.to_string())
+        }
+        GeometryQuery::EntityCount { target, kind } => {
+            let shape = shape_operand(results, id, *target, span)?;
+            let count = kernel_op(
+                id,
+                span,
+                "EntityCount",
+                match kind {
+                    TopologyKind::Vertex => shape.vertex_count(),
+                    TopologyKind::Edge => shape.edge_count(),
+                    TopologyKind::Wire => shape.wire_count(),
+                    TopologyKind::Face => shape.face_count(),
+                    TopologyKind::Shell => shape.shell_count(),
+                    TopologyKind::Solid => shape.solid_count(),
+                },
+            )?;
+            NodeResult::Number(count as f64)
+        }
+        GeometryQuery::AdjacentFaceCount { target, edge } => {
+            let shape = shape_operand(results, id, *target, span)?;
+            let count = kernel_op(
+                id,
+                span,
+                "AdjacentFaceCount",
+                shape.edge_adjacent_face_count(edge.0),
+            )?;
+            NodeResult::Number(count as f64)
+        }
+        GeometryQuery::IsOuterWire { face, wire } => {
+            let face_shape = shape_operand(results, id, *face, span)?;
+            let wire_shape = shape_operand(results, id, *wire, span)?;
+            NodeResult::Bool(kernel_op(
+                id,
+                span,
+                "IsOuterWire",
+                face_shape.is_outer_wire(wire_shape),
+            )?)
+        }
+        GeometryQuery::IsSameEntity { a, b } => {
+            let a_shape = shape_operand(results, id, *a, span)?;
+            let b_shape = shape_operand(results, id, *b, span)?;
+            NodeResult::Bool(kernel_op(
+                id,
+                span,
+                "IsSameEntity",
+                a_shape.is_same(b_shape),
+            )?)
+        }
+        GeometryQuery::IsForwardOriented(target) => {
+            let shape = shape_operand(results, id, *target, span)?;
+            NodeResult::Bool(kernel_op(
+                id,
+                span,
+                "IsForwardOriented",
+                shape.is_forward_oriented(),
+            )?)
+        }
+        GeometryQuery::VertexPoint(target) => {
+            let shape = shape_operand(results, id, *target, span)?;
+            NodeResult::Point(kernel_op(id, span, "VertexPoint", shape.vertex_point())?)
+        }
+        GeometryQuery::ClassifyPoint {
+            solid,
+            point,
+            tolerance,
+        } => {
+            let shape = shape_operand(results, id, *solid, span)?;
+            let classification = kernel_op(
+                id,
+                span,
+                "ClassifyPoint",
+                shape.classify_point(*point, mag(tolerance)),
+            )?;
+            NodeResult::Text(format!("{classification:?}"))
+        }
+        GeometryQuery::EnterRaw(target) => {
+            let shape = shape_operand(results, id, *target, span)?;
+            let kind = kernel_op(id, span, "EnterRaw", shape.topology_kind())?;
+            NodeResult::Classified(ClassifiedShape::new(kind, shape.handle()))
+        }
     };
     Ok(result)
 }
@@ -493,7 +712,8 @@ fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
         | GeometryOp::ImportStep { .. }
         | GeometryOp::LineEdge { .. }
         | GeometryOp::CircleWire { .. }
-        | GeometryOp::ArcEdge { .. } => Vec::new(),
+        | GeometryOp::ArcEdge { .. }
+        | GeometryOp::AdoptRaw(_) => Vec::new(),
         GeometryOp::WireFromEdges { edges } => edges.clone(),
         GeometryOp::MakeFace { wire } => vec![*wire],
         GeometryOp::GetFace { target, .. } => vec![*target],
@@ -510,12 +730,34 @@ fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
         | GeometryOp::Offset { target, .. }
         | GeometryOp::Transform { target, .. }
         | GeometryOp::Mirror { target, .. } => vec![*target],
+        GeometryOp::MakeVertex { .. } => Vec::new(),
+        GeometryOp::MakeFaceOnSurface { outer, holes, .. } => {
+            let mut ids = vec![*outer];
+            ids.extend(holes.iter().copied());
+            ids
+        }
+        GeometryOp::MakeShell { faces } => faces.clone(),
+        GeometryOp::MakeSolid { shell, voids } => {
+            let mut ids = vec![*shell];
+            ids.extend(voids.iter().copied());
+            ids
+        }
+        GeometryOp::Compound { shapes } => shapes.clone(),
+        GeometryOp::Sew { shapes, .. } => shapes.clone(),
+        GeometryOp::Heal { shape, .. } => vec![*shape],
+        GeometryOp::GetEdge { target, .. }
+        | GeometryOp::GetVertex { target, .. }
+        | GeometryOp::GetWire { target, .. }
+        | GeometryOp::GetAdjacentFace { target, .. } => vec![*target],
     }
 }
 
-/// The single [`GeomId`] every [`GeometryQuery`] variant reads as its own
-/// target — see [`op_input_ids`]'s identical purpose for constructions.
-fn query_input_id(query: &GeometryQuery) -> GeomId {
+/// Every [`GeomId`] a query reads as its own operand — see
+/// [`op_input_ids`]'s identical purpose for constructions. Most queries
+/// have exactly one (`AICAD-060`'s original single-target shape); `AICAD-
+/// 121`'s two-operand queries (`IsOuterWire`/`IsSameEntity`) are why this
+/// returns a `Vec` rather than one `GeomId` as it originally did.
+fn query_input_ids(query: &GeometryQuery) -> Vec<GeomId> {
     match query {
         GeometryQuery::IsValid(target)
         | GeometryQuery::Volume(target)
@@ -524,7 +766,16 @@ fn query_input_id(query: &GeometryQuery) -> GeomId {
         | GeometryQuery::CenterOfMass(target)
         | GeometryQuery::Validate(target)
         | GeometryQuery::Tessellate { target, .. }
-        | GeometryQuery::ExportStep { target, .. } => *target,
+        | GeometryQuery::ExportStep { target, .. }
+        | GeometryQuery::TopologyKindOf(target)
+        | GeometryQuery::EntityCount { target, .. }
+        | GeometryQuery::AdjacentFaceCount { target, .. }
+        | GeometryQuery::IsForwardOriented(target)
+        | GeometryQuery::VertexPoint(target)
+        | GeometryQuery::EnterRaw(target)
+        | GeometryQuery::ClassifyPoint { solid: target, .. } => vec![*target],
+        GeometryQuery::IsOuterWire { face, wire } => vec![*face, *wire],
+        GeometryQuery::IsSameEntity { a, b } => vec![*a, *b],
     }
 }
 
@@ -593,7 +844,7 @@ pub fn dispatch_graph_incremental<'ctx>(
     for node in graph.nodes() {
         let inputs = match &node.kind {
             GeometryNodeKind::Construct(op) => op_input_ids(op),
-            GeometryNodeKind::Query(query) => vec![query_input_id(query)],
+            GeometryNodeKind::Query(query) => query_input_ids(query),
         };
         let has_reusable_slot = prior_slots
             .get(node.id.index() as usize)
@@ -710,6 +961,12 @@ fn dispatch_op_with_lineage<'ctx>(
             )?;
             Ok((NodeResult::Shape(shape), Some(lineage)))
         }
+        GeometryOp::Sew { shapes, tolerance } => {
+            let member_shapes = shape_operands(results, id, shapes, span)?;
+            let (shape, lineage, _report) =
+                kernel_op(id, span, "Sew", ctx.sew(&member_shapes, mag(tolerance)))?;
+            Ok((NodeResult::Shape(shape), Some(lineage)))
+        }
         other => {
             let result = dispatch_op(id, span, other, ctx, results)?;
             Ok((result, None))
@@ -758,7 +1015,7 @@ pub fn dispatch_graph_incremental_with_lineage<'ctx>(
     for node in graph.nodes() {
         let inputs = match &node.kind {
             GeometryNodeKind::Construct(op) => op_input_ids(op),
-            GeometryNodeKind::Query(query) => vec![query_input_id(query)],
+            GeometryNodeKind::Query(query) => query_input_ids(query),
         };
         let has_reusable_slot = prior_slots
             .get(node.id.index() as usize)
@@ -811,6 +1068,27 @@ mod tests {
 
     fn angle(magnitude: f64) -> Quantity {
         Quantity::of(magnitude, Dimension::Angle)
+    }
+
+    fn as_number(result: &NodeResult) -> f64 {
+        match result {
+            NodeResult::Number(n) => *n,
+            other => panic!("expected NodeResult::Number, got {other:?}"),
+        }
+    }
+
+    fn as_bool(result: &NodeResult) -> bool {
+        match result {
+            NodeResult::Bool(b) => *b,
+            other => panic!("expected NodeResult::Bool, got {other:?}"),
+        }
+    }
+
+    fn as_text<'a>(result: &'a NodeResult) -> &'a str {
+        match result {
+            NodeResult::Text(t) => t,
+            other => panic!("expected NodeResult::Text, got {other:?}"),
+        }
     }
 
     /// Box/Cut/Fillet/Transform, then IsValid/Volume/BoundingBox/
@@ -1971,5 +2249,784 @@ mod tests {
             .expect("rebuild should succeed");
         assert_eq!(stats2.recomputed, vec![a]);
         assert!(stats2.reused.is_empty());
+    }
+
+    // --- AICAD-119: general topology construction dispatch ---
+
+    fn unit_square_wire(graph: &mut GeometryGraph) -> GeomId {
+        let mut edge = |x0: f64, y0: f64, x1: f64, y1: f64| {
+            graph
+                .push_op(
+                    GeometryOp::LineEdge {
+                        start: Point3::new(x0, y0, 0.0),
+                        end: Point3::new(x1, y1, 0.0),
+                    },
+                    span(),
+                )
+                .unwrap()
+        };
+        let e0 = edge(0.0, 0.0, 1.0, 0.0);
+        let e1 = edge(1.0, 0.0, 1.0, 1.0);
+        let e2 = edge(1.0, 1.0, 0.0, 1.0);
+        let e3 = edge(0.0, 1.0, 0.0, 0.0);
+        graph
+            .push_op(
+                GeometryOp::WireFromEdges {
+                    edges: vec![e0, e1, e2, e3],
+                },
+                span(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn vertex_through_edge_through_wire_through_face_on_plane_dispatches_to_a_valid_unit_face() {
+        let mut graph = GeometryGraph::new();
+        let outer = unit_square_wire(&mut graph);
+        let face = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: cad_kernel_api::Direction3::Z,
+                    },
+                    outer,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let area_q = graph.push_query(GeometryQuery::Area(face), span()).unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => assert!((*area - 1.0).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn box_faces_reassembled_through_shell_and_solid_reproduce_the_original_volume() {
+        const DX: f64 = 1.0;
+        const DY: f64 = 2.0;
+        const DZ: f64 = 3.0;
+
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(DX),
+                    dy: length(DY),
+                    dz: length(DZ),
+                },
+                span(),
+            )
+            .unwrap();
+        let faces: Vec<GeomId> = (0..6)
+            .map(|i| {
+                graph
+                    .push_op(
+                        GeometryOp::GetFace {
+                            target: source_box,
+                            face: FaceIndex(i),
+                        },
+                        span(),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        let shell = graph
+            .push_op(GeometryOp::MakeShell { faces }, span())
+            .unwrap();
+        let solid = graph
+            .push_op(
+                GeometryOp::MakeSolid {
+                    shell,
+                    voids: vec![],
+                },
+                span(),
+            )
+            .unwrap();
+        let validate_q = graph
+            .push_query(GeometryQuery::Validate(solid), span())
+            .unwrap();
+        let volume_q = graph
+            .push_query(GeometryQuery::Volume(solid), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[validate_q.index() as usize] {
+            NodeResult::Validation(report) => {
+                assert!(report.is_valid);
+                assert_eq!(report.invalid_solid_count, 0);
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+        match &results[volume_q.index() as usize] {
+            NodeResult::Number(volume) => assert!((*volume - DX * DY * DZ).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solid_from_a_single_reassembled_face_is_structurally_real_but_reported_invalid() {
+        // AICAD-119: the production-path counterpart of `cad-occt-bridge`'s
+        // own `make_solid_from_a_non_closed_shell_succeeds_structurally_
+        // but_is_reported_invalid` -- construction never silently rejects
+        // or "fixes" an open shell, and dispatch must surface that exact
+        // evidence through an ordinary `GeometryQuery::Validate` node, not
+        // a dispatch error.
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let single_face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target: source_box,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let open_shell = graph
+            .push_op(
+                GeometryOp::MakeShell {
+                    faces: vec![single_face],
+                },
+                span(),
+            )
+            .unwrap();
+        let solid = graph
+            .push_op(
+                GeometryOp::MakeSolid {
+                    shell: open_shell,
+                    voids: vec![],
+                },
+                span(),
+            )
+            .unwrap();
+        let validate_q = graph
+            .push_query(GeometryQuery::Validate(solid), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[validate_q.index() as usize] {
+            NodeResult::Validation(report) => {
+                assert!(!report.is_valid);
+                assert_eq!(report.invalid_solid_count, 1);
+            }
+            other => panic!("expected Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compound_of_a_vertex_and_a_wire_dispatches_successfully() {
+        let mut graph = GeometryGraph::new();
+        let vertex = graph
+            .push_op(
+                GeometryOp::MakeVertex {
+                    point: Point3::new(1.0, 2.0, 3.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let wire = unit_square_wire(&mut graph);
+        let compound = graph
+            .push_op(
+                GeometryOp::Compound {
+                    shapes: vec![vertex, wire],
+                },
+                span(),
+            )
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(compound), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+    }
+
+    // --- AICAD-120: sewing/healing dispatch ---
+
+    #[test]
+    fn sewing_two_edge_adjacent_planar_faces_dispatches_to_the_merged_area() {
+        let mut graph = GeometryGraph::new();
+        let outer1 = unit_square_wire(&mut graph);
+        let face1 = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: cad_kernel_api::Direction3::Z,
+                    },
+                    outer: outer1,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let e0 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(1.0, 0.0, 0.0),
+                    end: Point3::new(2.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let e1 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(2.0, 0.0, 0.0),
+                    end: Point3::new(2.0, 1.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let e2 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(2.0, 1.0, 0.0),
+                    end: Point3::new(1.0, 1.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let e3 = graph
+            .push_op(
+                GeometryOp::LineEdge {
+                    start: Point3::new(1.0, 1.0, 0.0),
+                    end: Point3::new(1.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let outer2 = graph
+            .push_op(
+                GeometryOp::WireFromEdges {
+                    edges: vec![e0, e1, e2, e3],
+                },
+                span(),
+            )
+            .unwrap();
+        let face2 = graph
+            .push_op(
+                GeometryOp::MakeFaceOnSurface {
+                    surface: SurfaceSpec::Plane {
+                        origin: Point3::ORIGIN,
+                        normal: cad_kernel_api::Direction3::Z,
+                    },
+                    outer: outer2,
+                    holes: vec![],
+                    orientation: FaceOrientation::Forward,
+                },
+                span(),
+            )
+            .unwrap();
+        let sewed = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: vec![face1, face2],
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        let area_q = graph
+            .push_query(GeometryQuery::Area(sewed), span())
+            .unwrap();
+        let valid_q = graph
+            .push_query(GeometryQuery::IsValid(sewed), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[area_q.index() as usize] {
+            NodeResult::Number(area) => assert!((*area - 2.0).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
+        }
+        match &results[valid_q.index() as usize] {
+            NodeResult::Bool(valid) => assert!(*valid),
+            other => panic!("expected Bool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sewing_a_solids_own_already_connected_faces_dispatches_with_lineage_captured() {
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let faces: Vec<GeomId> = (0..6)
+            .map(|i| {
+                graph
+                    .push_op(
+                        GeometryOp::GetFace {
+                            target: source_box,
+                            face: FaceIndex(i),
+                        },
+                        span(),
+                    )
+                    .unwrap()
+            })
+            .collect();
+        let sewed = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: faces,
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let (results, _stats, lineage_table) =
+            dispatch_graph_incremental_with_lineage(&graph, &ctx, None, &HashSet::new())
+                .expect("dispatch should succeed");
+        assert!(
+            lineage_table.iter().any(|(id, _)| *id == sewed),
+            "Sew must capture lineage"
+        );
+        match &results[sewed.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!((shape.volume().unwrap() - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected Shape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn healing_an_already_valid_solid_dispatches_unchanged() {
+        let mut graph = GeometryGraph::new();
+        let source_box = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let healed = graph
+            .push_op(
+                GeometryOp::Heal {
+                    shape: source_box,
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        let volume_q = graph
+            .push_query(GeometryQuery::Volume(healed), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        match &results[volume_q.index() as usize] {
+            NodeResult::Number(volume) => assert!((*volume - 1.0).abs() < 1e-9),
+            other => panic!("expected Number, got {other:?}"),
+        }
+    }
+
+    // --- AICAD-121: safe topology inspection ---
+
+    #[test]
+    fn a_boxs_own_entity_counts_and_kind_dispatch_correctly() {
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(2.0),
+                    dz: length(3.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let kind_q = graph
+            .push_query(GeometryQuery::TopologyKindOf(solid), span())
+            .unwrap();
+        let face_count_q = graph
+            .push_query(
+                GeometryQuery::EntityCount {
+                    target: solid,
+                    kind: TopologyKind::Face,
+                },
+                span(),
+            )
+            .unwrap();
+        let edge_count_q = graph
+            .push_query(
+                GeometryQuery::EntityCount {
+                    target: solid,
+                    kind: TopologyKind::Edge,
+                },
+                span(),
+            )
+            .unwrap();
+        let vertex_count_q = graph
+            .push_query(
+                GeometryQuery::EntityCount {
+                    target: solid,
+                    kind: TopologyKind::Vertex,
+                },
+                span(),
+            )
+            .unwrap();
+        let solid_count_q = graph
+            .push_query(
+                GeometryQuery::EntityCount {
+                    target: solid,
+                    kind: TopologyKind::Solid,
+                },
+                span(),
+            )
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        assert_eq!(as_text(&results[kind_q.index() as usize]), "Solid");
+        assert_eq!(as_number(&results[face_count_q.index() as usize]), 6.0);
+        assert_eq!(as_number(&results[edge_count_q.index() as usize]), 12.0);
+        assert_eq!(as_number(&results[vertex_count_q.index() as usize]), 8.0);
+        assert_eq!(as_number(&results[solid_count_q.index() as usize]), 1.0);
+    }
+
+    #[test]
+    fn a_transformed_boxs_own_entity_counts_are_unchanged() {
+        // "transformed topology" acceptance fixture: a rigid transform
+        // changes geometry, never topology -- the same box still has 6
+        // faces/12 edges/8 vertices after being translated.
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let moved = graph
+            .push_op(
+                GeometryOp::Transform {
+                    target: solid,
+                    transform: cad_kernel_api::Transform::translation(cad_kernel_api::Vector3 {
+                        x: 5.0,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+                },
+                span(),
+            )
+            .unwrap();
+        let face_count_q = graph
+            .push_query(
+                GeometryQuery::EntityCount {
+                    target: moved,
+                    kind: TopologyKind::Face,
+                },
+                span(),
+            )
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        assert_eq!(as_number(&results[face_count_q.index() as usize]), 6.0);
+    }
+
+    #[test]
+    fn get_edge_get_vertex_and_get_adjacent_face_dispatch_to_real_kernel_shapes() {
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let edge = graph
+            .push_op(
+                GeometryOp::GetEdge {
+                    target: solid,
+                    edge: EdgeIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let vertex = graph
+            .push_op(
+                GeometryOp::GetVertex {
+                    target: solid,
+                    vertex: cad_geometry_api::VertexIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let adjacent_face_count_q = graph
+            .push_query(
+                GeometryQuery::AdjacentFaceCount {
+                    target: solid,
+                    edge: EdgeIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let adjacent_face = graph
+            .push_op(
+                GeometryOp::GetAdjacentFace {
+                    target: solid,
+                    edge: EdgeIndex(0),
+                    adjacent: 0,
+                },
+                span(),
+            )
+            .unwrap();
+        let edge_kind_q = graph
+            .push_query(GeometryQuery::TopologyKindOf(edge), span())
+            .unwrap();
+        let vertex_point_q = graph
+            .push_query(GeometryQuery::VertexPoint(vertex), span())
+            .unwrap();
+        let adjacent_face_kind_q = graph
+            .push_query(GeometryQuery::TopologyKindOf(adjacent_face), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        assert_eq!(as_text(&results[edge_kind_q.index() as usize]), "Edge");
+        assert_eq!(
+            as_text(&results[adjacent_face_kind_q.index() as usize]),
+            "Face"
+        );
+        match &results[adjacent_face_count_q.index() as usize] {
+            NodeResult::Number(n) => {
+                assert_eq!(*n, 2.0, "every edge of a box borders exactly 2 faces")
+            }
+            other => panic!("expected Number, got {other:?}"),
+        }
+        match &results[vertex_point_q.index() as usize] {
+            NodeResult::Point(_) => {}
+            other => panic!("expected Point, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn is_outer_wire_and_is_same_entity_dispatch_correctly() {
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target: solid,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let wire = graph
+            .push_op(
+                GeometryOp::GetWire {
+                    target: face,
+                    wire: cad_geometry_api::WireIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let outer_q = graph
+            .push_query(GeometryQuery::IsOuterWire { face, wire }, span())
+            .unwrap();
+        // Re-selecting the same face by the same index a second time gives
+        // an independently-obtained ephemeral handle -- `is_same` is the
+        // safe way to confirm it names the identical topological entity.
+        let face_again = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target: solid,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let same_q = graph
+            .push_query(
+                GeometryQuery::IsSameEntity {
+                    a: face,
+                    b: face_again,
+                },
+                span(),
+            )
+            .unwrap();
+        let different_q = graph
+            .push_query(GeometryQuery::IsSameEntity { a: face, b: wire }, span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        assert!(as_bool(&results[outer_q.index() as usize]));
+        assert!(as_bool(&results[same_q.index() as usize]));
+        assert!(!as_bool(&results[different_q.index() as usize]));
+    }
+
+    #[test]
+    fn classify_point_and_is_forward_oriented_dispatch_correctly() {
+        let mut graph = GeometryGraph::new();
+        let solid = graph
+            .push_op(
+                GeometryOp::Box {
+                    dx: length(1.0),
+                    dy: length(1.0),
+                    dz: length(1.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let inside_q = graph
+            .push_query(
+                GeometryQuery::ClassifyPoint {
+                    solid,
+                    point: Point3::new(0.5, 0.5, 0.5),
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        let outside_q = graph
+            .push_query(
+                GeometryQuery::ClassifyPoint {
+                    solid,
+                    point: Point3::new(5.0, 5.0, 5.0),
+                    tolerance: length(0.000001),
+                },
+                span(),
+            )
+            .unwrap();
+        let face = graph
+            .push_op(
+                GeometryOp::GetFace {
+                    target: solid,
+                    face: FaceIndex(0),
+                },
+                span(),
+            )
+            .unwrap();
+        let orientation_q = graph
+            .push_query(GeometryQuery::IsForwardOriented(face), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let results = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        assert_eq!(as_text(&results[inside_q.index() as usize]), "Inside");
+        assert_eq!(as_text(&results[outside_q.index() as usize]), "Outside");
+        // Determinism, not a specific value: repeated dispatch of the
+        // identical graph must report the identical orientation.
+        let results2 = dispatch_graph(&graph, &ctx).expect("dispatch should succeed");
+        assert_eq!(
+            as_bool(&results[orientation_q.index() as usize]),
+            as_bool(&results2[orientation_q.index() as usize])
+        );
+    }
+
+    #[test]
+    fn topology_kind_of_a_compound_is_a_clean_dispatch_error_not_a_panic() {
+        let mut graph = GeometryGraph::new();
+        let vertex = graph
+            .push_op(
+                GeometryOp::MakeVertex {
+                    point: Point3::new(0.0, 0.0, 0.0),
+                },
+                span(),
+            )
+            .unwrap();
+        let compound = graph
+            .push_op(
+                GeometryOp::Compound {
+                    shapes: vec![vertex],
+                },
+                span(),
+            )
+            .unwrap();
+        graph
+            .push_query(GeometryQuery::TopologyKindOf(compound), span())
+            .unwrap();
+
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let err = dispatch_graph(&graph, &ctx).expect_err("a compound has no classifiable kind");
+        assert!(matches!(err, DispatchError::Kernel { .. }));
+    }
+
+    // --- AICAD-124: explicit raw-to-safe adoption ---
+
+    #[test]
+    fn adopt_raw_dispatches_a_valid_handle_into_a_real_shape_node() {
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let box_shape = ctx.create_box(1.0, 1.0, 1.0).unwrap();
+        let handle = box_shape.handle();
+
+        let mut graph = GeometryGraph::new();
+        let adopted = graph.push_op(GeometryOp::AdoptRaw(handle), span()).unwrap();
+
+        let results = dispatch_graph(&graph, &ctx).expect("a valid handle should adopt cleanly");
+        match &results[adopted.index() as usize] {
+            NodeResult::Shape(shape) => {
+                assert!((shape.volume().unwrap() - 1.0).abs() < 1e-9);
+            }
+            other => panic!("expected NodeResult::Shape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adopt_raw_rejects_an_invalid_shape_with_a_clean_dispatch_error() {
+        let ctx = OcctContext::new().expect("context creation should succeed");
+        let box_shape = ctx.create_box(1.0, 1.0, 1.0).unwrap();
+        let opened = box_shape.remove_face(&[0], false, 1e-6).unwrap();
+        let handle = opened.handle();
+
+        let mut graph = GeometryGraph::new();
+        graph.push_op(GeometryOp::AdoptRaw(handle), span()).unwrap();
+
+        let err = dispatch_graph(&graph, &ctx)
+            .expect_err("an open shell adopted as a solid must be rejected, not silently accepted");
+        assert!(matches!(err, DispatchError::Kernel { .. }));
     }
 }

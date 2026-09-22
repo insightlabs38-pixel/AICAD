@@ -44,13 +44,23 @@
 //! and leaves wiring it to actual `.aicad` call syntax for after `D18` is
 //! ruled on, exactly as `AICAD-056`/`AICAD-057` left `D16`/`D17`.
 
+pub mod adoption;
 pub mod bridge;
 pub mod dispatch;
+pub mod query_bridge;
+pub mod raw_exec;
+pub mod raw_lineage;
+pub mod raw_registry;
 pub mod sketch_lowering;
 
+pub use adoption::adopt_raw;
 pub use bridge::number_value_to_quantity;
 pub use dispatch::{
     DispatchError, GraphResults, IncrementalStats, LineageTable, NodeResult, dispatch_graph,
     dispatch_graph_incremental, dispatch_graph_incremental_with_lineage,
 };
+pub use query_bridge::OcctQueryExecutor;
+pub use raw_exec::OcctRawEditExecutor;
+pub use raw_lineage::{RawLineageChain, RawLineageIndex};
+pub use raw_registry::RawShapeRegistry;
 pub use sketch_lowering::{LoweredFace, SketchLoweringError, lower_profile_to_face};

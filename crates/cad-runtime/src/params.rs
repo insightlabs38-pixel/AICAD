@@ -45,19 +45,27 @@
 //!
 //! ## Scope boundary
 //!
-//! Only *top-level* `param` items (`program.items`, matching
-//! `Interpreter::run_top_level`'s own existing scope) are modeled —
-//! `part`-body params are a future extension, exactly like `run_top_level`
-//! already only covers top-level `let`/`const`/`param` today. Dependency
-//! edges are only ever recorded between two top-level `param`s; a param's
-//! default expression may also reference a top-level `let`/`const` (or
-//! call an ordinary function), which still evaluates correctly through the
-//! ordinary interpreter — it just is not part of *this* dependency graph,
-//! matching this task's explicit scope ("derived expressions" of the
-//! *parametric* model, not a general top-level value dependency graph for
-//! every `let`/`const`, which remains `crate::interp`'s own pre-existing,
-//! separately-documented gap: "no detection of circular top-level
-//! const/let value dependencies").
+//! `AICAD-104A` extended this to also model every `param` declared inside
+//! a `part` body, at any nesting depth (matching `AICAD-101`'s own
+//! unbounded `part`-in-`part` recursion) — not only `program.items`-level
+//! ones. Each [`ParamDecl::scope`] records the enclosing part-name path,
+//! the same `Vec<String>` convention `cad_feature_graph::graph::
+//! FeatureNode::scope`/`cad-cli`'s `qualified_feature_name` already use
+//! (`D31`): empty for a top-level param, `["Wall"]` for one declared
+//! directly inside `part Wall { ... }`. [`ParamId`] stays a bare
+//! `BindingId` wrapper regardless of scope — `BindingId` is already
+//! process-unique across the whole program (`cad_hir::ids::BindingId`'s
+//! own doc comment), so two params with the same *leaf* name in two
+//! different parts are already distinct [`ParamId`]s with no risk of
+//! collision in the dependency graph itself; only [`ParamModel::
+//! find_by_name`]'s own *name*-based lookup needs scope-aware, fail-closed
+//! disambiguation (see that method's own doc comment). A `let`/`const`
+//! value dependency (top-level or part-nested) is still not part of *this*
+//! dependency graph, matching this module's original scope ("derived
+//! expressions" of the *parametric* model, not a general value dependency
+//! graph for every `let`/`const`, which remains `crate::interp`'s own
+//! pre-existing, separately-documented gap: "no detection of circular
+//! top-level const/let value dependencies").
 
 use crate::error::RuntimeError;
 use crate::value::Value;
@@ -76,19 +84,42 @@ use std::collections::{HashMap, VecDeque};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParamId(pub BindingId);
 
-/// One modeled top-level `param`, plus its computed dependency edges.
+/// One modeled `param`, plus its computed dependency edges.
 #[derive(Debug, Clone)]
 pub struct ParamDecl<'a> {
     pub id: ParamId,
     pub name: &'a str,
+    /// The enclosing `part`-name path (`AICAD-104A`, `D31`'s own
+    /// convention) — empty for a top-level param, `["Wall"]` for one
+    /// declared directly inside `part Wall { ... }`, `["Wall", "Door"]`
+    /// two levels deep, and so on to any depth.
+    pub scope: Vec<String>,
     pub span: Span,
     pub ty: &'a HirTypeRef,
     pub default: Option<&'a HirExpr>,
-    /// Other top-level params this one's `default` expression directly
+    /// Other modeled params this one's `default` expression directly
     /// references, in first-occurrence source order within that
     /// expression (deduplicated). Empty for a param with no `default`, or
-    /// whose `default` references no other param.
+    /// whose `default` references no other param. May cross scopes freely
+    /// in either direction (a part-scoped param may depend on a top-level
+    /// one or a sibling part's, and vice versa) — dependency identity is
+    /// purely by [`ParamId`] (`BindingId`), never scope-restricted.
     pub depends_on: Vec<ParamId>,
+}
+
+impl<'a> ParamDecl<'a> {
+    /// This param's canonical dotted qualified-name string (`AICAD-104A`,
+    /// mirroring `cad-cli`'s `qualified_feature_name`/`D31` exactly) —
+    /// e.g. `(scope: ["Wall"], name: "width")` -> `"Wall.width"`. An empty
+    /// scope yields the bare name unchanged, so a top-level param's own
+    /// qualified name is byte-identical to its pre-`AICAD-104A` plain name.
+    pub fn qualified_name(&self) -> String {
+        if self.scope.is_empty() {
+            self.name.to_string()
+        } else {
+            format!("{}.{}", self.scope.join("."), self.name)
+        }
+    }
 }
 
 /// A caller-supplied edit: replaces a param's own `default` expression
@@ -137,28 +168,7 @@ impl<'a> ParamModel<'a> {
     pub fn build(program: &'a HirProgram) -> Result<ParamModel<'a>, ParamModelError> {
         let mut decls: Vec<ParamDecl<'a>> = Vec::new();
         let mut index_by_id: HashMap<ParamId, usize> = HashMap::new();
-
-        for item in &program.items {
-            if let HirItem::Param {
-                binding,
-                name,
-                ty,
-                default,
-                span,
-            } = item
-            {
-                let id = ParamId(*binding);
-                index_by_id.insert(id, decls.len());
-                decls.push(ParamDecl {
-                    id,
-                    name: name.as_str(),
-                    span: *span,
-                    ty,
-                    default: default.as_ref(),
-                    depends_on: Vec::new(),
-                });
-            }
-        }
+        collect_param_decls(&program.items, &[], &mut decls, &mut index_by_id);
 
         for decl in &mut decls {
             let Some(default) = decl.default else {
@@ -203,15 +213,94 @@ impl<'a> ParamModel<'a> {
         self.index_by_id.get(&id).map(|&i| &self.decls[i])
     }
 
-    /// Looks up a modeled param by its source name — a convenience for a
-    /// caller building a [`ParamOverrides`] map from user-facing input
-    /// (e.g. a future CLI `--param name=value` flag, not this task's own
-    /// scope). `None` if no top-level param named `name` exists.
+    /// Looks up a modeled param by name — a convenience for a caller
+    /// building a [`ParamOverrides`] map from user-facing input (e.g. a
+    /// future CLI `--param name=value` flag, or `cad-cli`'s own
+    /// `ParametricBuildSession::set_param`). `AICAD-104A` extended this to
+    /// the same collision-safe scoped lookup `cad-cli`'s `resolve_scoped_
+    /// name`/`D31` already use for features: `name` may be a fully
+    /// qualified dotted path (`"Wall.width"`, [`ParamDecl::qualified_
+    /// name`]'s own spelling), matched exactly against a param's own scope
+    /// path plus leaf name — always unambiguous, regardless of how many
+    /// other params share that leaf name elsewhere. A bare leaf name
+    /// (`"width"`) resolves only if *exactly one* modeled param anywhere
+    /// carries that name; a genuine collision (the same bare name in two
+    /// different parts, or in a part and at the top level) returns `None`
+    /// — never an arbitrary pick (`AGENTS.md`: "ambiguity is an error,
+    /// never an arbitrary selection"). For a program with no part-scoped
+    /// params at all (every pre-`AICAD-104A` caller), every name is
+    /// already unique by construction, so this is fully backward
+    /// compatible.
     pub fn find_by_name(&self, name: &str) -> Option<ParamId> {
-        self.decls
-            .iter()
-            .find(|decl| decl.name == name)
-            .map(|decl| decl.id)
+        if let Some((scope_part, leaf)) = name.rsplit_once('.') {
+            let scope_path: Vec<&str> = scope_part.split('.').collect();
+            return self
+                .decls
+                .iter()
+                .find(|decl| {
+                    decl.scope
+                        .iter()
+                        .map(String::as_str)
+                        .eq(scope_path.iter().copied())
+                        && decl.name == leaf
+                })
+                .map(|decl| decl.id);
+        }
+
+        let mut matches = self.decls.iter().filter(|decl| decl.name == name);
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(first.id)
+    }
+}
+
+/// Recurses into `items` (at scope path `scope`, empty for the module top
+/// level) collecting every `HirItem::Param` declaration found, at any
+/// `part`-nesting depth (`AICAD-104A`, matching `AICAD-101`'s own
+/// unbounded `part`-in-`part` recursion) — the `cad-runtime`-side
+/// counterpart of `cad-cli`'s identical `collect_scoped_bindings` walk
+/// (duplicated rather than shared: `cad-runtime` cannot depend on
+/// `cad-cli`, which depends on it).
+fn collect_param_decls<'a>(
+    items: &'a [HirItem],
+    scope: &[String],
+    decls: &mut Vec<ParamDecl<'a>>,
+    index_by_id: &mut HashMap<ParamId, usize>,
+) {
+    for item in items {
+        match item {
+            HirItem::Param {
+                binding,
+                name,
+                ty,
+                default,
+                span,
+            } => {
+                let id = ParamId(*binding);
+                index_by_id.insert(id, decls.len());
+                decls.push(ParamDecl {
+                    id,
+                    name: name.as_str(),
+                    scope: scope.to_vec(),
+                    span: *span,
+                    ty,
+                    default: default.as_ref(),
+                    depends_on: Vec::new(),
+                });
+            }
+            HirItem::Part {
+                name: part_name,
+                items: part_items,
+                ..
+            } => {
+                let mut child_scope = scope.to_vec();
+                child_scope.push(part_name.clone());
+                collect_param_decls(part_items, &child_scope, decls, index_by_id);
+            }
+            _ => {}
+        }
     }
 }
 

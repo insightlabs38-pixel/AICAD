@@ -14,6 +14,7 @@
 
 mod ffi;
 
+use cad_kernel_api::topology::TopologyKind;
 use cad_kernel_api::{
     Axis3, Direction3, KernelError, KernelId, KernelResult, KernelShape, Plane3, Point3, Transform,
 };
@@ -330,6 +331,149 @@ impl OcctContext {
             id: handle_to_id(handle),
         })
     }
+
+    /// Constructs a single-point vertex (`AICAD-119`,
+    /// `BRepBuilderAPI_MakeVertex`) -- the missing base case of the
+    /// vertex->edge->wire->face->shell->solid pipeline `make_line_edge`/
+    /// `make_circle_wire`/`make_arc_edge`/`make_wire_from_edges`/
+    /// `Shape::make_face` already cover.
+    pub fn make_vertex(&self, point: Point3) -> KernelResult<Shape<'_>> {
+        let p = [point.x, point.y, point.z];
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `p` is a valid, live `[f64; 3]` for the duration of this
+        // call; `self.raw`/`&mut handle` as in `create_box`.
+        let status = unsafe { ffi::aicad_occt_make_vertex(self.raw, p.as_ptr(), &mut handle) };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Assembles `faces` (each owned by this context) into one shell
+    /// (`AICAD-119`, `BRep_Builder::MakeShell`/`Add`) -- a structural
+    /// container only, no sewing/gap-closing (`AICAD-120`'s job): a shell
+    /// built from faces that do not already share identical edges is
+    /// open/non-manifold under [`Shape::validate`], not silently repaired.
+    /// `faces` must be non-empty.
+    pub fn make_shell<'ctx>(&'ctx self, faces: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        if faces.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            faces.iter().map(|face| id_to_handle(face.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_wire_from_edges` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_shell(self.raw, handles.as_ptr(), handles.len(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Groups `shapes` (each owned by this context, any kind, any mix of
+    /// kinds) into one `TopoDS_Compound` (`AICAD-119`,
+    /// `BRep_Builder::MakeCompound`/`Add`). `shapes` must be non-empty.
+    pub fn make_compound<'ctx>(&'ctx self, shapes: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        if shapes.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            shapes.iter().map(|shape| id_to_handle(shape.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_wire_from_edges` above; identical argument.
+        let status = unsafe {
+            ffi::aicad_occt_make_compound(self.raw, handles.as_ptr(), handles.len(), &mut handle)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Sews `shapes` together (`AICAD-120`, `BRepBuilderAPI_Sewing`) at
+    /// `tolerance` (a modeling/construction-domain length, canonical
+    /// metres, `> 0` -- `project/DECISION_LOG.md#DL-24` domain 2). Also
+    /// captures Generated/Modified/IsDeleted lineage for every unique
+    /// face/edge of each input against the sewing operation itself, in
+    /// the exact same [`Lineage`] type/table `Shape::union_with_lineage`
+    /// (`AICAD-086`) already uses -- consumable identically. Returns the
+    /// sewed shape, its lineage, and a [`SewReport`] structured evidence
+    /// summary; `shapes` must be non-empty. Never sews beyond what
+    /// `BRepBuilderAPI_Sewing` itself reports -- `SewReport::is_valid`/
+    /// `free_edge_count` are the required evidence, not this call's own
+    /// success.
+    pub fn sew<'ctx>(
+        &'ctx self,
+        shapes: &[&Shape<'ctx>],
+        tolerance: f64,
+    ) -> KernelResult<(Shape<'ctx>, Lineage<'ctx>, SewReport)> {
+        if shapes.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        let handles: Vec<ffi::aicad_shape_handle_t> =
+            shapes.iter().map(|shape| id_to_handle(shape.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut lineage_handle = ffi::aicad_lineage_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut report = ffi::aicad_sew_report_t::default();
+        // SAFETY: `handles` is a valid, live, contiguous array for the
+        // duration of this call; `self.raw`/`&mut handle`/
+        // `&mut lineage_handle` as in `boolean_with_lineage`; `&mut report`
+        // is a valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_sew(
+                self.raw,
+                handles.as_ptr(),
+                handles.len(),
+                tolerance,
+                &mut handle,
+                &mut lineage_handle,
+                &mut report,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self,
+                id: handle_to_id(handle),
+            },
+            Lineage {
+                context: self,
+                handle: lineage_handle,
+            },
+            SewReport {
+                changed: report.changed != 0,
+                is_valid: report.is_valid != 0,
+                free_edge_count: report.free_edge_count,
+                multiple_edge_count: report.multiple_edge_count,
+                degenerated_shape_count: report.degenerated_shape_count,
+            },
+        ))
+    }
 }
 
 impl Drop for OcctContext {
@@ -539,6 +683,301 @@ impl<'ctx> Shape<'ctx> {
             context: self.context,
             id: handle_to_id(handle),
         })
+    }
+
+    /// Builds a face bounded by this wire (`self`) on an explicit plane
+    /// through `origin` normal to `normal` (`AICAD-119`,
+    /// `BRepBuilderAPI_MakeFace(gp_Pln, wire, Inside)`) -- the
+    /// holes-and-orientation-capable counterpart of [`Shape::make_face`],
+    /// which infers its plane from a planar wire and supports neither.
+    /// `reversed` builds the face on `self.Reversed()` instead of `self`;
+    /// each of `holes` (each owned by this context) is added exactly as
+    /// given, with no orientation inferred or corrected -- see
+    /// `aicad_occt_make_face_on_plane`'s own doc comment. As with
+    /// `make_face`, construction success is not evidence of validity.
+    pub fn make_face_on_plane(
+        &self,
+        holes: &[&Shape<'ctx>],
+        origin: Point3,
+        normal: Direction3,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [origin.x, origin.y, origin.z];
+        let n = normal.as_vector3();
+        let normal = [n.x, n.y, n.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `origin`/`normal` are valid, live `[f64; 3]` arrays and
+        // `hole_handles` a valid, live, contiguous array for the duration
+        // of this call; `self.context.raw`/`self.raw_handle()`/`&mut
+        // handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_plane(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                normal.as_ptr(),
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a cylinder of `radius`
+    /// coaxial with `axis` (`AICAD-119`).
+    pub fn make_face_on_cylinder(
+        &self,
+        holes: &[&Shape<'ctx>],
+        axis: Axis3,
+        radius: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [axis.origin.x, axis.origin.y, axis.origin.z];
+        let d = axis.direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_cylinder(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                direction.as_ptr(),
+                radius,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a cone with apex at
+    /// `axis.origin`, opening along `axis.direction` at
+    /// `half_angle_radians` (`AICAD-119`).
+    pub fn make_face_on_cone(
+        &self,
+        holes: &[&Shape<'ctx>],
+        axis: Axis3,
+        half_angle_radians: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [axis.origin.x, axis.origin.y, axis.origin.z];
+        let d = axis.direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_cone(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                direction.as_ptr(),
+                half_angle_radians,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a sphere of `radius`
+    /// centered at `center` (`AICAD-119`).
+    pub fn make_face_on_sphere(
+        &self,
+        holes: &[&Shape<'ctx>],
+        center: Point3,
+        radius: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let center = [center.x, center.y, center.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_sphere(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                center.as_ptr(),
+                radius,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a torus coaxial with
+    /// `axis` (`major_radius` from the axis to the tube's own center
+    /// circle, `minor_radius` the tube's own cross-section radius)
+    /// (`AICAD-119`).
+    pub fn make_face_on_torus(
+        &self,
+        holes: &[&Shape<'ctx>],
+        axis: Axis3,
+        major_radius: f64,
+        minor_radius: f64,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let origin = [axis.origin.x, axis.origin.y, axis.origin.z];
+        let d = axis.direction.as_vector3();
+        let direction = [d.x, d.y, d.z];
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_plane` above; identical argument shapes.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_torus(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                origin.as_ptr(),
+                direction.as_ptr(),
+                major_radius,
+                minor_radius,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Builds a solid from this shell (`self`, `AICAD-119`,
+    /// `BRepBuilderAPI_MakeSolid`), adding each of `voids` (each owned by
+    /// this context) as an additional void/cavity shell. Verified
+    /// empirically, not assumed: OCCT's own `BRepBuilderAPI_MakeSolid`
+    /// does not require `self` to be closed -- it happily reports done for
+    /// an open shell, producing a structurally-real but invalid solid.
+    /// This call succeeding is therefore even less evidence of validity
+    /// than [`Shape::make_face`]'s own already-non-evidence success:
+    /// always call [`Shape::validate`]/[`Shape::is_valid`] separately.
+    pub fn make_solid(&self, voids: &[&Shape<'ctx>]) -> KernelResult<Shape<'ctx>> {
+        let void_handles: Vec<ffi::aicad_shape_handle_t> =
+            voids.iter().map(|void| id_to_handle(void.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `void_handles` is a valid, live, contiguous array for
+        // the duration of this call; `self.context.raw`/`self.raw_handle()`/
+        // `&mut handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_solid(
+                self.context.raw,
+                self.raw_handle(),
+                void_handles.as_ptr(),
+                void_handles.len(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Repairs this shape (`AICAD-120`, `ShapeFix_Shape`) at `tolerance`
+    /// (same modeling/construction tolerance domain as
+    /// [`OcctContext::sew`], `> 0`). Returns the repaired shape and a
+    /// [`HealReport`]. Verified empirically, not assumed: this can and
+    /// does return `HealReport::is_valid_after == true` for a shape that
+    /// was NOT genuinely repaired -- an unclosable Solid (e.g. built from
+    /// far fewer faces than it needs) is silently demoted to a bare Shell
+    /// by `ShapeFix_Shape` (a Shell has no closure requirement, so it
+    /// trivially validates). [`HealReport::kind_changed`] is what
+    /// distinguishes this from a genuine repair; `is_valid_after` must
+    /// never be read as "healing succeeded" on its own. Healing never
+    /// invents missing geometry, and this call has no per-entity lineage
+    /// (see [`HealReport`]'s own doc comment for why).
+    pub fn heal(&self, tolerance: f64) -> KernelResult<(Shape<'ctx>, HealReport)> {
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        let mut report = ffi::aicad_heal_report_t::default();
+        // SAFETY: `self.context.raw`/`self.raw_handle()`/`&mut handle` as
+        // in `is_valid`/`create_box`; `&mut report` is a valid out-param
+        // per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_heal(
+                self.context.raw,
+                self.raw_handle(),
+                tolerance,
+                &mut handle,
+                &mut report,
+            )
+        };
+        status_result(status)?;
+        Ok((
+            Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            },
+            HealReport {
+                changed: report.changed != 0,
+                is_valid_before: report.is_valid_before != 0,
+                is_valid_after: report.is_valid_after != 0,
+                kind_changed: report.kind_changed != 0,
+            },
+        ))
     }
 
     /// Linearly extrudes this planar face by `distance` along `direction`
@@ -1348,6 +1787,8 @@ impl<'ctx> Shape<'ctx> {
             invalid_edge_count: report.invalid_edge_count,
             invalid_wire_count: report.invalid_wire_count,
             invalid_face_count: report.invalid_face_count,
+            invalid_shell_count: report.invalid_shell_count,
+            invalid_solid_count: report.invalid_solid_count,
         })
     }
 
@@ -1694,6 +2135,280 @@ impl<'ctx> Shape<'ctx> {
         Ok(PointClassification::from_raw(classification))
     }
 
+    /// This shape's own top-level topological kind (`AICAD-121`) —
+    /// kernel-neutral (`cad_kernel_api::topology::TopologyKind`), never an
+    /// OCCT `TopAbs_ShapeEnum` value. Fails with
+    /// [`KernelError::OperationFailed`] for a Compound/CompSolid/generic-
+    /// Shape top-level kind, which has no single classifiable entity kind.
+    pub fn topology_kind(&self) -> KernelResult<TopologyKind> {
+        let mut kind: c_int = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut kind` is a valid
+        // out-param per the header's contract.
+        let status =
+            unsafe { ffi::aicad_occt_shape_kind(self.context.raw, self.raw_handle(), &mut kind) };
+        status_result(status)?;
+        match kind {
+            0 => Ok(TopologyKind::Vertex),
+            1 => Ok(TopologyKind::Edge),
+            2 => Ok(TopologyKind::Wire),
+            3 => Ok(TopologyKind::Face),
+            4 => Ok(TopologyKind::Shell),
+            5 => Ok(TopologyKind::Solid),
+            // The native side only ever returns AICAD_OCCT_OK alongside
+            // one of the six values above (anything else is
+            // AICAD_OCCT_ERR_OPERATION_FAILED, already mapped by
+            // `status_result` above) -- an unrecognized value here would
+            // be a bridge defect, not an expected outcome.
+            _ => Err(KernelError::Internal),
+        }
+    }
+
+    /// Whether this shape's own top-level `TopAbs_Orientation` is FORWARD
+    /// (`AICAD-121`) -- REVERSED, INTERNAL, and EXTERNAL (the latter two
+    /// are rare seam/degenerate-edge markers) all report `false`. A
+    /// deliberate, disclosed simplification -- see
+    /// `aicad_occt_shape_is_forward_oriented`'s own doc comment.
+    pub fn is_forward_oriented(&self) -> KernelResult<bool> {
+        let mut is_forward: c_int = 0;
+        // SAFETY: see `is_valid`'s SAFETY comment; `&mut is_forward` is a
+        // valid out-param per the header's contract.
+        let status = unsafe {
+            ffi::aicad_occt_shape_is_forward_oriented(
+                self.context.raw,
+                self.raw_handle(),
+                &mut is_forward,
+            )
+        };
+        status_result(status)?;
+        Ok(is_forward != 0)
+    }
+
+    /// Resolves a previously-obtained [`KernelShape`] handle back into a
+    /// live, owning `Shape` in `ctx` (`AICAD-122`/`AICAD-123`) -- the
+    /// native shape table is looked up purely by handle value
+    /// (context_id/slot/generation), so this needs no new native/FFI
+    /// entry point: it performs the identical `aicad_occt_shape_duplicate`
+    /// call [`Shape::duplicate`] already makes, just without requiring an
+    /// existing live `Shape` wrapper as `self`. Fails with
+    /// `KernelError::StaleHandle`/`ForeignContext` exactly like any other
+    /// operation if `handle`'s own generation/context no longer addresses
+    /// a live slot in `ctx` -- the mechanism the raw/unsafe geometry tier
+    /// needs to turn a `cad_geometry_api::raw::RawGeometry`'s own
+    /// [`KernelShape`] back into something a further raw operation can
+    /// actually dispatch against.
+    pub fn resolve(ctx: &'ctx OcctContext, handle: KernelShape) -> KernelResult<Shape<'ctx>> {
+        let mut out = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `ctx.raw` is a valid, live context for `'ctx`;
+        // `id_to_handle(handle.id())` is a plain value with no aliasing
+        // concern; `&mut out` is a valid out-param per the header's
+        // contract -- identical reasoning to `duplicate`'s own SAFETY
+        // comment, just without requiring an existing `Shape` as `self`.
+        let status = unsafe {
+            ffi::aicad_occt_shape_duplicate(ctx.raw, id_to_handle(handle.id()), &mut out)
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: ctx,
+            id: handle_to_id(out),
+        })
+    }
+
+    /// Deletes the faces at `faces` (raw 0-based indices into this
+    /// shape's own face list, `AICAD-123`, `BRepTools_ReShape`), optionally
+    /// healing the result at `tolerance` afterward (a separate
+    /// [`Shape::heal`] call -- see `aicad_occt_remove_face`'s own doc
+    /// comment for why healing is not built into the native op itself). D2
+    /// functional/value semantics: `self` is unchanged; a genuinely new
+    /// `Shape` is returned. `faces` must be non-empty and every index in
+    /// range; removing a boundary face commonly leaves the result open --
+    /// validity is the caller's own separate concern
+    /// ([`Shape::is_valid`]/[`Shape::validate`]), never implied by this
+    /// call's own success.
+    pub fn remove_face(
+        &self,
+        faces: &[usize],
+        heal: bool,
+        tolerance: f64,
+    ) -> KernelResult<Shape<'ctx>> {
+        if faces.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        // Each selected face is kept alive as its own owned `Shape` until
+        // after the FFI call below -- extracting only its raw handle and
+        // letting the wrapper drop immediately would release that face's
+        // own native slot before `aicad_occt_remove_face` ever looks it up.
+        let mut face_shapes = Vec::with_capacity(faces.len());
+        for &index in faces {
+            face_shapes.push(self.get_face(index)?);
+        }
+        let face_handles: Vec<ffi::aicad_shape_handle_t> =
+            face_shapes.iter().map(Shape::raw_handle).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `face_handles` is a valid, live, contiguous array for
+        // the duration of this call; other arguments as in `is_valid`.
+        let status = unsafe {
+            ffi::aicad_occt_remove_face(
+                self.context.raw,
+                self.raw_handle(),
+                face_handles.as_ptr(),
+                face_handles.len(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        let result = Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        };
+        if heal {
+            Ok(result.heal(tolerance)?.0)
+        } else {
+            Ok(result)
+        }
+    }
+
+    /// Replaces the face at `face_index` (a raw 0-based index into this
+    /// shape's own face list) with `replacement` throughout this shape
+    /// (`AICAD-123`, `BRepTools_ReShape`), optionally healing the result at
+    /// `tolerance` afterward. `replacement` need not (and typically does
+    /// not) belong to this shape's own context slot table position -- it
+    /// is any other already-resolved `Face`-kind `Shape` in the same
+    /// [`OcctContext`]. D2 functional/value semantics: `self` and
+    /// `replacement` are both unchanged; a genuinely new `Shape` is
+    /// returned.
+    pub fn replace_face(
+        &self,
+        face_index: usize,
+        replacement: &Shape<'ctx>,
+        heal: bool,
+        tolerance: f64,
+    ) -> KernelResult<Shape<'ctx>> {
+        let old_face = self.get_face(face_index)?;
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `old_face`/`replacement` are both live for the duration
+        // of this call; other arguments as in `is_valid`.
+        let status = unsafe {
+            ffi::aicad_occt_replace_face(
+                self.context.raw,
+                self.raw_handle(),
+                old_face.raw_handle(),
+                replacement.raw_handle(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        let result = Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        };
+        if heal {
+            Ok(result.heal(tolerance)?.0)
+        } else {
+            Ok(result)
+        }
+    }
+
+    /// Splits this edge's own underlying curve at `params` (strictly
+    /// increasing, each strictly interior to the edge's own parameter
+    /// range -- `AICAD-123`, `BRepBuilderAPI_MakeEdge` per segment),
+    /// producing `params.len() + 1` new edges in ascending-parameter
+    /// order. `self` must address a shape of exactly kind Edge with a real
+    /// underlying 3D curve (fails with `KernelError::OperationFailed` for
+    /// a degenerate edge that has none). D2 functional/value semantics:
+    /// `self` is unchanged.
+    pub fn split_edge(&self, params: &[f64]) -> KernelResult<Vec<Shape<'ctx>>> {
+        if params.is_empty() {
+            return Err(KernelError::InvalidArgument);
+        }
+        let mut out_handles = vec![
+            ffi::aicad_shape_handle_t {
+                context_id: 0,
+                slot: 0,
+                generation: 0,
+            };
+            params.len() + 1
+        ];
+        let mut out_count: usize = 0;
+        // SAFETY: `params` is a valid, live, contiguous array for the
+        // duration of this call; `out_handles` is a caller-owned buffer of
+        // exactly `params.len() + 1` entries, matching the header's own
+        // documented required capacity; `&mut out_count` is a valid
+        // out-param; other arguments as in `is_valid`.
+        let status = unsafe {
+            ffi::aicad_occt_split_edge(
+                self.context.raw,
+                self.raw_handle(),
+                params.as_ptr(),
+                params.len(),
+                out_handles.as_mut_ptr(),
+                &mut out_count,
+            )
+        };
+        status_result(status)?;
+        Ok(out_handles[..out_count]
+            .iter()
+            .map(|&handle| Shape {
+                context: self.context,
+                id: handle_to_id(handle),
+            })
+            .collect())
+    }
+
+    /// Merges the faces at `faces` (raw 0-based indices into this shape's
+    /// own face list, `AICAD-123`, `ShapeUpgrade_UnifySameDomain`) into as
+    /// few faces as their shared underlying geometry allows. `faces` must
+    /// name at least 2 indices. The result may collapse to a single Face
+    /// (`Shape::topology_kind` reports `Face`) or remain a Compound/Shell
+    /// of more than one Face if not every input pair is actually
+    /// same-domain adjacent -- callers distinguish the two by classifying
+    /// the result, not by this call's own success. D2 functional/value
+    /// semantics: `self` is unchanged.
+    pub fn merge_faces(&self, faces: &[usize]) -> KernelResult<Shape<'ctx>> {
+        if faces.len() < 2 {
+            return Err(KernelError::InvalidArgument);
+        }
+        // See `remove_face`'s own comment: each selected face is kept
+        // alive until after the FFI call.
+        let mut face_shapes = Vec::with_capacity(faces.len());
+        for &index in faces {
+            face_shapes.push(self.get_face(index)?);
+        }
+        let face_handles: Vec<ffi::aicad_shape_handle_t> =
+            face_shapes.iter().map(Shape::raw_handle).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `face_handles` is a valid, live, contiguous array for
+        // the duration of this call; other arguments as in `is_valid`.
+        let status = unsafe {
+            ffi::aicad_occt_merge_faces(
+                self.context.raw,
+                face_handles.as_ptr(),
+                face_handles.len(),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
     fn raw_handle(&self) -> ffi::aicad_shape_handle_t {
         id_to_handle(self.id)
     }
@@ -1941,13 +2656,19 @@ pub struct BoundingBox {
 
 /// A normalized B-rep validation report, as reported by
 /// [`Shape::validate`] (AICAD-031). `is_valid` mirrors
-/// [`Shape::is_valid`]'s own bool for the same shape; the four
+/// [`Shape::is_valid`]'s own bool for the same shape; the six
 /// `invalid_*_count` fields break that down by topological kind, each
 /// counted over the shape's own *unique* subshapes (matching
 /// [`Shape::edge_count`]/[`Shape::face_count`]'s own de-duplication
-/// convention). A shape with `is_valid == false` always has at least one
-/// nonzero count; a shape with `is_valid == true` always has all four at
-/// zero.
+/// convention). `invalid_shell_count`/`invalid_solid_count` were added by
+/// `AICAD-119` alongside this batch's own [`OcctContext::make_shell`]/
+/// [`Shape::make_solid`] construction paths -- this is the primary
+/// validity-evidence mechanism those "construction success is not
+/// validity" doc comments point to (e.g. building a solid from a
+/// non-closed shell succeeds structurally, then reports here as
+/// `is_valid: false, invalid_solid_count: 1`). A shape with `is_valid ==
+/// false` always has at least one nonzero count; a shape with `is_valid ==
+/// true` always has all six at zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationReport {
     pub is_valid: bool,
@@ -1955,6 +2676,51 @@ pub struct ValidationReport {
     pub invalid_edge_count: usize,
     pub invalid_wire_count: usize,
     pub invalid_face_count: usize,
+    pub invalid_shell_count: usize,
+    pub invalid_solid_count: usize,
+}
+
+/// Structured sewing evidence, as returned by [`OcctContext::sew`]
+/// (`AICAD-120`). `free_edge_count`/`multiple_edge_count`/
+/// `degenerated_shape_count` are `BRepBuilderAPI_Sewing`'s own residual-
+/// defect counts on the *result* (a free edge remains unshared by any
+/// second face; a multiple edge is shared by more than 2, itself a
+/// non-manifold defect neither this nor `AICAD-119`'s bare `make_shell`
+/// silently repairs). `is_valid` mirrors a full [`Shape::validate`] call
+/// against the sewed result exactly (`BRepCheck_Analyzer`); `changed` is
+/// true iff at least one input face/edge was actually merged/relabeled
+/// (an already-fully-connected input, e.g. a real solid's own faces,
+/// reports `changed: false`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SewReport {
+    pub changed: bool,
+    pub is_valid: bool,
+    pub free_edge_count: usize,
+    pub multiple_edge_count: usize,
+    pub degenerated_shape_count: usize,
+}
+
+/// Structured healing evidence, as returned by [`Shape::heal`]
+/// (`AICAD-120`). **`is_valid_after` alone is never sufficient evidence
+/// that healing succeeded** -- see `kind_changed`'s own doc comment,
+/// which is exactly why this task added it. `changed` mirrors
+/// `ShapeFix_Shape::Perform`'s own return value (whether it did anything
+/// at all, coarse and not per-entity -- see [`Shape::heal`]'s own doc
+/// comment for why no finer-grained lineage is offered here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HealReport {
+    pub changed: bool,
+    pub is_valid_before: bool,
+    pub is_valid_after: bool,
+    /// Whether `ShapeFix_Shape` returned a shape of a different top-level
+    /// topological kind than its input -- verified empirically (not
+    /// assumed) to happen for an unclosable Solid, which gets silently
+    /// demoted to a bare Shell (trivially valid, since a Shell has no
+    /// closure requirement). `is_valid_after == true` together with
+    /// `kind_changed == true` means healing gave up on the shape it was
+    /// asked to fix and returned a different, lesser kind instead -- not
+    /// a genuine repair, and must not be presented as one.
+    pub kind_changed: bool,
 }
 
 /// A flat-shaded triangle-soup mesh, as returned by [`Shape::tessellate`]
@@ -3259,6 +4025,8 @@ mod tests {
                 invalid_edge_count: 0,
                 invalid_wire_count: 0,
                 invalid_face_count: 0,
+                invalid_shell_count: 0,
+                invalid_solid_count: 0,
             }
         );
         assert_eq!(report.is_valid, box_shape.is_valid().unwrap());
@@ -3286,6 +4054,460 @@ mod tests {
         assert_eq!(report.invalid_wire_count, 0);
     }
 
+    // --- AICAD-119: general topology construction ---
+
+    fn unit_square_wire<'ctx>(context: &'ctx OcctContext) -> Shape<'ctx> {
+        let e0 = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let e1 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let e2 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0))
+            .unwrap();
+        let e3 = context
+            .make_line_edge(Point3::new(0.0, 1.0, 0.0), Point3::new(0.0, 0.0, 0.0))
+            .unwrap();
+        context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap()
+    }
+
+    #[test]
+    fn make_vertex_reports_exactly_its_own_point() {
+        let context = OcctContext::new().unwrap();
+        let vertex = context.make_vertex(Point3::new(1.0, 2.0, 3.0)).unwrap();
+        let point = vertex.vertex_point().unwrap();
+        assert_eq!(point, Point3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn make_face_on_plane_of_a_unit_square_wire_has_unit_area() {
+        let context = OcctContext::new().unwrap();
+        let wire = unit_square_wire(&context);
+        let face = wire
+            .make_face_on_plane(&[], Point3::ORIGIN, Direction3::Z, false)
+            .unwrap();
+        let report = face.validate().unwrap();
+        assert!(report.is_valid);
+        assert!((face.area().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn make_shell_then_make_solid_from_a_box_faces_matches_the_box_volume() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 2.0, 3.0).unwrap();
+        let faces: Vec<Shape> = (0..box_shape.face_count().unwrap())
+            .map(|i| box_shape.get_face(i).unwrap())
+            .collect();
+        let face_refs: Vec<&Shape> = faces.iter().collect();
+        let shell = context.make_shell(&face_refs).unwrap();
+        let shell_report = shell.validate().unwrap();
+        assert!(shell_report.is_valid);
+        assert_eq!(shell_report.invalid_shell_count, 0);
+
+        let solid = shell.make_solid(&[]).unwrap();
+        let solid_report = solid.validate().unwrap();
+        assert!(solid_report.is_valid);
+        assert_eq!(solid_report.invalid_solid_count, 0);
+        assert!((solid.volume().unwrap() - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn make_solid_from_a_non_closed_shell_succeeds_structurally_but_is_reported_invalid() {
+        // AICAD-119: verified empirically that BRepBuilderAPI_MakeSolid does
+        // not require its input shell to be closed -- this is Stage-1
+        // kernel policy #14 ("construction success is not evidence of
+        // validity") in its starkest form, and is exactly the behavior
+        // `Shape::make_solid`'s own doc comment describes.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let single_face = box_shape.get_face(0).unwrap();
+        let open_shell = context.make_shell(&[&single_face]).unwrap();
+        let solid = open_shell
+            .make_solid(&[])
+            .expect("construction itself succeeds even though the shell is open");
+        let report = solid.validate().unwrap();
+        assert!(!report.is_valid);
+        assert_eq!(report.invalid_solid_count, 1);
+    }
+
+    #[test]
+    fn make_shell_rejects_an_empty_face_list() {
+        let context = OcctContext::new().unwrap();
+        assert_eq!(
+            context.make_shell(&[]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_compound_rejects_an_empty_shape_list() {
+        let context = OcctContext::new().unwrap();
+        assert_eq!(
+            context.make_compound(&[]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_compound_groups_mixed_kind_shapes_without_error() {
+        let context = OcctContext::new().unwrap();
+        let vertex = context.make_vertex(Point3::ORIGIN).unwrap();
+        let wire = unit_square_wire(&context);
+        let compound = context.make_compound(&[&vertex, &wire]).unwrap();
+        assert!(compound.is_valid().unwrap());
+    }
+
+    #[test]
+    fn make_face_on_cylinder_of_a_planar_wire_is_structurally_real_but_not_required_to_be_valid() {
+        // A unit-square wire does not lie on the cylinder's own surface, so
+        // this documents the honest outcome (a structurally-built face that
+        // validate() may reject) rather than asserting a specific result --
+        // exactly [`Shape::make_face_on_plane`]'s own "construction success
+        // is not validity" contract, exercised on a non-planar surface.
+        let context = OcctContext::new().unwrap();
+        let wire = unit_square_wire(&context);
+        let axis = Axis3::new(Point3::ORIGIN, Direction3::Z);
+        let face = wire.make_face_on_cylinder(&[], axis, 0.5, false).unwrap();
+        let _ = face.validate().unwrap();
+    }
+
+    #[test]
+    fn make_face_on_sphere_torus_cone_construct_without_error() {
+        let context = OcctContext::new().unwrap();
+        let axis = Axis3::new(Point3::ORIGIN, Direction3::Z);
+        assert!(
+            unit_square_wire(&context)
+                .make_face_on_sphere(&[], Point3::ORIGIN, 2.0, false)
+                .is_ok()
+        );
+        assert!(
+            unit_square_wire(&context)
+                .make_face_on_torus(&[], axis, 2.0, 0.5, false)
+                .is_ok()
+        );
+        assert!(
+            unit_square_wire(&context)
+                .make_face_on_cone(&[], axis, std::f64::consts::FRAC_PI_4, false)
+                .is_ok()
+        );
+    }
+
+    // --- AICAD-120: sewing/healing ---
+
+    #[test]
+    fn sewing_an_already_connected_solids_own_faces_is_a_deterministic_no_op() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let faces: Vec<Shape> = (0..6).map(|i| box_shape.get_face(i).unwrap()).collect();
+        let face_refs: Vec<&Shape> = faces.iter().collect();
+        let (sewed, _lineage, report) = context.sew(&face_refs, 1e-6).unwrap();
+        assert!(!report.changed);
+        assert!(report.is_valid);
+        assert_eq!(report.free_edge_count, 0);
+        assert_eq!(report.multiple_edge_count, 0);
+        assert!((sewed.volume().unwrap() - 1.0).abs() < 1e-9);
+
+        // Deterministic repeated behavior: sewing the same faces again
+        // produces the identical report.
+        let (_sewed2, _lineage2, report2) = context.sew(&face_refs, 1e-6).unwrap();
+        assert_eq!(report, report2);
+    }
+
+    #[test]
+    fn sewing_two_edge_adjacent_squares_merges_them_and_reports_the_perimeter() {
+        let context = OcctContext::new().unwrap();
+        let e0 = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let e1 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let e2 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0))
+            .unwrap();
+        let e3 = context
+            .make_line_edge(Point3::new(0.0, 1.0, 0.0), Point3::new(0.0, 0.0, 0.0))
+            .unwrap();
+        let wire1 = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        let face1 = wire1
+            .make_face_on_plane(&[], Point3::ORIGIN, Direction3::Z, false)
+            .unwrap();
+
+        let f0 = context
+            .make_line_edge(Point3::new(1.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0))
+            .unwrap();
+        let f1 = context
+            .make_line_edge(Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 1.0, 0.0))
+            .unwrap();
+        let f2 = context
+            .make_line_edge(Point3::new(2.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0))
+            .unwrap();
+        let f3 = context
+            .make_line_edge(Point3::new(1.0, 1.0, 0.0), Point3::new(1.0, 0.0, 0.0))
+            .unwrap();
+        let wire2 = context.make_wire_from_edges(&[&f0, &f1, &f2, &f3]).unwrap();
+        let face2 = wire2
+            .make_face_on_plane(&[], Point3::ORIGIN, Direction3::Z, false)
+            .unwrap();
+
+        let (sewed, _lineage, report) = context.sew(&[&face1, &face2], 1e-6).unwrap();
+        assert!(report.changed);
+        assert!(report.is_valid);
+        // Two unit squares glued along one shared edge -> a 1x2 rectangle,
+        // whose own perimeter is 6 unique boundary edges.
+        assert_eq!(report.free_edge_count, 6);
+        assert!((sewed.area().unwrap() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sew_rejects_an_empty_shape_list() {
+        let context = OcctContext::new().unwrap();
+        assert_eq!(
+            context.sew(&[], 1e-6).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn healing_an_already_valid_box_reports_unchanged() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let (healed, report) = box_shape.heal(1e-6).unwrap();
+        assert!(!report.changed);
+        assert!(report.is_valid_before);
+        assert!(report.is_valid_after);
+        assert!(!report.kind_changed);
+        assert!((healed.volume().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn healing_an_unclosable_solid_reports_valid_after_only_alongside_kind_changed() {
+        // AICAD-120's own central discovery: ShapeFix_Shape cannot invent
+        // the 5 missing faces a solid built from a single standalone face
+        // would need to actually close, so it silently demotes the Solid
+        // to a bare Shell -- which trivially validates (no closure
+        // requirement). `is_valid_after` alone would misrepresent this as
+        // a successful repair; `kind_changed` is the required evidence
+        // that stops that misreading.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let single_face = box_shape.get_face(0).unwrap();
+        let open_shell = context.make_shell(&[&single_face]).unwrap();
+        let open_solid = open_shell.make_solid(&[]).unwrap();
+        assert!(!open_solid.validate().unwrap().is_valid);
+
+        let (_healed, report) = open_solid.heal(1e-6).unwrap();
+        assert!(report.changed);
+        assert!(!report.is_valid_before);
+        assert!(report.is_valid_after);
+        assert!(
+            report.kind_changed,
+            "a bare 'is_valid_after: true' here would silently misrepresent an unclosable \
+             solid demoted to a Shell as a genuine repair"
+        );
+    }
+
+    // --- AICAD-121: safe topology inspection ---
+
+    #[test]
+    fn topology_kind_classifies_every_concrete_entity_kind() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(box_shape.topology_kind().unwrap(), TopologyKind::Solid);
+
+        let face = box_shape.get_face(0).unwrap();
+        assert_eq!(face.topology_kind().unwrap(), TopologyKind::Face);
+
+        let wire = face.get_wire(0).unwrap();
+        assert_eq!(wire.topology_kind().unwrap(), TopologyKind::Wire);
+
+        let edge = face.get_edge(0).unwrap();
+        assert_eq!(edge.topology_kind().unwrap(), TopologyKind::Edge);
+
+        let vertex = face.get_vertex(0).unwrap();
+        assert_eq!(vertex.topology_kind().unwrap(), TopologyKind::Vertex);
+
+        let shell = context.make_shell(&[&face]).unwrap();
+        assert_eq!(shell.topology_kind().unwrap(), TopologyKind::Shell);
+    }
+
+    #[test]
+    fn topology_kind_rejects_a_compound_as_unclassifiable() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        let compound = context.make_compound(&[&face]).unwrap();
+        assert_eq!(
+            compound.topology_kind().unwrap_err(),
+            KernelError::OperationFailed
+        );
+    }
+
+    #[test]
+    fn is_forward_oriented_is_deterministic_across_repeated_calls() {
+        // Not every face of a real solid is FORWARD-oriented relative to
+        // the solid's own topology -- verified empirically (box face 0 is
+        // REVERSED) -- so this asserts determinism/repeatability, not a
+        // specific expected orientation (matching this task's own
+        // acceptance line: tests must not rely on a specific kernel
+        // enumeration/orientation outcome, only that it is stable).
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let face = box_shape.get_face(0).unwrap();
+        let first = face.is_forward_oriented().unwrap();
+        let second = face.is_forward_oriented().unwrap();
+        assert_eq!(first, second);
+    }
+
+    // --- AICAD-123: functional raw topology editing ---
+
+    #[test]
+    fn resolve_reconstructs_a_live_shape_from_a_bare_kernel_handle() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let handle = box_shape.handle();
+        let resolved = Shape::resolve(&context, handle).unwrap();
+        assert!((resolved.volume().unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remove_face_deletes_exactly_the_selected_face_and_opens_the_shell() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let opened = box_shape.remove_face(&[0], false, 1e-6).unwrap();
+        assert_eq!(opened.face_count().unwrap(), 5);
+        assert!(
+            !opened.is_valid().unwrap(),
+            "a box missing one of its six faces is not a valid closed solid"
+        );
+    }
+
+    #[test]
+    fn remove_face_is_deterministic_across_repeated_calls() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let first = box_shape.remove_face(&[0], false, 1e-6).unwrap();
+        let second = box_shape.remove_face(&[0], false, 1e-6).unwrap();
+        assert_eq!(first.face_count().unwrap(), second.face_count().unwrap());
+        assert_eq!(first.is_valid().unwrap(), second.is_valid().unwrap());
+        assert!((first.area().unwrap() - second.area().unwrap()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remove_face_rejects_an_empty_face_list() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.remove_face(&[], false, 1e-6).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn replace_face_with_an_independently_built_equivalent_face_preserves_face_count() {
+        let context = OcctContext::new().unwrap();
+        let box_a = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let box_b = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let replacement = box_b.get_face(0).unwrap();
+        let replaced = box_a.replace_face(0, &replacement, false, 1e-6).unwrap();
+        assert_eq!(replaced.face_count().unwrap(), 6);
+    }
+
+    #[test]
+    fn split_edge_produces_two_edges_whose_lengths_sum_to_the_original() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0))
+            .unwrap();
+        let original_length = edge.length().unwrap();
+        let pieces = edge.split_edge(&[1.0]).unwrap();
+        assert_eq!(pieces.len(), 2);
+        let total: f64 = pieces.iter().map(|p| p.length().unwrap()).sum();
+        assert!((total - original_length).abs() < 1e-9);
+        for piece in &pieces {
+            assert_eq!(piece.topology_kind().unwrap(), TopologyKind::Edge);
+        }
+    }
+
+    #[test]
+    fn split_edge_rejects_a_parameter_outside_the_edges_own_range() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0))
+            .unwrap();
+        assert_eq!(
+            edge.split_edge(&[1.0e6]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn split_edge_rejects_an_empty_parameter_list() {
+        let context = OcctContext::new().unwrap();
+        let edge = context
+            .make_line_edge(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0))
+            .unwrap();
+        assert_eq!(
+            edge.split_edge(&[]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn merge_faces_unifies_two_coplanar_adjacent_faces_into_one() {
+        let context = OcctContext::new().unwrap();
+        let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+        let e0 = context.make_line_edge(p(0.0, 0.0), p(1.0, 0.0)).unwrap();
+        let e1 = context.make_line_edge(p(1.0, 0.0), p(1.0, 1.0)).unwrap();
+        let e2 = context.make_line_edge(p(1.0, 1.0), p(0.0, 1.0)).unwrap();
+        let e3 = context.make_line_edge(p(0.0, 1.0), p(0.0, 0.0)).unwrap();
+        let wire1 = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        let face1 = wire1.make_face().unwrap();
+
+        // A second unit square sharing edge x=1 with the first (adjacent,
+        // same z=0 plane).
+        let f0 = context.make_line_edge(p(1.0, 0.0), p(2.0, 0.0)).unwrap();
+        let f1 = context.make_line_edge(p(2.0, 0.0), p(2.0, 1.0)).unwrap();
+        let f2 = context.make_line_edge(p(2.0, 1.0), p(1.0, 1.0)).unwrap();
+        let f3 = context.make_line_edge(p(1.0, 1.0), p(1.0, 0.0)).unwrap();
+        let wire2 = context.make_wire_from_edges(&[&f0, &f1, &f2, &f3]).unwrap();
+        let face2 = wire2.make_face().unwrap();
+
+        // `face1`/`face2` were each built from their own independent edge
+        // objects -- geometrically coincident along the shared boundary
+        // but not yet the SAME topological edge, so `UnifySameDomain`
+        // would not recognize them as neighbours without first sewing
+        // them together (exactly the tool `AICAD-120`'s own `sew` exists
+        // for).
+        let (sewn, _lineage, _report) = context.sew(&[&face1, &face2], 1e-6).unwrap();
+        let merged = sewn.merge_faces(&[0, 1]).unwrap();
+        // The result stays wrapped in whatever container `sewn` itself
+        // was (a Shell/Compound), so its own FACE count -- not its
+        // top-level TopAbs kind -- is what proves a real merge happened.
+        assert_eq!(merged.face_count().unwrap(), 1);
+        assert!((merged.area().unwrap() - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn merge_faces_leaves_non_coplanar_faces_unmerged() {
+        // Two perpendicular faces of a box are never same-domain, so
+        // UnifySameDomain must not collapse them into one Face.
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let merged = box_shape.merge_faces(&[0, 1]).unwrap();
+        assert_eq!(merged.face_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn merge_faces_rejects_fewer_than_two_indices() {
+        let context = OcctContext::new().unwrap();
+        let box_shape = context.create_box(1.0, 1.0, 1.0).unwrap();
+        assert_eq!(
+            box_shape.merge_faces(&[0]).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
     // --- AICAD-032: display tessellation output ---
 
     #[test]

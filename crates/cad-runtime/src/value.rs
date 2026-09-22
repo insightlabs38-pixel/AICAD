@@ -142,6 +142,46 @@ pub enum Value {
     /// job, run against the finished graph after execution completes, not
     /// this crate's.
     Geometry(cad_geometry_api::GeomId),
+    /// A kernel-neutral analytic curve value (`AICAD-109`,
+    /// `project/DECISION_LOG.md#DL-5`/`DL-26`). Unlike [`Value::Geometry`],
+    /// this carries the curve's own data directly (`AnalyticCurve` is
+    /// backend-independent pure data — see its own module doc comment)
+    /// rather than a `GeomId` into [`Interpreter`](crate::interp::
+    /// Interpreter)'s accumulated `GeometryGraph`: constructing one is
+    /// ordinary value computation, never a kernel call or a graph node, so
+    /// it needs no such indirection. `Box`ed rather than inline: the
+    /// largest `AnalyticCurve` variant (`Ellipse`, two `Point3`/`Direction3`
+    /// pairs plus two `Quantity`s) is far larger than every other `Value`
+    /// variant, and an inline `AnalyticCurve` measurably inflated `Value`'s
+    /// own size enough to reduce `Interpreter`'s safe self-recursion depth
+    /// in a debug build (found by `moderately_deep_self_recursion_
+    /// succeeds_within_the_default_budget` regressing) — boxing keeps
+    /// `Value` small regardless of which variant is live, at the cost of
+    /// one heap allocation per constructed curve, matching the ordinary
+    /// Rust idiom for exactly this "one large variant" shape.
+    Curve(Box<cad_geometry_api::AnalyticCurve>),
+    /// A kernel-neutral analytic surface value (`AICAD-113`,
+    /// `project/DECISION_LOG.md#DL-5`/`DL-26`) — the surface-family
+    /// counterpart of [`Value::Curve`], for the identical reasons (pure
+    /// backend-independent data, boxed to keep `Value` small).
+    Surface(Box<cad_geometry_api::AnalyticSurface>),
+    /// A raw/unsafe geometry handle (`AICAD-122`, `project/DECISION_LOG.md
+    /// #DL-24` (D22)) — a `cad_geometry_api::raw::RawGeometry` minted by
+    /// `enter_raw` against the owning [`Interpreter`](crate::interp::
+    /// Interpreter) session's current epoch. Unlike [`Value::Geometry`],
+    /// this is not a `GeomId` into an accumulated `GeometryGraph` — it
+    /// already carries the classified kernel-neutral handle directly (a
+    /// `cad_kernel_api::topology::ClassifiedShape` plus the minting
+    /// `Epoch`), since the whole point of the raw tier is a real,
+    /// synchronously-materialized kernel result (`BuiltinFnId::EnterRaw`
+    /// is `Query`-category — see that variant's own doc comment). Reading
+    /// back through it (`raw_topology_kind_of`) always re-checks the
+    /// handle's own minted epoch against the session's *current*
+    /// `EpochCounter`, never trusting a previously-successful check.
+    /// `Copy`-sized (a `KernelId` triple plus a small tag, no heap
+    /// allocation) — no boxing needed, unlike [`Value::Curve`]/
+    /// [`Value::Surface`].
+    Raw(cad_geometry_api::RawGeometry),
     /// A struct-instance value (`AICAD-070`) — completes `AICAD-053`'s
     /// already-approved general struct declarations with an actual
     /// runtime representation (previously documented above as a genuine,
@@ -224,6 +264,9 @@ impl Value {
             Value::List(_) => "List",
             Value::Range(_) => "Range",
             Value::Geometry(_) => "Geometry",
+            Value::Curve(_) => "Curve",
+            Value::Surface(_) => "Surface",
+            Value::Raw(_) => "Raw",
             Value::Struct { .. } => "struct instance",
             Value::Part { .. } => "part instance",
         }
@@ -253,6 +296,9 @@ impl Value {
             | Value::List(_)
             | Value::Range(_)
             | Value::Geometry(_)
+            | Value::Curve(_)
+            | Value::Surface(_)
+            | Value::Raw(_)
             | Value::Struct { .. }
             | Value::Part { .. } => None,
         }

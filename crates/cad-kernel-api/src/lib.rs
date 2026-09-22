@@ -16,6 +16,11 @@
 //! syntax, semantic references, user-facing package abstractions, or AI
 //! logic (see `README.md`).
 //!
+//! `AICAD-108` (Stage 5) adds [`topology`]: [`TopologyKind`]/
+//! [`ClassifiedShape`] — the kernel-neutral kind tag a future topology-
+//! inspection operation (`AICAD-119`-`121`) pairs with an otherwise-
+//! unclassified [`KernelShape`]. See that module's own doc comment.
+//!
 //! # Not a semantic reference
 //!
 //! Every handle type here is **build/epoch-local** (Stage-1 kernel
@@ -33,8 +38,10 @@
 use std::fmt;
 
 mod geometry;
+pub mod topology;
 
 pub use geometry::{Axis3, Direction3, Frame3, Plane3, Point3, Transform, Vector3};
+pub use topology::{ClassifiedShape, TopologyKind};
 
 /// Backend-independent identity for one kernel-resident entity, scoped to
 /// a single kernel context and shape-table generation.

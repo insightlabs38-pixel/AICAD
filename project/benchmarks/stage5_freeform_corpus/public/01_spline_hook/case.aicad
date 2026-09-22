@@ -1,0 +1,31 @@
+// Spline-defined hook/bend profile. `make_edge`/topology construction does
+// not yet accept a Bezier/B-spline curve family directly (AICAD-119's own
+// `curve_to_edge_op` only covers Circle/Arc/trimmed-Line -- see
+// `held_out/07_spline_edge_construction_unsupported` and this corpus's own
+// README "Discovered capability gap" section); this fixture instead proves
+// the hook's own exact value-level geometry: clamped-endpoint identity and
+// a real closest-point-on-curve query, matching `examples/curves/
+// cable_routing_path.aicad`'s own established realistic-curve-use pattern.
+let hook: Curve = bspline_curve(
+    degree = 3,
+    control_points = [
+        Point3(x = 0mm, y = 0mm, z = 0mm),
+        Point3(x = 0mm, y = 45mm, z = 0mm),
+        Point3(x = 25mm, y = 60mm, z = 0mm),
+        Point3(x = 45mm, y = 40mm, z = 0mm),
+        Point3(x = 30mm, y = 15mm, z = 0mm),
+    ],
+    knots = [0.0, 0.5, 1.0],
+    multiplicities = [4, 1, 4],
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0],
+    periodic = false,
+);
+let hook_start: CurveEvaluation = evaluate_curve(hook, 0.0);
+let hook_end: CurveEvaluation = evaluate_curve(hook, 1.0);
+let hook_mid: CurveEvaluation = evaluate_curve(hook, 0.5);
+
+// A fixed obstacle point; its nearest point on the hook's own curved
+// bend, checked in the Rust test against the same value the curve's own
+// exact analytic evaluation reports at the reported parameter.
+let obstacle: Point3 = Point3(x = 50mm, y = 30mm, z = 0mm);
+let clearance_points: List<ClosestPointResult> = closest_point_on_curve(hook, obstacle);

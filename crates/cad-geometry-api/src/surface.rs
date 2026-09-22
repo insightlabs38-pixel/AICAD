@@ -1,0 +1,2769 @@
+//! Kernel-neutral analytic surface values (`AICAD-108` stubbed the value
+//! shape; `AICAD-113` wires construction/evaluation end to end) — the
+//! surface-family counterpart of [`crate::curve::AnalyticCurve`]; see that
+//! module's own doc comment for the closed-enum/pure-data/no-kernel-handle
+//! design rationale, which applies here unchanged.
+//!
+//! # Construction and evaluation (`AICAD-113`)
+//!
+//! [`AnalyticSurface::plane`]/`cylinder`/`cone`/`sphere`/`torus` are
+//! validated constructors; [`AnalyticSurface::evaluate`] computes a point
+//! plus both partial derivatives (`du`/`dv`) and the outward unit normal at
+//! a `(u, v)` parameter pair — pure closed-form math, no kernel call, exactly
+//! like [`crate::curve::AnalyticCurve::evaluate`]. Bezier/B-spline/NURBS
+//! surfaces (`AICAD-114`), trimmed surfaces (`AICAD-115`), and offset/
+//! derivative queries generalized across every family (`AICAD-116`) are
+//! later Stage-5 batch tasks, per this crate's own `README.md`/module doc
+//! comment.
+//!
+//! `normal` is always computed as `du.cross(dv)`, normalized — never a
+//! separately-derived "this family's known normal formula" shortcut. This
+//! is deliberate, not incidental: at a genuine parametrization singularity
+//! (a sphere's own pole, `v = +-pi/2`, where longitude `u` is ambiguous; a
+//! cone's own apex, `v = 0`, where `u` is likewise ambiguous) `du` is the
+//! zero vector, so `du.cross(dv)` is zero and normalizing it correctly
+//! yields `None` — reported as [`QueryFailure::Degenerate`], never an
+//! arbitrary picked normal. A hand-derived closed-form normal (e.g. "radial
+//! direction from center" for a sphere) would paper over exactly this case,
+//! since it stays well-defined at the pole even though the `(u, v)`
+//! parametrization itself is singular there — [`AGENTS.md`]'s "singular ...
+//! locations are reported structurally" acceptance criterion is about the
+//! parametrization, not the underlying point.
+
+//! # Trimmed surfaces (`AICAD-115`)
+//!
+//! [`AnalyticSurface::Trimmed`]/[`AnalyticSurface::trim`]/[`TrimLoop`] add a
+//! bounded surface: an underlying (base) surface plus an outer trim loop
+//! and zero or more hole loops, all living in the base surface's own
+//! `(u, v)` parameter domain — a "pcurve" in conventional CAD-kernel
+//! terminology, though `TrimLoop` is AICAD-owned data, never an OCCT
+//! `Geom2d_Curve`. A trim loop is exactly one already-closed
+//! [`crate::curve::AnalyticCurve`], evaluated with its point's `x`/`y`
+//! components read as `(u, v)` (`z` must be numerically zero — the loop
+//! must actually lie in the parameter plane). Composite multi-segment
+//! loops (e.g. a rounded-rectangle boundary built from several curve
+//! pieces) are **not yet supported** — see [`TrimLoop::new`]'s own doc
+//! comment for exactly which single-curve shapes close on their own (a full
+//! [`crate::curve::AnalyticCurve::Circle`]/[`crate::curve::AnalyticCurve::
+//! Ellipse`] is the common practical case: a circular/elliptical hole or
+//! outer boundary).
+
+use crate::Quantity;
+use crate::curve::AnalyticCurve;
+use crate::query_result::{QueryFailure, QueryOutcome};
+use cad_kernel_api::{Axis3, Direction3, Frame3, Point3, Vector3};
+use cad_units::ConstructionTolerance;
+use std::fmt;
+
+/// One of the closed set of analytic surface families Stage 5 values may
+/// describe — see module doc comment.
+///
+/// Not `Copy` (unlike this enum's original `AICAD-108`/`AICAD-113`
+/// revision) — `AICAD-114`'s `Bezier`/`BSpline` variants carry `Vec<Vec<_>>`
+/// control-net data, which cannot be `Copy`. Every pre-existing call site
+/// that relied on an implicit copy now clones explicitly instead, mirroring
+/// [`crate::curve::AnalyticCurve`]'s own identical `AICAD-110` change.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnalyticSurface {
+    /// An infinite plane through `origin` normal to `normal`.
+    Plane { origin: Point3, normal: Direction3 },
+    /// An infinite circular cylinder of `radius`, coaxial with `axis`.
+    Cylinder { axis: Axis3, radius: Quantity },
+    /// A cone with apex at `axis.origin`, opening along `axis.direction` at
+    /// `half_angle` from that axis.
+    Cone { axis: Axis3, half_angle: Quantity },
+    /// A sphere of `radius` centered at `center`.
+    Sphere { center: Point3, radius: Quantity },
+    /// A torus coaxial with `axis`: `major_radius` from the axis to the
+    /// tube's own center circle, `minor_radius` the tube's own cross-
+    /// section radius.
+    Torus {
+        axis: Axis3,
+        major_radius: Quantity,
+        minor_radius: Quantity,
+    },
+    /// A (possibly rational) tensor-product Bezier surface (`AICAD-114`) of
+    /// bidegree `(control_points.len() - 1, control_points[0].len() - 1)`,
+    /// parametrized by `(u, v)` in `[0, 1] x [0, 1]`. `control_points[i][j]`
+    /// — outer index `i` along `u`, inner index `j` along `v`; every row
+    /// must have the identical length (a rectangular control net).
+    /// `weights` follows [`crate::curve::AnalyticCurve::Bezier`]'s own
+    /// `None`-means-non-rational convention, shaped identically to
+    /// `control_points`. Evaluated as the equivalent clamped tensor-product
+    /// B-spline (see [`AnalyticSurface::evaluate`]'s own doc comment) —
+    /// exactly [`crate::curve::AnalyticCurve::Bezier`]'s own precedent,
+    /// applied once per parametric direction.
+    Bezier {
+        control_points: Vec<Vec<Point3>>,
+        weights: Option<Vec<Vec<f64>>>,
+    },
+    /// A (possibly rational) tensor-product B-spline/NURBS surface
+    /// (`AICAD-114`) of the given `degree_u`/`degree_v`, with independent
+    /// explicit knot vectors per direction (the [`crate::curve::
+    /// AnalyticCurve::bspline`] `(knots, multiplicities)` convention,
+    /// applied once per direction). `periodic_u`/`periodic_v: true` are
+    /// constructible-only-to-reject, mirroring [`crate::curve::
+    /// AnalyticCurve::BSpline::periodic`]'s own identical documented scope
+    /// limitation.
+    BSpline {
+        degree_u: usize,
+        degree_v: usize,
+        control_points: Vec<Vec<Point3>>,
+        knots_u: Vec<f64>,
+        multiplicities_u: Vec<usize>,
+        knots_v: Vec<f64>,
+        multiplicities_v: Vec<usize>,
+        weights: Option<Vec<Vec<f64>>>,
+        periodic_u: bool,
+        periodic_v: bool,
+    },
+    /// A bounded (trimmed) surface (`AICAD-115`): `base`, restricted to the
+    /// region inside `outer` and outside every one of `holes` — see module
+    /// doc comment. Constructed only via [`AnalyticSurface::trim`] (fields
+    /// are private, unlike every other variant — `outer`/`holes` carry
+    /// their own construction-time-validated orientation, which a
+    /// struct-literal caller could otherwise silently invalidate).
+    Trimmed {
+        base: Box<AnalyticSurface>,
+        outer: TrimLoop,
+        holes: Vec<TrimLoop>,
+    },
+}
+
+impl AnalyticSurface {
+    /// This surface's own anchor point — a plane/sphere's own defining
+    /// point, a cylinder/cone/torus's own axis origin, a Bezier/B-spline
+    /// surface's own first control point (`.first()` rather than indexing —
+    /// an empty control net is only reachable via direct struct-literal
+    /// construction bypassing [`AnalyticSurface::bezier`]/[`AnalyticSurface::
+    /// bspline`], mirroring [`crate::curve::AnalyticCurve::anchor`]'s
+    /// identical defensive convention), or a trimmed surface's own `base`
+    /// anchor.
+    pub fn anchor(&self) -> Point3 {
+        match self {
+            AnalyticSurface::Plane { origin, .. } => *origin,
+            AnalyticSurface::Cylinder { axis, .. }
+            | AnalyticSurface::Cone { axis, .. }
+            | AnalyticSurface::Torus { axis, .. } => axis.origin,
+            AnalyticSurface::Sphere { center, .. } => *center,
+            AnalyticSurface::Trimmed { base, .. } => base.anchor(),
+            AnalyticSurface::Bezier { control_points, .. }
+            | AnalyticSurface::BSpline { control_points, .. } => control_points
+                .first()
+                .and_then(|row| row.first())
+                .copied()
+                .unwrap_or(Point3::ORIGIN),
+        }
+    }
+}
+
+/// Every way validated [`AnalyticSurface`] construction can be rejected —
+/// the surface-family counterpart of [`crate::curve::CurveConstructionError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceConstructionError {
+    /// A `Length`/`Angle` magnitude was not finite.
+    NonFinite,
+    /// A radius was zero or negative.
+    NonPositiveRadius,
+    /// A cone's `half_angle` was not strictly between `0` and `pi/2` — `0`
+    /// degenerates to a line, and `pi/2` or beyond degenerates to a flat
+    /// plane/reflex cone, neither a well-defined cone.
+    InvalidHalfAngle,
+    /// A torus's `minor_radius` was not strictly less than `major_radius`.
+    /// Stage-5's initial scope is the non-self-intersecting "ring" torus
+    /// only — a spindle (`minor_radius >= major_radius`) or self-
+    /// intersecting torus is a documented scope limitation, mirroring
+    /// [`crate::curve::CurveConstructionError::UnsupportedPeriodic`]'s own
+    /// "constructible-only-to-reject" precedent.
+    MinorNotLessThanMajor,
+    /// A Bezier/B-spline control net had fewer than 2 rows/columns (Bezier),
+    /// or fewer than `degree + 1` rows/columns for its own declared degree
+    /// (B-spline) — the surface-family counterpart of [`crate::curve::
+    /// CurveConstructionError::TooFewControlPoints`].
+    TooFewControlPoints,
+    /// A control net's rows did not all have the identical length (not
+    /// rectangular).
+    RaggedControlNet,
+    /// `weights` was given but its shape (row/column count) did not match
+    /// `control_points`.
+    MismatchedWeightShape,
+    /// A given weight was zero, negative, or non-finite.
+    NonPositiveWeight,
+    /// One direction's `knots`/`multiplicities` had different lengths.
+    MismatchedKnotArrays,
+    /// One direction's `knots` was not strictly increasing.
+    NonIncreasingKnots,
+    /// One direction's multiplicity was zero, or exceeded the bound
+    /// [`crate::curve::CurveConstructionError::InvalidMultiplicity`]
+    /// documents (`degree` for an interior knot, `degree + 1` for an end
+    /// knot).
+    InvalidMultiplicity,
+    /// One direction's expanded knot count did not equal `control net
+    /// extent along that direction + degree + 1` — the surface-family
+    /// counterpart of [`crate::curve::CurveConstructionError::
+    /// KnotControlPointCountMismatch`], checked independently per direction.
+    KnotControlPointCountMismatch,
+    /// `periodic_u`/`periodic_v: true` (a closed/wrapping B-spline surface
+    /// along that direction) was requested — mirrors [`crate::curve::
+    /// CurveConstructionError::UnsupportedPeriodic`]'s own documented scope
+    /// limitation exactly, per direction.
+    UnsupportedPeriodic,
+}
+
+impl fmt::Display for SurfaceConstructionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            SurfaceConstructionError::NonFinite => "surface parameter is not finite",
+            SurfaceConstructionError::NonPositiveRadius => "surface radius must be positive",
+            SurfaceConstructionError::InvalidHalfAngle => {
+                "cone half_angle must be strictly between 0 and pi/2"
+            }
+            SurfaceConstructionError::MinorNotLessThanMajor => {
+                "torus minor_radius must be strictly less than major_radius"
+            }
+            SurfaceConstructionError::TooFewControlPoints => {
+                "a surface needs at least 2 (Bezier) or degree + 1 (B-spline) control points \
+                 along each direction"
+            }
+            SurfaceConstructionError::RaggedControlNet => {
+                "every row of a control net must have the identical length"
+            }
+            SurfaceConstructionError::MismatchedWeightShape => {
+                "weights must have the same shape as control_points"
+            }
+            SurfaceConstructionError::NonPositiveWeight => {
+                "every weight must be positive and finite"
+            }
+            SurfaceConstructionError::MismatchedKnotArrays => {
+                "knots and multiplicities must have the same length"
+            }
+            SurfaceConstructionError::NonIncreasingKnots => "knots must be strictly increasing",
+            SurfaceConstructionError::InvalidMultiplicity => {
+                "a multiplicity must be at least 1, at most degree for an interior knot, and at \
+                 most degree + 1 for an end knot"
+            }
+            SurfaceConstructionError::KnotControlPointCountMismatch => {
+                "the expanded knot count must equal the control net's own extent along that \
+                 direction plus degree + 1"
+            }
+            SurfaceConstructionError::UnsupportedPeriodic => {
+                "periodic (closed/wrapping) B-spline surfaces are not yet supported"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for SurfaceConstructionError {}
+
+fn positive_finite(magnitude: f64) -> Result<(), SurfaceConstructionError> {
+    if !magnitude.is_finite() {
+        return Err(SurfaceConstructionError::NonFinite);
+    }
+    if magnitude <= 0.0 {
+        return Err(SurfaceConstructionError::NonPositiveRadius);
+    }
+    Ok(())
+}
+
+impl AnalyticSurface {
+    /// Constructs an infinite plane. Always succeeds: `origin`/`normal`
+    /// carry no invariant beyond `Direction3`'s own already-enforced
+    /// unit-length guarantee.
+    pub fn plane(origin: Point3, normal: Direction3) -> AnalyticSurface {
+        AnalyticSurface::Plane { origin, normal }
+    }
+
+    /// Constructs an infinite cylinder. Rejects a non-finite/non-positive
+    /// `radius`.
+    pub fn cylinder(
+        axis: Axis3,
+        radius: Quantity,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        positive_finite(radius.magnitude)?;
+        Ok(AnalyticSurface::Cylinder { axis, radius })
+    }
+
+    /// Constructs a cone. Rejects a non-finite `half_angle`, or one outside
+    /// `(0, pi/2)` (see [`SurfaceConstructionError::InvalidHalfAngle`]).
+    pub fn cone(
+        axis: Axis3,
+        half_angle: Quantity,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        if !half_angle.magnitude.is_finite() {
+            return Err(SurfaceConstructionError::NonFinite);
+        }
+        if half_angle.magnitude <= 0.0 || half_angle.magnitude >= std::f64::consts::FRAC_PI_2 {
+            return Err(SurfaceConstructionError::InvalidHalfAngle);
+        }
+        Ok(AnalyticSurface::Cone { axis, half_angle })
+    }
+
+    /// Constructs a sphere. Rejects a non-finite/non-positive `radius`.
+    pub fn sphere(
+        center: Point3,
+        radius: Quantity,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        positive_finite(radius.magnitude)?;
+        Ok(AnalyticSurface::Sphere { center, radius })
+    }
+
+    /// Constructs a (non-self-intersecting, "ring") torus. Rejects a
+    /// non-finite/non-positive `major_radius`/`minor_radius`, or
+    /// `minor_radius >= major_radius` (see [`SurfaceConstructionError::
+    /// MinorNotLessThanMajor`]).
+    pub fn torus(
+        axis: Axis3,
+        major_radius: Quantity,
+        minor_radius: Quantity,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        positive_finite(major_radius.magnitude)?;
+        positive_finite(minor_radius.magnitude)?;
+        if minor_radius.magnitude >= major_radius.magnitude {
+            return Err(SurfaceConstructionError::MinorNotLessThanMajor);
+        }
+        Ok(AnalyticSurface::Torus {
+            axis,
+            major_radius,
+            minor_radius,
+        })
+    }
+
+    /// Constructs a (possibly rational) tensor-product Bezier surface.
+    /// Rejects a non-rectangular control net, fewer than 2 rows/columns, or
+    /// (when `weights` is given) a shape mismatch or a non-positive/
+    /// non-finite weight.
+    pub fn bezier(
+        control_points: Vec<Vec<Point3>>,
+        weights: Option<Vec<Vec<f64>>>,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        let (nu, nv) = validate_rectangular_net(&control_points)?;
+        if nu < 2 || nv < 2 {
+            return Err(SurfaceConstructionError::TooFewControlPoints);
+        }
+        if let Some(w) = &weights {
+            validate_weight_shape(w, nu, nv)?;
+        }
+        Ok(AnalyticSurface::Bezier {
+            control_points,
+            weights,
+        })
+    }
+
+    /// Constructs a (possibly rational) tensor-product B-spline/NURBS
+    /// surface. Rejects `periodic_u`/`periodic_v: true`, a non-rectangular
+    /// control net, `degree_u`/`degree_v < 1` or too few rows/columns for
+    /// that degree, a `weights` shape mismatch or non-positive/non-finite
+    /// weight, or an invalid `knots_u`/`multiplicities_u`/`knots_v`/
+    /// `multiplicities_v` pair (per direction, exactly [`crate::curve::
+    /// AnalyticCurve::bspline`]'s own validation).
+    #[allow(clippy::too_many_arguments)] // one full knot/multiplicity/weight
+    // shape per direction, plus periodic flags — the tensor-product
+    // counterpart of `AnalyticCurve::bspline`'s own already-long signature,
+    // doubled, not an arbitrary parameter pile-up.
+    pub fn bspline(
+        degree_u: usize,
+        degree_v: usize,
+        control_points: Vec<Vec<Point3>>,
+        knots_u: Vec<f64>,
+        multiplicities_u: Vec<usize>,
+        knots_v: Vec<f64>,
+        multiplicities_v: Vec<usize>,
+        weights: Option<Vec<Vec<f64>>>,
+        periodic_u: bool,
+        periodic_v: bool,
+    ) -> Result<AnalyticSurface, SurfaceConstructionError> {
+        if periodic_u || periodic_v {
+            return Err(SurfaceConstructionError::UnsupportedPeriodic);
+        }
+        let (nu, nv) = validate_rectangular_net(&control_points)?;
+        if degree_u < 1 || nu < degree_u + 1 || degree_v < 1 || nv < degree_v + 1 {
+            return Err(SurfaceConstructionError::TooFewControlPoints);
+        }
+        if let Some(w) = &weights {
+            validate_weight_shape(w, nu, nv)?;
+        }
+        validate_knot_direction(degree_u, nu, &knots_u, &multiplicities_u)?;
+        validate_knot_direction(degree_v, nv, &knots_v, &multiplicities_v)?;
+        Ok(AnalyticSurface::BSpline {
+            degree_u,
+            degree_v,
+            control_points,
+            knots_u,
+            multiplicities_u,
+            knots_v,
+            multiplicities_v,
+            weights,
+            periodic_u,
+            periodic_v,
+        })
+    }
+}
+
+/// This control net's own `(row count, column count)` — rejects an empty
+/// net or one whose rows are not all the identical length (not
+/// rectangular). Shared by [`AnalyticSurface::bezier`]/[`AnalyticSurface::
+/// bspline`].
+fn validate_rectangular_net(
+    control_points: &[Vec<Point3>],
+) -> Result<(usize, usize), SurfaceConstructionError> {
+    let nu = control_points.len();
+    if nu == 0 {
+        return Err(SurfaceConstructionError::TooFewControlPoints);
+    }
+    let nv = control_points[0].len();
+    if nv == 0 || control_points.iter().any(|row| row.len() != nv) {
+        return Err(SurfaceConstructionError::RaggedControlNet);
+    }
+    Ok((nu, nv))
+}
+
+/// `weights`'s own shape/positivity validation against an already-validated
+/// `(nu, nv)` control-net extent. Shared by [`AnalyticSurface::bezier`]/
+/// [`AnalyticSurface::bspline`].
+fn validate_weight_shape(
+    weights: &[Vec<f64>],
+    nu: usize,
+    nv: usize,
+) -> Result<(), SurfaceConstructionError> {
+    if weights.len() != nu || weights.iter().any(|row| row.len() != nv) {
+        return Err(SurfaceConstructionError::MismatchedWeightShape);
+    }
+    for row in weights {
+        for &w in row {
+            if !w.is_finite() || w <= 0.0 {
+                return Err(SurfaceConstructionError::NonPositiveWeight);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One parametric direction's own `(knots, multiplicities)` validation —
+/// exactly [`crate::curve::AnalyticCurve::bspline`]'s own knot-vector
+/// validation, applied once per direction by [`AnalyticSurface::bspline`].
+fn validate_knot_direction(
+    degree: usize,
+    count: usize,
+    knots: &[f64],
+    multiplicities: &[usize],
+) -> Result<(), SurfaceConstructionError> {
+    if knots.len() != multiplicities.len() || knots.is_empty() {
+        return Err(SurfaceConstructionError::MismatchedKnotArrays);
+    }
+    for &k in knots {
+        if !k.is_finite() {
+            return Err(SurfaceConstructionError::NonFinite);
+        }
+    }
+    for pair in knots.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err(SurfaceConstructionError::NonIncreasingKnots);
+        }
+    }
+    let last = multiplicities.len() - 1;
+    let mut total: usize = 0;
+    for (i, &m) in multiplicities.iter().enumerate() {
+        let max_allowed = if i == 0 || i == last {
+            degree + 1
+        } else {
+            degree
+        };
+        if m == 0 || m > max_allowed {
+            return Err(SurfaceConstructionError::InvalidMultiplicity);
+        }
+        total += m;
+    }
+    if total != count + degree + 1 {
+        return Err(SurfaceConstructionError::KnotControlPointCountMismatch);
+    }
+    Ok(())
+}
+
+/// One evaluated sample of an [`AnalyticSurface`] at a parameter pair
+/// `(u, v)`: the point, both partial derivatives ("`du`"/"`dv`", **not**
+/// normalized — their magnitude is this surface's own local parametric
+/// speed along each parameter), and the outward unit normal. Pure
+/// `cad_kernel_api` data — no kernel/OCCT object, since every analytic
+/// family's evaluation below is closed-form.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceSample {
+    pub point: Point3,
+    pub du: Vector3,
+    pub dv: Vector3,
+    pub normal: Direction3,
+}
+
+/// `du.cross(dv)`, normalized — see module doc comment for why this is the
+/// *only* way [`AnalyticSurface::evaluate`] ever derives a normal (never a
+/// family-specific closed-form shortcut): it is what makes a genuine
+/// parametrization singularity (`du` or `dv` the zero vector, or the two
+/// parallel) surface as [`QueryFailure::Degenerate`] for free, with no
+/// separate per-family singularity check.
+fn normal_from_derivatives(du: Vector3, dv: Vector3) -> Option<Direction3> {
+    du.cross(dv).normalize()
+}
+
+// --- AICAD-115: trim loops ---
+
+/// One `(u, v, du, dv, z)` sample of a trim loop's own underlying curve —
+/// see [`sample_uv_curve`].
+struct UvSample {
+    u: f64,
+    v: f64,
+    du: f64,
+    dv: f64,
+    z: f64,
+}
+
+/// The (even) sample count [`sample_uv_curve`]'s composite-Simpson's-rule
+/// integration uses — fixed, matching [`crate::curve::AnalyticCurve::
+/// closest_point`]'s own `numeric_closest_points::SAMPLES` precedent of a
+/// fixed, not adaptive, sample budget for a bounded numerical method.
+const LOOP_SAMPLE_COUNT: usize = 256;
+
+/// Samples `curve.evaluate` at `LOOP_SAMPLE_COUNT + 1` evenly-spaced
+/// parameters across `[lo, hi]`, reading each sample's point `x`/`y` as
+/// `(u, v)` and its own `z` for the [`TrimLoop::new`] planarity check.
+/// `None` if any sample fails to evaluate (an unsupported/degenerate
+/// underlying curve).
+fn sample_uv_curve(curve: &AnalyticCurve, lo: f64, hi: f64) -> Option<Vec<UvSample>> {
+    let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+    let mut samples = Vec::with_capacity(LOOP_SAMPLE_COUNT + 1);
+    for i in 0..=LOOP_SAMPLE_COUNT {
+        let t = lo + h * i as f64;
+        let QueryOutcome::Solutions(mut s) = curve.evaluate(t) else {
+            return None;
+        };
+        if s.len() != 1 {
+            return None;
+        }
+        let sample = s.pop().unwrap();
+        samples.push(UvSample {
+            u: sample.point.x,
+            v: sample.point.y,
+            du: sample.tangent.x,
+            dv: sample.tangent.y,
+            z: sample.point.z,
+        });
+    }
+    Some(samples)
+}
+
+/// Composite Simpson's rule over `samples` (`samples.len() - 1 ==
+/// LOOP_SAMPLE_COUNT`, always even), given the fixed sample spacing `h`.
+fn simpson_integrate(samples: &[UvSample], h: f64, integrand: impl Fn(&UvSample) -> f64) -> f64 {
+    let n = samples.len() - 1;
+    let mut sum = integrand(&samples[0]) + integrand(&samples[n]);
+    for (i, sample) in samples.iter().enumerate().take(n).skip(1) {
+        let coeff = if i % 2 == 0 { 2.0 } else { 4.0 };
+        sum += coeff * integrand(sample);
+    }
+    sum * h / 3.0
+}
+
+/// The signed area enclosed by a `(u, v)` loop, via the exact Green's-
+/// theorem line integral `(1/2) * oint (u dv - v du)` — using each sample's
+/// own *analytic* tangent (`AnalyticCurve::evaluate`'s own derivative), not
+/// a finite difference, so this converges far faster than a plain polygon/
+/// shoelace approximation over the same sample count. Positive for a
+/// counter-clockwise loop, negative for clockwise (the standard planar
+/// orientation convention) — see [`Orientation`].
+fn signed_area(samples: &[UvSample], h: f64) -> f64 {
+    simpson_integrate(samples, h, |s| 0.5 * (s.u * s.dv - s.v * s.du))
+}
+
+/// The winding number of a `(u, v)` loop around the query point `(qu, qv)`
+/// — `+-1` for a point strictly inside a simple (non-self-intersecting)
+/// loop, `0` for a point strictly outside, computed via the exact winding-
+/// angle line integral `(1/2*pi) * oint d(theta)` (the standard robust
+/// point-in-region test for a loop with curved, not merely polygonal,
+/// edges). [`TrimLoop::contains`]'s own `|winding| > 0.5` threshold
+/// distinguishes the two cases without needing an exact `0`/`1` (which
+/// floating-point quadrature cannot guarantee bit-for-bit).
+fn winding_number(samples: &[UvSample], h: f64, qu: f64, qv: f64) -> f64 {
+    let angle = simpson_integrate(samples, h, |s| {
+        let du = s.u - qu;
+        let dv = s.v - qv;
+        let denom = du * du + dv * dv;
+        if denom < 1e-300 {
+            0.0
+        } else {
+            (du * s.dv - dv * s.du) / denom
+        }
+    });
+    angle / std::f64::consts::TAU
+}
+
+/// This curve's own natural closed-loop parameter domain, if it has one —
+/// distinct from [`AnalyticCurve::domain`]: a full [`AnalyticCurve::
+/// Circle`]/[`AnalyticCurve::Ellipse`] is always closed over one period
+/// (`domain` returns `None` for both, since *evaluation* accepts any finite
+/// parameter — this function is specifically about the loop-closing
+/// period), while [`AnalyticCurve::Line`] can never close (infinite) and
+/// every other family closes only if its own already-bounded `domain`
+/// happens to start/end at the same point (checked numerically by
+/// [`TrimLoop::new`], not assumed here).
+fn loop_domain(curve: &AnalyticCurve) -> Option<(f64, f64)> {
+    match curve {
+        AnalyticCurve::Line { .. } => None,
+        AnalyticCurve::Circle { .. } | AnalyticCurve::Ellipse { .. } => {
+            Some((0.0, std::f64::consts::TAU))
+        }
+        _ => curve.domain(),
+    }
+}
+
+/// A trim loop's own orientation in its surface's `(u, v)` parameter plane
+/// — the standard planar-region convention: an outer boundary is
+/// [`Orientation::CounterClockwise`] (positive signed area), a hole is
+/// [`Orientation::Clockwise`] (negative signed area). [`AnalyticSurface::
+/// trim`] enforces this assignment; it is never inferred silently from an
+/// ambiguous or degenerate loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    CounterClockwise,
+    Clockwise,
+}
+
+/// Every way [`TrimLoop::new`] can reject a candidate loop curve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrimError {
+    /// This curve family has no closed-loop parameter domain at all (only
+    /// [`AnalyticCurve::Line`] today — see [`loop_domain`]'s own doc
+    /// comment).
+    UnsupportedCurveFamily,
+    /// The curve's own domain endpoints do not map to the same `(u, v)`
+    /// point within `tolerance` — composite multi-segment loops are not
+    /// yet supported (see this module's own doc comment), so a genuine
+    /// closed loop must already be exactly one closed curve.
+    NotClosed,
+    /// A sampled point's own `z` component was not (within `tolerance`)
+    /// zero — the loop does not actually lie in the `(u, v)` parameter
+    /// plane.
+    NonPlanarLoop,
+    /// The loop's own enclosed signed area was too small to reliably
+    /// determine an orientation (a genuinely zero-area or self-retracing
+    /// loop).
+    DegenerateLoop,
+}
+
+impl fmt::Display for TrimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            TrimError::UnsupportedCurveFamily => {
+                "this curve family has no closed-loop parameter domain (composite multi-segment \
+                 loops are not yet supported)"
+            }
+            TrimError::NotClosed => {
+                "the curve's own domain endpoints do not map to the same (u, v) point"
+            }
+            TrimError::NonPlanarLoop => "the loop does not lie in the (u, v) parameter plane",
+            TrimError::DegenerateLoop => "the loop's own enclosed area is too small to orient",
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for TrimError {}
+
+/// One closed loop in a surface's own `(u, v)` parameter domain
+/// (`AICAD-115`) — see module doc comment. Immutable and validated at
+/// construction: [`TrimLoop::orientation`] is always the curve's own
+/// actually-computed orientation, never caller-asserted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrimLoop {
+    curve: AnalyticCurve,
+    domain: (f64, f64),
+    orientation: Orientation,
+}
+
+impl TrimLoop {
+    /// Validates and builds a trim loop from `curve`, read as a `(u, v)`
+    /// parameter-plane curve. Rejects a curve family with no closed-loop
+    /// domain ([`TrimError::UnsupportedCurveFamily`] —
+    /// [`AnalyticCurve::Line`] only), a domain whose endpoints do not
+    /// coincide within `tolerance` ([`TrimError::NotClosed`]), a sampled
+    /// `z` exceeding `tolerance` ([`TrimError::NonPlanarLoop`]), or a
+    /// too-small enclosed area ([`TrimError::DegenerateLoop`]). `tolerance`
+    /// is `project/DECISION_LOG.md#DL-26`'s modeling/construction domain,
+    /// reused here as a dimensionless `(u, v)`-space epsilon since `u`/`v`
+    /// carry mixed dimensions per surface family (an angle for one axis, a
+    /// length for another) and Stage 5 has no separate parameter-space
+    /// tolerance domain — a deliberate, disclosed simplification, not a
+    /// silent cross-domain reuse of a *typed* `Length` value.
+    pub fn new(
+        curve: AnalyticCurve,
+        tolerance: ConstructionTolerance,
+    ) -> Result<TrimLoop, TrimError> {
+        let Some((lo, hi)) = loop_domain(&curve) else {
+            return Err(TrimError::UnsupportedCurveFamily);
+        };
+        let Some(samples) = sample_uv_curve(&curve, lo, hi) else {
+            return Err(TrimError::UnsupportedCurveFamily);
+        };
+        let tol = tolerance.canonical_magnitude();
+        let first = &samples[0];
+        let last = &samples[samples.len() - 1];
+        let closure_gap = ((first.u - last.u).powi(2) + (first.v - last.v).powi(2)).sqrt();
+        if closure_gap > tol {
+            return Err(TrimError::NotClosed);
+        }
+        let max_abs_z = samples.iter().fold(0.0f64, |acc, s| acc.max(s.z.abs()));
+        if max_abs_z > tol {
+            return Err(TrimError::NonPlanarLoop);
+        }
+        let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+        let area = signed_area(&samples, h);
+        if area.abs() < tol * tol {
+            return Err(TrimError::DegenerateLoop);
+        }
+        let orientation = if area > 0.0 {
+            Orientation::CounterClockwise
+        } else {
+            Orientation::Clockwise
+        };
+        Ok(TrimLoop {
+            curve,
+            domain: (lo, hi),
+            orientation,
+        })
+    }
+
+    /// This loop's own underlying `(u, v)`-parameter-plane curve.
+    pub fn curve(&self) -> &AnalyticCurve {
+        &self.curve
+    }
+
+    /// This loop's own closed-loop parameter domain (see [`loop_domain`]).
+    pub fn domain(&self) -> (f64, f64) {
+        self.domain
+    }
+
+    /// This loop's own actually-computed orientation — see [`Orientation`].
+    pub fn orientation(&self) -> Orientation {
+        self.orientation
+    }
+
+    /// Whether `(u, v)` lies strictly inside this loop (winding-number
+    /// test — see [`winding_number`]). Re-samples the underlying curve on
+    /// every call rather than caching samples: simpler, and a trim-region
+    /// membership test is not yet a hot path anywhere in Stage 5 — a
+    /// disclosed performance limitation, not a correctness one.
+    fn contains(&self, u: f64, v: f64) -> bool {
+        let (lo, hi) = self.domain;
+        let Some(samples) = sample_uv_curve(&self.curve, lo, hi) else {
+            return false;
+        };
+        let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+        winding_number(&samples, h, u, v).abs() > 0.5
+    }
+}
+
+/// Every way [`AnalyticSurface::trim`] can reject a candidate outer/hole
+/// loop combination — distinct from [`TrimError`] (which is about one
+/// loop's own construction, independent of any base surface).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceTrimError {
+    /// `outer`'s own [`TrimLoop::orientation`] was not
+    /// [`Orientation::CounterClockwise`].
+    OuterMustBeCounterClockwise,
+    /// One of `holes`'s own [`TrimLoop::orientation`] was not
+    /// [`Orientation::Clockwise`].
+    HoleMustBeClockwise,
+    /// A sampled `(u, v)` point on `outer` or a hole fell outside `base`'s
+    /// own valid evaluation domain — the trim boundary must lie entirely on
+    /// the base surface it bounds, never partly off it.
+    LoopOutsideBaseDomain,
+}
+
+impl fmt::Display for SurfaceTrimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            SurfaceTrimError::OuterMustBeCounterClockwise => {
+                "the outer trim loop must be oriented counter-clockwise"
+            }
+            SurfaceTrimError::HoleMustBeClockwise => {
+                "every hole trim loop must be oriented clockwise"
+            }
+            SurfaceTrimError::LoopOutsideBaseDomain => {
+                "a trim loop sample fell outside the base surface's own valid domain"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for SurfaceTrimError {}
+
+impl AnalyticSurface {
+    /// Builds a trimmed surface (`AICAD-115`): `base`, restricted to the
+    /// region inside `outer` and outside every one of `holes`. Rejects an
+    /// `outer` not [`Orientation::CounterClockwise`]
+    /// ([`SurfaceTrimError::OuterMustBeCounterClockwise`]), a hole not
+    /// [`Orientation::Clockwise`] ([`SurfaceTrimError::HoleMustBeClockwise`]),
+    /// or any loop with a sampled `(u, v)` point where `base.evaluate`
+    /// fails ([`SurfaceTrimError::LoopOutsideBaseDomain`]) — validated
+    /// rather than accepting silent kernel repair as semantic truth, per
+    /// this task's own acceptance criterion. Each `TrimLoop` already
+    /// carries its own construction-time-validated closure/planarity/
+    /// orientation evidence (`TrimLoop::new`'s own `ConstructionTolerance`
+    /// parameter) — this function does not re-derive or re-heal any of it.
+    pub fn trim(
+        base: AnalyticSurface,
+        outer: TrimLoop,
+        holes: Vec<TrimLoop>,
+    ) -> Result<AnalyticSurface, SurfaceTrimError> {
+        if outer.orientation() != Orientation::CounterClockwise {
+            return Err(SurfaceTrimError::OuterMustBeCounterClockwise);
+        }
+        for hole in &holes {
+            if hole.orientation() != Orientation::Clockwise {
+                return Err(SurfaceTrimError::HoleMustBeClockwise);
+            }
+        }
+        for loop_ in std::iter::once(&outer).chain(holes.iter()) {
+            let (lo, hi) = loop_.domain();
+            let Some(samples) = sample_uv_curve(loop_.curve(), lo, hi) else {
+                return Err(SurfaceTrimError::LoopOutsideBaseDomain);
+            };
+            for sample in &samples {
+                if !matches!(
+                    base.evaluate(sample.u, sample.v),
+                    QueryOutcome::Solutions(_)
+                ) {
+                    return Err(SurfaceTrimError::LoopOutsideBaseDomain);
+                }
+            }
+        }
+        Ok(AnalyticSurface::Trimmed {
+            base: Box::new(base),
+            outer,
+            holes,
+        })
+    }
+}
+
+impl AnalyticSurface {
+    /// Evaluates this surface at parameter pair `(u, v)` (`AICAD-113`).
+    /// Each family's own parameter convention:
+    ///
+    /// - [`AnalyticSurface::Plane`]: `(u, v)` are raw offsets along a
+    ///   deterministic in-plane frame derived from `normal`
+    ///   ([`Frame3::from_z`], the same reference-direction convention
+    ///   [`crate::curve::AnalyticCurve::Circle`] already uses) — valid for
+    ///   any finite `(u, v)`.
+    /// - [`AnalyticSurface::Cylinder`]: `u` is an angle around `axis`
+    ///   (periodic, any finite value), `v` a raw offset along `axis`
+    ///   (unbounded).
+    /// - [`AnalyticSurface::Cone`]: `u` is an angle around `axis` (periodic);
+    ///   `v` is distance along `axis.direction` from the apex, required
+    ///   `>= 0` ([`QueryFailure::OutOfDomain`] otherwise — a cone only
+    ///   extends one direction from its apex).
+    /// - [`AnalyticSurface::Sphere`]: `u` is longitude (periodic, measured
+    ///   around world `+Z` from world `+X` — a sphere has no orientation of
+    ///   its own to derive a reference frame from, so [`Frame3::WORLD`] is
+    ///   the deterministic canonical choice); `v` is latitude, required in
+    ///   `[-pi/2, pi/2]` ([`QueryFailure::OutOfDomain`] otherwise).
+    /// - [`AnalyticSurface::Torus`]: `u` is an angle around `axis` (periodic,
+    ///   the main-circle angle), `v` an angle around the tube's own
+    ///   cross-section (periodic) — both valid for any finite value.
+    ///
+    /// Never panics: a non-finite `u`/`v`, or a surface built by direct
+    /// struct-literal construction with an invalid shape, reports
+    /// [`QueryFailure::Degenerate`] (or `OutOfDomain` for a non-finite/
+    /// out-of-range parameter) rather than dividing by zero or producing a
+    /// non-finite result silently.
+    pub fn evaluate(&self, u: f64, v: f64) -> QueryOutcome<SurfaceSample> {
+        if !u.is_finite() || !v.is_finite() {
+            return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+        }
+        match self {
+            AnalyticSurface::Plane { origin, normal } => {
+                let frame = Frame3::from_z(*origin, *normal);
+                let du = frame.x.as_vector3();
+                let dv = frame.y.as_vector3();
+                let point = *origin + du * u + dv * v;
+                QueryOutcome::Solutions(vec![SurfaceSample {
+                    point,
+                    du,
+                    dv,
+                    normal: *normal,
+                }])
+            }
+            AnalyticSurface::Cylinder { axis, radius } => {
+                if !radius.magnitude.is_finite() || radius.magnitude <= 0.0 {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let frame = Frame3::from_z(axis.origin, axis.direction);
+                let (sin_u, cos_u) = u.sin_cos();
+                let radial = frame.x.as_vector3() * cos_u + frame.y.as_vector3() * sin_u;
+                let point =
+                    axis.origin + axis.direction.as_vector3() * v + radial * radius.magnitude;
+                let du = (frame.x.as_vector3() * -sin_u + frame.y.as_vector3() * cos_u)
+                    * radius.magnitude;
+                let dv = axis.direction.as_vector3();
+                Self::sample_or_degenerate(point, du, dv)
+            }
+            AnalyticSurface::Cone { axis, half_angle } => {
+                if !half_angle.magnitude.is_finite()
+                    || half_angle.magnitude <= 0.0
+                    || half_angle.magnitude >= std::f64::consts::FRAC_PI_2
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if v < 0.0 {
+                    return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+                }
+                let frame = Frame3::from_z(axis.origin, axis.direction);
+                let (sin_u, cos_u) = u.sin_cos();
+                let radial = frame.x.as_vector3() * cos_u + frame.y.as_vector3() * sin_u;
+                let tan_half = half_angle.magnitude.tan();
+                let radius_at_v = v * tan_half;
+                let point = axis.origin + axis.direction.as_vector3() * v + radial * radius_at_v;
+                let radial_perp = frame.x.as_vector3() * -sin_u + frame.y.as_vector3() * cos_u;
+                let du = radial_perp * radius_at_v;
+                let dv = axis.direction.as_vector3() + radial * tan_half;
+                // `v == 0` (the apex): `radius_at_v == 0`, so `du` is the
+                // zero vector — `sample_or_degenerate` reports this as
+                // `Degenerate` with no special case, per the module doc
+                // comment's own "why cross-product, not a shortcut" note.
+                Self::sample_or_degenerate(point, du, dv)
+            }
+            AnalyticSurface::Sphere { center, radius } => {
+                if !radius.magnitude.is_finite() || radius.magnitude <= 0.0 {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if v < -std::f64::consts::FRAC_PI_2 || v > std::f64::consts::FRAC_PI_2 {
+                    return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+                }
+                let frame = Frame3::WORLD;
+                let (sin_u, cos_u) = u.sin_cos();
+                let (sin_v, cos_v) = v.sin_cos();
+                let (ex, ey, ez) = (
+                    frame.x.as_vector3(),
+                    frame.y.as_vector3(),
+                    frame.z.as_vector3(),
+                );
+                let radial = (ex * cos_u + ey * sin_u) * cos_v + ez * sin_v;
+                let point = *center + radial * radius.magnitude;
+                let du = (ex * -sin_u + ey * cos_u) * (radius.magnitude * cos_v);
+                let dv = ((ex * cos_u + ey * sin_u) * -sin_v + ez * cos_v) * radius.magnitude;
+                // `v == +-pi/2` (a pole): `cos_v == 0`, so `du` is the zero
+                // vector — reported `Degenerate` for the identical reason
+                // as the cone's own apex above.
+                Self::sample_or_degenerate(point, du, dv)
+            }
+            AnalyticSurface::Torus {
+                axis,
+                major_radius,
+                minor_radius,
+            } => {
+                if !major_radius.magnitude.is_finite()
+                    || major_radius.magnitude <= 0.0
+                    || !minor_radius.magnitude.is_finite()
+                    || minor_radius.magnitude <= 0.0
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let frame = Frame3::from_z(axis.origin, axis.direction);
+                let (sin_u, cos_u) = u.sin_cos();
+                let (sin_v, cos_v) = v.sin_cos();
+                let radial = frame.x.as_vector3() * cos_u + frame.y.as_vector3() * sin_u;
+                let axis_dir = axis.direction.as_vector3();
+                let ring_center = axis.origin + radial * major_radius.magnitude;
+                let point = ring_center
+                    + radial * (minor_radius.magnitude * cos_v)
+                    + axis_dir * (minor_radius.magnitude * sin_v);
+                let radial_perp = frame.x.as_vector3() * -sin_u + frame.y.as_vector3() * cos_u;
+                let du = radial_perp * (major_radius.magnitude + minor_radius.magnitude * cos_v);
+                let dv = (radial * -sin_v + axis_dir * cos_v) * minor_radius.magnitude;
+                // Never degenerate for a validated (`minor_radius <
+                // major_radius`) ring torus: `major_radius +
+                // minor_radius*cos_v` cannot reach zero, so `du` is never
+                // the zero vector — `sample_or_degenerate` is still used
+                // (rather than an infallible construction) so a directly
+                // struct-literal-constructed invalid torus is still
+                // defended, per this module's established convention.
+                Self::sample_or_degenerate(point, du, dv)
+            }
+            AnalyticSurface::Bezier {
+                control_points,
+                weights,
+            } => {
+                let nu = control_points.len();
+                let nv = control_points.first().map_or(0, Vec::len);
+                if nu < 2 || nv < 2 || control_points.iter().any(|row| row.len() != nv) {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if !weights_shape_valid(weights.as_deref(), nu, nv) {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let degree_u = nu - 1;
+                let degree_v = nv - 1;
+                let knot_vector_u = crate::curve::clamped_bezier_knots(degree_u);
+                let knot_vector_v = crate::curve::clamped_bezier_knots(degree_v);
+                tensor_bspline_evaluate(
+                    degree_u,
+                    degree_v,
+                    control_points,
+                    &knot_vector_u,
+                    &knot_vector_v,
+                    weights.as_deref(),
+                    u,
+                    v,
+                )
+            }
+            AnalyticSurface::BSpline {
+                degree_u,
+                degree_v,
+                control_points,
+                knots_u,
+                multiplicities_u,
+                knots_v,
+                multiplicities_v,
+                weights,
+                periodic_u,
+                periodic_v,
+            } => {
+                if *periodic_u || *periodic_v {
+                    return QueryOutcome::Failed(QueryFailure::Unsupported);
+                }
+                let nu = control_points.len();
+                let nv = control_points.first().map_or(0, Vec::len);
+                if *degree_u < 1
+                    || nu < degree_u + 1
+                    || *degree_v < 1
+                    || nv < degree_v + 1
+                    || control_points.iter().any(|row| row.len() != nv)
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if !weights_shape_valid(weights.as_deref(), nu, nv) {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                if knots_u.len() != multiplicities_u.len()
+                    || knots_u.is_empty()
+                    || knots_v.len() != multiplicities_v.len()
+                    || knots_v.is_empty()
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let knot_vector_u = crate::curve::expand_knots(knots_u, multiplicities_u);
+                let knot_vector_v = crate::curve::expand_knots(knots_v, multiplicities_v);
+                if knot_vector_u.iter().any(|k| !k.is_finite())
+                    || knot_vector_u.windows(2).any(|pair| pair[0] > pair[1])
+                    || knot_vector_v.iter().any(|k| !k.is_finite())
+                    || knot_vector_v.windows(2).any(|pair| pair[0] > pair[1])
+                {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                tensor_bspline_evaluate(
+                    *degree_u,
+                    *degree_v,
+                    control_points,
+                    &knot_vector_u,
+                    &knot_vector_v,
+                    weights.as_deref(),
+                    u,
+                    v,
+                )
+            }
+            AnalyticSurface::Trimmed { base, outer, holes } => {
+                if !outer.contains(u, v) {
+                    return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+                }
+                if holes.iter().any(|hole| hole.contains(u, v)) {
+                    return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+                }
+                base.evaluate(u, v)
+            }
+        }
+    }
+
+    fn sample_or_degenerate(
+        point: Point3,
+        du: Vector3,
+        dv: Vector3,
+    ) -> QueryOutcome<SurfaceSample> {
+        match normal_from_derivatives(du, dv) {
+            Some(normal) => QueryOutcome::Solutions(vec![SurfaceSample {
+                point,
+                du,
+                dv,
+                normal,
+            }]),
+            None => QueryOutcome::Failed(QueryFailure::Degenerate),
+        }
+    }
+}
+
+// --- AICAD-116: bounded surface offset ---
+
+/// Every way [`AnalyticSurface::offset`] can fail — the surface-family
+/// counterpart of [`crate::curve::CurveOperationError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceOperationError {
+    /// This operation is not supported for this surface family. Exact
+    /// offsetting of a Bezier/B-spline/trimmed surface is not, in general,
+    /// expressible as a surface in the same family — the identical
+    /// well-known CAD limitation [`crate::curve::CurveOperationError::
+    /// UnsupportedFamily`] documents for a curve, applied here.
+    UnsupportedFamily,
+    /// The requested offset distance would produce a degenerate result
+    /// (e.g. a cylinder/sphere radius, or a torus minor radius, reaching
+    /// zero or negative, or a torus offset that would break the
+    /// `minor_radius < major_radius` ring-torus invariant).
+    DegenerateResult,
+}
+
+impl fmt::Display for SurfaceOperationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            SurfaceOperationError::UnsupportedFamily => {
+                "this operation is not supported for this surface family"
+            }
+            SurfaceOperationError::DegenerateResult => {
+                "this operation would produce a degenerate surface"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
+impl std::error::Error for SurfaceOperationError {}
+
+impl AnalyticSurface {
+    /// Offsets this surface by `distance` along its own outward normal
+    /// (`AICAD-116`, `offset_surface`). Exact for every analytic family
+    /// except [`AnalyticSurface::Cone`]'s neighbors in the enum
+    /// ([`AnalyticSurface::Bezier`]/[`AnalyticSurface::BSpline`]/
+    /// [`AnalyticSurface::Trimmed`] — [`SurfaceOperationError::
+    /// UnsupportedFamily`], mirroring [`crate::curve::AnalyticCurve::
+    /// offset`]'s own identical curve-family narrowing):
+    ///
+    /// - [`AnalyticSurface::Plane`]: `origin` translated by `distance`
+    ///   along `normal`; `normal` unchanged. Never degenerate.
+    /// - [`AnalyticSurface::Cylinder`]/[`AnalyticSurface::Sphere`]: `radius
+    ///   += distance`, staying coaxial/concentric.
+    /// - [`AnalyticSurface::Torus`]: `minor_radius += distance`, staying
+    ///   coaxial with the same `major_radius` (a torus's own outward
+    ///   normal always points directly away from the tube's own center
+    ///   circle by exactly `minor_radius`, so offsetting is exactly this
+    ///   one substitution).
+    /// - [`AnalyticSurface::Cone`]: the offset of a cone is exactly another
+    ///   coaxial cone with the *same* `half_angle`, apex translated along
+    ///   `axis.direction` by `-distance / sin(half_angle)` — a standard
+    ///   analytic-geometry identity (a cone's own outward normal has a
+    ///   constant axial component `-sin(half_angle)` everywhere on the
+    ///   surface, independent of the radial parameter, which is exactly
+    ///   what makes a constant-distance offset stay a cone of the *same*
+    ///   angle rather than becoming a different shape).
+    ///
+    /// [`SurfaceOperationError::DegenerateResult`] if the offset radius
+    /// (cylinder/sphere/torus) would be non-positive, or a torus offset
+    /// would break `minor_radius < major_radius`.
+    pub fn offset(&self, distance: Quantity) -> Result<AnalyticSurface, SurfaceOperationError> {
+        if !distance.magnitude.is_finite() {
+            return Err(SurfaceOperationError::DegenerateResult);
+        }
+        match self {
+            AnalyticSurface::Plane { origin, normal } => Ok(AnalyticSurface::Plane {
+                origin: *origin + normal.as_vector3() * distance.magnitude,
+                normal: *normal,
+            }),
+            AnalyticSurface::Cylinder { axis, radius } => {
+                let new_radius = Quantity::new(radius.magnitude + distance.magnitude, radius.ty);
+                AnalyticSurface::cylinder(*axis, new_radius)
+                    .map_err(|_| SurfaceOperationError::DegenerateResult)
+            }
+            AnalyticSurface::Sphere { center, radius } => {
+                let new_radius = Quantity::new(radius.magnitude + distance.magnitude, radius.ty);
+                AnalyticSurface::sphere(*center, new_radius)
+                    .map_err(|_| SurfaceOperationError::DegenerateResult)
+            }
+            AnalyticSurface::Torus {
+                axis,
+                major_radius,
+                minor_radius,
+            } => {
+                let new_minor =
+                    Quantity::new(minor_radius.magnitude + distance.magnitude, minor_radius.ty);
+                AnalyticSurface::torus(*axis, *major_radius, new_minor)
+                    .map_err(|_| SurfaceOperationError::DegenerateResult)
+            }
+            AnalyticSurface::Cone { axis, half_angle } => {
+                let sin_half = half_angle.magnitude.sin();
+                let shift = distance.magnitude / sin_half;
+                let new_apex = axis.origin + axis.direction.as_vector3() * (-shift);
+                Ok(AnalyticSurface::Cone {
+                    axis: Axis3::new(new_apex, axis.direction),
+                    half_angle: *half_angle,
+                })
+            }
+            AnalyticSurface::Bezier { .. }
+            | AnalyticSurface::BSpline { .. }
+            | AnalyticSurface::Trimmed { .. } => Err(SurfaceOperationError::UnsupportedFamily),
+        }
+    }
+}
+
+// --- AICAD-117: point-to-surface projection ---
+
+/// One solution of [`AnalyticSurface::project_point`]: the surface's own
+/// parameter pair at the projected point, the point itself, and its
+/// distance from the target — the surface-family counterpart of
+/// [`crate::curve::ClosestPointResult`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfaceProjectionResult {
+    pub u: f64,
+    pub v: f64,
+    pub point: Point3,
+    pub distance: Quantity,
+}
+
+fn distance_quantity(a: Point3, b: Point3) -> Quantity {
+    crate::curve::distance_quantity(a, b)
+}
+
+/// `target`'s own cylindrical coordinates relative to `axis` — shared by
+/// [`AnalyticSurface::project_point`]'s `Cylinder`/`Cone`/`Torus` cases
+/// (every axis-symmetric family except `Sphere`, which has no `axis` field
+/// of its own — see that case's own separate handling). `None` if `target`
+/// lies on `axis` itself (`r0 < 1e-9`) — every point on the surface is then
+/// equidistant in angle, a genuine ambiguity, never an arbitrary `u`.
+struct Cylindrical {
+    a0: f64,
+    r0: f64,
+    ex: Vector3,
+    ey: Vector3,
+    ez: Vector3,
+    radial_dir: Vector3,
+}
+
+impl Cylindrical {
+    fn new(axis: Axis3, target: Point3) -> Option<Cylindrical> {
+        let frame = Frame3::from_z(axis.origin, axis.direction);
+        let rel = target - axis.origin;
+        let ez = axis.direction.as_vector3();
+        let a0 = rel.dot(ez);
+        let radial_vec = rel - ez * a0;
+        let r0 = radial_vec.length();
+        if !r0.is_finite() || r0 < 1e-9 {
+            return None;
+        }
+        let radial_dir = radial_vec * (1.0 / r0);
+        Some(Cylindrical {
+            a0,
+            r0,
+            ex: frame.x.as_vector3(),
+            ey: frame.y.as_vector3(),
+            ez,
+            radial_dir,
+        })
+    }
+
+    /// `target`'s own angular parameter — see module-level "solids of
+    /// revolution never need to search over `u`" note on
+    /// [`AnalyticSurface::project_point`].
+    fn u(&self) -> f64 {
+        self.radial_dir
+            .dot(self.ey)
+            .atan2(self.radial_dir.dot(self.ex))
+    }
+
+    fn point_at(&self, origin: Point3, axial: f64, radial: f64) -> Point3 {
+        origin + self.ez * axial + self.radial_dir * radial
+    }
+}
+
+/// This surface's own bounded `(u, v)` numerical-search domain (`AICAD-117`)
+/// — `Some` only for [`AnalyticSurface::Bezier`]/[`AnalyticSurface::
+/// BSpline`] (the two families [`AnalyticSurface::project_point`] searches
+/// numerically), `None` for every other family (each already has an exact
+/// closed form, or — [`AnalyticSurface::Trimmed`] — is not yet supported by
+/// this search at all).
+pub(crate) fn numeric_surface_domain(
+    surface: &AnalyticSurface,
+) -> Option<((f64, f64), (f64, f64))> {
+    match surface {
+        AnalyticSurface::Bezier { .. } => Some(((0.0, 1.0), (0.0, 1.0))),
+        AnalyticSurface::BSpline {
+            degree_u,
+            degree_v,
+            control_points,
+            knots_u,
+            multiplicities_u,
+            knots_v,
+            multiplicities_v,
+            ..
+        } => {
+            let nu = control_points.len();
+            let nv = control_points.first().map_or(0, Vec::len);
+            if *degree_u == 0 || *degree_v == 0 || nu == 0 || nv == 0 {
+                return None;
+            }
+            let ku = crate::curve::expand_knots(knots_u, multiplicities_u);
+            let kv = crate::curve::expand_knots(knots_v, multiplicities_v);
+            if ku.len() != nu + degree_u + 1 || kv.len() != nv + degree_v + 1 {
+                return None;
+            }
+            Some(((ku[*degree_u], ku[nu]), (kv[*degree_v], kv[nv])))
+        }
+        _ => None,
+    }
+}
+
+/// One-dimensional golden-section minimization of `f` over `[lo, hi]` —
+/// mirrors [`crate::curve::golden_section_minimize`]'s own algorithm
+/// exactly, generalized to an arbitrary scalar objective (that function is
+/// hard-coded to squared curve/target distance; this one takes `f`
+/// directly so [`refine_surface_minimum`] can reuse it for both `u` and `v`
+/// in turn).
+fn golden_section_1d(f: impl Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
+    const ITERATIONS: u32 = 40;
+    const INV_PHI: f64 = 0.618_033_988_749_895;
+    let mut c = hi - INV_PHI * (hi - lo);
+    let mut d = lo + INV_PHI * (hi - lo);
+    let mut fc = f(c);
+    let mut fd = f(d);
+    for _ in 0..ITERATIONS {
+        if fc < fd {
+            hi = d;
+            d = c;
+            fd = fc;
+            c = hi - INV_PHI * (hi - lo);
+            fc = f(c);
+        } else {
+            lo = c;
+            c = d;
+            fc = fd;
+            d = lo + INV_PHI * (hi - lo);
+            fd = f(d);
+        }
+    }
+    (lo + hi) / 2.0
+}
+
+/// Refines a coarse-grid local minimum of squared distance from `target` to
+/// `surface.evaluate(u, v)` at `(u0, v0)` (found within grid cell bounds
+/// `(u_lo, u_hi) x (v_lo, v_hi)`) via alternating-axis golden section —
+/// fix `v`, minimize over `u`; fix `u`, minimize over `v`; repeat — a
+/// standard coordinate-descent refinement for a smooth two-parameter
+/// objective, matching this crate's own established numerical-effort level
+/// (`crate::curve::numeric_closest_points`'s 1D precedent, applied per
+/// axis). Returns `None` if `surface.evaluate` fails at every sample tried
+/// (an unreachable coarse-grid cell).
+fn refine_surface_minimum(
+    surface: &AnalyticSurface,
+    target: Point3,
+    (u_lo, u_hi): (f64, f64),
+    (v_lo, v_hi): (f64, f64),
+    u0: f64,
+    v0: f64,
+) -> Option<(f64, f64)> {
+    const ROUNDS: u32 = 6;
+    let squared_distance = |u: f64, v: f64| -> f64 {
+        match surface.evaluate(u, v) {
+            QueryOutcome::Solutions(mut s) if s.len() == 1 => {
+                let p = s.pop().unwrap().point;
+                let d = p - target;
+                d.dot(d)
+            }
+            _ => f64::INFINITY,
+        }
+    };
+    let mut u = u0;
+    let mut v = v0;
+    for _ in 0..ROUNDS {
+        u = golden_section_1d(|candidate_u| squared_distance(candidate_u, v), u_lo, u_hi);
+        v = golden_section_1d(|candidate_v| squared_distance(u, candidate_v), v_lo, v_hi);
+    }
+    if squared_distance(u, v).is_finite() {
+        Some((u, v))
+    } else {
+        None
+    }
+}
+
+/// Numerical `project_point` search for [`AnalyticSurface::Bezier`]/
+/// [`AnalyticSurface::BSpline`] (`AICAD-117`) — coarse grid sampling to
+/// bracket every local minimum of squared distance (an 8-neighbor test on
+/// the grid, the 2D counterpart of [`crate::curve::numeric_closest_points`]'s
+/// own 1D bracket scan), then [`refine_surface_minimum`] per bracket.
+/// Reports every local minimum found (deduplicated by resulting point),
+/// never only the single global one.
+fn numeric_project_point(
+    surface: &AnalyticSurface,
+    target: Point3,
+    (u_lo, u_hi): (f64, f64),
+    (v_lo, v_hi): (f64, f64),
+) -> QueryOutcome<SurfaceProjectionResult> {
+    const GRID: usize = 12;
+    if !u_lo.is_finite() || !u_hi.is_finite() || u_lo >= u_hi {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    if !v_lo.is_finite() || !v_hi.is_finite() || v_lo >= v_hi {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    let step_u = (u_hi - u_lo) / GRID as f64;
+    let step_v = (v_hi - v_lo) / GRID as f64;
+    let grid_u: Vec<f64> = (0..=GRID).map(|i| u_lo + step_u * i as f64).collect();
+    let grid_v: Vec<f64> = (0..=GRID).map(|j| v_lo + step_v * j as f64).collect();
+    let squared_distance_at = |i: usize, j: usize| -> Option<f64> {
+        match surface.evaluate(grid_u[i], grid_v[j]) {
+            QueryOutcome::Solutions(mut s) if s.len() == 1 => {
+                let p = s.pop().unwrap().point;
+                let d = p - target;
+                Some(d.dot(d))
+            }
+            _ => None,
+        }
+    };
+    let mut candidates: Vec<(f64, f64)> = Vec::new();
+    for i in 0..=GRID {
+        for j in 0..=GRID {
+            let Some(d_ij) = squared_distance_at(i, j) else {
+                continue;
+            };
+            let mut is_local_min = true;
+            for di in -1i32..=1 {
+                for dj in -1i32..=1 {
+                    if di == 0 && dj == 0 {
+                        continue;
+                    }
+                    let (ni, nj) = (i as i32 + di, j as i32 + dj);
+                    if ni < 0 || nj < 0 || ni > GRID as i32 || nj > GRID as i32 {
+                        continue;
+                    }
+                    if let Some(d_n) = squared_distance_at(ni as usize, nj as usize)
+                        && d_n < d_ij
+                    {
+                        is_local_min = false;
+                    }
+                }
+            }
+            if !is_local_min {
+                continue;
+            }
+            let cell_u = (
+                if i == 0 { u_lo } else { grid_u[i - 1] },
+                if i == GRID { u_hi } else { grid_u[i + 1] },
+            );
+            let cell_v = (
+                if j == 0 { v_lo } else { grid_v[j - 1] },
+                if j == GRID { v_hi } else { grid_v[j + 1] },
+            );
+            if let Some(refined) =
+                refine_surface_minimum(surface, target, cell_u, cell_v, grid_u[i], grid_v[j])
+            {
+                candidates.push(refined);
+            }
+        }
+    }
+    let mut solutions: Vec<SurfaceProjectionResult> = Vec::new();
+    for (u, v) in candidates {
+        let QueryOutcome::Solutions(mut s) = surface.evaluate(u, v) else {
+            continue;
+        };
+        if s.len() != 1 {
+            continue;
+        }
+        let point = s.pop().unwrap().point;
+        let is_duplicate = solutions
+            .iter()
+            .any(|existing| (existing.point - point).length() < 1e-6);
+        if is_duplicate {
+            continue;
+        }
+        solutions.push(SurfaceProjectionResult {
+            u,
+            v,
+            point,
+            distance: distance_quantity(point, target),
+        });
+    }
+    if solutions.is_empty() {
+        QueryOutcome::Failed(QueryFailure::Degenerate)
+    } else {
+        QueryOutcome::Solutions(solutions)
+    }
+}
+
+impl AnalyticSurface {
+    /// Every point on this surface closest to `target` (`AICAD-117`,
+    /// `project_point_to_surface`) — the surface-family counterpart of
+    /// [`crate::curve::AnalyticCurve::closest_point`]. Exact, closed-form
+    /// for [`AnalyticSurface::Plane`]/[`AnalyticSurface::Cylinder`]/
+    /// [`AnalyticSurface::Cone`]/[`AnalyticSurface::Sphere`]/
+    /// [`AnalyticSurface::Torus`] — the same five families
+    /// [`AnalyticSurface::offset`] already handles exactly; a bounded
+    /// numerical search ([`numeric_project_point`]) for
+    /// [`AnalyticSurface::Bezier`]/[`AnalyticSurface::BSpline`];
+    /// [`QueryFailure::Unsupported`] for [`AnalyticSurface::Trimmed`] (a
+    /// disclosed scope limit — this search does not yet account for a
+    /// trimmed region's own boundary).
+    ///
+    /// # Solids of revolution never need to search over `u`
+    ///
+    /// For every axis-symmetric family (`Cylinder`/`Cone`/`Sphere`/
+    /// `Torus`), the closest point's own angular parameter `u` always
+    /// equals `target`'s own angle around the axis: rotating the whole
+    /// configuration about the axis changes neither the surface nor the
+    /// distance from `target` to any fixed-`u` meridian point, so each case
+    /// below only ever solves a 1D problem in the `(axial, radial)`
+    /// meridian half-plane, never a genuine 2D search. `target` exactly on
+    /// the axis (`Sphere`: exactly at `center`) has no well-defined `u` —
+    /// [`QueryFailure::Degenerate`], never an arbitrary pick.
+    pub fn project_point(&self, target: Point3) -> QueryOutcome<SurfaceProjectionResult> {
+        match self {
+            AnalyticSurface::Plane { origin, normal } => {
+                let frame = Frame3::from_z(*origin, *normal);
+                let offset = target - *origin;
+                let u = offset.dot(frame.x.as_vector3());
+                let v = offset.dot(frame.y.as_vector3());
+                let point = *origin + frame.x.as_vector3() * u + frame.y.as_vector3() * v;
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u,
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Cylinder { axis, radius } => {
+                let Some(cyl) = Cylindrical::new(*axis, target) else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let point = cyl.point_at(axis.origin, cyl.a0, radius.magnitude);
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u: cyl.u(),
+                    v: cyl.a0,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Cone { axis, half_angle } => {
+                let Some(cyl) = Cylindrical::new(*axis, target) else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let (sin_ha, cos_ha) = half_angle.magnitude.sin_cos();
+                let t = cyl.a0 * cos_ha + cyl.r0 * sin_ha;
+                if t < 0.0 {
+                    // The closest point projects onto the apex itself,
+                    // which has no well-defined `u` — see module doc
+                    // comment on `AnalyticSurface::evaluate`'s own apex
+                    // handling.
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let v = t * cos_ha;
+                let r_prime = v * sin_ha / cos_ha;
+                let point = cyl.point_at(axis.origin, v, r_prime);
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u: cyl.u(),
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Sphere { center, radius } => {
+                let offset = target - *center;
+                let Some(dir) = offset.normalize() else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let dv = dir.as_vector3();
+                let world = Frame3::WORLD;
+                let u = dv
+                    .dot(world.y.as_vector3())
+                    .atan2(dv.dot(world.x.as_vector3()));
+                let v = dv.dot(world.z.as_vector3()).clamp(-1.0, 1.0).asin();
+                let point = *center + dv * radius.magnitude;
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u,
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Torus {
+                axis,
+                major_radius,
+                minor_radius,
+            } => {
+                let Some(cyl) = Cylindrical::new(*axis, target) else {
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                };
+                let da = cyl.a0;
+                let dr = cyl.r0 - major_radius.magnitude;
+                let len = (da * da + dr * dr).sqrt();
+                if !len.is_finite() || len < 1e-9 {
+                    // `target` sits exactly on the tube's own core circle
+                    // center in the meridian plane — every meridian angle
+                    // is equidistant.
+                    return QueryOutcome::Failed(QueryFailure::Degenerate);
+                }
+                let v = da.atan2(dr);
+                let (sin_v, cos_v) = v.sin_cos();
+                let radial_prime = major_radius.magnitude + minor_radius.magnitude * cos_v;
+                let axial_prime = minor_radius.magnitude * sin_v;
+                let point = cyl.point_at(axis.origin, axial_prime, radial_prime);
+                QueryOutcome::Solutions(vec![SurfaceProjectionResult {
+                    u: cyl.u(),
+                    v,
+                    point,
+                    distance: distance_quantity(point, target),
+                }])
+            }
+            AnalyticSurface::Bezier { .. } | AnalyticSurface::BSpline { .. } => {
+                match numeric_surface_domain(self) {
+                    Some((u_domain, v_domain)) => {
+                        numeric_project_point(self, target, u_domain, v_domain)
+                    }
+                    None => QueryOutcome::Failed(QueryFailure::Degenerate),
+                }
+            }
+            AnalyticSurface::Trimmed { .. } => QueryOutcome::Failed(QueryFailure::Unsupported),
+        }
+    }
+}
+
+/// [`AnalyticSurface::evaluate`]'s own boolean-returning shape/positivity
+/// check for a Bezier/B-spline surface's `weights` — the surface-family
+/// counterpart of [`crate::curve::weights_are_valid`] (private to that
+/// module, so duplicated here rather than exposed solely for this one
+/// reuse).
+fn weights_shape_valid(weights: Option<&[Vec<f64>]>, nu: usize, nv: usize) -> bool {
+    match weights {
+        None => true,
+        Some(w) => {
+            w.len() == nu
+                && w.iter()
+                    .all(|row| row.len() == nv && row.iter().all(|&x| x.is_finite() && x > 0.0))
+        }
+    }
+}
+
+/// Evaluates a (possibly rational) tensor-product B-spline surface of
+/// `(degree_u, degree_v)` at `(u, v)`, given both directions' already-
+/// expanded knot vectors — the shared evaluation core [`AnalyticSurface::
+/// Bezier`] (via [`crate::curve::clamped_bezier_knots`], once per direction)
+/// and [`AnalyticSurface::BSpline`] both reduce to, exactly mirroring
+/// [`crate::curve::nurbs_evaluate`]'s own role for curves.
+///
+/// # The tensor-product algorithm
+///
+/// A tensor-product surface is separable: holding `v` fixed, `S(u, v0)` is
+/// an ordinary B-spline *curve* in `u` whose control points are each
+/// control-net *row* evaluated in `v` at `v0`; holding `u` fixed
+/// symmetrically. This function computes exactly those two curves' worth of
+/// homogeneous data and reuses [`crate::curve::de_boor`]/
+/// [`crate::curve::derivative_control_points`] unchanged for each:
+///
+/// 1. `v_evaluated[i]` = row `i`'s own homogeneous point at `v` — the
+///    control points of the "evaluate at `u`" curve. `de_boor` on this
+///    (full `degree_u`/`knot_vector_u`/`span_u`) gives the surface point;
+///    [`crate::curve::derivative_control_points`] plus a second `de_boor`
+///    on the *reduced* `degree_u - 1` curve gives `du` (via the identical
+///    rational quotient rule [`crate::curve::nurbs_evaluate`] already uses
+///    for a plain curve's tangent).
+/// 2. `u_evaluated[j]` = column `j`'s own homogeneous point at `u` — the
+///    symmetric construction for `dv`.
+///
+/// Never panics: a degenerate degree/knot-vector shape (only reachable via
+/// direct struct-literal construction bypassing this module's validated
+/// constructors) reports [`QueryFailure::Degenerate`]; an out-of-domain
+/// `(u, v)` reports [`QueryFailure::OutOfDomain`].
+#[allow(clippy::too_many_arguments)] // one degree/knot-vector pair per
+// direction plus the shared control net/weights/(u, v) — the tensor-product
+// counterpart of `crate::curve::nurbs_evaluate`'s own already-several
+// parameters, doubled, not an arbitrary parameter pile-up.
+fn tensor_bspline_evaluate(
+    degree_u: usize,
+    degree_v: usize,
+    control_points: &[Vec<Point3>],
+    knot_vector_u: &[f64],
+    knot_vector_v: &[f64],
+    weights: Option<&[Vec<f64>]>,
+    u: f64,
+    v: f64,
+) -> QueryOutcome<SurfaceSample> {
+    use crate::curve::{
+        Homogeneous, de_boor, derivative_control_points, find_span, to_homogeneous,
+    };
+
+    let nu = control_points.len();
+    let nv = control_points.first().map_or(0, Vec::len);
+    if degree_u == 0
+        || degree_v == 0
+        || nu == 0
+        || nv == 0
+        || knot_vector_u.len() != nu + degree_u + 1
+        || knot_vector_v.len() != nv + degree_v + 1
+    {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    if u < knot_vector_u[degree_u]
+        || u > knot_vector_u[nu]
+        || v < knot_vector_v[degree_v]
+        || v > knot_vector_v[nv]
+    {
+        return QueryOutcome::Failed(QueryFailure::OutOfDomain);
+    }
+
+    let h: Vec<Vec<Homogeneous>> = control_points
+        .iter()
+        .enumerate()
+        .map(|(i, row)| to_homogeneous(row, weights.map(|w| w[i].as_slice())))
+        .collect();
+
+    let span_u = find_span(u, degree_u, knot_vector_u, nu);
+    let span_v = find_span(v, degree_v, knot_vector_v, nv);
+
+    let v_evaluated: Vec<Homogeneous> = h
+        .iter()
+        .map(|row| de_boor(degree_v, row, knot_vector_v, span_v, v))
+        .collect();
+    let point_h = de_boor(degree_u, &v_evaluated, knot_vector_u, span_u, u);
+    let w = point_h[3];
+    if !w.is_finite() || w.abs() < 1e-12 {
+        return QueryOutcome::Failed(QueryFailure::Degenerate);
+    }
+    let point = Point3::new(point_h[0] / w, point_h[1] / w, point_h[2] / w);
+
+    let du_h = {
+        let deriv_cp = derivative_control_points(degree_u, &v_evaluated, knot_vector_u);
+        let deriv_knots = &knot_vector_u[1..knot_vector_u.len() - 1];
+        let deriv_span = find_span(u, degree_u - 1, deriv_knots, nu - 1);
+        de_boor(degree_u - 1, &deriv_cp, deriv_knots, deriv_span, u)
+    };
+
+    let u_evaluated: Vec<Homogeneous> = (0..nv)
+        .map(|j| {
+            let column: Vec<Homogeneous> = h.iter().map(|row| row[j]).collect();
+            de_boor(degree_u, &column, knot_vector_u, span_u, u)
+        })
+        .collect();
+    let dv_h = {
+        let deriv_cp = derivative_control_points(degree_v, &u_evaluated, knot_vector_v);
+        let deriv_knots = &knot_vector_v[1..knot_vector_v.len() - 1];
+        let deriv_span = find_span(v, degree_v - 1, deriv_knots, nv - 1);
+        de_boor(degree_v - 1, &deriv_cp, deriv_knots, deriv_span, v)
+    };
+
+    // The rational-curve quotient rule ([`crate::curve::nurbs_evaluate`]'s
+    // own identical formula), applied independently per direction: exact
+    // for the non-rational case too, since `w == 1`/`dw == 0` then.
+    let rational_tangent = |deriv_h: Homogeneous| -> Vector3 {
+        Vector3::new(
+            (deriv_h[0] * w - point_h[0] * deriv_h[3]) / (w * w),
+            (deriv_h[1] * w - point_h[1] * deriv_h[3]) / (w * w),
+            (deriv_h[2] * w - point_h[2] * deriv_h[3]) / (w * w),
+        )
+    };
+    let du = rational_tangent(du_h);
+    let dv = rational_tangent(dv_h);
+
+    AnalyticSurface::sample_or_degenerate(point, du, dv)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cad_types::Dimension;
+
+    fn length(magnitude: f64) -> Quantity {
+        Quantity::of(magnitude, Dimension::Length)
+    }
+
+    fn angle(magnitude: f64) -> Quantity {
+        Quantity::of(magnitude, Dimension::Angle)
+    }
+
+    fn axis() -> Axis3 {
+        Axis3::new(Point3::ORIGIN, Direction3::Z)
+    }
+
+    #[test]
+    fn identical_surfaces_compare_equal() {
+        let a = AnalyticSurface::Cylinder {
+            axis: axis(),
+            radius: length(0.01),
+        };
+        let b = AnalyticSurface::Cylinder {
+            axis: axis(),
+            radius: length(0.01),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_radii_compare_unequal() {
+        let a = AnalyticSurface::Sphere {
+            center: Point3::ORIGIN,
+            radius: length(0.01),
+        };
+        let b = AnalyticSurface::Sphere {
+            center: Point3::ORIGIN,
+            radius: length(0.02),
+        };
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn anchor_returns_each_familys_own_defining_point() {
+        let plane = AnalyticSurface::Plane {
+            origin: Point3::new(1.0, 2.0, 3.0),
+            normal: Direction3::Z,
+        };
+        assert_eq!(plane.anchor(), Point3::new(1.0, 2.0, 3.0));
+
+        let cone = AnalyticSurface::Cone {
+            axis: Axis3::new(Point3::new(4.0, 5.0, 6.0), Direction3::Z),
+            half_angle: angle(0.4),
+        };
+        assert_eq!(cone.anchor(), Point3::new(4.0, 5.0, 6.0));
+    }
+
+    #[test]
+    fn every_variant_is_debug_printable_without_a_kernel_context() {
+        let surfaces = [
+            AnalyticSurface::Plane {
+                origin: Point3::ORIGIN,
+                normal: Direction3::Z,
+            },
+            AnalyticSurface::Cylinder {
+                axis: axis(),
+                radius: length(0.01),
+            },
+            AnalyticSurface::Cone {
+                axis: axis(),
+                half_angle: angle(0.3),
+            },
+            AnalyticSurface::Sphere {
+                center: Point3::ORIGIN,
+                radius: length(0.02),
+            },
+            AnalyticSurface::Torus {
+                axis: axis(),
+                major_radius: length(0.03),
+                minor_radius: length(0.01),
+            },
+        ];
+        for surface in surfaces {
+            assert!(!format!("{surface:?}").is_empty());
+        }
+    }
+
+    fn assert_close(a: f64, b: f64, tol: f64) {
+        assert!((a - b).abs() < tol, "{a} vs {b} (tol {tol})");
+    }
+
+    fn assert_point_close(a: Point3, b: Point3, tol: f64) {
+        assert_close(a.x, b.x, tol);
+        assert_close(a.y, b.y, tol);
+        assert_close(a.z, b.z, tol);
+    }
+
+    // --- Construction validation ---
+
+    #[test]
+    fn cylinder_rejects_non_positive_or_non_finite_radius() {
+        assert_eq!(
+            AnalyticSurface::cylinder(axis(), length(0.0)),
+            Err(SurfaceConstructionError::NonPositiveRadius)
+        );
+        assert_eq!(
+            AnalyticSurface::cylinder(axis(), length(-1.0)),
+            Err(SurfaceConstructionError::NonPositiveRadius)
+        );
+        assert_eq!(
+            AnalyticSurface::cylinder(axis(), length(f64::NAN)),
+            Err(SurfaceConstructionError::NonFinite)
+        );
+    }
+
+    #[test]
+    fn cone_rejects_half_angle_outside_open_zero_to_half_pi() {
+        assert_eq!(
+            AnalyticSurface::cone(axis(), angle(0.0)),
+            Err(SurfaceConstructionError::InvalidHalfAngle)
+        );
+        assert_eq!(
+            AnalyticSurface::cone(axis(), angle(std::f64::consts::FRAC_PI_2)),
+            Err(SurfaceConstructionError::InvalidHalfAngle)
+        );
+        assert_eq!(
+            AnalyticSurface::cone(axis(), angle(std::f64::consts::PI)),
+            Err(SurfaceConstructionError::InvalidHalfAngle)
+        );
+        assert!(AnalyticSurface::cone(axis(), angle(0.5)).is_ok());
+    }
+
+    #[test]
+    fn torus_rejects_minor_radius_not_less_than_major() {
+        assert_eq!(
+            AnalyticSurface::torus(axis(), length(0.01), length(0.01)),
+            Err(SurfaceConstructionError::MinorNotLessThanMajor)
+        );
+        assert_eq!(
+            AnalyticSurface::torus(axis(), length(0.01), length(0.02)),
+            Err(SurfaceConstructionError::MinorNotLessThanMajor)
+        );
+        assert!(AnalyticSurface::torus(axis(), length(0.03), length(0.01)).is_ok());
+    }
+
+    #[test]
+    fn sphere_and_plane_construction_never_reject_a_finite_input() {
+        assert!(AnalyticSurface::sphere(Point3::ORIGIN, length(0.02)).is_ok());
+        // A `Direction3` can never itself be degenerate (only `Vector3::
+        // normalize` constructs one), so `plane` has no failure mode at all
+        // — it is not a `Result`-returning constructor.
+        let _ = AnalyticSurface::plane(Point3::ORIGIN, Direction3::Z);
+    }
+
+    // --- Evaluation: plane ---
+
+    #[test]
+    fn plane_evaluates_to_a_point_in_its_own_frame_with_orthonormal_derivatives() {
+        let plane = AnalyticSurface::plane(Point3::new(0.0, 0.0, 1.0), Direction3::Z);
+        let QueryOutcome::Solutions(mut s) = plane.evaluate(2.0, 3.0) else {
+            panic!("plane evaluation never fails for finite parameters")
+        };
+        let sample = s.pop().unwrap();
+        assert_close(sample.point.z, 1.0, 1e-12);
+        assert_close(sample.normal.dot(Direction3::Z), 1.0, 1e-12);
+        assert_close(sample.du.length(), 1.0, 1e-12);
+        assert_close(sample.dv.length(), 1.0, 1e-12);
+        assert_close(sample.du.dot(sample.dv), 0.0, 1e-12);
+        // The point actually lies at the claimed (u, v) offset within the
+        // plane's own frame.
+        let reconstructed = plane.anchor() + sample.du * 2.0 + sample.dv * 3.0;
+        assert_point_close(sample.point, reconstructed, 1e-12);
+    }
+
+    #[test]
+    fn plane_rejects_non_finite_parameters() {
+        let plane = AnalyticSurface::plane(Point3::ORIGIN, Direction3::Z);
+        assert_eq!(
+            plane.evaluate(f64::NAN, 0.0),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+    }
+
+    // --- Evaluation: cylinder ---
+
+    #[test]
+    fn cylinder_point_lies_on_the_analytic_surface_with_radial_outward_normal() {
+        let radius = 0.02;
+        let cylinder = AnalyticSurface::cylinder(
+            Axis3::new(Point3::new(1.0, -1.0, 0.5), Direction3::Z),
+            length(radius),
+        )
+        .unwrap();
+        for u in [0.0, 0.7, std::f64::consts::PI, 4.2] {
+            let QueryOutcome::Solutions(mut s) = cylinder.evaluate(u, 0.3) else {
+                panic!("cylinder is never degenerate for a validated positive radius")
+            };
+            let sample = s.pop().unwrap();
+            // Height along the axis matches `v`.
+            assert_close(sample.point.z, 0.5 + 0.3, 1e-9);
+            // Radial distance from the axis matches `radius`.
+            let radial = sample.point - Point3::new(1.0, -1.0, sample.point.z);
+            assert_close(
+                (radial.x * radial.x + radial.y * radial.y).sqrt(),
+                radius,
+                1e-9,
+            );
+            // The normal is exactly the outward radial direction.
+            assert_close(sample.normal.dot(radial.normalize().unwrap()), 1.0, 1e-9);
+            // `du`/`dv` are orthogonal to each other and to the normal.
+            assert_close(sample.du.dot(sample.dv), 0.0, 1e-9);
+            assert_close(sample.du.dot(sample.normal.as_vector3()), 0.0, 1e-9);
+            assert_close(sample.dv.dot(sample.normal.as_vector3()), 0.0, 1e-9);
+        }
+    }
+
+    // --- Evaluation: cone ---
+
+    #[test]
+    fn cone_point_lies_at_the_correct_slant_distance_and_apex_is_degenerate() {
+        let half_angle = 0.4;
+        let cone = AnalyticSurface::cone(axis(), angle(half_angle)).unwrap();
+        let QueryOutcome::Solutions(mut s) = cone.evaluate(1.1, 2.0) else {
+            panic!("cone is not degenerate away from its own apex")
+        };
+        let sample = s.pop().unwrap();
+        assert_close(sample.point.z, 2.0, 1e-12);
+        let radial_distance =
+            (sample.point.x * sample.point.x + sample.point.y * sample.point.y).sqrt();
+        assert_close(radial_distance, 2.0 * half_angle.tan(), 1e-9);
+
+        // The apex (`v == 0`) is a genuine parametrization singularity —
+        // every `u` maps to the identical point, so no normal is defined.
+        assert_eq!(
+            cone.evaluate(0.0, 0.0),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn cone_rejects_negative_v() {
+        let cone = AnalyticSurface::cone(axis(), angle(0.4)).unwrap();
+        assert_eq!(
+            cone.evaluate(0.0, -1.0),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+    }
+
+    // --- Evaluation: sphere ---
+
+    #[test]
+    fn sphere_point_lies_at_radius_from_center_with_radial_normal() {
+        let radius = 0.015;
+        let center = Point3::new(0.2, -0.3, 0.1);
+        let sphere = AnalyticSurface::sphere(center, length(radius)).unwrap();
+        for (u, v) in [(0.0, 0.0), (1.3, 0.5), (4.0, -0.7)] {
+            let QueryOutcome::Solutions(mut s) = sphere.evaluate(u, v) else {
+                panic!("sphere is not degenerate away from its own poles")
+            };
+            let sample = s.pop().unwrap();
+            let radial = sample.point - center;
+            assert_close(radial.length(), radius, 1e-9);
+            assert_close(sample.normal.dot(radial.normalize().unwrap()), 1.0, 1e-9);
+        }
+    }
+
+    #[test]
+    fn sphere_poles_are_a_reported_parametrization_singularity() {
+        let sphere = AnalyticSurface::sphere(Point3::ORIGIN, length(0.01)).unwrap();
+        assert_eq!(
+            sphere.evaluate(1.0, std::f64::consts::FRAC_PI_2),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+        assert_eq!(
+            sphere.evaluate(1.0, -std::f64::consts::FRAC_PI_2),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn sphere_rejects_latitude_outside_plus_minus_half_pi() {
+        let sphere = AnalyticSurface::sphere(Point3::ORIGIN, length(0.01)).unwrap();
+        assert_eq!(
+            sphere.evaluate(0.0, std::f64::consts::PI),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+    }
+
+    // --- Evaluation: torus ---
+
+    #[test]
+    fn torus_point_is_at_the_expected_distance_from_the_main_circle() {
+        let major_radius = 0.05;
+        let minor_radius = 0.015;
+        let torus =
+            AnalyticSurface::torus(axis(), length(major_radius), length(minor_radius)).unwrap();
+        for (u, v) in [(0.0, 0.0), (0.9, 1.2), (3.4, -2.1)] {
+            let QueryOutcome::Solutions(mut s) = torus.evaluate(u, v) else {
+                panic!("a validated ring torus is never degenerate")
+            };
+            let sample = s.pop().unwrap();
+            let ring_center = Point3::new(major_radius * u.cos(), major_radius * u.sin(), 0.0);
+            let from_ring = sample.point - ring_center;
+            assert_close(from_ring.length(), minor_radius, 1e-9);
+            assert_close(sample.du.dot(sample.dv), 0.0, 1e-9);
+        }
+    }
+
+    #[test]
+    fn torus_never_degenerates_for_any_finite_u_v() {
+        let torus = AnalyticSurface::torus(axis(), length(0.05), length(0.049)).unwrap();
+        for i in 0..12 {
+            let u = i as f64;
+            for j in 0..12 {
+                let v = j as f64;
+                assert!(
+                    matches!(torus.evaluate(u, v), QueryOutcome::Solutions(_)),
+                    "torus.evaluate({u}, {v}) unexpectedly degenerate"
+                );
+            }
+        }
+    }
+
+    // --- AICAD-114: Bezier/B-spline/NURBS surface construction/evaluation ---
+
+    /// A bidegree-(1,1) control net whose corners exactly define
+    /// `point(u, v) = (u, v, u*v)` — bilinear interpolation is *exact* for
+    /// this function, so both the Bezier and the equivalent-clamped
+    /// B-spline path can be checked against a hand-derived closed form,
+    /// including derivatives.
+    fn hyperbolic_paraboloid_net() -> Vec<Vec<Point3>> {
+        vec![
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0)],
+        ]
+    }
+
+    #[test]
+    fn bezier_surface_evaluates_a_known_bilinear_point_and_derivatives() {
+        let surface = AnalyticSurface::bezier(hyperbolic_paraboloid_net(), None).unwrap();
+        let QueryOutcome::Solutions(mut s) = surface.evaluate(0.5, 0.5) else {
+            panic!("a validated bidegree-(1,1) Bezier surface is never degenerate")
+        };
+        let sample = s.pop().unwrap();
+        // point(u, v) = (u, v, u*v)
+        assert_point_close(sample.point, Point3::new(0.5, 0.5, 0.25), 1e-12);
+        // du = (1, 0, v); dv = (0, 1, u)
+        assert_close(sample.du.x, 1.0, 1e-9);
+        assert_close(sample.du.y, 0.0, 1e-9);
+        assert_close(sample.du.z, 0.5, 1e-9);
+        assert_close(sample.dv.x, 0.0, 1e-9);
+        assert_close(sample.dv.y, 1.0, 1e-9);
+        assert_close(sample.dv.z, 0.5, 1e-9);
+    }
+
+    #[test]
+    fn bezier_surface_passes_through_every_corner_control_point() {
+        let net = hyperbolic_paraboloid_net();
+        let surface = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        for (u, v, expected) in [
+            (0.0, 0.0, net[0][0]),
+            (1.0, 0.0, net[1][0]),
+            (0.0, 1.0, net[0][1]),
+            (1.0, 1.0, net[1][1]),
+        ] {
+            let QueryOutcome::Solutions(mut s) = surface.evaluate(u, v) else {
+                panic!("corner evaluation is never degenerate")
+            };
+            assert_point_close(s.pop().unwrap().point, expected, 1e-12);
+        }
+    }
+
+    #[test]
+    fn bezier_surface_with_uniform_weights_reproduces_the_non_rational_result() {
+        // A uniform (equal-everywhere) weight cancels in the rational
+        // quotient rule, so the result must be bit-for-bit identical to the
+        // non-rational evaluation — a strong correctness check on the
+        // rational tensor-product derivative formula, independent of
+        // hand-deriving a new rational closed form.
+        let net = hyperbolic_paraboloid_net();
+        let plain = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        let weighted =
+            AnalyticSurface::bezier(net, Some(vec![vec![2.0, 2.0], vec![2.0, 2.0]])).unwrap();
+        let QueryOutcome::Solutions(mut a) = plain.evaluate(0.3, 0.7) else {
+            panic!("plain evaluation is never degenerate")
+        };
+        let QueryOutcome::Solutions(mut b) = weighted.evaluate(0.3, 0.7) else {
+            panic!("uniformly-weighted evaluation is never degenerate")
+        };
+        let (sa, sb) = (a.pop().unwrap(), b.pop().unwrap());
+        assert_point_close(sa.point, sb.point, 1e-12);
+        assert_close((sa.du - sb.du).length(), 0.0, 1e-9);
+        assert_close((sa.dv - sb.dv).length(), 0.0, 1e-9);
+    }
+
+    #[test]
+    fn bspline_surface_bidegree_one_matches_the_equivalent_bezier_surface() {
+        let net = hyperbolic_paraboloid_net();
+        let bezier = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        let bspline = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2, 2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        for (u, v) in [(0.0, 0.0), (0.5, 0.5), (0.2, 0.9), (1.0, 1.0)] {
+            let QueryOutcome::Solutions(mut a) = bezier.evaluate(u, v) else {
+                panic!("bezier evaluation is never degenerate")
+            };
+            let QueryOutcome::Solutions(mut b) = bspline.evaluate(u, v) else {
+                panic!("the equivalent clamped B-spline evaluation is never degenerate")
+            };
+            assert_point_close(a.pop().unwrap().point, b.pop().unwrap().point, 1e-9);
+        }
+    }
+
+    #[test]
+    fn bspline_surface_rejects_periodic() {
+        let net = hyperbolic_paraboloid_net();
+        let err = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2, 2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err, SurfaceConstructionError::UnsupportedPeriodic);
+    }
+
+    #[test]
+    fn bezier_surface_rejects_a_ragged_control_net() {
+        let net = vec![
+            vec![Point3::ORIGIN, Point3::new(0.0, 1.0, 0.0)],
+            vec![Point3::new(1.0, 0.0, 0.0)],
+        ];
+        assert_eq!(
+            AnalyticSurface::bezier(net, None),
+            Err(SurfaceConstructionError::RaggedControlNet)
+        );
+    }
+
+    #[test]
+    fn bezier_surface_rejects_too_few_control_points_along_a_direction() {
+        let net = vec![vec![Point3::ORIGIN, Point3::new(0.0, 1.0, 0.0)]];
+        assert_eq!(
+            AnalyticSurface::bezier(net, None),
+            Err(SurfaceConstructionError::TooFewControlPoints)
+        );
+    }
+
+    #[test]
+    fn bezier_surface_rejects_a_weight_shape_mismatch() {
+        let net = hyperbolic_paraboloid_net();
+        assert_eq!(
+            AnalyticSurface::bezier(net, Some(vec![vec![1.0, 1.0]])),
+            Err(SurfaceConstructionError::MismatchedWeightShape)
+        );
+    }
+
+    #[test]
+    fn bspline_surface_rejects_mismatched_knot_arrays() {
+        let net = hyperbolic_paraboloid_net();
+        let err = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err, SurfaceConstructionError::MismatchedKnotArrays);
+    }
+
+    #[test]
+    fn bspline_surface_evaluation_outside_its_own_domain_is_out_of_domain() {
+        let net = hyperbolic_paraboloid_net();
+        let bspline = AnalyticSurface::bspline(
+            1,
+            1,
+            net,
+            vec![0.0, 1.0],
+            vec![2, 2],
+            vec![0.0, 1.0],
+            vec![2, 2],
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            bspline.evaluate(1.5, 0.5),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+    }
+
+    #[test]
+    fn bezier_and_bspline_surfaces_are_debug_printable_and_compare_by_value() {
+        let net = hyperbolic_paraboloid_net();
+        let a = AnalyticSurface::bezier(net.clone(), None).unwrap();
+        let b = AnalyticSurface::bezier(net, None).unwrap();
+        assert_eq!(a, b);
+        assert!(!format!("{a:?}").is_empty());
+    }
+
+    // --- AICAD-115: trimmed-surface semantic model ---
+
+    fn tol() -> ConstructionTolerance {
+        ConstructionTolerance::new(1e-9).unwrap()
+    }
+
+    /// A full circle read as a `(u, v)`-parameter-plane loop: `normal =
+    /// +Z` traverses counter-clockwise (an outer boundary), `normal = -Z`
+    /// traverses clockwise (a hole) — see `TrimLoop`'s own module doc
+    /// comment for the derivation.
+    fn uv_circle(center_u: f64, center_v: f64, radius: f64, normal: Direction3) -> AnalyticCurve {
+        AnalyticCurve::circle(Point3::new(center_u, center_v, 0.0), normal, length(radius)).unwrap()
+    }
+
+    fn flat_plane() -> AnalyticSurface {
+        AnalyticSurface::plane(Point3::ORIGIN, Direction3::Z)
+    }
+
+    #[test]
+    fn a_ccw_circle_is_counter_clockwise_and_a_reversed_one_is_clockwise() {
+        let ccw = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        assert_eq!(ccw.orientation(), Orientation::CounterClockwise);
+        let cw = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, -Direction3::Z), tol()).unwrap();
+        assert_eq!(cw.orientation(), Orientation::Clockwise);
+    }
+
+    #[test]
+    fn trim_loop_rejects_an_unclosed_arc() {
+        let arc = AnalyticCurve::arc(
+            Point3::ORIGIN,
+            Direction3::Z,
+            length(1.0),
+            angle(0.0),
+            angle(std::f64::consts::PI),
+        )
+        .unwrap();
+        assert_eq!(TrimLoop::new(arc, tol()), Err(TrimError::NotClosed));
+    }
+
+    #[test]
+    fn trim_loop_rejects_an_unsupported_line() {
+        let line = AnalyticCurve::line(Point3::ORIGIN, Direction3::X);
+        assert_eq!(
+            TrimLoop::new(line, tol()),
+            Err(TrimError::UnsupportedCurveFamily)
+        );
+    }
+
+    #[test]
+    fn trim_loop_rejects_a_non_planar_circle() {
+        let tilted_normal = cad_kernel_api::Vector3::new(1.0, 1.0, 1.0)
+            .normalize()
+            .unwrap();
+        let circle = AnalyticCurve::circle(Point3::ORIGIN, tilted_normal, length(1.0)).unwrap();
+        assert_eq!(TrimLoop::new(circle, tol()), Err(TrimError::NonPlanarLoop));
+    }
+
+    #[test]
+    fn plane_trimmed_by_a_circle_matches_the_closed_form_area_via_boundary_sampling() {
+        // Not a direct area computation (that is a later query task's own
+        // job) — an independent check that the same Green's-theorem
+        // integral this module already uses for orientation reproduces
+        // pi*r^2 to high precision, since `flat_plane`'s own (u, v)
+        // parametrization is an isometry (`point(u, v) = (u, v, 0)`).
+        let radius = 7.0;
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, radius, Direction3::Z), tol()).unwrap();
+        let (lo, hi) = outer.domain();
+        let samples = sample_uv_curve(outer.curve(), lo, hi).unwrap();
+        let h = (hi - lo) / LOOP_SAMPLE_COUNT as f64;
+        let area = signed_area(&samples, h);
+        assert_close(area, std::f64::consts::PI * radius * radius, 1e-6);
+    }
+
+    #[test]
+    fn trimmed_plane_with_a_hole_evaluates_inside_outside_and_hole_correctly() {
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        let hole = TrimLoop::new(uv_circle(3.0, 0.0, 2.0, -Direction3::Z), tol()).unwrap();
+        let trimmed = AnalyticSurface::trim(flat_plane(), outer, vec![hole]).unwrap();
+
+        // Inside the outer boundary, outside the hole: succeeds.
+        let QueryOutcome::Solutions(mut s) = trimmed.evaluate(0.0, 0.0) else {
+            panic!("(0, 0) is inside the outer boundary and outside the hole")
+        };
+        assert_point_close(s.pop().unwrap().point, Point3::ORIGIN, 1e-9);
+
+        // Just outside the hole boundary (hole spans u in [1, 5]).
+        assert!(matches!(
+            trimmed.evaluate(5.5, 0.0),
+            QueryOutcome::Solutions(_)
+        ));
+        // Just inside the hole boundary.
+        assert_eq!(
+            trimmed.evaluate(4.5, 0.0),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+        // Well outside the outer boundary.
+        assert_eq!(
+            trimmed.evaluate(15.0, 0.0),
+            QueryOutcome::Failed(QueryFailure::OutOfDomain)
+        );
+        // Near the outer boundary but still inside.
+        assert!(matches!(
+            trimmed.evaluate(9.9, 0.0),
+            QueryOutcome::Solutions(_)
+        ));
+    }
+
+    #[test]
+    fn trim_rejects_a_hole_with_the_wrong_orientation() {
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        // Both counter-clockwise — the hole must be clockwise.
+        let bad_hole = TrimLoop::new(uv_circle(3.0, 0.0, 2.0, Direction3::Z), tol()).unwrap();
+        assert_eq!(
+            AnalyticSurface::trim(flat_plane(), outer, vec![bad_hole]),
+            Err(SurfaceTrimError::HoleMustBeClockwise)
+        );
+    }
+
+    #[test]
+    fn trim_rejects_a_loop_outside_the_base_surface_domain() {
+        // A cone requires v >= 0; a (u, v) circle straddling v = 0 samples
+        // points with v < 0, which the cone itself rejects.
+        let cone =
+            AnalyticSurface::cone(Axis3::new(Point3::ORIGIN, Direction3::Z), angle(0.4)).unwrap();
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 1.0, Direction3::Z), tol()).unwrap();
+        assert_eq!(
+            AnalyticSurface::trim(cone, outer, Vec::new()),
+            Err(SurfaceTrimError::LoopOutsideBaseDomain)
+        );
+    }
+
+    #[test]
+    fn trimmed_surface_anchor_delegates_to_its_own_base() {
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        let trimmed = AnalyticSurface::trim(flat_plane(), outer, Vec::new()).unwrap();
+        assert_eq!(trimmed.anchor(), flat_plane().anchor());
+    }
+
+    // --- AICAD-116: bounded surface offset ---
+
+    #[test]
+    fn plane_offset_translates_the_origin_along_its_own_normal() {
+        let plane = AnalyticSurface::plane(Point3::new(0.0, 0.0, 1.0), Direction3::Z);
+        let offset = plane.offset(length(0.5)).unwrap();
+        let QueryOutcome::Solutions(mut before) = plane.evaluate(2.0, 3.0) else {
+            panic!("plane evaluation never fails")
+        };
+        let QueryOutcome::Solutions(mut after) = offset.evaluate(2.0, 3.0) else {
+            panic!("offset plane evaluation never fails")
+        };
+        let (b, a) = (before.pop().unwrap(), after.pop().unwrap());
+        assert_point_close(a.point, b.point + Vector3::new(0.0, 0.0, 0.5), 1e-12);
+        assert_eq!(a.normal, b.normal);
+    }
+
+    #[test]
+    fn cylinder_and_sphere_offset_adjust_radius_by_exactly_the_distance() {
+        let cylinder = AnalyticSurface::cylinder(axis(), length(0.02)).unwrap();
+        let offset_cylinder = cylinder.offset(length(0.005)).unwrap();
+        let AnalyticSurface::Cylinder { radius, .. } = offset_cylinder else {
+            panic!("offsetting a cylinder must produce another cylinder")
+        };
+        assert_close(radius.magnitude, 0.025, 1e-12);
+
+        let sphere = AnalyticSurface::sphere(Point3::ORIGIN, length(0.02)).unwrap();
+        let offset_sphere = sphere.offset(length(-0.005)).unwrap();
+        let AnalyticSurface::Sphere { radius, .. } = offset_sphere else {
+            panic!("offsetting a sphere must produce another sphere")
+        };
+        assert_close(radius.magnitude, 0.015, 1e-12);
+    }
+
+    #[test]
+    fn cylinder_offset_rejects_a_distance_that_would_make_the_radius_non_positive() {
+        let cylinder = AnalyticSurface::cylinder(axis(), length(0.01)).unwrap();
+        assert_eq!(
+            cylinder.offset(length(-0.02)),
+            Err(SurfaceOperationError::DegenerateResult)
+        );
+    }
+
+    #[test]
+    fn torus_offset_adjusts_minor_radius_and_rejects_breaking_the_ring_invariant() {
+        let torus = AnalyticSurface::torus(axis(), length(0.05), length(0.01)).unwrap();
+        let offset = torus.offset(length(0.01)).unwrap();
+        let AnalyticSurface::Torus { minor_radius, .. } = offset else {
+            panic!("offsetting a torus must produce another torus")
+        };
+        assert_close(minor_radius.magnitude, 0.02, 1e-12);
+
+        // An offset large enough to reach/exceed major_radius breaks the
+        // ring-torus invariant.
+        assert_eq!(
+            torus.offset(length(0.05)),
+            Err(SurfaceOperationError::DegenerateResult)
+        );
+    }
+
+    #[test]
+    fn cone_offset_produces_the_same_half_angle_surface_at_the_exact_offset_distance() {
+        // Independent evidence for the derived apex-shift formula: pick a
+        // point on the original cone, and check that the offset cone's own
+        // evaluation at the predicted corresponding parameter lands exactly
+        // `distance` away along the original point's own normal.
+        let half_angle = 0.4;
+        let cone = AnalyticSurface::cone(axis(), angle(half_angle)).unwrap();
+        let distance = 0.003;
+        let offset = cone.offset(length(distance)).unwrap();
+        let AnalyticSurface::Cone {
+            half_angle: offset_half_angle,
+            ..
+        } = offset
+        else {
+            panic!("offsetting a cone must produce another cone")
+        };
+        assert_close(offset_half_angle.magnitude, half_angle, 1e-12);
+
+        let (u0, v0) = (1.1, 0.02);
+        let QueryOutcome::Solutions(mut original) = cone.evaluate(u0, v0) else {
+            panic!("cone evaluation away from the apex is never degenerate")
+        };
+        let sample = original.pop().unwrap();
+        let expected = sample.point + sample.normal.as_vector3() * distance;
+        let v_prime = v0 + distance * half_angle.cos().powi(2) / half_angle.sin();
+        let QueryOutcome::Solutions(mut offset_samples) = offset.evaluate(u0, v_prime) else {
+            panic!("offset cone evaluation is never degenerate here")
+        };
+        assert_point_close(offset_samples.pop().unwrap().point, expected, 1e-9);
+    }
+
+    #[test]
+    fn bezier_bspline_and_trimmed_surfaces_reject_offset() {
+        let bezier = AnalyticSurface::bezier(hyperbolic_paraboloid_net(), None).unwrap();
+        assert_eq!(
+            bezier.offset(length(0.001)),
+            Err(SurfaceOperationError::UnsupportedFamily)
+        );
+        let outer = TrimLoop::new(uv_circle(0.0, 0.0, 10.0, Direction3::Z), tol()).unwrap();
+        let trimmed = AnalyticSurface::trim(flat_plane(), outer, Vec::new()).unwrap();
+        assert_eq!(
+            trimmed.offset(length(0.001)),
+            Err(SurfaceOperationError::UnsupportedFamily)
+        );
+    }
+
+    /// Independent numerical evidence for `du`/`dv` across every
+    /// constructible family (not merely each family's own hand-derived
+    /// closed form, already checked by `AICAD-113`/`114`'s own tests): a
+    /// central finite difference of `evaluate`'s own point must agree with
+    /// the analytic derivative it returns, to well within the difference
+    /// scheme's own truncation error.
+    #[test]
+    fn analytic_derivatives_agree_with_a_central_finite_difference_everywhere() {
+        let h = 1e-5;
+        let cases: Vec<(AnalyticSurface, f64, f64)> = vec![
+            (
+                AnalyticSurface::plane(Point3::new(1.0, -2.0, 0.5), Direction3::Z),
+                0.3,
+                0.7,
+            ),
+            (
+                AnalyticSurface::cylinder(axis(), length(0.02)).unwrap(),
+                1.1,
+                0.4,
+            ),
+            (AnalyticSurface::cone(axis(), angle(0.4)).unwrap(), 0.9, 0.6),
+            (
+                AnalyticSurface::sphere(Point3::new(0.1, 0.2, -0.1), length(0.03)).unwrap(),
+                1.3,
+                0.5,
+            ),
+            (
+                AnalyticSurface::torus(axis(), length(0.05), length(0.01)).unwrap(),
+                0.8,
+                2.1,
+            ),
+            (
+                AnalyticSurface::bezier(hyperbolic_paraboloid_net(), None).unwrap(),
+                0.4,
+                0.6,
+            ),
+        ];
+        for (surface, u, v) in cases {
+            let QueryOutcome::Solutions(mut center) = surface.evaluate(u, v) else {
+                panic!("evaluation at the chosen interior parameter must not be degenerate")
+            };
+            let sample = center.pop().unwrap();
+            let QueryOutcome::Solutions(mut up) = surface.evaluate(u + h, v) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let QueryOutcome::Solutions(mut um) = surface.evaluate(u - h, v) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let du_fd = (up.pop().unwrap().point - um.pop().unwrap().point) * (1.0 / (2.0 * h));
+            assert_close(
+                (du_fd - sample.du).length(),
+                0.0,
+                1e-5 * (1.0 + sample.du.length()),
+            );
+
+            let QueryOutcome::Solutions(mut vp) = surface.evaluate(u, v + h) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let QueryOutcome::Solutions(mut vm) = surface.evaluate(u, v - h) else {
+                panic!("neighboring evaluation must not be degenerate")
+            };
+            let dv_fd = (vp.pop().unwrap().point - vm.pop().unwrap().point) * (1.0 / (2.0 * h));
+            assert_close(
+                (dv_fd - sample.dv).length(),
+                0.0,
+                1e-5 * (1.0 + sample.dv.length()),
+            );
+        }
+    }
+
+    // --- AICAD-117: project_point ---
+
+    fn one_projection(surface: &AnalyticSurface, target: Point3) -> SurfaceProjectionResult {
+        match surface.project_point(target) {
+            QueryOutcome::Solutions(mut s) if s.len() == 1 => s.pop().unwrap(),
+            other => panic!("expected exactly one projection solution, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plane_projection_is_the_orthogonal_foot() {
+        let plane = AnalyticSurface::Plane {
+            origin: Point3::ORIGIN,
+            normal: Direction3::Z,
+        };
+        let result = one_projection(&plane, Point3::new(3.0, 4.0, 7.0));
+        assert_close(result.point.x, 3.0, 1e-9);
+        assert_close(result.point.y, 4.0, 1e-9);
+        assert_close(result.point.z, 0.0, 1e-9);
+        assert_close(result.distance.magnitude, 7.0, 1e-9);
+    }
+
+    #[test]
+    fn cylinder_projection_lands_on_the_radius_at_the_same_height() {
+        let cylinder = AnalyticSurface::Cylinder {
+            axis: axis(),
+            radius: length(2.0),
+        };
+        // Radially outside, at height 5.
+        let result = one_projection(&cylinder, Point3::new(5.0, 0.0, 5.0));
+        assert_close(
+            (result.point.x.powi(2) + result.point.y.powi(2)).sqrt(),
+            2.0,
+            1e-9,
+        );
+        assert_close(result.point.z, 5.0, 1e-9);
+        assert_close(result.distance.magnitude, 3.0, 1e-9);
+    }
+
+    #[test]
+    fn cylinder_projection_from_the_axis_is_degenerate() {
+        let cylinder = AnalyticSurface::Cylinder {
+            axis: axis(),
+            radius: length(2.0),
+        };
+        assert_eq!(
+            cylinder.project_point(Point3::new(0.0, 0.0, 3.0)),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn sphere_projection_cross_checked_against_evaluate() {
+        let sphere = AnalyticSurface::Sphere {
+            center: Point3::new(1.0, 1.0, 1.0),
+            radius: length(3.0),
+        };
+        let target = Point3::new(10.0, 1.0, 1.0);
+        let result = one_projection(&sphere, target);
+        let QueryOutcome::Solutions(mut eval) = sphere.evaluate(result.u, result.v) else {
+            panic!("projection's own (u, v) must itself evaluate")
+        };
+        let evaluated_point = eval.pop().unwrap().point;
+        assert_close((evaluated_point - result.point).length(), 0.0, 1e-9);
+        assert_close(result.distance.magnitude, 6.0, 1e-9);
+    }
+
+    #[test]
+    fn sphere_projection_from_the_center_is_degenerate() {
+        let sphere = AnalyticSurface::Sphere {
+            center: Point3::new(1.0, 1.0, 1.0),
+            radius: length(3.0),
+        };
+        assert_eq!(
+            sphere.project_point(Point3::new(1.0, 1.0, 1.0)),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn cone_projection_onto_a_generator_matches_the_generator_point_itself() {
+        // A point already exactly on the cone must project onto itself.
+        let cone = AnalyticSurface::Cone {
+            axis: axis(),
+            half_angle: angle(std::f64::consts::FRAC_PI_4),
+        };
+        let QueryOutcome::Solutions(mut s) = cone.evaluate(0.3, 4.0) else {
+            panic!("evaluate must succeed for a valid (u, v)")
+        };
+        let on_surface = s.pop().unwrap().point;
+        let result = one_projection(&cone, on_surface);
+        assert_close((result.point - on_surface).length(), 0.0, 1e-6);
+        assert_close(result.distance.magnitude, 0.0, 1e-6);
+    }
+
+    #[test]
+    fn cone_projection_behind_the_apex_is_degenerate() {
+        let cone = AnalyticSurface::Cone {
+            axis: axis(),
+            half_angle: angle(std::f64::consts::FRAC_PI_4),
+        };
+        // Far behind the apex along the negative axis direction, close to
+        // the axis: the closest point on the (one-nappe, v >= 0) cone is
+        // the ill-defined apex itself.
+        assert_eq!(
+            cone.project_point(Point3::new(0.01, 0.0, -50.0)),
+            QueryOutcome::Failed(QueryFailure::Degenerate)
+        );
+    }
+
+    #[test]
+    fn torus_projection_cross_checked_against_evaluate() {
+        let torus = AnalyticSurface::Torus {
+            axis: axis(),
+            major_radius: length(5.0),
+            minor_radius: length(1.0),
+        };
+        let target = Point3::new(8.0, 0.0, 0.0);
+        let result = one_projection(&torus, target);
+        let QueryOutcome::Solutions(mut eval) = torus.evaluate(result.u, result.v) else {
+            panic!("projection's own (u, v) must itself evaluate")
+        };
+        let evaluated_point = eval.pop().unwrap().point;
+        assert_close((evaluated_point - result.point).length(), 0.0, 1e-9);
+        // Target is on the outer equator: closest point is the outer rim,
+        // at radius major+minor = 6, so distance = 8 - 6 = 2.
+        assert_close(result.distance.magnitude, 2.0, 1e-9);
+    }
+
+    #[test]
+    fn bezier_surface_projection_numeric_search_finds_a_flat_plane_analog() {
+        // A flat (planar) Bezier patch: projection should match the exact
+        // Plane case closely.
+        let bezier = AnalyticSurface::bezier(
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            ],
+            None,
+        )
+        .unwrap();
+        let result = one_projection(&bezier, Point3::new(0.5, 0.5, 2.0));
+        assert_close(result.point.z, 0.0, 1e-4);
+        assert_close(result.distance.magnitude, 2.0, 1e-3);
+    }
+
+    #[test]
+    fn trimmed_surface_projection_is_unsupported() {
+        let base = AnalyticSurface::Plane {
+            origin: Point3::ORIGIN,
+            normal: Direction3::Z,
+        };
+        let outer = TrimLoop::new(
+            AnalyticCurve::circle(Point3::ORIGIN, Direction3::Z, length(5.0)).unwrap(),
+            ConstructionTolerance::new(1e-6).unwrap(),
+        )
+        .unwrap();
+        let trimmed = AnalyticSurface::trim(base, outer, Vec::new()).unwrap();
+        assert_eq!(
+            trimmed.project_point(Point3::new(0.0, 0.0, 3.0)),
+            QueryOutcome::Failed(QueryFailure::Unsupported)
+        );
+    }
+}

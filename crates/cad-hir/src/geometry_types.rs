@@ -51,6 +51,17 @@
 //! degenerate direction or a non-orthonormal frame explicitly rather than
 //! silently repairing or panicking).
 //!
+//! `AICAD-109` (Stage 5) added the `CurveEvaluation` declaration above —
+//! `evaluate_curve`'s own return shape (a curve-evaluation point plus
+//! tangent vector), the identical "ordinary struct, no new grammar" pattern
+//! as every other type in this module. `AICAD-111` added
+//! `ClosestPointResult` the same way — `closest_point_on_curve`'s own
+//! per-solution element type (used as `List<ClosestPointResult>`, per
+//! `AICAD-110`'s own widened `List<T>`). `AICAD-113` added
+//! `SurfaceEvaluation` — `evaluate_surface`'s own return shape (a point plus
+//! both partial derivatives and the unit normal), mirroring
+//! `CurveEvaluation` exactly.
+//!
 //! `AICAD-076` wired the first real `RuntimeBuiltin` consumers
 //! (`extrude`/`revolve`/`hole`/`pocket`) through that boundary, and in
 //! doing so found that a `BuiltinFnId` signature referencing one of these
@@ -111,10 +122,54 @@ struct Plane {
     origin: Point3,
     normal: Vector3<Float>,
 }
+
+struct CurveEvaluation {
+    point: Point3,
+    tangent: Vector3<Float>,
+}
+
+struct ClosestPointResult {
+    parameter: Float,
+    point: Point3,
+    distance: Length,
+}
+
+struct SurfaceEvaluation {
+    point: Point3,
+    du: Vector3<Float>,
+    dv: Vector3<Float>,
+    normal: Vector3<Float>,
+}
+
+struct CurveIntersectionResult {
+    point: Point3,
+    parameter_a: Float,
+    parameter_b: Float,
+}
+
+struct CurveSurfaceIntersectionResult {
+    point: Point3,
+    curve_parameter: Float,
+    surface_u: Float,
+    surface_v: Float,
+}
+
+struct SurfaceProjectionResult {
+    point: Point3,
+    u: Float,
+    v: Float,
+    distance: Length,
+}
+
+struct DistanceResult {
+    distance: Length,
+    point_a: Point3,
+    point_b: Point3,
+}
 ";
 
 /// Parses [`GEOMETRY_TYPES_SOURCE`] and returns a new [`Program`] whose
-/// items are these seven struct declarations followed by every item in
+/// items are these fourteen struct declarations followed by every item in
 /// `user_program`, in that order — see [`crate::prelude::with_prelude`]
 /// for the identical mechanism and rationale this mirrors exactly.
 ///
@@ -133,7 +188,7 @@ struct Plane {
 /// lower::lower_program` at all — `crate::typeck::check_program` performs
 /// no seeding of its own). Calling it and relying on `lower_program`'s
 /// own seeding are **idempotent together**: `seed_standard_types` skips
-/// any of these seven names `user_program` already declares (by name, at
+/// any of these fourteen names `user_program` already declares (by name, at
 /// the AST level), so composing this function never produces two
 /// distinct `BindingId`s nominally named the same standard type.
 ///
@@ -177,15 +232,15 @@ mod tests {
     }
 
     #[test]
-    fn with_geometry_types_prepends_the_seven_declarations_before_user_items() {
+    fn with_geometry_types_prepends_the_fourteen_declarations_before_user_items() {
         let (user_program, diags) = cad_parser::parse_program("let x = 1;", "test.aicad");
         assert!(diags.is_empty(), "{diags:?}");
         let combined = with_geometry_types(&user_program);
-        assert_eq!(combined.items.len(), 8);
-        for item in &combined.items[..7] {
+        assert_eq!(combined.items.len(), 15);
+        for item in &combined.items[..14] {
             assert!(matches!(item, cad_ast::Item::Struct { .. }));
         }
-        assert!(matches!(combined.items[7], cad_ast::Item::Let { .. }));
+        assert!(matches!(combined.items[14], cad_ast::Item::Let { .. }));
     }
 
     #[test]
@@ -264,5 +319,45 @@ mod tests {
             !checked.diagnostics.is_empty(),
             "expected a type mismatch assigning Vector2<Float> to Vector2<Length>"
         );
+    }
+
+    #[test]
+    fn user_code_can_construct_and_read_a_curve_evaluation() {
+        let source = "fn f() -> Length { \
+                 let e = CurveEvaluation( \
+                     point = Point3(x = 1mm, y = 2mm, z = 3mm), \
+                     tangent = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 return e.point.x; \
+             }";
+        let (user_program, diags) = cad_parser::parse_program(source, "test.aicad");
+        assert!(diags.is_empty(), "{diags:?}");
+        let combined = with_geometry_types(&user_program);
+        let lowered = crate::lower::lower_program(&combined, "test.aicad", source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked =
+            crate::typeck::check_program(&lowered.program, &lowered.bindings, "test.aicad", source);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn user_code_can_construct_and_read_a_surface_evaluation() {
+        let source = "fn f() -> Length { \
+                 let e = SurfaceEvaluation( \
+                     point = Point3(x = 1mm, y = 2mm, z = 3mm), \
+                     du = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     dv = Vector3(x = 0.0, y = 1.0, z = 0.0), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 return e.point.x; \
+             }";
+        let (user_program, diags) = cad_parser::parse_program(source, "test.aicad");
+        assert!(diags.is_empty(), "{diags:?}");
+        let combined = with_geometry_types(&user_program);
+        let lowered = crate::lower::lower_program(&combined, "test.aicad", source);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let checked =
+            crate::typeck::check_program(&lowered.program, &lowered.bindings, "test.aicad", source);
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
 }

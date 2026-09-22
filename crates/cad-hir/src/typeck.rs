@@ -143,16 +143,31 @@ pub enum CheckedType {
     /// every variant of one enum shares this same `CheckedType`.
     Enum(BindingId),
     /// An immutable `List<T>` (`AICAD-056`, `project/OWNER_DECISIONS.md
-    /// #D16`). `T` is restricted to a plain [`CheckedType::Value`] element
-    /// type (never `Struct`/`Enum`/nested `List`/`Range`) — the owner
-    /// ruling's own "Stage-2 collection foundation" scope limit ("does not
-    /// need to implement the entire future collection library"); nothing
-    /// in `AICAD-056`'s required test list needs a struct/enum or nested-
-    /// collection element, and keeping the element type as a plain
-    /// [`HirType`] (already `Copy`) keeps `CheckedType` itself `Copy`
-    /// rather than requiring a `Box` that would ripple through every
-    /// existing by-value `CheckedType` call site in this module.
-    List(HirType),
+    /// #D16`; widened `AICAD-110` to any element `T`, not only a plain
+    /// [`CheckedType::Value`]). `AICAD-056`'s original "Stage-2 collection
+    /// foundation" scope explicitly limited `T` to a plain scalar/
+    /// dimensional [`HirType`] — its own decision text frames this as the
+    /// "minimum coherent... model", never a permanent restriction ("does
+    /// not need to implement the entire future collection library" *yet*).
+    /// `AICAD-110`'s NURBS/Bezier curve builtins need `List<Point3>`
+    /// control-point lists (`docs/plan/
+    /// 05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own `bezier_curve`/
+    /// `bspline_curve` signatures), a genuine, evidenced Stage-5 need this
+    /// variant's own previous `HirType`-only representation could not
+    /// express at all. Boxed rather than inline: `CheckedType` was already
+    /// not `Copy` before this change (`CheckedType::Instantiated`'s own
+    /// `Vec<CheckedType>`), so boxing here adds no new `Copy`-preservation
+    /// cost this type did not already pay. This is a purely internal
+    /// type-checker representation change — no new source syntax, no
+    /// change to `[e1, e2, ...]` list-literal grammar, and every existing
+    /// `List<Length>`/`List<Int>` program is unaffected (same
+    /// `types_compatible` outcome, now derived generally via recursive
+    /// [`types_compatible`] rather than [`value_types_compatible`]
+    /// specifically). [`CheckedType::Range`] is deliberately **not**
+    /// widened alongside this — nothing in Stage 5 needs a struct-typed
+    /// range, and `Range<T>`'s own automatic-iteration restriction
+    /// (`Checker::check_iterable_element_type`) is unaffected either way.
+    List(Box<CheckedType>),
     /// A `Range<T>` (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`) —
     /// `start..end`/`start..=end`. Constructible for any plain element
     /// type `T` (the owner ruling: "Range<T> may exist for dimensional
@@ -212,6 +227,33 @@ pub enum CheckedType {
     /// it resolves `"Length"`/`"Int"`), so there is no declaring item to
     /// point back to.
     Geometry,
+    /// A kernel-neutral analytic curve value (`AICAD-109`,
+    /// `cad_geometry_api::curve::AnalyticCurve`) — a second single opaque
+    /// nominal type alongside [`CheckedType::Geometry`], resolved from the
+    /// bare source name `"Curve"` exactly the same way. Deliberately kept
+    /// distinct from `Geometry` rather than reusing it: a `Curve` carries
+    /// no `cad_geometry_api::GeomId` (it is pure backend-independent data,
+    /// never a `GeometryGraph` node — see `AnalyticCurve`'s own module doc
+    /// comment), so passing one where a topology-consuming builtin expects
+    /// `Geometry` must be a type error, not a silent reinterpretation.
+    Curve,
+    /// A kernel-neutral analytic surface value (`AICAD-113`,
+    /// `cad_geometry_api::surface::AnalyticSurface`) — the surface-family
+    /// counterpart of [`CheckedType::Curve`], resolved from the bare source
+    /// name `"Surface"` the identical way and kept distinct from both
+    /// `Curve` and `Geometry` for the same reason.
+    Surface,
+    /// A raw/unsafe geometry handle (`AICAD-122`, `project/DECISION_LOG.md
+    /// #DL-24` (D22); `cad_geometry_api::raw::RawGeometry`) — a fourth
+    /// single opaque nominal type, resolved from the bare source name
+    /// `"Raw"` the identical way `Geometry`/`Curve`/`Surface` are. Kept
+    /// strictly distinct from [`CheckedType::Geometry`]: a `Raw` value is
+    /// epoch-bound and carries no `GeomId`, so a program passing one where
+    /// a `Geometry`-typed parameter is declared (or vice versa) is a type
+    /// error at this layer, never a silent reinterpretation — the D22
+    /// "never treat a raw handle as... a Stage-4 semantic reference"
+    /// boundary enforced structurally, not merely documented.
+    Raw,
 }
 
 /// One function's checked signature — built once in [`Checker::
@@ -410,10 +452,13 @@ fn types_compatible(expected: CheckedType, actual: CheckedType) -> bool {
         (CheckedType::Value(e), CheckedType::Value(a)) => value_types_compatible(e, a),
         (CheckedType::Struct(e), CheckedType::Struct(a)) => e == a,
         (CheckedType::Enum(e), CheckedType::Enum(a)) => e == a,
-        (CheckedType::List(e), CheckedType::List(a)) => value_types_compatible(e, a),
+        (CheckedType::List(e), CheckedType::List(a)) => types_compatible(*e, *a),
         (CheckedType::Range(e), CheckedType::Range(a)) => value_types_compatible(e, a),
         (CheckedType::TypeParam(e), CheckedType::TypeParam(a)) => e == a,
         (CheckedType::Geometry, CheckedType::Geometry) => true,
+        (CheckedType::Curve, CheckedType::Curve) => true,
+        (CheckedType::Surface, CheckedType::Surface) => true,
+        (CheckedType::Raw, CheckedType::Raw) => true,
         // Nominal, not structural (`AICAD-057D`): the same declaring
         // struct/enum `base`, with every type argument pairwise
         // compatible in declared order.
@@ -557,7 +602,7 @@ impl<'a> Checker<'a> {
             CheckedType::Struct(id) | CheckedType::Enum(id) => {
                 self.bindings[id.index()].name.clone()
             }
-            CheckedType::List(elem) => format!("List<{elem}>"),
+            CheckedType::List(elem) => format!("List<{}>", self.describe(*elem)),
             CheckedType::Range(elem) => format!("Range<{elem}>"),
             CheckedType::TypeParam(id) => self.bindings[id.index()].name.clone(),
             CheckedType::Instantiated { base, args } => {
@@ -566,6 +611,9 @@ impl<'a> Checker<'a> {
                 format!("{name}<{}>", arg_strs.join(", "))
             }
             CheckedType::Geometry => "Geometry".to_string(),
+            CheckedType::Curve => "Curve".to_string(),
+            CheckedType::Surface => "Surface".to_string(),
+            CheckedType::Raw => "Raw".to_string(),
         }
     }
 
@@ -660,24 +708,12 @@ impl<'a> Checker<'a> {
 
     fn resolve_type_ref(&mut self, ty: &HirTypeRef) -> Option<CheckedType> {
         match ty {
-            HirTypeRef::Generic { name, args, span } if name == "List" && args.len() == 1 => {
-                match self.resolve_type_ref(&args[0])? {
-                    CheckedType::Value(elem) => Some(CheckedType::List(elem)),
-                    other => {
-                        self.diagnostics.push(self.diag(
-                            444,
-                            "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
-                            format!(
-                                "'List<{}>' is not supported — Stage 2 collection element types \
-                                 are limited to plain scalar/dimensional types \
-                                 (project/OWNER_DECISIONS.md#D16)",
-                                self.describe(other)
-                            ),
-                            *span,
-                        ));
-                        None
-                    }
-                }
+            // `List<T>` (`AICAD-056`, widened `AICAD-110` — see
+            // `CheckedType::List`'s own doc comment): any resolvable
+            // element type is accepted, not only a plain `Value`.
+            HirTypeRef::Generic { name, args, .. } if name == "List" && args.len() == 1 => {
+                let elem = self.resolve_type_ref(&args[0])?;
+                Some(CheckedType::List(Box::new(elem)))
             }
             HirTypeRef::Generic { name, args, span } if name == "Range" && args.len() == 1 => {
                 match self.resolve_type_ref(&args[0])? {
@@ -730,6 +766,20 @@ impl<'a> Checker<'a> {
                 // `Int` already do).
                 if name == "Geometry" {
                     return Some(CheckedType::Geometry);
+                }
+                // `Curve` (`AICAD-109`): the identical single-opaque-
+                // nominal-type pattern as `Geometry` immediately above,
+                // checked before `self.type_names` for the same reason.
+                if name == "Curve" {
+                    return Some(CheckedType::Curve);
+                }
+                // `Surface` (`AICAD-113`): the identical pattern again.
+                if name == "Surface" {
+                    return Some(CheckedType::Surface);
+                }
+                // `Raw` (`AICAD-122`): the identical pattern again.
+                if name == "Raw" {
+                    return Some(CheckedType::Raw);
                 }
                 if let Some(prim) = PrimitiveType::from_name(name) {
                     return Some(CheckedType::Value(HirType::Scalar(prim)));
@@ -1384,17 +1434,19 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// `[e1, e2, ...]` (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`).
-    /// Every element must resolve to the same [`CheckedType::Value`]
-    /// (`value_types_compatible`, via [`types_compatible`]) — e.g. `5mm`,
-    /// `2cm`, and `1in` all resolve to the identical `Dimensional{Length,
-    /// None}` regardless of source unit spelling (dimension resolution is
-    /// unit-symbol-independent), so "elements unify to one compatible
-    /// element type" reduces to plain type-identity agreement, not a
-    /// numeric-promotion algorithm. An empty literal (`[]`) needs
-    /// `expected` (a `List<T>` annotation) to know its own element type at
-    /// all; without one, `EMPTY_LIST_TYPE_UNKNOWN` — the owner ruling's
-    /// own required case ("otherwise emit a stable type-inference
+    /// `[e1, e2, ...]` (`AICAD-056`, `project/OWNER_DECISIONS.md#D16`;
+    /// widened `AICAD-110` to any element type, not only
+    /// [`CheckedType::Value`] — see [`CheckedType::List`]'s own doc
+    /// comment). Every element must resolve to the same/compatible type
+    /// (full [`types_compatible`], not merely [`value_types_compatible`])
+    /// — e.g. `5mm`, `2cm`, and `1in` all resolve to the identical
+    /// `Dimensional{Length, None}` regardless of source unit spelling, and
+    /// (since `AICAD-110`) two `Point3` struct-literal elements unify by
+    /// the same nominal-struct-identity rule any other `Point3`-typed
+    /// expression already uses. An empty literal (`[]`) needs `expected`
+    /// (a `List<T>` annotation) to know its own element type at all;
+    /// without one, `EMPTY_LIST_TYPE_UNKNOWN` — the owner ruling's own
+    /// required case ("otherwise emit a stable type-inference
     /// diagnostic").
     fn check_list_literal(
         &mut self,
@@ -1403,13 +1455,13 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Option<CheckedType> {
         let expected_elem = match expected {
-            Some(CheckedType::List(elem)) => Some(CheckedType::Value(elem)),
+            Some(CheckedType::List(elem)) => Some(*elem),
             _ => None,
         };
         if elements.is_empty() {
             return match expected_elem {
-                Some(CheckedType::Value(elem)) => Some(CheckedType::List(elem)),
-                _ => {
+                Some(elem) => Some(CheckedType::List(Box::new(elem))),
+                None => {
                     self.diagnostics.push(
                         self.diag(
                             441,
@@ -1428,18 +1480,6 @@ impl<'a> Checker<'a> {
         for element in elements {
             let Some(this_ty) = self.check_expr(element, expected_elem.clone().or(elem_ty.clone()))
             else {
-                continue;
-            };
-            let CheckedType::Value(_) = &this_ty else {
-                self.diagnostics.push(self.diag(
-                    444,
-                    "UNSUPPORTED_COLLECTION_ELEMENT_TYPE",
-                    format!(
-                        "list elements must have a plain scalar/dimensional type; found {}",
-                        self.describe(this_ty)
-                    ),
-                    element.span(),
-                ));
                 continue;
             };
             match elem_ty.clone().or(expected_elem.clone()) {
@@ -1463,10 +1503,9 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        match elem_ty.or(expected_elem) {
-            Some(CheckedType::Value(elem)) => Some(CheckedType::List(elem)),
-            _ => None,
-        }
+        elem_ty
+            .or(expected_elem)
+            .map(|elem| CheckedType::List(Box::new(elem)))
     }
 
     /// `start..end` / `start..=end` (`AICAD-056`, `project/
@@ -1545,7 +1584,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Option<CheckedType> {
         match iterable_ty? {
-            CheckedType::List(elem) => Some(CheckedType::Value(elem)),
+            CheckedType::List(elem) => Some(*elem),
             CheckedType::Range(
                 elem @ HirType::Scalar(PrimitiveType::Int | PrimitiveType::UInt),
             ) => Some(CheckedType::Value(elem)),
@@ -3290,6 +3329,57 @@ mod tests {
         );
     }
 
+    // --- AICAD-102: Area source-value construction ---
+
+    #[test]
+    fn area_unit_literal_type_checks_to_dimensional_area() {
+        let (lowered, checked) = check("let plate_area = 500mm2;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(value(HirType::dimensional(
+                cad_types::Dimension::Area,
+                None
+            )))
+        );
+    }
+
+    #[test]
+    fn length_times_length_infers_area_with_no_annotation_needed() {
+        // Unlike `Force * Length` (Torque vs. Energy), `Length * Length`
+        // has exactly one dimensional-algebra match (`Dimension::Area`),
+        // so this already type-checked before `AICAD-102` -- this test
+        // pins that pre-existing behavior as part of this task's own
+        // "positive" construction-path coverage for `Area`.
+        let (lowered, checked) = check("let plate_area = 10mm * 10mm;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        assert_eq!(
+            checked.binding_types[b.index()],
+            Some(value(HirType::dimensional(
+                cad_types::Dimension::Area,
+                None
+            )))
+        );
+    }
+
+    #[test]
+    fn area_plus_length_is_rejected_not_coerced() {
+        let (_lowered, checked) = check("let x = 500mm2 + 10mm;");
+        assert_eq!(codes(&checked.diagnostics), vec!["UNIT-E104"]);
+    }
+
+    #[test]
+    fn area_literal_and_derived_area_are_the_same_dimension() {
+        // A literal Area (`500mm2`) and a derived Area (`10mm * 10mm`)
+        // must type-check as freely addable -- same named dimension,
+        // regardless of construction path (DL-3's own "canonical
+        // representation independent of source-literal unit").
+        let (_lowered, checked) = check("let x = 500mm2 + 10mm * 10mm;");
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
     #[test]
     fn ambiguous_derived_dimension_resolves_via_function_return_type() {
         // `force * length` alone is ambiguous (Torque vs. Energy) — the
@@ -4065,7 +4155,9 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(CheckedType::List(HirType::Scalar(PrimitiveType::Int)))
+            Some(CheckedType::List(Box::new(CheckedType::Value(
+                HirType::Scalar(PrimitiveType::Int)
+            ))))
         );
     }
 
@@ -4078,13 +4170,49 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(CheckedType::List(HirType::dimensional(Length, None)))
+            Some(CheckedType::List(Box::new(CheckedType::Value(
+                HirType::dimensional(Length, None)
+            ))))
         );
     }
 
     #[test]
     fn list_literal_with_incompatible_element_dimensions_is_reported() {
         let (_lowered, checked) = check("let xs = [5mm, 3kg];");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E440"]);
+    }
+
+    /// `AICAD-110`: `List<T>`'s element type is no longer restricted to a
+    /// plain scalar/dimensional `Value` (see `CheckedType::List`'s own doc
+    /// comment) — a `List<Point3>` control-point list, exactly the shape
+    /// `bezier_curve`/`bspline_curve` need, must type-check cleanly and
+    /// resolve to `List<Struct(Point3)>`.
+    #[test]
+    fn list_literal_of_a_struct_type_type_checks() {
+        let (lowered, checked) = check(
+            "let pts = [\
+                 Point3(x = 0mm, y = 0mm, z = 0mm), \
+                 Point3(x = 1mm, y = 0mm, z = 0mm), \
+             ];",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+        let b = let_binding(&lowered, 0);
+        let Some(CheckedType::List(elem)) = &checked.binding_types[b.index()] else {
+            panic!(
+                "expected List<_>, got {:?}",
+                checked.binding_types[b.index()]
+            );
+        };
+        assert!(matches!(**elem, CheckedType::Struct(_)));
+    }
+
+    /// A `List<Point3>` element mismatched against an incompatible
+    /// `Length` element is still a real, reported type error — widening
+    /// which element *kinds* are supported did not weaken same-list
+    /// element agreement.
+    #[test]
+    fn list_literal_mixing_a_struct_and_a_value_element_is_reported() {
+        let (_lowered, checked) = check("let xs = [Point3(x = 0mm, y = 0mm, z = 0mm), 5mm];");
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E440"]);
     }
 
@@ -4095,7 +4223,9 @@ mod tests {
         let b = let_binding(&lowered, 0);
         assert_eq!(
             checked.binding_types[b.index()],
-            Some(CheckedType::List(HirType::Scalar(PrimitiveType::Int)))
+            Some(CheckedType::List(Box::new(CheckedType::Value(
+                HirType::Scalar(PrimitiveType::Int)
+            ))))
         );
     }
 
@@ -4904,6 +5034,27 @@ mod tests {
     #[test]
     fn union_called_with_a_non_geometry_argument_is_reported() {
         let (_lowered, checked) = check("let s = union(box(1mm, 1mm, 1mm), 5mm);");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
+    }
+
+    /// `AICAD-122`, D22: a `Raw` value must never be silently accepted
+    /// where a `Geometry`-typed parameter is declared -- the raw/unsafe
+    /// tier's own opacity is enforced structurally by `CheckedType::Raw`
+    /// being a distinct nominal type, not merely documented.
+    #[test]
+    fn a_raw_value_cannot_be_passed_where_geometry_is_expected() {
+        let (_lowered, checked) =
+            check("let b = box(1mm, 1mm, 1mm); let r = enter_raw(b); let bad = is_valid(r);");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
+    }
+
+    /// The converse of the test above: a `Geometry` value must never be
+    /// silently accepted where a `Raw`-typed parameter is declared --
+    /// `enter_raw` is the only sanctioned entry point into the raw tier.
+    #[test]
+    fn a_geometry_value_cannot_be_passed_where_raw_is_expected() {
+        let (_lowered, checked) =
+            check("let b = box(1mm, 1mm, 1mm); let bad = raw_topology_kind_of(b);");
         assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E418"]);
     }
 

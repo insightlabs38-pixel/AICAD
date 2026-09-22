@@ -421,6 +421,208 @@ pub enum RuntimeError {
         count: i64,
         span: Span,
     },
+    /// A kernel-backed query builtin (`is_valid`/`volume`/`area`,
+    /// `AICAD-105`, `project/DECISION_LOG.md#DL-25`) was called on an
+    /// [`crate::interp::Interpreter`] with no [`crate::query_exec::
+    /// KernelQueryExecutor`] configured (`crate::interp::Interpreter::
+    /// with_query_executor`) — the default for every interpreter that does
+    /// not need real kernel results (most tests, and any evaluation phase
+    /// that runs before a real kernel context exists). Reported as a
+    /// structured diagnostic, never a silent placeholder value or a panic.
+    KernelQueryUnavailable {
+        name: &'static str,
+        span: Span,
+    },
+    /// A configured [`crate::query_exec::KernelQueryExecutor`] genuinely
+    /// failed to produce a result (a real kernel-side error, e.g. an
+    /// invalid/degenerate shape a query cannot meaningfully evaluate) —
+    /// distinct from [`RuntimeError::KernelQueryUnavailable`] (no executor
+    /// configured at all).
+    KernelQueryFailed {
+        name: &'static str,
+        span: Span,
+        message: String,
+    },
+    /// This interpreter's [`crate::interp::ResourceBudget::
+    /// max_kernel_queries`] (`AICAD-105`) was exceeded. A kernel-backed
+    /// query is a real, potentially expensive kernel call (unlike an
+    /// ordinary loop iteration or function call, it is not bounded purely
+    /// by this evaluator's own execution cost) — this budget exists so a
+    /// program cannot drive unbounded kernel work through repeated query
+    /// calls, mirroring [`RuntimeError::IterationBudgetExceeded`]/
+    /// [`RuntimeError::RecursionLimitExceeded`]'s own resource-budget
+    /// rationale. Carries the dedicated `BUDGET` diagnostic family
+    /// (`BUDGET-E003`), not `RUNTIME` — see this module's own doc comment.
+    QueryBudgetExceeded {
+        span: Span,
+    },
+    /// `line_curve`/`circle_curve`/`arc_curve`/`ellipse_curve`
+    /// (`AICAD-109`) received arguments that evaluate to a genuinely
+    /// invalid curve — a non-finite/non-positive radius, an empty/reversed
+    /// arc angle range, or an ellipse `major_direction` not perpendicular
+    /// to `normal` (`cad_geometry_api::curve::CurveConstructionError`).
+    /// Type-checking cannot rule this out (it depends on the actual
+    /// evaluated numeric components), mirroring
+    /// [`RuntimeError::InvalidSpatialArgument`]'s own identical rationale.
+    InvalidCurveConstruction {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::CurveConstructionError,
+    },
+    /// `evaluate_curve` (`AICAD-109`) could not evaluate its `curve`
+    /// argument at the given `u` — a non-finite `u`, an `Arc`'s `u` outside
+    /// its own `start_angle..=end_angle` domain, or (only reachable for a
+    /// directly struct-literal-constructed `AnalyticCurve` bypassing this
+    /// crate's own validated constructors) a degenerate curve shape
+    /// (`cad_geometry_api::QueryFailure`).
+    CurveEvaluationFailed {
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
+    /// `offset_curve`/`interpolate_curve` (`AICAD-111`) could not perform
+    /// the requested curve operation — an unsupported family, a missing/
+    /// degenerate offset direction, a degenerate result, or (for
+    /// `interpolate_curve`) too few/duplicate points or an achieved
+    /// residual above the caller's tolerance
+    /// (`cad_geometry_api::CurveOperationError`).
+    CurveOperationFailed {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::CurveOperationError,
+    },
+    /// `closest_point_on_curve` (`AICAD-111`) could not find a closest
+    /// point — e.g. the target lies exactly on a circle/ellipse's own
+    /// normal axis, where every point on the curve is equidistant (a
+    /// genuine ambiguity, never resolved by an arbitrary pick).
+    ClosestPointFailed {
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
+    /// `plane_surface`/`cylinder_surface`/`cone_surface`/`sphere_surface`/
+    /// `torus_surface` (`AICAD-113`) received arguments that evaluate to a
+    /// genuinely invalid surface — a non-finite/non-positive radius, a
+    /// cone `half_angle` outside `(0, pi/2)`, or a torus `minor_radius >=
+    /// major_radius` (`cad_geometry_api::SurfaceConstructionError`).
+    /// Mirrors [`RuntimeError::InvalidCurveConstruction`]'s own identical
+    /// rationale.
+    InvalidSurfaceConstruction {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::SurfaceConstructionError,
+    },
+    /// `evaluate_surface` (`AICAD-113`) could not evaluate its `surface`
+    /// argument at the given `(u, v)` — a non-finite/out-of-domain
+    /// parameter, or a genuine parametrization singularity (e.g. a
+    /// sphere's own pole, a cone's own apex — see `cad_geometry_api::
+    /// surface`'s own module doc comment) (`cad_geometry_api::
+    /// QueryFailure`).
+    SurfaceEvaluationFailed {
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
+    /// `trim_surface` (`AICAD-115`) received an `outer`/`holes` curve that
+    /// is not a valid trim loop — not closed, not planar in the base
+    /// surface's own `(u, v)` plane, or too small to orient
+    /// (`cad_geometry_api::TrimError`).
+    InvalidTrimLoop {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::TrimError,
+    },
+    /// `trim_surface` (`AICAD-115`) received a structurally valid outer/
+    /// hole loop combination that `AnalyticSurface::trim` still rejects —
+    /// wrong orientation, or a loop sample outside the base surface's own
+    /// valid domain (`cad_geometry_api::SurfaceTrimError`).
+    SurfaceTrimFailed {
+        span: Span,
+        reason: cad_geometry_api::SurfaceTrimError,
+    },
+    /// `trim_surface`'s (`AICAD-115`) own `tolerance` argument evaluated to
+    /// a non-finite/non-positive magnitude (`cad_units::ToleranceError`) —
+    /// type-checking cannot rule this out, mirroring [`RuntimeError::
+    /// InvalidSpatialArgument`]'s own identical "depends on the actual
+    /// evaluated value" rationale.
+    InvalidToleranceMagnitude {
+        name: &'static str,
+        span: Span,
+        reason: cad_units::ToleranceError,
+    },
+    /// `offset_surface` (`AICAD-116`) could not offset its `surface`
+    /// argument — an unsupported family (Bezier/B-spline/trimmed), or a
+    /// distance that would produce a degenerate result
+    /// (`cad_geometry_api::SurfaceOperationError`).
+    SurfaceOperationFailed {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::SurfaceOperationError,
+    },
+    /// `intersect_curves`/`intersect_curve_surface`/`intersect_surfaces`/
+    /// `project_point_to_surface`/`distance_curve_curve`/
+    /// `distance_curve_surface`/`distance_surface_surface` (`AICAD-117`)
+    /// could not evaluate reliably — a coincident/overlapping or tangent
+    /// input (`QueryFailure::Degenerate`), a family combination this
+    /// query does not yet support (`QueryFailure::Unsupported`), or (in
+    /// principle, though no current query in this batch produces it) a
+    /// non-convergent numerical search or out-of-domain parameter
+    /// (`cad_geometry_api::QueryFailure`). Genuinely zero solutions is a
+    /// real, successful answer (an empty `List`), never this error.
+    GeometricQueryFailed {
+        name: &'static str,
+        span: Span,
+        reason: cad_geometry_api::QueryFailure,
+    },
+    /// `make_edge`/`make_face_on_surface` (`AICAD-119`) received a `Curve`/
+    /// `Surface` value from a family this batch's kernel construction does
+    /// not (yet) support materializing — e.g. an infinite (untrimmed)
+    /// `Line`, an `Ellipse`, a `Bezier`/`BSpline` curve or surface, or a
+    /// `Surface::Trimmed`. A structural limit (no matching `GeometryOp`
+    /// variant exists for these families), not a missing case check —
+    /// `reason` names exactly which.
+    UnsupportedTopologyConstruction {
+        name: &'static str,
+        span: Span,
+        reason: &'static str,
+    },
+    /// `raw_topology_kind_of` (`AICAD-122`) was called on an
+    /// [`crate::interp::Interpreter`] with no [`cad_geometry_api::raw::
+    /// EpochCounter`] configured ([`crate::interp::Interpreter::
+    /// with_epoch_counter`]) — the default for every interpreter that
+    /// never needs raw-tier results (every existing call site before this
+    /// task, and most tests), mirroring [`RuntimeError::
+    /// KernelQueryUnavailable`]'s own "explicit failure, never a
+    /// placeholder" precedent for the query executor.
+    RawTierUnavailable {
+        name: &'static str,
+        span: Span,
+    },
+    /// A [`crate::value::Value::Raw`] handle was presented after its own
+    /// minting epoch no longer matches the calling session's *current*
+    /// [`cad_geometry_api::raw::EpochCounter`] (`AICAD-122`, D22) — either
+    /// because the underlying build regenerated since the handle was
+    /// minted (`enter_raw` re-run would produce a fresh one), or because
+    /// the handle was minted by a *different* session's counter entirely
+    /// (D22's "wrong context" case; `cad_references::raw_handle::Epoch`'s
+    /// own counter-identity tagging makes both cases indistinguishable to
+    /// the handle itself, and both are equally invalid to use). `reason`
+    /// is the wrapped `cad_references::raw_handle::StaleHandle`'s own
+    /// `Display` text, naming both epochs.
+    RawHandleStale {
+        name: &'static str,
+        span: Span,
+        reason: String,
+    },
+    /// A configured [`crate::raw_exec::RawEditExecutor`] genuinely failed
+    /// to perform a raw-tier edit (`AICAD-123`) -- a real kernel-side
+    /// error (e.g. an out-of-range face index, a degenerate edge with no
+    /// underlying curve, an unsupported input shape). Distinct from
+    /// [`RuntimeError::RawTierUnavailable`] (no executor configured at
+    /// all), mirroring [`RuntimeError::KernelQueryFailed`]'s own identical
+    /// split for the query executor.
+    RawEditFailed {
+        name: &'static str,
+        span: Span,
+        message: String,
+    },
 }
 
 impl RuntimeError {
@@ -463,6 +665,24 @@ impl RuntimeError {
             RuntimeError::UnknownField { .. } => "RUNTIME-E127".to_string(),
             RuntimeError::InvalidSpatialArgument { .. } => "RUNTIME-E128".to_string(),
             RuntimeError::InvalidPatternCount { .. } => "RUNTIME-E129".to_string(),
+            RuntimeError::KernelQueryUnavailable { .. } => "RUNTIME-E130".to_string(),
+            RuntimeError::KernelQueryFailed { .. } => "RUNTIME-E131".to_string(),
+            RuntimeError::QueryBudgetExceeded { .. } => "BUDGET-E003".to_string(),
+            RuntimeError::InvalidCurveConstruction { .. } => "RUNTIME-E132".to_string(),
+            RuntimeError::CurveEvaluationFailed { .. } => "RUNTIME-E133".to_string(),
+            RuntimeError::CurveOperationFailed { .. } => "RUNTIME-E134".to_string(),
+            RuntimeError::ClosestPointFailed { .. } => "RUNTIME-E135".to_string(),
+            RuntimeError::InvalidSurfaceConstruction { .. } => "RUNTIME-E136".to_string(),
+            RuntimeError::SurfaceEvaluationFailed { .. } => "RUNTIME-E137".to_string(),
+            RuntimeError::InvalidTrimLoop { .. } => "RUNTIME-E138".to_string(),
+            RuntimeError::SurfaceTrimFailed { .. } => "RUNTIME-E139".to_string(),
+            RuntimeError::InvalidToleranceMagnitude { .. } => "RUNTIME-E140".to_string(),
+            RuntimeError::SurfaceOperationFailed { .. } => "RUNTIME-E141".to_string(),
+            RuntimeError::GeometricQueryFailed { .. } => "RUNTIME-E142".to_string(),
+            RuntimeError::UnsupportedTopologyConstruction { .. } => "RUNTIME-E143".to_string(),
+            RuntimeError::RawTierUnavailable { .. } => "RUNTIME-E144".to_string(),
+            RuntimeError::RawHandleStale { .. } => "RUNTIME-E145".to_string(),
+            RuntimeError::RawEditFailed { .. } => "RUNTIME-E146".to_string(),
         }
     }
 
@@ -474,7 +694,8 @@ impl RuntimeError {
     fn category(&self) -> &'static str {
         match self {
             RuntimeError::IterationBudgetExceeded { .. }
-            | RuntimeError::RecursionLimitExceeded { .. } => "resource-budget",
+            | RuntimeError::RecursionLimitExceeded { .. }
+            | RuntimeError::QueryBudgetExceeded { .. } => "resource-budget",
             RuntimeError::GeometryConstruction { .. } => "geometry-ir",
             _ => "execution",
         }
@@ -514,7 +735,25 @@ impl RuntimeError {
             | RuntimeError::StructConstructionArgumentShape { span, .. }
             | RuntimeError::UnknownField { span, .. }
             | RuntimeError::InvalidSpatialArgument { span, .. }
-            | RuntimeError::InvalidPatternCount { span, .. } => *span,
+            | RuntimeError::InvalidPatternCount { span, .. }
+            | RuntimeError::KernelQueryUnavailable { span, .. }
+            | RuntimeError::KernelQueryFailed { span, .. }
+            | RuntimeError::QueryBudgetExceeded { span }
+            | RuntimeError::InvalidCurveConstruction { span, .. }
+            | RuntimeError::CurveEvaluationFailed { span, .. }
+            | RuntimeError::CurveOperationFailed { span, .. }
+            | RuntimeError::ClosestPointFailed { span, .. }
+            | RuntimeError::InvalidSurfaceConstruction { span, .. }
+            | RuntimeError::SurfaceEvaluationFailed { span, .. }
+            | RuntimeError::InvalidTrimLoop { span, .. }
+            | RuntimeError::SurfaceTrimFailed { span, .. }
+            | RuntimeError::InvalidToleranceMagnitude { span, .. }
+            | RuntimeError::SurfaceOperationFailed { span, .. }
+            | RuntimeError::GeometricQueryFailed { span, .. }
+            | RuntimeError::UnsupportedTopologyConstruction { span, .. }
+            | RuntimeError::RawTierUnavailable { span, .. }
+            | RuntimeError::RawHandleStale { span, .. }
+            | RuntimeError::RawEditFailed { span, .. } => *span,
         }
     }
 
@@ -555,6 +794,26 @@ impl RuntimeError {
             RuntimeError::UnknownField { .. } => "UNKNOWN_FIELD",
             RuntimeError::InvalidSpatialArgument { .. } => "INVALID_SPATIAL_ARGUMENT",
             RuntimeError::InvalidPatternCount { .. } => "INVALID_PATTERN_COUNT",
+            RuntimeError::KernelQueryUnavailable { .. } => "KERNEL_QUERY_UNAVAILABLE",
+            RuntimeError::KernelQueryFailed { .. } => "KERNEL_QUERY_FAILED",
+            RuntimeError::QueryBudgetExceeded { .. } => "QUERY_BUDGET_EXCEEDED",
+            RuntimeError::InvalidCurveConstruction { .. } => "INVALID_CURVE_CONSTRUCTION",
+            RuntimeError::CurveEvaluationFailed { .. } => "CURVE_EVALUATION_FAILED",
+            RuntimeError::CurveOperationFailed { .. } => "CURVE_OPERATION_FAILED",
+            RuntimeError::ClosestPointFailed { .. } => "CLOSEST_POINT_FAILED",
+            RuntimeError::InvalidSurfaceConstruction { .. } => "INVALID_SURFACE_CONSTRUCTION",
+            RuntimeError::SurfaceEvaluationFailed { .. } => "SURFACE_EVALUATION_FAILED",
+            RuntimeError::InvalidTrimLoop { .. } => "INVALID_TRIM_LOOP",
+            RuntimeError::SurfaceTrimFailed { .. } => "SURFACE_TRIM_FAILED",
+            RuntimeError::InvalidToleranceMagnitude { .. } => "INVALID_TOLERANCE_MAGNITUDE",
+            RuntimeError::SurfaceOperationFailed { .. } => "SURFACE_OPERATION_FAILED",
+            RuntimeError::GeometricQueryFailed { .. } => "GEOMETRIC_QUERY_FAILED",
+            RuntimeError::UnsupportedTopologyConstruction { .. } => {
+                "UNSUPPORTED_TOPOLOGY_CONSTRUCTION"
+            }
+            RuntimeError::RawTierUnavailable { .. } => "RAW_TIER_UNAVAILABLE",
+            RuntimeError::RawHandleStale { .. } => "RAW_HANDLE_STALE",
+            RuntimeError::RawEditFailed { .. } => "RAW_EDIT_FAILED",
         }
     }
 
@@ -663,6 +922,62 @@ impl RuntimeError {
             }
             RuntimeError::InvalidPatternCount { name, count, .. } => {
                 format!("'{name}' requires a 'count' of at least 1, found {count}")
+            }
+            RuntimeError::KernelQueryUnavailable { name, .. } => format!(
+                "'{name}' requires a real kernel-backed query executor, but this interpreter has \
+                 none configured"
+            ),
+            RuntimeError::KernelQueryFailed { name, message, .. } => {
+                format!("'{name}' failed: {message}")
+            }
+            RuntimeError::QueryBudgetExceeded { .. } => {
+                "exceeded this interpreter's kernel-query budget".to_string()
+            }
+            RuntimeError::InvalidCurveConstruction { name, reason, .. } => {
+                format!("'{name}' received invalid curve parameters: {reason}")
+            }
+            RuntimeError::CurveEvaluationFailed { reason, .. } => {
+                format!("'evaluate_curve' could not evaluate this curve: {reason}")
+            }
+            RuntimeError::CurveOperationFailed { name, reason, .. } => {
+                format!("'{name}' failed: {reason}")
+            }
+            RuntimeError::ClosestPointFailed { reason, .. } => {
+                format!("'closest_point_on_curve' could not find a closest point: {reason}")
+            }
+            RuntimeError::InvalidSurfaceConstruction { name, reason, .. } => {
+                format!("'{name}' received invalid surface parameters: {reason}")
+            }
+            RuntimeError::SurfaceEvaluationFailed { reason, .. } => {
+                format!("'evaluate_surface' could not evaluate this surface: {reason}")
+            }
+            RuntimeError::InvalidTrimLoop { name, reason, .. } => {
+                format!("'{name}' received an invalid trim loop: {reason}")
+            }
+            RuntimeError::SurfaceTrimFailed { reason, .. } => {
+                format!("'trim_surface' could not build a trimmed surface: {reason}")
+            }
+            RuntimeError::InvalidToleranceMagnitude { name, reason, .. } => {
+                format!("'{name}' received an invalid tolerance: {reason}")
+            }
+            RuntimeError::SurfaceOperationFailed { name, reason, .. } => {
+                format!("'{name}' failed: {reason}")
+            }
+            RuntimeError::GeometricQueryFailed { name, reason, .. } => {
+                format!("'{name}' could not be evaluated: {reason}")
+            }
+            RuntimeError::UnsupportedTopologyConstruction { name, reason, .. } => {
+                format!("'{name}' does not support this input: {reason}")
+            }
+            RuntimeError::RawTierUnavailable { name, .. } => format!(
+                "'{name}' requires a real raw-geometry epoch counter, but this interpreter has \
+                 none configured"
+            ),
+            RuntimeError::RawHandleStale { name, reason, .. } => {
+                format!("'{name}' received a stale raw handle: {reason}")
+            }
+            RuntimeError::RawEditFailed { name, message, .. } => {
+                format!("'{name}' failed: {message}")
             }
         }
     }

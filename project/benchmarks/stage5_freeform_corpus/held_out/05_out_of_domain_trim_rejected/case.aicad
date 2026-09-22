@@ -1,0 +1,28 @@
+// Adversarial: identical trimmed patch to
+// `public/04_trimmed_freeform_patch`, but evaluated at (0.95, 0.95), which
+// is distance ~0.636 from the trim center (0.5, 0.5) -- well outside the
+// r=0.3 trim loop. Expected outcome: the build fails explicitly
+// (`RuntimeError::SurfaceEvaluationFailed` / `QueryFailure::OutOfDomain`),
+// never a silently returned out-of-region point.
+let base: Surface = bspline_surface(
+    degree_u = 1,
+    degree_v = 1,
+    control_points = [
+        [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 100mm, z = 20mm)],
+        [Point3(x = 100mm, y = 0mm, z = 20mm), Point3(x = 100mm, y = 100mm, z = 0mm)],
+    ],
+    knots_u = [0.0, 1.0],
+    multiplicities_u = [2, 2],
+    knots_v = [0.0, 1.0],
+    multiplicities_v = [2, 2],
+    weights = [[1.0, 1.0], [1.0, 1.0]],
+    periodic_u = false,
+    periodic_v = false,
+);
+let outer: Curve = circle_curve(
+    center = Point3(x = 0.5m, y = 0.5m, z = 0m),
+    normal = Vector3(x = 0.0, y = 0.0, z = 1.0),
+    radius = 0.3m,
+);
+let trimmed: Surface = trim_surface(base, outer, [], 0.000001m);
+let rejected_eval: SurfaceEvaluation = evaluate_surface(trimmed, 0.95, 0.95);

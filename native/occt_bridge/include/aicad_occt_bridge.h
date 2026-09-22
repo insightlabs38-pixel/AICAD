@@ -743,17 +743,22 @@ aicad_occt_status_t aicad_occt_shape_center_of_mass(aicad_occt_context_t* contex
 
 /* Normalized validation report: overall validity plus a count of
  * invalid subshapes broken down by topological kind, via
- * BRepCheck_Analyzer::IsValid() queried per unique vertex/edge/wire/face
- * (TopExp::MapShapes-deduplicated, matching this bridge's own established
- * "unique subshapes" convention). A shape with `is_valid == 0` always has
- * at least one nonzero count among the four; a shape with `is_valid == 1`
- * always has all four at zero. */
+ * BRepCheck_Analyzer::IsValid() queried per unique vertex/edge/wire/face/
+ * shell/solid (TopExp::MapShapes-deduplicated, matching this bridge's own
+ * established "unique subshapes" convention). `invalid_shell_count`/
+ * `invalid_solid_count` were added by AICAD-119, alongside this batch's
+ * own shell/solid construction paths -- a shape with no Shell/Solid
+ * subshape (e.g. a bare face) always reports 0 for both, not an error. A
+ * shape with `is_valid == 0` always has at least one nonzero count among
+ * the six; a shape with `is_valid == 1` always has all six at zero. */
 typedef struct aicad_validation_report {
   int is_valid;
   size_t invalid_vertex_count;
   size_t invalid_edge_count;
   size_t invalid_wire_count;
   size_t invalid_face_count;
+  size_t invalid_shell_count;
+  size_t invalid_solid_count;
 } aicad_validation_report_t;
 
 aicad_occt_status_t aicad_occt_shape_validate(aicad_occt_context_t* context,
@@ -1061,6 +1066,319 @@ aicad_occt_status_t aicad_occt_shape_classify_point(aicad_occt_context_t* contex
                                                      const double point[3],
                                                      double tolerance,
                                                      int* out_classification);
+
+/* --- AICAD-119: general topology construction (vertex/face-on-surface/
+ * shell/solid/compound), completing the vertex->edge->wire->face->shell->
+ * solid pipeline docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md §3
+ * specifies. aicad_occt_make_line_edge/_make_circle_wire/_make_arc_edge/
+ * _make_wire_from_edges/_make_face_from_wire (AICAD-022/023) already cover
+ * vertex-less edge/wire/planar-face construction; this batch adds the
+ * missing vertex, non-planar (quadric-surface) face, shell, and solid
+ * construction paths, plus compound grouping. None of these perform
+ * sewing/gap-closing (AICAD-120's job): a shell/solid built here reflects
+ * exactly the connectivity its input faces/shells already have byte-for-
+ * byte, so a caller-supplied gap or orientation mismatch surfaces as an
+ * open/invalid result under aicad_occt_shape_validate, never a silently
+ * "fixed" one -- Stage-1 kernel policy #14 applies here exactly as it does
+ * to aicad_occt_make_face_from_wire. --- */
+
+/* Constructs a single-point vertex (`BRepBuilderAPI_MakeVertex`). Always
+ * succeeds for a finite `point`. */
+aicad_occt_status_t aicad_occt_make_vertex(aicad_occt_context_t* context,
+                                            const double point[3],
+                                            aicad_shape_handle_t* out_handle);
+
+/* Builds a face bounded by `outer_wire` on the given elementary quadric
+ * surface (`BRepBuilderAPI_MakeFace(surface, wire, Inside=true)`), then
+ * adds each of `holes` (each must already be wound with the opposite
+ * orientation from `outer_wire`, per OCCT's own inner-boundary convention
+ * -- this bridge does not infer or correct hole orientation) as an inner
+ * boundary. `outer_reversed != 0` builds the face on `outer_wire.Reversed()`
+ * instead, the one explicit orientation control this batch exposes.
+ * `outer_wire`/every element of `holes` must address a shape of exactly
+ * kind Wire. As with aicad_occt_make_face_from_wire, construction success
+ * is not evidence of validity -- call aicad_occt_shape_validate/
+ * aicad_occt_shape_is_valid separately. */
+aicad_occt_status_t aicad_occt_make_face_on_plane(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t outer_wire,
+                                                   const aicad_shape_handle_t* holes,
+                                                   size_t hole_count,
+                                                   const double origin[3],
+                                                   const double normal[3],
+                                                   int outer_reversed,
+                                                   aicad_shape_handle_t* out_handle);
+
+/* See aicad_occt_make_face_on_plane's own doc comment; the cylinder is
+ * coaxial with (axis_origin, axis_direction). */
+aicad_occt_status_t aicad_occt_make_face_on_cylinder(aicad_occt_context_t* context,
+                                                      aicad_shape_handle_t outer_wire,
+                                                      const aicad_shape_handle_t* holes,
+                                                      size_t hole_count,
+                                                      const double axis_origin[3],
+                                                      const double axis_direction[3],
+                                                      double radius,
+                                                      int outer_reversed,
+                                                      aicad_shape_handle_t* out_handle);
+
+/* See aicad_occt_make_face_on_plane's own doc comment; the cone's apex is
+ * at axis_origin, opening along axis_direction at half_angle_radians. */
+aicad_occt_status_t aicad_occt_make_face_on_cone(aicad_occt_context_t* context,
+                                                  aicad_shape_handle_t outer_wire,
+                                                  const aicad_shape_handle_t* holes,
+                                                  size_t hole_count,
+                                                  const double axis_origin[3],
+                                                  const double axis_direction[3],
+                                                  double half_angle_radians,
+                                                  int outer_reversed,
+                                                  aicad_shape_handle_t* out_handle);
+
+/* See aicad_occt_make_face_on_plane's own doc comment. */
+aicad_occt_status_t aicad_occt_make_face_on_sphere(aicad_occt_context_t* context,
+                                                    aicad_shape_handle_t outer_wire,
+                                                    const aicad_shape_handle_t* holes,
+                                                    size_t hole_count,
+                                                    const double center[3],
+                                                    double radius,
+                                                    int outer_reversed,
+                                                    aicad_shape_handle_t* out_handle);
+
+/* See aicad_occt_make_face_on_plane's own doc comment; the torus is
+ * coaxial with (axis_origin, axis_direction). */
+aicad_occt_status_t aicad_occt_make_face_on_torus(aicad_occt_context_t* context,
+                                                   aicad_shape_handle_t outer_wire,
+                                                   const aicad_shape_handle_t* holes,
+                                                   size_t hole_count,
+                                                   const double axis_origin[3],
+                                                   const double axis_direction[3],
+                                                   double major_radius,
+                                                   double minor_radius,
+                                                   int outer_reversed,
+                                                   aicad_shape_handle_t* out_handle);
+
+/* Assembles `faces` into one shell (`BRep_Builder::MakeShell` + `Add` per
+ * face, in order) -- a structural container only, exactly like a
+ * `TopoDS_Compound` of faces except tagged Shell: no edge is matched,
+ * merged, or moved, so a shell built from faces that do not already share
+ * identical edges is open/non-manifold, not repaired. `face_count` must be
+ * >= 1; every element of `faces` must address a shape of exactly kind
+ * Face. */
+aicad_occt_status_t aicad_occt_make_shell(aicad_occt_context_t* context,
+                                           const aicad_shape_handle_t* faces,
+                                           size_t face_count,
+                                           aicad_shape_handle_t* out_handle);
+
+/* Builds a solid from `outer_shell` (`BRepBuilderAPI_MakeSolid`), adding
+ * each of `voids` as an additional (void/cavity) shell. `outer_shell`/
+ * every element of `voids` must address a shape of exactly kind Shell;
+ * `void_count` may be 0. Verified empirically, not assumed: OCCT's own
+ * `BRepBuilderAPI_MakeSolid::IsDone()` does NOT require `outer_shell` to
+ * be closed -- it reports done (and this function returns AICAD_OCCT_OK)
+ * even for an open shell, producing a structurally-real but invalid
+ * solid. This is Stage-1 kernel policy #14 in its starkest form: call
+ * aicad_occt_shape_validate/aicad_occt_shape_is_valid separately, always
+ * -- a non-`AICAD_OCCT_OK` status from this function means the C++ call
+ * itself failed (a bad handle, a foreign-context handle, an unexpected
+ * OCCT exception), never "the resulting solid is invalid." */
+aicad_occt_status_t aicad_occt_make_solid(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t outer_shell,
+                                           const aicad_shape_handle_t* voids,
+                                           size_t void_count,
+                                           aicad_shape_handle_t* out_handle);
+
+/* Groups `shapes` (any kind, any mix of kinds) into one `TopoDS_Compound`
+ * (`BRep_Builder::MakeCompound` + `Add` per shape, in order). `shape_count`
+ * must be >= 1. Always succeeds once its arguments are valid handles --
+ * a compound has no closure/connectivity requirement to fail. */
+aicad_occt_status_t aicad_occt_make_compound(aicad_occt_context_t* context,
+                                              const aicad_shape_handle_t* shapes,
+                                              size_t shape_count,
+                                              aicad_shape_handle_t* out_handle);
+
+/* --- AICAD-120: sewing/healing with an explicit, bounded modeling/
+ * construction tolerance policy (`project/DECISION_LOG.md#DL-24` domain
+ * 2). Neither sews/heals silently beyond what `BRepBuilderAPI_Sewing`/
+ * `ShapeFix_Shape` themselves report -- `aicad_sew_report_t`/
+ * `aicad_heal_report_t` are the required structured evidence a caller
+ * must consult before trusting the result; a non-`AICAD_OCCT_OK` status
+ * means the C++ call itself failed, never "the result is invalid" (Stage-1
+ * kernel policy #14, matching every other construction function in this
+ * header, applied here in its starkest form: `aicad_occt_heal` can and
+ * does return `AICAD_OCCT_OK` with `is_valid_after == 0`). --- */
+
+typedef struct aicad_sew_report {
+  int changed;
+  int is_valid;
+  size_t free_edge_count;
+  size_t multiple_edge_count;
+  size_t degenerated_shape_count;
+} aicad_sew_report_t;
+
+/* Sews `shapes` together (`BRepBuilderAPI_Sewing`) at `tolerance` (a
+ * modeling/construction-domain Length, canonical metres, > 0). Also
+ * captures Generated/Modified/IsDeleted lineage for every unique face/
+ * edge of each input against the sewing operation itself, in the SAME
+ * lineage table `aicad_occt_boolean_union_lineage` (`AICAD-086`) uses --
+ * `out_lineage` is consumable by the same `aicad_occt_lineage_*` query
+ * functions. Sewing never deletes an entity outright (it merges/relabels
+ * coincident boundaries) and never generates one with no traceable
+ * input, so every captured entry's own `deleted`/`generated` are always
+ * false/empty; `modified` holds at most one entry
+ * (`BRepBuilderAPI_Sewing::Modified`'s own single-result shape).
+ * `shape_count` must be >= 1. */
+aicad_occt_status_t aicad_occt_sew(aicad_occt_context_t* context,
+                                    const aicad_shape_handle_t* shapes,
+                                    size_t shape_count,
+                                    double tolerance,
+                                    aicad_shape_handle_t* out_handle,
+                                    aicad_lineage_handle_t* out_lineage,
+                                    aicad_sew_report_t* out_report);
+
+typedef struct aicad_heal_report {
+  int changed;
+  int is_valid_before;
+  int is_valid_after;
+  /* Whether `ShapeFix_Shape` returned a shape of a DIFFERENT top-level
+   * TopAbs kind than its input (e.g. an unclosable Solid silently
+   * demoted to a bare Shell). Verified empirically, not assumed: a
+   * Solid built from a single standalone Face (missing 5 of 6 faces, no
+   * possible legitimate closure) reports `is_valid_after == 1` from
+   * `BRepCheck_Analyzer` alone, because `ShapeFix_Shape` gave up closing
+   * it and returned a Shell instead -- a bare Shell has no closure
+   * requirement to fail, so it trivially validates. `is_valid_after`
+   * must NEVER be read as "healing succeeded" without also checking
+   * `kind_changed == 0`: healing never invents missing geometry to
+   * close a shape, and this field is what stops that silent kind-
+   * downgrade from being mistaken for success (the batch's own
+   * "healing is never an invisible fallback" acceptance requirement, in
+   * its sharpest concrete form). */
+  int kind_changed;
+} aicad_heal_report_t;
+
+/* Repairs `handle`'s shape (`ShapeFix_Shape`) at `tolerance` (same domain
+ * as `aicad_occt_sew`, > 0). Verified empirically, not assumed:
+ * `ShapeFix_Shape`'s own history-tracking (`ShapeBuild_ReShape::
+ * History()`) does not reliably populate for common fixes (an
+ * orientation-only correction never populates it, confirmed empirically
+ * against a hand-built inconsistently-oriented shell) -- this function
+ * therefore reports only the coarse `changed`/before/after validity
+ * evidence plus `kind_changed` (see that field's own doc comment)
+ * `aicad_heal_report_t` holds, not per-entity lineage; see
+ * `project/reports/AICAD-120.md` for the investigation and why finer-
+ * grained heal lineage is deferred rather than faked. */
+aicad_occt_status_t aicad_occt_heal(aicad_occt_context_t* context,
+                                     aicad_shape_handle_t handle,
+                                     double tolerance,
+                                     aicad_shape_handle_t* out_handle,
+                                     aicad_heal_report_t* out_report);
+
+/* --- AICAD-121: safe topology inspection (entity-kind classification and
+ * orientation) -- the two accessors no earlier task added: every other
+ * enumeration/adjacency/point/classification primitive this batch's own
+ * Rust wrapper needs already existed (AICAD-027..034, AICAD-082..084). --- */
+
+/* This ABI's own stable, kernel-neutral encoding of the six concrete
+ * topological entity kinds -- deliberately NOT TopAbs_ShapeEnum's own
+ * numbering (Stage-1 kernel policy #2-3: no OCCT enum crosses this
+ * header). */
+typedef enum aicad_topology_kind {
+  AICAD_TOPOLOGY_VERTEX = 0,
+  AICAD_TOPOLOGY_EDGE = 1,
+  AICAD_TOPOLOGY_WIRE = 2,
+  AICAD_TOPOLOGY_FACE = 3,
+  AICAD_TOPOLOGY_SHELL = 4,
+  AICAD_TOPOLOGY_SOLID = 5,
+} aicad_topology_kind_t;
+
+/* Classifies `handle`'s own top-level topological kind
+ * (`TopoDS_Shape::ShapeType()`), as one of `aicad_topology_kind_t`'s six
+ * values. Fails with `AICAD_OCCT_ERR_OPERATION_FAILED` for a Compound/
+ * CompSolid/generic-Shape top-level kind, which has no single
+ * classifiable entity kind to report. */
+aicad_occt_status_t aicad_occt_shape_kind(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t handle,
+                                           int* out_kind);
+
+/* Reports `handle`'s own top-level `TopAbs_Orientation`, collapsed to a
+ * bool: true for FORWARD, false for REVERSED/INTERNAL/EXTERNAL. The
+ * latter two are rare seam/degenerate-edge markers this ABI does not
+ * distinguish further from REVERSED -- a deliberate, disclosed
+ * simplification (see `project/reports/AICAD-121.md`), not an
+ * unconsidered omission. */
+aicad_occt_status_t aicad_occt_shape_is_forward_oriented(aicad_occt_context_t* context,
+                                                          aicad_shape_handle_t handle,
+                                                          int* out_is_forward);
+
+/* --- AICAD-123: functional raw topology editing (`project/DECISION_LOG.md
+ * #DL-24` (D22)). Every entity argument is a handle the caller already
+ * resolved by raw index against a live shape (e.g. via
+ * `aicad_occt_shape_get_face`) -- none of these functions resolves an
+ * index itself, mirroring `aicad_occt_shell`'s own `faces_to_remove`
+ * convention. As with every other construction function in this header, a
+ * non-`AICAD_OCCT_OK` status means the C++ call itself failed; it never
+ * means "the result is invalid" -- callers must separately consult
+ * `aicad_occt_shape_is_valid`/`aicad_occt_shape_validate` (Stage-1 kernel
+ * policy #14). Optional healing after an edit is the caller's own
+ * separate `aicad_occt_heal` call, not built into these functions --
+ * keeps each edit's own native surface minimal and reuses the existing,
+ * already-tested healing primitive rather than duplicating it. --- */
+
+/* Removes `faces_to_remove` (>= 1, each obtained from `shape_handle`
+ * itself) from `shape_handle` via `BRepTools_ReShape::Remove`+`Apply` --
+ * an explicit deletion, distinct from `aicad_occt_shell`'s thickening/
+ * offsetting removal. The result is commonly an open shape (removing a
+ * boundary face necessarily opens the shape there); validity is the
+ * caller's own separate concern, per this section's own doc comment. */
+aicad_occt_status_t aicad_occt_remove_face(aicad_occt_context_t* context,
+                                            aicad_shape_handle_t shape_handle,
+                                            const aicad_shape_handle_t* faces_to_remove,
+                                            size_t face_count,
+                                            aicad_shape_handle_t* out_handle);
+
+/* Replaces `old_face_handle` (a subshape of `shape_handle`) with
+ * `new_face_handle` throughout `shape_handle`
+ * (`BRepTools_ReShape::Replace`+`Apply`). If `old_face_handle` does not
+ * actually occur within `shape_handle`'s own subshape tree, `Apply`
+ * silently returns `shape_handle` unchanged (an OCCT `ReShape` property,
+ * not a bug in this wrapper) -- callers needing to detect that should
+ * compare the result's own entity count/kind against the input, not
+ * assume this call's `AICAD_OCCT_OK` status alone proves a real edit
+ * happened. */
+aicad_occt_status_t aicad_occt_replace_face(aicad_occt_context_t* context,
+                                             aicad_shape_handle_t shape_handle,
+                                             aicad_shape_handle_t old_face_handle,
+                                             aicad_shape_handle_t new_face_handle,
+                                             aicad_shape_handle_t* out_handle);
+
+/* Splits `edge_handle`'s own underlying curve at `params` (strictly
+ * increasing, each strictly interior to the edge's own parameter range --
+ * a param at or beyond either end is rejected as
+ * `AICAD_OCCT_ERR_INVALID_ARGUMENT` rather than producing a degenerate
+ * zero-length segment), producing `param_count + 1` new edges
+ * (`BRepBuilderAPI_MakeEdge` per segment) written into the caller-owned
+ * `out_handles` buffer (which must hold at least `param_count + 1`
+ * entries) in ascending-parameter order; `*out_handle_count` is always set
+ * to `param_count + 1` on success. Fails with
+ * `AICAD_OCCT_ERR_OPERATION_FAILED` for a degenerate edge with no
+ * underlying 3D curve (`BRep_Tool::Curve` returns null). */
+aicad_occt_status_t aicad_occt_split_edge(aicad_occt_context_t* context,
+                                           aicad_shape_handle_t edge_handle,
+                                           const double* params,
+                                           size_t param_count,
+                                           aicad_shape_handle_t* out_handles,
+                                           size_t* out_handle_count);
+
+/* Merges `faces` (>= 2, same-domain adjacent faces expected) into as few
+ * faces as their shared underlying geometry allows
+ * (`ShapeUpgrade_UnifySameDomain` over a compound of `faces`). The result
+ * may collapse to a single Face (full merge), or remain a Compound/Shell
+ * of more than one Face if not every input pair is actually same-domain
+ * adjacent -- callers distinguish the two by classifying the result's own
+ * top-level kind (`aicad_occt_shape_kind`), not by this call's status
+ * alone. */
+aicad_occt_status_t aicad_occt_merge_faces(aicad_occt_context_t* context,
+                                            const aicad_shape_handle_t* faces,
+                                            size_t face_count,
+                                            aicad_shape_handle_t* out_handle);
 
 #ifdef __cplusplus
 }

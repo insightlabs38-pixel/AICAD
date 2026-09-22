@@ -1,0 +1,13 @@
+param radius: Length = 25mm;
+
+part CurveBasics {
+    let profile: Curve = circle_curve(
+        center = Point3(x = 0mm, y = 0mm, z = 0mm),
+        normal = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        radius = radius,
+    );
+    let start: CurveEvaluation = evaluate_curve(profile, 0.0);
+    let quarter: CurveEvaluation = evaluate_curve(profile, 1.5707963267948966);
+    let start_x: Length = start.point.x;
+    let quarter_y: Length = quarter.point.y;
+}

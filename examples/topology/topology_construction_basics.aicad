@@ -1,0 +1,160 @@
+param bore_radius: Length = 5mm;
+
+part TopologyConstructionBasics {
+    // Vertex -- the base case of the vertex->edge->wire->face->shell->solid
+    // pipeline (AICAD-119).
+    let corner: Geometry = make_vertex(Point3(x = 0mm, y = 0mm, z = 0mm));
+
+    // Edge, from three different curve families: a bounded (trimmed) line,
+    // a circular arc, and a full circle (which builds a closed *wire*, not
+    // an open edge -- a full circle has no natural single start/end point
+    // for OCCT's own edge model). `trim_curve`'s `u0`/`u1` are plain
+    // (unitless) offsets along the line's own direction, in the same
+    // canonical scale every other length-like quantity is expressed in
+    // internally -- 0.01 here matches the 10mm edge length below exactly.
+    let bottom_edge: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 0mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 1.0, y = 0.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let right_edge: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 10mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = 1.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let top_edge: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 10mm, y = 10mm, z = 0mm),
+            direction = Vector3(x = -1.0, y = 0.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let left_edge: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 0mm, y = 10mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = -1.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let quarter_arc: Geometry = make_edge(arc_curve(
+        center = Point3(x = 0mm, y = 0mm, z = 0mm),
+        normal = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        radius = bore_radius,
+        start_angle = 0deg,
+        end_angle = 90deg,
+    ));
+    let bore_circle: Geometry = make_edge(circle_curve(
+        center = Point3(x = 0mm, y = 0mm, z = 0mm),
+        normal = Vector3(x = 0.0, y = 0.0, z = 1.0),
+        radius = bore_radius,
+    ));
+
+    // Wire, from an ordered list of edges (AICAD-022's own op, exposed to
+    // source for the first time by AICAD-119).
+    let square: Geometry = make_wire([bottom_edge, right_edge, top_edge, left_edge]);
+
+    // Planar face, bounded by the square wire above.
+    let square_face: Geometry = make_face(square);
+
+    // A face on an explicit non-planar (elementary quadric) surface,
+    // bounded by the same closed circle wire built above -- the general
+    // form `make_face` (planar-only, no holes) cannot express. Verified
+    // empirically, not assumed: this constructs successfully (a real
+    // `BRepBuilderAPI_MakeFace(gp_Cylinder, wire, Inside)` call), but a
+    // wire that has no matching 2D parametrization on the target surface
+    // (this `bore_circle` sits at one fixed height, tracing zero extent
+    // along the cylinder's own axis direction) yields a structurally-real
+    // but degenerate (zero-area) trimmed region -- `is_valid`/`area`
+    // remain the required separate evidence, exactly like `open_solid`
+    // below. See `crates/cad-cli/tests/stage5_topology_construction.rs`.
+    let cylinder_face: Geometry = make_face_on_surface(
+        cylinder_surface(
+            axis = Axis3(
+                origin = Point3(x = 0mm, y = 0mm, z = 0mm),
+                direction = Vector3(x = 0.0, y = 0.0, z = 1.0),
+            ),
+            radius = bore_radius,
+        ),
+        bore_circle,
+        [],
+    );
+
+    // Shell/solid: `make_shell` is a structural container only (no
+    // sewing/gap-closing -- that is `sew`'s own job, below), so this
+    // shell built from one standalone face is open, and the solid built
+    // from it is correspondingly reported invalid by `is_valid`/
+    // `validate` -- construction success is never silently treated as
+    // proof of a valid exact B-rep. See `crates/cad-cli/tests/
+    // stage5_topology_construction.rs` for this exact evidence checked
+    // against the real kernel.
+    let open_shell: Geometry = make_shell([square_face]);
+    let open_solid: Geometry = make_solid(open_shell, []);
+
+    // Compound: groups any mix of already-built kinds with no closure
+    // requirement to fail.
+    let bundle: Geometry = compound([corner, quarter_arc]);
+
+    // Sewing (AICAD-120): a second square, edge-adjacent to the first,
+    // built independently (its own edges, not sharing the first square's
+    // own edge objects). `sew` merges their coincident boundary within
+    // `tolerance`, unlike `make_shell` above -- see
+    // `crates/cad-cli/tests/stage5_sewing_healing.rs` for the exact
+    // resulting 2-square area this produces.
+    let adjacent_bottom: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 10mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 1.0, y = 0.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_right: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 20mm, y = 0mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = 1.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_top: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 20mm, y = 10mm, z = 0mm),
+            direction = Vector3(x = -1.0, y = 0.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_left: Geometry = make_edge(trim_curve(
+        line_curve(
+            origin = Point3(x = 10mm, y = 10mm, z = 0mm),
+            direction = Vector3(x = 0.0, y = -1.0, z = 0.0),
+        ),
+        0.0, 0.01,
+    ));
+    let adjacent_square: Geometry = make_wire([adjacent_bottom, adjacent_right, adjacent_top, adjacent_left]);
+    let adjacent_face: Geometry = make_face(adjacent_square);
+    let sewed_pair: Geometry = sew([square_face, adjacent_face], 0.000001mm);
+
+    // Healing (AICAD-120): repairs `sewed_pair` at the same tolerance
+    // domain. Healing never invents missing geometry -- an unclosable
+    // shape can be silently demoted to a lesser topological kind by the
+    // underlying kernel call (see `cad_occt_bridge::HealReport::
+    // kind_changed`'s own doc comment, and `crates/cad-occt-bridge/src/
+    // lib.rs`'s own `healing_an_unclosable_solid_reports_valid_after_
+    // only_alongside_kind_changed` test for the exact discovered case);
+    // `sewed_pair` is already a valid open sheet, so this is a genuine
+    // no-op repair, not that disclosed case.
+    let healed_pair: Geometry = heal(sewed_pair, 0.000001mm);
+
+    // Deterministic topology traversal (AICAD-121): raw-index selection
+    // is Construction-category (it mints a new geometry node), so it
+    // builds here with no kernel context; the paired Query-category
+    // inspection (`face_count`/`topology_kind_of`/`is_same_entity`/etc.)
+    // requires a real kernel executor and is exercised instead in
+    // `crates/cad-cli/tests/stage5_topology_inspection.rs`.
+    let reselected_face: Geometry = topology_face_at(open_solid, 0);
+    let square_edge: Geometry = topology_edge_at(square_face, 0);
+    let square_corner: Geometry = topology_vertex_at(square_face, 0);
+    let far_side_of_the_seam: Geometry = adjacent_face_at(healed_pair, 0, 0);
+}

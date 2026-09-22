@@ -3,7 +3,20 @@
 Shape validation and healing-report normalization
 (`validate()`/`heal()` per `docs/plan/23_CROSS_SYSTEM_PARAMETER_CATALOG.md`
 §7-8), supporting WP-01/WP-05. `validate()` must never silently heal unless
-explicitly requested. Not yet implemented.
+explicitly requested.
+
+## Status (`AICAD-120`, Stage 5)
+
+`src/healing.rs`: `RepairPolicy` — the explicit modeling/construction
+tolerance policy (`project/DECISION_LOG.md#DL-24` domain 2) a `sew`/`heal`
+call uses. Kernel-neutral: no `cad-occt-bridge`/`cad-kernel-api` dependency.
+The real native sewing (`BRepBuilderAPI_Sewing`)/healing (`ShapeFix_Shape`)
+calls and their own raw structured evidence (`SewReport`/`HealReport`,
+including the empirically-discovered `HealReport::kind_changed` — an
+unclosable Solid silently demoted to a valid-looking Shell) live in
+`cad-occt-bridge`; `cad_geometry_api::ir::GeometryOp::{Sew,Heal}` and
+`cad-geometry-runtime`'s dispatch of them carry a plain tolerance
+`Quantity`, matching every other dimensioned `GeometryOp` field.
 
 ## Status (`AICAD-064A`, Stage 3)
 

@@ -9,11 +9,16 @@
 - Final Stage-4 gate: `project/gates/stage-4-gate.md`.
 - Owner approval: 2026-09-16, recorded by `project/approvals/STAGE4_OWNER_APPROVAL.md` and `DL-34`.
 
-The active branch is `claude/aicad-stage5-transition`. It is a transition/planning/documentation branch, **not** the Stage-5 development branch.
+**The Stage-5 queue is approved and implementation is authorized.**
 
-## What this transition finalized
+- Owner approval: 2026-09-18, recorded by `project/approvals/STAGE5_QUEUE_OWNER_APPROVAL.md` and `DL-35`.
+- Canonical Stage-5 development branch: `claude/aicad-stage5-dev`, created from the approved merged head `df9334634e09a9793191ea5de40f0aad12032589`.
 
-Stage 5 has an exact executable queue for owner review:
+The active branch is `claude/aicad-stage5-dev`. It is the Stage-5 development branch.
+
+## What the transition finalized
+
+Stage 5 has an exact executable queue, now approved for implementation:
 
 - `AICAD-101..AICAD-130` in `project/TASKS.yaml`;
 - fixed batches `S5-00..S5-10` in `project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md`;
@@ -55,12 +60,40 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-**Stage-5 implementation has not begun. Do not implement `AICAD-101` on this branch.**
+**Stage 5 is complete: all batches `S5-00`..`S5-10` (`AICAD-101`..`130`)
+are done.** `AICAD-130` (sole task of `S5-10`) independently re-audited
+every `AICAD-101..129` acceptance item against current source and a fresh
+full test/CI run, and produced the final Stage-5 owner gate packet:
+`project/gates/stage-5-gate.md` (short cross-reference:
+`project/reports/AICAD-130.md`). **Recommendation: PASS** (advisory only —
+the agent does not approve Stage 5).
 
-Owner should review the completed transition, including the documentation/example synchronization. If accepted:
+Gate-packet highlights (full detail in the gate file, not repeated here
+per this file's own "current state, not an appended diary" convention):
 
-1. merge `claude/aicad-stage5-transition` to `main`;
-2. create `claude/aicad-stage5-dev` from that exact merged HEAD;
-3. begin Stage 5 with `AICAD-101`.
+- Full re-run evidence, all green: `cargo fmt`/`clippy` clean, `cargo test
+  --workspace` 1830 passed/0 failed (95 binaries), native OCCT CTest
+  18/18, `semantic_ref_harness.py validate`/`self-test` both `ok`, 14
+  ACTIVE examples building cleanly, all three internal checkpoints
+  (`AICAD-112`/`118`/`126`) independently re-confirmed PASS.
+- `D21`-`D25`/`D27`/`D6`/`D7` compatibility re-verified directly against
+  source, not cited from prior reports; zero surviving silent-wrong
+  reference regressions; zero scope creep (no assembly/configuration/
+  requirement/packaging crate touched anywhere in Stage 5).
+- Two structural limitations carried forward for Stage-6 planning (both
+  pre-existing, disclosed by `AICAD-127`/`129`, recorded in `project/
+  OWNER_DECISIONS.md`'s "Non-decision items" section, not new this task):
+  freeform (Bezier/B-spline) curves/surfaces and trimmed surfaces cannot
+  yet become real kernel topology (`make_edge`/`make_face_on_surface`
+  reject them explicitly); `List<Geometry>` builtin parameters are
+  invisible to `geometry_inputs` in `FeatureGraph`/`TraceFeatureGraph`,
+  with real incremental-rebuild dirty-set interaction left unverified.
+
+Per `AGENTS.md`'s **FINAL STOP RULE**, roadmap development stops here. No
+future invocation may begin Stage-6 implementation, finalize/activate the
+provisional Stage-6/7 queues, or assign final global Stage-6 AICAD IDs.
+Only the owner may review `project/gates/stage-5-gate.md`, approve Stage 5
+in `project/DECISION_LOG.md`, and authorize the Stage-5 -> Stage-6
+reconciliation and Stage 6 itself.
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.

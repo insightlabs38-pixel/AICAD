@@ -165,20 +165,30 @@
 //! this evaluator's `expected`-type context.
 
 use crate::error::RuntimeError;
+use crate::feature_trace::{CallPath, PathFrame, TraceEntry};
+use crate::query_exec::{KernelQueryExecutor, QueryOutcome};
+use crate::raw_exec::{RawEditExecutor, RawEditOp, RawEditResult};
 use crate::value::{NumberValue, RangeValue, Value, VariantPayload};
 use cad_ast::Span;
-use cad_geometry_api::{EdgeIndex, FaceIndex, GeomId, GeometryOp, Quantity};
+use cad_geometry_api::QueryOutcome as CurveQueryOutcome;
+use cad_geometry_api::{
+    AnalyticCurve, AnalyticSurface, CurveConstructionError, CurveOperationError, EdgeIndex,
+    EpochCounter, FaceIndex, FaceOrientation, GeomId, GeometryOp, GeometryQuery, Quantity,
+    SurfaceSpec, TrimLoop, VertexIndex,
+};
 use cad_hir::builtins::BuiltinFnId;
 use cad_hir::hir::{
     BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
     HirLiteral, HirMatchArm, HirParam, HirPattern, HirProgram, HirStmt, UnaryOp,
 };
 use cad_hir::ids::{Binding, BindingId, BindingKind};
-use cad_hir::types::HirType;
-use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Transform, Vector3};
-use cad_types::{AffineKind, PrimitiveType};
+use cad_hir::types::{HirType, HirTypeRef};
+use cad_kernel_api::topology::{ClassifiedShape, TopologyKind};
+use cad_kernel_api::{Axis3, Direction3, Frame3, Plane3, Point3, Transform, Vector3};
+use cad_types::{AffineKind, Dimension, PrimitiveType};
 use cad_units::{
-    ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison, check_unary_neg,
+    ApproximationTolerance, ArithmeticOp, OperandType, check_binary_arithmetic, check_comparison,
+    check_unary_neg,
 };
 use std::collections::HashMap;
 
@@ -291,6 +301,94 @@ pub struct Interpreter<'a> {
     /// Not populated for a call that fails partway through (irrelevant: the
     /// whole build fails too in that case).
     call_geom_ranges: HashMap<Span, std::ops::Range<u32>>,
+    /// The real kernel-backed query dispatcher (`AICAD-105`,
+    /// `project/DECISION_LOG.md#DL-25`) a `is_valid`/`volume`/`area`
+    /// builtin call demand-materializes its result through — see
+    /// [`crate::query_exec`]'s own module doc comment for why this crate
+    /// takes a trait object here rather than depending on
+    /// `cad-geometry-runtime` directly. `None` (the default, set by
+    /// [`Interpreter::new`]) for every interpreter that does not need real
+    /// kernel results — every existing call site before this task, and
+    /// most tests — in which case a query builtin call fails cleanly with
+    /// `RuntimeError::KernelQueryUnavailable` rather than silently
+    /// returning a placeholder.
+    query_executor: Option<&'a dyn KernelQueryExecutor>,
+    /// The number of kernel-backed query calls this run has performed so
+    /// far, charged against [`ResourceBudget::max_kernel_queries`] — see
+    /// [`Interpreter::consume_query_budget`].
+    queries_consumed: u64,
+    /// The owning session's raw-geometry epoch counter (`AICAD-122`,
+    /// `project/DECISION_LOG.md#DL-24` (D22)) — `enter_raw` mints every
+    /// `Value::Raw` it produces against `self.epoch_counter.current()`,
+    /// and `raw_topology_kind_of` re-checks a presented handle against the
+    /// same counter's *current* epoch before reading it. `None` (the
+    /// default) for every interpreter that never needs the raw tier —
+    /// both raw-tier builtins then fail cleanly with
+    /// `RuntimeError::RawTierUnavailable` rather than silently minting an
+    /// epoch-less (and therefore never-stale) handle, which would defeat
+    /// D22's own "explicitly invalid once its owning context/epoch is
+    /// invalid" guarantee.
+    epoch_counter: Option<&'a EpochCounter>,
+    /// The real raw-tier editing dispatcher (`AICAD-123`) `remove_face`/
+    /// `replace_face`/`split_edge`/`merge_faces` demand-dispatch through —
+    /// see [`crate::raw_exec`]'s own module doc comment for why this crate
+    /// takes a trait object here rather than depending on
+    /// `cad-geometry-runtime` directly (identical reasoning to
+    /// [`Interpreter::query_executor`]). `None` (the default) for every
+    /// interpreter that never needs real raw-edit results, in which case a
+    /// raw-editing builtin call fails cleanly with
+    /// `RuntimeError::RawTierUnavailable`.
+    raw_edit_executor: Option<&'a dyn RawEditExecutor>,
+    /// The current dynamic call/loop-iteration nesting (`AICAD-107`,
+    /// `project/DECISION_LOG.md#DL-27`) — the live stack a `RuntimeBuiltin`
+    /// geometry call's own [`CallPath`] is built from at the moment it
+    /// dispatches. Pushed/popped in [`Interpreter::call`] (one
+    /// [`PathFrame::Call`] per ordinary AICAD-source `fn` call entered) and
+    /// in [`Interpreter::exec_for`]/`while`/`loop` (one
+    /// [`PathFrame::Iteration`] per dynamic loop-body execution) — see
+    /// [`crate::feature_trace::CallPath`]'s own doc comment for why this
+    /// disambiguates every repeated dynamic visit to the same source span.
+    call_path_stack: Vec<PathFrame>,
+    /// Every top-level (or `part`-nested) declaration `BindingId` a
+    /// *local* binding's own current value transitively depends on
+    /// (`AICAD-107`) — populated at every place this crate assigns a local
+    /// binding a value derived from an expression (function-parameter
+    /// binding, `let`/`var`, assignment, a `for` loop's own element
+    /// binding, a `match` pattern binding) via [`Interpreter::
+    /// provenance_of`]. Never populated for a genuine top-level/`part`-
+    /// nested declaration itself (those are never "assigned" through one
+    /// of these sites — see [`Interpreter::run_top_level_parametric`]/
+    /// [`Interpreter::eval_part_body_inner`]), so [`Interpreter::
+    /// provenance_of`] correctly treats an absent entry as "this binding
+    /// already *is* a root". A flat, single map is safe despite nested
+    /// calls reusing it (mirrors [`Frame`]'s own "no scope stack needed"
+    /// precedent): [`BindingId`] is process-unique regardless of lexical
+    /// scope, so no two different declarations ever collide here, and a
+    /// loop-variable/local re-bound on a later iteration or call simply
+    /// overwrites its own previous entry, exactly matching how its
+    /// companion [`Frame`] entry is already overwritten.
+    binding_provenance: HashMap<BindingId, Vec<BindingId>>,
+    /// Every Geometry-returning `RuntimeBuiltin` call this run has
+    /// successfully dispatched so far, in execution order (`AICAD-107`) —
+    /// see [`Interpreter::trace`]'s own doc comment.
+    trace: Vec<TraceEntry>,
+    /// The [`CallPath`] of whichever traced call produced each live
+    /// [`Value::Geometry`] id this run has seen so far (`AICAD-107`) — how
+    /// [`Interpreter::call`] resolves one call's own `Geometry`-typed
+    /// arguments back to the [`CallPath`]s that produced them, for
+    /// [`crate::feature_trace::TraceEntry::geometry_inputs`].
+    geom_id_to_path: HashMap<GeomId, CallPath>,
+    /// The enclosing `part` name path (`D31`) of whichever top-level (or
+    /// `part`-nested) `let`/`const` is *currently* being evaluated
+    /// (`AICAD-107`) — set by [`Interpreter::run_top_level_parametric`]/
+    /// [`Interpreter::run_top_level`]/[`Interpreter::eval_part_body_inner`]
+    /// immediately before evaluating each such item's own value expression,
+    /// and copied into every [`TraceEntry::scope`] built while evaluating
+    /// it (including deep inside a function call/loop this evaluation
+    /// dynamically reaches) — see [`crate::feature_trace::TraceEntry::
+    /// scope`]'s own doc comment for why a helper function's own
+    /// *declaration* site never determines this.
+    current_scope: Vec<String>,
 }
 
 /// The single coherent configuration surface for every execution resource
@@ -329,17 +427,26 @@ pub struct ResourceBudget {
     /// [`DEFAULT_MAX_CALL_DEPTH`]'s own doc comment for why this exists
     /// and how its default was chosen.
     pub max_call_depth: u64,
+    /// The total number of kernel-backed query calls (`is_valid`/`volume`/
+    /// `area`, `AICAD-105`) this interpreter run may perform before
+    /// `RuntimeError::QueryBudgetExceeded` — see
+    /// [`crate::query_exec`]'s own module doc comment for why a real
+    /// kernel call is a distinct, separately-budgeted resource from an
+    /// ordinary loop iteration or function call.
+    pub max_kernel_queries: u64,
 }
 
 impl Default for ResourceBudget {
-    /// [`DEFAULT_ITERATION_BUDGET`]/[`DEFAULT_MAX_CALL_DEPTH`] — the same
-    /// defaults a fresh [`Interpreter`] already started with before this
-    /// task, preserved exactly (this task generalizes the *contract*, not
-    /// the shipped default values themselves).
+    /// [`DEFAULT_ITERATION_BUDGET`]/[`DEFAULT_MAX_CALL_DEPTH`]/
+    /// [`DEFAULT_QUERY_BUDGET`] — the same defaults a fresh [`Interpreter`]
+    /// already started with before this task, preserved exactly (this task
+    /// generalizes the *contract*, not the shipped default values
+    /// themselves).
     fn default() -> ResourceBudget {
         ResourceBudget {
             max_iterations: DEFAULT_ITERATION_BUDGET,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
+            max_kernel_queries: DEFAULT_QUERY_BUDGET,
         }
     }
 }
@@ -364,6 +471,11 @@ pub struct ResourceUsage {
     pub peak_call_depth: u64,
     /// The configured call-depth limit this run started with.
     pub max_call_depth: u64,
+    /// Total kernel-backed query calls performed so far (see
+    /// [`ResourceBudget::max_kernel_queries`]).
+    pub queries_consumed: u64,
+    /// The configured kernel-query budget this run started with.
+    pub max_kernel_queries: u64,
 }
 
 /// The default `for`/`while`/`loop` iteration budget a fresh [`Interpreter`]
@@ -408,6 +520,15 @@ pub const DEFAULT_ITERATION_BUDGET: u64 = 10_000_000;
 /// thread stack could safely raise this).
 pub const DEFAULT_MAX_CALL_DEPTH: u64 = 64;
 
+/// The default kernel-backed-query budget a fresh [`Interpreter`] starts
+/// with (`AICAD-105`). A real kernel call is far more expensive than an
+/// ordinary loop iteration, so this is deliberately much smaller than
+/// [`DEFAULT_ITERATION_BUDGET`] while still being generous enough that no
+/// realistic test/ordinary program exercises it by accident — mirroring
+/// [`DEFAULT_ITERATION_BUDGET`]'s own "a real, finite bound, not merely
+/// very large" rationale (`AGENTS.md` "Execution safety").
+pub const DEFAULT_QUERY_BUDGET: u64 = 10_000;
+
 impl<'a> Interpreter<'a> {
     pub fn new(
         program: &'a HirProgram,
@@ -432,7 +553,50 @@ impl<'a> Interpreter<'a> {
             budget: ResourceBudget::default(),
             geometry: cad_geometry_api::GeometryGraph::new(),
             call_geom_ranges: HashMap::new(),
+            query_executor: None,
+            queries_consumed: 0,
+            epoch_counter: None,
+            raw_edit_executor: None,
+            call_path_stack: Vec::new(),
+            binding_provenance: HashMap::new(),
+            trace: Vec::new(),
+            geom_id_to_path: HashMap::new(),
+            current_scope: Vec::new(),
         }
+    }
+
+    /// Configures the real kernel-backed query dispatcher (`AICAD-105`) a
+    /// `is_valid`/`volume`/`area` builtin call demand-materializes its
+    /// result through — see [`crate::query_exec`]'s own module doc
+    /// comment. A builder method (not a `new` parameter) so every existing
+    /// call site that never needs real kernel query results is unaffected.
+    pub fn with_query_executor(mut self, executor: &'a dyn KernelQueryExecutor) -> Self {
+        self.query_executor = Some(executor);
+        self
+    }
+
+    /// Configures the real raw-geometry epoch counter (`AICAD-122`) the
+    /// controlled raw/unsafe geometry tier's own builtins (`enter_raw`,
+    /// `raw_topology_kind_of`) check every `Value::Raw` handle against —
+    /// see [`Interpreter::epoch_counter`]'s own doc comment. A builder
+    /// method, for the identical reason [`Interpreter::with_query_executor`]
+    /// is one: every existing call site that never touches the raw tier is
+    /// unaffected.
+    pub fn with_epoch_counter(mut self, counter: &'a EpochCounter) -> Self {
+        self.epoch_counter = Some(counter);
+        self
+    }
+
+    /// Configures the real raw-tier editing dispatcher (`AICAD-123`)
+    /// `remove_face`/`replace_face`/`split_edge`/`merge_faces` demand-
+    /// dispatch through — see [`Interpreter::raw_edit_executor`]'s own doc
+    /// comment. A builder method, for the identical reason
+    /// [`Interpreter::with_query_executor`]/[`Interpreter::
+    /// with_epoch_counter`] are: every existing call site that never
+    /// touches raw editing is unaffected.
+    pub fn with_raw_edit_executor(mut self, executor: &'a dyn RawEditExecutor) -> Self {
+        self.raw_edit_executor = Some(executor);
+        self
     }
 
     /// The [`GeomId`] range [`Interpreter::dispatch_builtin`] pushed for the
@@ -456,6 +620,31 @@ impl<'a> Interpreter<'a> {
     /// completes — this crate makes zero kernel calls itself.
     pub fn geometry_graph(&self) -> &cad_geometry_api::GeometryGraph {
         &self.geometry
+    }
+
+    /// Every Geometry-returning `RuntimeBuiltin` call this run has
+    /// successfully dispatched so far, in execution order (`AICAD-107`,
+    /// `project/DECISION_LOG.md#DL-27`) — the execution-trace counterpart
+    /// of a purely-static `cad_feature_graph::graph::FeatureGraph`, built
+    /// by [`Interpreter::call`] as ordinary program execution reaches each
+    /// one, regardless of whether it occurs at top level, inside a `part`
+    /// body, inside a user function (at any call depth), inside a taken
+    /// `if`/`match` branch, or inside a loop iteration. Safe to call at any
+    /// point during or after execution, exactly like [`Interpreter::
+    /// geometry_graph`]. See `cad_feature_graph::trace_graph` for turning
+    /// this into a real dependency graph.
+    pub fn trace(&self) -> &[TraceEntry] {
+        &self.trace
+    }
+
+    /// The [`CallPath`] of the traced call that produced `id`, if `id`
+    /// names a [`Value::Geometry`] this run's own trace actually covers
+    /// (`AICAD-107`) — the accessor `cad_feature_graph::trace_graph` uses
+    /// to resolve a top-level (or `part`-nested) binding's own current
+    /// `Value::Geometry` id back to the feature that produced it, for
+    /// named lookup.
+    pub fn geom_id_path(&self, id: GeomId) -> Option<&CallPath> {
+        self.geom_id_to_path.get(&id)
     }
 
     /// Overrides this interpreter's [`ResourceBudget`] (default
@@ -484,6 +673,8 @@ impl<'a> Interpreter<'a> {
             max_iterations: self.budget.max_iterations,
             peak_call_depth: self.peak_call_depth,
             max_call_depth: self.budget.max_call_depth,
+            queries_consumed: self.queries_consumed,
+            max_kernel_queries: self.budget.max_kernel_queries,
         }
     }
 
@@ -506,17 +697,27 @@ impl<'a> Interpreter<'a> {
         for item in &program.items {
             match item {
                 HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
+                    // `AICAD-107`: a top-level declaration's own `part`
+                    // scope is always empty (`D31`) — a part-nested one
+                    // goes through the `HirItem::Part` arm below instead.
+                    self.current_scope.clear();
                     self.eval_top_level_value(*binding, value)?;
                 }
                 HirItem::Param {
                     binding, default, ..
                 } => {
                     if let Some(value) = default {
+                        self.current_scope.clear();
                         self.eval_top_level_value(*binding, value)?;
                     }
                 }
-                HirItem::Part { binding, items, .. } => {
-                    let value = self.eval_part_body(*binding, items)?;
+                HirItem::Part {
+                    binding,
+                    name,
+                    items,
+                    ..
+                } => {
+                    let value = self.eval_part_body(*binding, items, std::slice::from_ref(name))?;
                     self.globals.insert(*binding, value);
                 }
                 HirItem::Fn { .. }
@@ -556,11 +757,16 @@ impl<'a> Interpreter<'a> {
     ///   this stays unresolved at the type level; only this crate's own
     ///   runtime [`Value::Part`] and [`Interpreter::global`] exist so far,
     ///   for introspection (tests, a future `cad-cli` reporting a part's
-    ///   outputs), not general `.aicad` source syntax;
-    /// - nested `part`-in-`part` bodies — skipped exactly like `fn`/
-    ///   `struct`/`enum`/`import` are, matching this method's own
-    ///   top-level-only precedent, with no forcing evidence requiring
-    ///   recursion here yet.
+    ///   outputs), not general `.aicad` source syntax.
+    ///
+    /// `AICAD-101` extended this method to recurse into a nested
+    /// `part`-in-`part` body (arbitrary depth, matching `grammar.ebnf`'s
+    /// own `item = ... | part_decl` production, which already permitted
+    /// this — only every walker's own runtime behavior was capped at one
+    /// level before): a nested `HirItem::Part` is evaluated by calling
+    /// this same method recursively, and the resulting nested
+    /// [`Value::Part`] is folded into the enclosing part's own `fields`
+    /// under the nested part's name, exactly like a `let`/`const` result.
     ///
     /// `fn`/`struct` items declared *inside* a part body are unaffected by
     /// any of the above: [`Interpreter::fns`]/[`Interpreter::structs`]
@@ -568,10 +774,49 @@ impl<'a> Interpreter<'a> {
     /// pre-existing recursion into `part` nesting, so calling/constructing
     /// one from inside (or outside) a part body already worked before this
     /// task and needs no change here.
+    ///
+    /// `AICAD-104A`: this is a thin wrapper over
+    /// [`Interpreter::eval_part_body_inner`] with `params_precomputed:
+    /// false` — every `param` item evaluates its own `default` expression
+    /// directly, exactly as before. Used by [`Interpreter::run_top_level`],
+    /// which has no [`crate::params::ParamModel`]/override concept at all.
     fn eval_part_body(
         &mut self,
         part_binding: BindingId,
         items: &'a [HirItem],
+        scope: &[String],
+    ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
+        self.eval_part_body_inner(part_binding, items, false, scope)
+    }
+
+    /// Like [`Interpreter::eval_part_body`], but every `param` item's value
+    /// (`params_precomputed: true`) is read back from [`Interpreter::
+    /// globals`] instead of evaluating its own `default` expression —
+    /// [`Interpreter::run_top_level_parametric`]'s own first pass already
+    /// computed it there (default-evaluated or overridden) via
+    /// [`crate::params::ParamModel`]'s dependency-ordered schedule, which
+    /// (`AICAD-104A`) now covers a part-scoped `param` exactly like a
+    /// top-level one. Re-evaluating the default here instead would silently
+    /// ignore any override on a part-scoped param. A part-scoped `param`
+    /// with neither a `default` nor an override is correctly absent from
+    /// `globals` and so is left out of this part's own `fields`, mirroring
+    /// [`Interpreter::run_top_level_parametric`]'s identical top-level
+    /// convention.
+    fn eval_part_body_parametric(
+        &mut self,
+        part_binding: BindingId,
+        items: &'a [HirItem],
+        scope: &[String],
+    ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
+        self.eval_part_body_inner(part_binding, items, true, scope)
+    }
+
+    fn eval_part_body_inner(
+        &mut self,
+        part_binding: BindingId,
+        items: &'a [HirItem],
+        params_precomputed: bool,
+        scope: &[String],
     ) -> Result<Value, Box<cad_diagnostics::Diagnostic>> {
         let mut frame: Frame = HashMap::new();
         let mut fields = Vec::new();
@@ -594,15 +839,54 @@ impl<'a> Interpreter<'a> {
                     name,
                     default,
                     ..
-                } => (*binding, name, default.as_ref()),
+                } => {
+                    if params_precomputed {
+                        if let Some(v) = self.globals.get(binding) {
+                            frame.insert(*binding, v.clone());
+                            fields.push((name.clone(), v.clone()));
+                        }
+                        continue;
+                    }
+                    (*binding, name, default.as_ref())
+                }
+                HirItem::Part {
+                    binding,
+                    name,
+                    items: nested_items,
+                    ..
+                } => {
+                    // Recurse to any depth (AICAD-101) — a nested part's own
+                    // value is folded into this part's `fields` exactly like
+                    // a `let`/`const` result, and into `frame` so a binding
+                    // lookup by this part's own `BindingId` behaves
+                    // identically to the top-level case in `run_top_level`.
+                    // `params_precomputed` propagates unchanged so a
+                    // doubly-nested `param` (`AICAD-104A`) gets the same
+                    // treatment as one nested only one level deep.
+                    // `AICAD-107`: `child_scope` extends this part's own
+                    // `scope` with the nested part's own name (`D31`),
+                    // matching `cad_feature_graph::graph::FeatureGraph::
+                    // build_items`'s identical convention exactly.
+                    let mut child_scope = scope.to_vec();
+                    child_scope.push(name.clone());
+                    let value = self.eval_part_body_inner(
+                        *binding,
+                        nested_items,
+                        params_precomputed,
+                        &child_scope,
+                    )?;
+                    frame.insert(*binding, value.clone());
+                    fields.push((name.clone(), value));
+                    continue;
+                }
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
-                | HirItem::Part { .. }
                 | HirItem::Import { .. }
                 | HirItem::Query { .. } => continue,
             };
             let Some(value) = value else { continue };
+            self.current_scope = scope.to_vec();
             match self.eval_expr(&mut frame, value) {
                 Ok(v) => {
                     frame.insert(binding, v.clone());
@@ -733,15 +1017,31 @@ impl<'a> Interpreter<'a> {
             let Some(default) = decl.default else {
                 continue;
             };
+            // `AICAD-107`: a `param`'s own default expression is evaluated
+            // in this flat, dependency-ordered pass with no `part`-scope
+            // context available (`crate::params::ParamModel` does not
+            // track a `param`'s own enclosing part path) — a documented,
+            // narrow limitation (see `project/reports/AICAD-107.md`), not
+            // a silent gap: any `TraceEntry` built while evaluating a
+            // `param` default (rare — a default is ordinarily a scalar
+            // computation, never a geometry construction) reports an empty
+            // scope regardless of whether the `param` itself is part-nested.
+            self.current_scope.clear();
             self.eval_top_level_value(id.0, default)?;
         }
 
         for item in &program.items {
             match item {
                 HirItem::Let { binding, value, .. } | HirItem::Const { binding, value, .. } => {
+                    self.current_scope.clear();
                     self.eval_top_level_value(*binding, value)?;
                 }
-                HirItem::Part { binding, items, .. } => {
+                HirItem::Part {
+                    binding,
+                    name,
+                    items,
+                    ..
+                } => {
                     // `AICAD-096`: this method used to silently skip every
                     // `part { ... }` item (a pure declaration with no
                     // runtime effect, per this method's own prior doc
@@ -761,7 +1061,17 @@ impl<'a> Interpreter<'a> {
                     // [`Interpreter::eval_part_body`]) — not a new
                     // execution semantics, just wiring an existing one
                     // into this method's own second entry point.
-                    let value = self.eval_part_body(*binding, items)?;
+                    // `AICAD-104A`: uses `eval_part_body_parametric`, not
+                    // `eval_part_body` — every `param` inside this part
+                    // (at any nesting depth) was already computed by this
+                    // method's own first pass above via `model`/
+                    // `overrides`, so its value must be read back, never
+                    // recomputed from its own `default` a second time.
+                    let value = self.eval_part_body_parametric(
+                        *binding,
+                        items,
+                        std::slice::from_ref(name),
+                    )?;
                     self.globals.insert(*binding, value);
                 }
                 HirItem::Param { .. }
@@ -900,6 +1210,135 @@ impl<'a> Interpreter<'a> {
         self.run_fn_body(fn_item, frame)
     }
 
+    /// Computes `expr`'s own value provenance (`AICAD-107`, `project/
+    /// DECISION_LOG.md#DL-27`): every top-level (or `part`-nested)
+    /// declaration [`BindingId`] `expr`'s evaluated value transitively
+    /// depends on, resolved *through* [`Interpreter::binding_provenance`]
+    /// wherever `expr` references a local binding (a function parameter, a
+    /// loop variable, a `let`/`var` local, a `match` pattern binding) —
+    /// deduplicated, first-occurrence order, mirroring `cad_feature_graph::
+    /// cache::node_cache_key`'s own identical convention.
+    ///
+    /// This is the call-boundary-crossing counterpart of
+    /// `cad_feature_graph::cache::hash_expr`'s own purely syntactic
+    /// `BindingId` collection: that function walks *source structure*
+    /// alone and can never see through a function call (it has no
+    /// execution state to consult, by design — `cad-feature-graph` has no
+    /// interpreter); this one walks the *same* expression shapes but
+    /// resolves each local `BindingId` it finds against this run's own
+    /// live [`Interpreter::binding_provenance`] table, so a scalar
+    /// argument to a `RuntimeBuiltin` call deep inside a user function
+    /// still resolves back to the real top-level/`param` bindings it
+    /// ultimately came from at the *caller's* own call site, however many
+    /// levels of function-call argument-passing lie in between.
+    ///
+    /// # One deliberate conservative approximation
+    ///
+    /// A nested call's own provenance is the union of its own arguments'
+    /// provenance — this function does *not* look inside the callee's own
+    /// body to see whether it actually uses each argument (that would
+    /// require re-deriving a full interprocedural dataflow analysis, far
+    /// beyond what dirty-propagation correctness needs). This can only
+    /// ever *over-report* a dependency (an edit to a bindng the callee
+    /// happens to ignore triggers an unnecessary-but-harmless rebuild),
+    /// never under-report one (which would be the genuinely unsafe
+    /// direction — a real dependency silently missed).
+    fn provenance_of(&self, expr: &HirExpr) -> Vec<BindingId> {
+        let mut out = Vec::new();
+        self.collect_provenance(expr, &mut out);
+        out
+    }
+
+    fn collect_provenance(&self, expr: &HirExpr, out: &mut Vec<BindingId>) {
+        let push = |b: BindingId, out: &mut Vec<BindingId>| {
+            if !out.contains(&b) {
+                out.push(b);
+            }
+        };
+        match expr {
+            HirExpr::Literal { .. } => {}
+            HirExpr::Ident {
+                binding: Some(b), ..
+            } => match self.binding_provenance.get(b) {
+                Some(resolved) => {
+                    for r in resolved {
+                        push(*r, out);
+                    }
+                }
+                // No tracked provenance: `b` is either a genuine top-level/
+                // `part`-nested declaration (never itself "assigned"
+                // through one of `Interpreter::binding_provenance`'s own
+                // population sites — see that field's own doc comment), in
+                // which case it *is* the root to report, or an unresolved/
+                // defensive case with nothing better to report than its
+                // own identity.
+                None => push(*b, out),
+            },
+            HirExpr::Ident { binding: None, .. } => {}
+            HirExpr::Unary { operand, .. } => self.collect_provenance(operand, out),
+            HirExpr::Binary { lhs, rhs, .. } => {
+                self.collect_provenance(lhs, out);
+                self.collect_provenance(rhs, out);
+            }
+            HirExpr::Call { args, .. } => {
+                for arg in args {
+                    match arg {
+                        HirArg::Positional(e) => self.collect_provenance(e, out),
+                        HirArg::Named { value, .. } => self.collect_provenance(value, out),
+                    }
+                }
+            }
+            HirExpr::Field { receiver, .. } => self.collect_provenance(receiver, out),
+            HirExpr::Block(block) => self.collect_provenance_block(block, out),
+            HirExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.collect_provenance(cond, out);
+                self.collect_provenance_block(then_branch, out);
+                self.collect_provenance(else_branch, out);
+            }
+            HirExpr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.collect_provenance(scrutinee, out);
+                for arm in arms {
+                    self.collect_provenance(&arm.body, out);
+                }
+            }
+            HirExpr::ListLiteral { elements, .. } => {
+                for e in elements {
+                    self.collect_provenance(e, out);
+                }
+            }
+            HirExpr::Range { start, end, .. } => {
+                self.collect_provenance(start, out);
+                self.collect_provenance(end, out);
+            }
+            HirExpr::RecordLiteral { fields, .. } => {
+                for f in fields {
+                    self.collect_provenance(&f.value, out);
+                }
+            }
+        }
+    }
+
+    /// Only the trailing expression's provenance matters for "this block's
+    /// own value" (matching [`Interpreter::exec_block`]'s own evaluation
+    /// semantics: a block's statements are never themselves the block's
+    /// *value* provenance) — every intermediate statement's own local
+    /// bindings are already tracked at the point they are individually
+    /// assigned (see [`Interpreter::binding_provenance`]'s own population
+    /// sites), so walking them again here would only duplicate, never add,
+    /// real dependency information.
+    fn collect_provenance_block(&self, block: &HirBlock, out: &mut Vec<BindingId>) {
+        if let Some(trailing) = &block.trailing {
+            self.collect_provenance(trailing, out);
+        }
+    }
+
     /// Evaluates a real call site's arguments (in the caller's own frame,
     /// left to right) and dispatches on the callee binding's kind.
     fn call(
@@ -974,11 +1413,18 @@ impl<'a> Interpreter<'a> {
                 name: name.clone(),
                 span: *callee_span,
             })?;
-        let HirItem::Fn { params, .. } = fn_item else {
+        let HirItem::Fn {
+            params,
+            body,
+            return_ty,
+            ..
+        } = fn_item
+        else {
             unreachable!("fns only ever indexes HirItem::Fn (see index_fns)")
         };
 
         let mut slots: Vec<Option<Value>> = vec![None; params.len()];
+        let mut slot_exprs: Vec<Option<&HirExpr>> = vec![None; params.len()];
         let mut next_positional = 0usize;
         for arg in args {
             match arg {
@@ -993,6 +1439,7 @@ impl<'a> Interpreter<'a> {
                         .into());
                     }
                     slots[next_positional] = Some(value);
+                    slot_exprs[next_positional] = Some(expr);
                     next_positional += 1;
                 }
                 HirArg::Named {
@@ -1010,27 +1457,9 @@ impl<'a> Interpreter<'a> {
                             span: arg.span(),
                         })?;
                     slots[idx] = Some(evaluated);
+                    slot_exprs[idx] = Some(value);
                 }
             }
-        }
-
-        let mut frame: Frame = HashMap::new();
-        for (param, slot) in params.iter().zip(slots) {
-            let value = match slot {
-                Some(v) => v,
-                None => match &param.default {
-                    Some(default_expr) => self.eval_expr(&mut frame, default_expr)?,
-                    None => {
-                        return Err(RuntimeError::MissingArgument {
-                            name: name.clone(),
-                            param: param.name.clone(),
-                            span,
-                        }
-                        .into());
-                    }
-                },
-            };
-            frame.insert(param.binding, value);
         }
 
         // `AICAD-079B` gate remediation: for a `RuntimeBuiltin` call
@@ -1051,23 +1480,115 @@ impl<'a> Interpreter<'a> {
         // a feature node — see that module's own "Interprocedural
         // construction" scope note), so this stays narrowly scoped to
         // `RuntimeBuiltin` bodies only.
-        let is_runtime_builtin = matches!(
-            fn_item,
-            HirItem::Fn {
-                body: FunctionImplementation::RuntimeBuiltin(_),
-                ..
+        let is_runtime_builtin = matches!(body, FunctionImplementation::RuntimeBuiltin(_));
+
+        // `AICAD-107` (`project/DECISION_LOG.md#DL-27`): while filling
+        // `frame`, also record each parameter binding's own value
+        // provenance (`Interpreter::provenance_of`, resolved from the
+        // *caller's* own argument expression — see `Interpreter::
+        // binding_provenance`'s own doc comment for why this is what lets
+        // a later dirty-propagation check see straight through this call),
+        // and — for a `RuntimeBuiltin` callee only — classify each
+        // argument as a `geometry_inputs` edge or a scalar `parameters`
+        // entry, exactly mirroring `cad_feature_graph::graph::Builder::
+        // resolve_geometry_expr`'s own static classification, just driven
+        // by this call's own real dynamic argument values instead of a
+        // static type-only signature lookup.
+        let mut frame: Frame = HashMap::new();
+        let mut geometry_input_ids: Vec<GeomId> = Vec::new();
+        let mut trace_parameters: Vec<(String, Span)> = Vec::new();
+        let mut trace_binding_refs: Vec<BindingId> = Vec::new();
+        for (param, (slot, slot_expr)) in params.iter().zip(slots.into_iter().zip(slot_exprs)) {
+            let (value, expr) = match slot {
+                Some(v) => (
+                    v,
+                    slot_expr.expect("a filled slot always carries its own argument expression"),
+                ),
+                None => match &param.default {
+                    Some(default_expr) => (self.eval_expr(&mut frame, default_expr)?, default_expr),
+                    None => {
+                        return Err(RuntimeError::MissingArgument {
+                            name: name.clone(),
+                            param: param.name.clone(),
+                            span,
+                        }
+                        .into());
+                    }
+                },
+            };
+            let provenance = self.provenance_of(expr);
+            if is_runtime_builtin {
+                if is_geometry_type_ref(&param.ty) {
+                    if let Value::Geometry(id) = &value {
+                        geometry_input_ids.push(*id);
+                    }
+                } else {
+                    trace_parameters.push((param.name.clone(), expr.span()));
+                    for b in &provenance {
+                        if !trace_binding_refs.contains(b) {
+                            trace_binding_refs.push(*b);
+                        }
+                    }
+                }
             }
-        );
+            self.binding_provenance.insert(param.binding, provenance);
+            frame.insert(param.binding, value);
+        }
+
         if is_runtime_builtin {
+            let FunctionImplementation::RuntimeBuiltin(builtin_id) = body else {
+                unreachable!(
+                    "is_runtime_builtin only true for FunctionImplementation::RuntimeBuiltin"
+                )
+            };
+            let builtin_id = *builtin_id;
+            let is_geometry_result = return_ty.as_ref().is_some_and(is_geometry_type_ref);
             let start = self.geometry.nodes().len() as u32;
             let result = self.run_fn_body(fn_item, frame);
-            if result.is_ok() {
+            if let Ok(value) = &result {
                 let end = self.geometry.nodes().len() as u32;
                 self.call_geom_ranges.insert(span, start..end);
+                // Only a Geometry-returning builtin becomes a traced
+                // feature (`is_valid`/`volume`/`area`, `AICAD-105`, return
+                // a scalar/bool and are never features) — mirrors
+                // `cad_feature_graph::graph::Builder::resolve_geometry_
+                // expr`'s own identical `is_geometry_type` gate.
+                if is_geometry_result {
+                    let path = CallPath::new(self.call_path_stack.clone(), span);
+                    let geometry_inputs: Vec<CallPath> = geometry_input_ids
+                        .iter()
+                        .filter_map(|id| self.geom_id_to_path.get(id).cloned())
+                        .collect();
+                    if let Value::Geometry(result_id) = value {
+                        self.geom_id_to_path.insert(*result_id, path.clone());
+                    }
+                    self.trace.push(TraceEntry {
+                        path,
+                        op: builtin_id,
+                        geom_range: start..end,
+                        geometry_inputs,
+                        parameters: trace_parameters,
+                        binding_refs: trace_binding_refs,
+                        scope: self.current_scope.clone(),
+                    });
+                }
             }
             result
         } else {
-            self.run_fn_body(fn_item, frame)
+            // `AICAD-107`: an ordinary AICAD-source function call is one
+            // more frame of dynamic nesting for any `RuntimeBuiltin`
+            // geometry call reached inside its body — see `Interpreter::
+            // call_path_stack`'s own doc comment. Popped unconditionally
+            // (success or failure) so a failed call never leaves a stale
+            // frame behind for whatever executes next after error recovery
+            // (there is none today — every `RuntimeError` unwinds the
+            // whole run — but this keeps the invariant "the stack always
+            // reflects genuinely active dynamic nesting" exception-safe
+            // regardless).
+            self.call_path_stack.push(PathFrame::Call(span));
+            let result = self.run_fn_body(fn_item, frame);
+            self.call_path_stack.pop();
+            result
         }
     }
 
@@ -1155,6 +1676,107 @@ impl<'a> Interpreter<'a> {
             ty: struct_binding,
             fields,
         })
+    }
+
+    /// Looks up an always-seeded `cad_hir::geometry_types` struct's own
+    /// `BindingId` by its declared name (`AICAD-109`) — the *return*-value
+    /// counterpart of [`Interpreter::construct_struct`]'s own by-`BindingId`
+    /// lookup: `evaluate_curve`'s own dispatch arm needs to *build* a
+    /// `Point3`/`CurveEvaluation` return value, not merely read an
+    /// already-constructed one, so it needs the declaring `BindingId` from
+    /// a bare name instead. Linear search over [`Interpreter::structs`] —
+    /// that map only ever holds a handful of always-seeded types plus
+    /// whatever a user program itself declares, and this runs at most once
+    /// per `evaluate_curve`/curve-construction call, never in a hot loop.
+    fn struct_binding_named(&self, name: &str) -> Option<BindingId> {
+        self.structs.iter().find_map(|(id, item)| match item {
+            HirItem::Struct { name: n, .. } if n == name => Some(*id),
+            _ => None,
+        })
+    }
+
+    /// Builds a [`Value::Struct`] for the always-seeded struct `name`, from
+    /// `fields` given in any order — reordered into the struct's own
+    /// declared field order, exactly matching [`Value::Struct`]'s own
+    /// "declared field order, not construction order" contract (mirrors
+    /// [`Interpreter::construct_struct`]'s identical convention for an
+    /// ordinary source-level struct literal). Only ever called by this
+    /// crate's own `AICAD-109` curve-builtin dispatch with a `name`/
+    /// `fields` shape it fully controls (never user input) — a lookup
+    /// failure is therefore an internal-error
+    /// [`RuntimeError::BuiltinArgumentShape`], mirroring
+    /// [`Interpreter::construct_struct`]'s own "trusts, but verifies"
+    /// precedent, never a panic.
+    fn build_geometry_struct(
+        &self,
+        name: &'static str,
+        fields: Vec<(&'static str, Value)>,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let ty = self
+            .struct_binding_named(name)
+            .ok_or(RuntimeError::BuiltinArgumentShape { name, span })?;
+        let HirItem::Struct {
+            fields: field_decls,
+            ..
+        } = self
+            .structs
+            .get(&ty)
+            .copied()
+            .ok_or(RuntimeError::BuiltinArgumentShape { name, span })?
+        else {
+            unreachable!("structs only ever indexes HirItem::Struct (see index_structs)")
+        };
+        let mut ordered = Vec::with_capacity(field_decls.len());
+        for decl in field_decls {
+            let value = fields
+                .iter()
+                .find(|(field_name, _)| *field_name == decl.name.as_str())
+                .map(|(_, v)| v.clone())
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })?;
+            ordered.push((decl.name.clone(), value));
+        }
+        Ok(Value::Struct {
+            ty,
+            fields: ordered,
+        })
+    }
+
+    /// Builds a `Point3` [`Value::Struct`] from a kernel-neutral
+    /// [`cad_kernel_api::Point3`] (`AICAD-109`) — each component's
+    /// canonical magnitude (metres) tagged `Length`-dimensional, mirroring
+    /// `crate::spatial::point3_from_value`'s own identical "canonical
+    /// magnitude, unconverted" convention in reverse.
+    fn point3_value(&self, p: Point3, span: Span) -> EvalResult<Value> {
+        let length = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Length, None),
+            })
+        };
+        self.build_geometry_struct(
+            "Point3",
+            vec![("x", length(p.x)), ("y", length(p.y)), ("z", length(p.z))],
+            span,
+        )
+    }
+
+    /// Builds a `Vector3<Float>` [`Value::Struct`] from a kernel-neutral
+    /// [`cad_kernel_api::Vector3`] (`AICAD-109`) — each component a plain
+    /// scalar `Float`, mirroring `crate::spatial::
+    /// vector3_float_from_value`'s own identical shape in reverse.
+    fn vector3_float_value(&self, v: Vector3, span: Span) -> EvalResult<Value> {
+        let scalar = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::Scalar(PrimitiveType::Float),
+            })
+        };
+        self.build_geometry_struct(
+            "Vector3",
+            vec![("x", scalar(v.x)), ("y", scalar(v.y)), ("z", scalar(v.z))],
+            span,
+        )
     }
 
     fn run_fn_body(&mut self, fn_item: &'a HirItem, mut frame: Frame) -> EvalResult<Value> {
@@ -1358,6 +1980,209 @@ impl<'a> Interpreter<'a> {
             }
             Ok(count as u32)
         };
+        // A plain, non-negative raw index (`AICAD-121`: `edge_index`/
+        // `adjacent_index`/enumeration `index`) — `Value::Number` shape is
+        // already guaranteed by `cad_hir::typeck`; unlike `pattern_count`
+        // there is no `>= 1` floor (index `0` is the common case).
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // Kernel-backed query builtins (`AICAD-105`, `project/
+        // DECISION_LOG.md#DL-25`) are handled separately, before
+        // `push_op` below: they push a `GeometryQuery` node (not a
+        // `GeometryOp`) and return a scalar/struct `Value`
+        // (`Bool`/`Number`/`String`/`Point3`), never a `Value::Geometry`,
+        // so they cannot share this function's own "every arm produces a
+        // `GeomId`, wrapped in `Value::Geometry` at the end" shape below.
+        if matches!(
+            id,
+            BuiltinFnId::IsValid
+                | BuiltinFnId::Volume
+                | BuiltinFnId::Area
+                | BuiltinFnId::TopologyKindOf
+                | BuiltinFnId::FaceCount
+                | BuiltinFnId::EdgeCount
+                | BuiltinFnId::VertexCount
+                | BuiltinFnId::WireCount
+                | BuiltinFnId::ShellCount
+                | BuiltinFnId::SolidCount
+                | BuiltinFnId::AdjacentFaceCount
+                | BuiltinFnId::IsOuterWire
+                | BuiltinFnId::IsSameEntity
+                | BuiltinFnId::IsForwardOriented
+                | BuiltinFnId::VertexPoint
+                | BuiltinFnId::ClassifyPoint
+                | BuiltinFnId::EnterRaw
+        ) {
+            let query = match id {
+                BuiltinFnId::IsValid => GeometryQuery::IsValid(geometry(arg(0)?)?),
+                BuiltinFnId::Volume => GeometryQuery::Volume(geometry(arg(0)?)?),
+                BuiltinFnId::Area => GeometryQuery::Area(geometry(arg(0)?)?),
+                BuiltinFnId::TopologyKindOf => GeometryQuery::TopologyKindOf(geometry(arg(0)?)?),
+                BuiltinFnId::FaceCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Face,
+                },
+                BuiltinFnId::EdgeCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Edge,
+                },
+                BuiltinFnId::VertexCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Vertex,
+                },
+                BuiltinFnId::WireCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Wire,
+                },
+                BuiltinFnId::ShellCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Shell,
+                },
+                BuiltinFnId::SolidCount => GeometryQuery::EntityCount {
+                    target: geometry(arg(0)?)?,
+                    kind: TopologyKind::Solid,
+                },
+                BuiltinFnId::AdjacentFaceCount => GeometryQuery::AdjacentFaceCount {
+                    target: geometry(arg(0)?)?,
+                    edge: EdgeIndex(usize_value(arg(1)?)?),
+                },
+                BuiltinFnId::IsOuterWire => GeometryQuery::IsOuterWire {
+                    face: geometry(arg(0)?)?,
+                    wire: geometry(arg(1)?)?,
+                },
+                BuiltinFnId::IsSameEntity => GeometryQuery::IsSameEntity {
+                    a: geometry(arg(0)?)?,
+                    b: geometry(arg(1)?)?,
+                },
+                BuiltinFnId::IsForwardOriented => {
+                    GeometryQuery::IsForwardOriented(geometry(arg(0)?)?)
+                }
+                BuiltinFnId::VertexPoint => GeometryQuery::VertexPoint(geometry(arg(0)?)?),
+                BuiltinFnId::ClassifyPoint => GeometryQuery::ClassifyPoint {
+                    solid: geometry(arg(0)?)?,
+                    point: crate::spatial::point3_from_value(arg(1)?).map_err(|reason| {
+                        RuntimeError::InvalidSpatialArgument { name, span, reason }
+                    })?,
+                    tolerance: quantity(arg(2)?)?,
+                },
+                BuiltinFnId::EnterRaw => GeometryQuery::EnterRaw(geometry(arg(0)?)?),
+                _ => unreachable!("guarded by the outer matches! above"),
+            };
+            let query_node = self
+                .geometry
+                .push_query(query, span)
+                .map_err(|err| RuntimeError::GeometryConstruction { err })?;
+            return self.execute_kernel_query(id, query_node, span);
+        }
+
+        // Analytic curve construction/evaluation (`AICAD-109`,
+        // `BuiltinCategory::Value`): a `cad_geometry_api::curve::
+        // AnalyticCurve` is pure backend-independent data (that module's
+        // own doc comment: "constructing one is pure data assembly, never
+        // a kernel call") — these builtins never push a `GeometryGraph`/
+        // `GeometryQuery` node and never touch a kernel context, so they
+        // are handled entirely separately from both the `Query` block
+        // above and the `GeometryOp`-pushing match below. Factored into its
+        // own method, not inlined here — see `Interpreter::
+        // dispatch_curve_builtin`'s own doc comment for why.
+        if matches!(
+            id,
+            BuiltinFnId::LineCurve
+                | BuiltinFnId::CircleCurve
+                | BuiltinFnId::ArcCurve
+                | BuiltinFnId::EllipseCurve
+                | BuiltinFnId::EvaluateCurve
+                | BuiltinFnId::BezierCurve
+                | BuiltinFnId::BSplineCurve
+                | BuiltinFnId::TrimCurve
+                | BuiltinFnId::OffsetCurve
+                | BuiltinFnId::ClosestPointOnCurve
+                | BuiltinFnId::InterpolateCurve
+        ) {
+            return self.dispatch_curve_builtin(id, name, params, frame, span);
+        }
+
+        // Analytic surface construction/evaluation (`AICAD-113`) — the
+        // surface-family counterpart of the curve block immediately above,
+        // for the identical reason: pure backend-independent data, no
+        // `GeometryGraph`/kernel call.
+        if matches!(
+            id,
+            BuiltinFnId::PlaneSurface
+                | BuiltinFnId::CylinderSurface
+                | BuiltinFnId::ConeSurface
+                | BuiltinFnId::SphereSurface
+                | BuiltinFnId::TorusSurface
+                | BuiltinFnId::EvaluateSurface
+                | BuiltinFnId::BezierSurface
+                | BuiltinFnId::BSplineSurface
+                | BuiltinFnId::TrimSurface
+                | BuiltinFnId::OffsetSurface
+        ) {
+            return self.dispatch_surface_builtin(id, name, params, frame, span);
+        }
+
+        // Multi-solution curve/surface geometric queries (`AICAD-117`) —
+        // `cad_geometry_api::query`'s own intersection/projection/distance
+        // functions are pure math over already-constructed `Curve`/
+        // `Surface` values, exactly like the two blocks immediately above:
+        // no `GeometryGraph`/kernel call.
+        if matches!(
+            id,
+            BuiltinFnId::IntersectCurves
+                | BuiltinFnId::IntersectCurveSurface
+                | BuiltinFnId::IntersectSurfaces
+                | BuiltinFnId::ProjectPointToSurface
+                | BuiltinFnId::DistanceCurveCurve
+                | BuiltinFnId::DistanceCurveSurface
+                | BuiltinFnId::DistanceSurfaceSurface
+        ) {
+            return self.dispatch_geometric_query_builtin(id, name, params, frame, span);
+        }
+
+        // The raw/unsafe geometry tier's own post-entry builtins
+        // (`AICAD-122`, `BuiltinCategory::Raw`): read directly from an
+        // already-materialized `Value::Raw` handle, checked against this
+        // session's own `EpochCounter`. No `GeometryGraph`/`GeometryQuery`
+        // node and no kernel call — the classified kind was already
+        // captured in full when `enter_raw` minted the handle.
+        if id == BuiltinFnId::RawTopologyKindOf {
+            let raw = match arg(0)? {
+                Value::Raw(handle) => *handle,
+                _ => return Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            };
+            let counter = self
+                .epoch_counter
+                .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+            let classified = raw
+                .get(counter)
+                .map_err(|stale| RuntimeError::RawHandleStale {
+                    name,
+                    span,
+                    reason: stale.to_string(),
+                })?;
+            return Ok(Value::Str(classified.kind.to_string()));
+        }
+
+        // The raw/unsafe geometry tier's own editing builtins (`AICAD-123`)
+        // — unlike `RawTopologyKindOf` above, these dispatch a real kernel
+        // call through the already-materialized handle(s), so they are
+        // factored into their own method for the identical reason
+        // `Interpreter::dispatch_curve_builtin`'s own doc comment gives.
+        if matches!(
+            id,
+            BuiltinFnId::RemoveFace
+                | BuiltinFnId::ReplaceFace
+                | BuiltinFnId::SplitEdge
+                | BuiltinFnId::MergeFaces
+        ) {
+            return self.dispatch_raw_edit_builtin(id, name, params, frame, span);
+        }
+
         // Pushes one `GeometryOp` node onto this run's own accumulated
         // `Interpreter::geometry` graph — every builtin arm below ends in
         // one or more calls to this, per this function's own doc comment
@@ -1366,6 +2191,58 @@ impl<'a> Interpreter<'a> {
             self.geometry
                 .push_op(op, span)
                 .map_err(|err| RuntimeError::GeometryConstruction { err }.into())
+        };
+
+        // `adopt` (`AICAD-124`): epoch-checks a `Raw` argument exactly like
+        // `dispatch_raw_edit_builtin`'s own identical closure -- eager
+        // extraction here, not deferred to dispatch time, since a stale/
+        // foreign-session handle must never even reach a `GeometryOp` node.
+        let raw_shape = |value: &Value| -> EvalResult<ClassifiedShape> {
+            let counter = self
+                .epoch_counter
+                .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+            match value {
+                Value::Raw(handle) => handle.get(counter).copied().map_err(|stale| {
+                    RuntimeError::RawHandleStale {
+                        name,
+                        span,
+                        reason: stale.to_string(),
+                    }
+                    .into()
+                }),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+
+        // `AICAD-119`'s own extra argument shapes: a real `Point3` (per
+        // `crate::spatial`'s established conversion boundary, mirroring
+        // `dispatch_curve_builtin`'s identical closure exactly), an
+        // already-constructed `Curve`/`Surface` value (`make_edge`/
+        // `make_face_on_surface` materialize these into real kernel
+        // topology), and `List<Geometry>` (every other new builtin's
+        // plural operand list).
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let curve_value = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok((**c).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let surface_value = |value: &Value| -> EvalResult<AnalyticSurface> {
+            match value {
+                Value::Surface(s) => Ok((**s).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let geometry_list = |value: &Value| -> EvalResult<Vec<GeomId>> {
+            match value {
+                Value::List(items) => items.iter().map(geometry).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
         };
 
         let node = match id {
@@ -1605,8 +2482,1210 @@ impl<'a> Interpreter<'a> {
                     thickness: Quantity::new(-thickness.magnitude, thickness.ty),
                 })?
             }
+            // `make_vertex(point)` (`AICAD-119`): the base case of the
+            // vertex->edge->wire->face->shell->solid pipeline.
+            BuiltinFnId::MakeVertex => {
+                let point = spatial_point(arg(0)?)?;
+                push_op(GeometryOp::MakeVertex { point })?
+            }
+            // `make_edge(curve)` (`AICAD-119`): materializes an already-
+            // constructed `Curve` value into the matching existing kernel
+            // edge/wire op — see `BuiltinFnId::MakeEdge`'s own doc comment
+            // for the exact family coverage and the `Circle`-produces-a-
+            // wire disclosure.
+            BuiltinFnId::MakeEdge => {
+                let curve = curve_value(arg(0)?)?;
+                let op = curve_to_edge_op(&curve).map_err(|reason| {
+                    RuntimeError::UnsupportedTopologyConstruction { name, span, reason }
+                })?;
+                push_op(op)?
+            }
+            // `make_wire(edges)` (`AICAD-119`): `GeometryOp::WireFromEdges`'
+            // first source-language exposure (the op itself is `AICAD-022`).
+            BuiltinFnId::MakeWire => push_op(GeometryOp::WireFromEdges {
+                edges: geometry_list(arg(0)?)?,
+            })?,
+            // `make_face(wire)` (`AICAD-119`): `GeometryOp::MakeFace`'s
+            // first source-language exposure (the op itself is `AICAD-023`)
+            // — planar, no holes; see `make_face_on_surface` for the
+            // general form.
+            BuiltinFnId::MakeFace => push_op(GeometryOp::MakeFace {
+                wire: geometry(arg(0)?)?,
+            })?,
+            // `make_face_on_surface(surface, outer, holes)` (`AICAD-119`):
+            // materializes an already-constructed `Surface` value into a
+            // new `GeometryOp::MakeFaceOnSurface` node bounded by the
+            // already-real kernel wires `outer`/`holes` — see
+            // `BuiltinFnId::MakeFaceOnSurface`'s own doc comment for the
+            // exact family coverage.
+            BuiltinFnId::MakeFaceOnSurface => {
+                let surface_val = surface_value(arg(0)?)?;
+                let outer = geometry(arg(1)?)?;
+                let holes = geometry_list(arg(2)?)?;
+                let surface = surface_to_spec(&surface_val).map_err(|reason| {
+                    RuntimeError::UnsupportedTopologyConstruction { name, span, reason }
+                })?;
+                push_op(GeometryOp::MakeFaceOnSurface {
+                    surface,
+                    outer,
+                    holes,
+                    orientation: FaceOrientation::Forward,
+                })?
+            }
+            // `make_shell(faces)` (`AICAD-119`): a structural container
+            // only, no sewing/gap-closing (`AICAD-120`'s job).
+            BuiltinFnId::MakeShell => push_op(GeometryOp::MakeShell {
+                faces: geometry_list(arg(0)?)?,
+            })?,
+            // `make_solid(shell, voids)` (`AICAD-119`): `shell` need not be
+            // closed for this call to succeed — see `GeometryOp::MakeSolid`'s
+            // own doc comment for why construction success here is even
+            // less evidence of validity than usual.
+            BuiltinFnId::MakeSolid => push_op(GeometryOp::MakeSolid {
+                shell: geometry(arg(0)?)?,
+                voids: geometry_list(arg(1)?)?,
+            })?,
+            // `compound(shapes)` (`AICAD-119`): groups any mix of already-
+            // built kinds with no closure/connectivity requirement to fail.
+            BuiltinFnId::Compound => push_op(GeometryOp::Compound {
+                shapes: geometry_list(arg(0)?)?,
+            })?,
+            // `sew(shapes, tolerance)` (`AICAD-120`): merges/relabels
+            // coincident boundaries among `shapes` — never proves
+            // validity on its own, see `BuiltinFnId::Sew`'s own doc
+            // comment.
+            BuiltinFnId::Sew => push_op(GeometryOp::Sew {
+                shapes: geometry_list(arg(0)?)?,
+                tolerance: quantity(arg(1)?)?,
+            })?,
+            // `heal(shape, tolerance)` (`AICAD-120`): repairs `shape` —
+            // never invents missing geometry, see `BuiltinFnId::Heal`'s
+            // own doc comment.
+            BuiltinFnId::Heal => push_op(GeometryOp::Heal {
+                shape: geometry(arg(0)?)?,
+                tolerance: quantity(arg(1)?)?,
+            })?,
+            // `topology_face_at(shape, index)` (`AICAD-121`): the first
+            // standalone traversal exposure of `GeometryOp::GetFace`
+            // (`AICAD-076`), previously only reachable internally via
+            // `extrude`/`revolve`.
+            BuiltinFnId::TopologyFaceAt => push_op(GeometryOp::GetFace {
+                target: geometry(arg(0)?)?,
+                face: FaceIndex(usize_value(arg(1)?)?),
+            })?,
+            // `topology_edge_at(shape, index)` (`AICAD-121`): the new
+            // `GeometryOp::GetEdge`.
+            BuiltinFnId::TopologyEdgeAt => push_op(GeometryOp::GetEdge {
+                target: geometry(arg(0)?)?,
+                edge: EdgeIndex(usize_value(arg(1)?)?),
+            })?,
+            // `topology_vertex_at(shape, index)` (`AICAD-121`): the new
+            // `GeometryOp::GetVertex`.
+            BuiltinFnId::TopologyVertexAt => push_op(GeometryOp::GetVertex {
+                target: geometry(arg(0)?)?,
+                vertex: VertexIndex(usize_value(arg(1)?)?),
+            })?,
+            // `adjacent_face_at(shape, edge_index, adjacent_index)`
+            // (`AICAD-121`): the new `GeometryOp::GetAdjacentFace`.
+            BuiltinFnId::AdjacentFaceAt => push_op(GeometryOp::GetAdjacentFace {
+                target: geometry(arg(0)?)?,
+                edge: EdgeIndex(usize_value(arg(1)?)?),
+                adjacent: usize_value(arg(2)?)?,
+            })?,
+            // `adopt(raw)` (`AICAD-124`): the sole raw-to-safe exit.
+            BuiltinFnId::AdoptRaw => push_op(GeometryOp::AdoptRaw(raw_shape(arg(0)?)?.shape))?,
+            BuiltinFnId::IsValid
+            | BuiltinFnId::Volume
+            | BuiltinFnId::Area
+            | BuiltinFnId::TopologyKindOf
+            | BuiltinFnId::FaceCount
+            | BuiltinFnId::EdgeCount
+            | BuiltinFnId::VertexCount
+            | BuiltinFnId::WireCount
+            | BuiltinFnId::ShellCount
+            | BuiltinFnId::SolidCount
+            | BuiltinFnId::AdjacentFaceCount
+            | BuiltinFnId::IsOuterWire
+            | BuiltinFnId::IsSameEntity
+            | BuiltinFnId::IsForwardOriented
+            | BuiltinFnId::VertexPoint
+            | BuiltinFnId::ClassifyPoint
+            | BuiltinFnId::EnterRaw => {
+                unreachable!(
+                    "query builtins return early above, before this Construction-only match"
+                )
+            }
+            BuiltinFnId::RawTopologyKindOf
+            | BuiltinFnId::RemoveFace
+            | BuiltinFnId::ReplaceFace
+            | BuiltinFnId::SplitEdge
+            | BuiltinFnId::MergeFaces => unreachable!(
+                "raw-tier builtins return early above, before this Construction-only match"
+            ),
+            BuiltinFnId::LineCurve
+            | BuiltinFnId::CircleCurve
+            | BuiltinFnId::ArcCurve
+            | BuiltinFnId::EllipseCurve
+            | BuiltinFnId::EvaluateCurve
+            | BuiltinFnId::BezierCurve
+            | BuiltinFnId::BSplineCurve
+            | BuiltinFnId::TrimCurve
+            | BuiltinFnId::OffsetCurve
+            | BuiltinFnId::ClosestPointOnCurve
+            | BuiltinFnId::InterpolateCurve => unreachable!(
+                "curve builtins return early above, before this Construction-only match"
+            ),
+            BuiltinFnId::PlaneSurface
+            | BuiltinFnId::CylinderSurface
+            | BuiltinFnId::ConeSurface
+            | BuiltinFnId::SphereSurface
+            | BuiltinFnId::TorusSurface
+            | BuiltinFnId::EvaluateSurface
+            | BuiltinFnId::BezierSurface
+            | BuiltinFnId::BSplineSurface
+            | BuiltinFnId::TrimSurface
+            | BuiltinFnId::OffsetSurface => unreachable!(
+                "surface builtins return early above, before this Construction-only match"
+            ),
+            BuiltinFnId::IntersectCurves
+            | BuiltinFnId::IntersectCurveSurface
+            | BuiltinFnId::IntersectSurfaces
+            | BuiltinFnId::ProjectPointToSurface
+            | BuiltinFnId::DistanceCurveCurve
+            | BuiltinFnId::DistanceCurveSurface
+            | BuiltinFnId::DistanceSurfaceSurface => unreachable!(
+                "geometric-query builtins return early above, before this Construction-only match"
+            ),
         };
         Ok(Value::Geometry(node))
+    }
+
+    /// The `AICAD-123` raw-tier editing half of [`Interpreter::
+    /// dispatch_builtin`] (`BuiltinFnId::RemoveFace`/`ReplaceFace`/
+    /// `SplitEdge`/`MergeFaces`) — factored into its own method for the
+    /// identical reason [`Interpreter::dispatch_curve_builtin`]'s own doc
+    /// comment gives (keeps every other `dispatch_builtin` call's own stack
+    /// frame free of these locals). Every `Value::Raw` argument is
+    /// epoch-checked against `self.epoch_counter` before use (D22: a stale
+    /// or foreign-session handle must never reach a real kernel call), and
+    /// every result is minted at the *current* epoch — never the input
+    /// handle's own — matching `enter_raw`'s identical minting convention.
+    /// Charges [`Interpreter::consume_query_budget`] exactly like a
+    /// `Query`-category builtin: a raw edit is a real, potentially
+    /// expensive kernel call, the same resource-budget rationale
+    /// `RuntimeError::QueryBudgetExceeded`'s own doc comment gives.
+    fn dispatch_raw_edit_builtin(
+        &mut self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let counter = self
+            .epoch_counter
+            .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+        let raw_shape = |value: &Value| -> EvalResult<ClassifiedShape> {
+            match value {
+                Value::Raw(handle) => handle.get(counter).copied().map_err(|stale| {
+                    RuntimeError::RawHandleStale {
+                        name,
+                        span,
+                        reason: stale.to_string(),
+                    }
+                    .into()
+                }),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_list = |value: &Value| -> EvalResult<Vec<usize>> {
+            match value {
+                Value::List(items) => items.iter().map(usize_value).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let float_list = |value: &Value| -> EvalResult<Vec<f64>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let bool_value = |value: &Value| -> EvalResult<bool> {
+            match value {
+                Value::Bool(b) => Ok(*b),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let tolerance = |value: &Value| -> EvalResult<f64> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+
+        let op = match id {
+            BuiltinFnId::RemoveFace => RawEditOp::RemoveFace {
+                shape: raw_shape(arg(0)?)?,
+                faces: usize_list(arg(1)?)?,
+                heal: bool_value(arg(2)?)?,
+                tolerance: tolerance(arg(3)?)?,
+            },
+            BuiltinFnId::ReplaceFace => RawEditOp::ReplaceFace {
+                shape: raw_shape(arg(0)?)?,
+                face_index: usize_value(arg(1)?)?,
+                replacement: raw_shape(arg(2)?)?,
+                heal: bool_value(arg(3)?)?,
+                tolerance: tolerance(arg(4)?)?,
+            },
+            BuiltinFnId::SplitEdge => RawEditOp::SplitEdge {
+                edge: raw_shape(arg(0)?)?,
+                params: float_list(arg(1)?)?,
+            },
+            BuiltinFnId::MergeFaces => RawEditOp::MergeFaces {
+                shape: raw_shape(arg(0)?)?,
+                faces: usize_list(arg(1)?)?,
+            },
+            _ => unreachable!("guarded by dispatch_builtin's own matches! before delegating here"),
+        };
+
+        self.consume_query_budget(span)?;
+        let executor = self
+            .raw_edit_executor
+            .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+        let outcome = executor
+            .execute(op)
+            .map_err(|err| RuntimeError::RawEditFailed {
+                name,
+                span,
+                message: err.message,
+            })?;
+        match outcome.result {
+            RawEditResult::Single(classified) => Ok(Value::Raw(counter.mint(classified))),
+            RawEditResult::Multiple(classified_list) => Ok(Value::List(
+                classified_list
+                    .into_iter()
+                    .map(|c| Value::Raw(counter.mint(c)))
+                    .collect(),
+            )),
+        }
+    }
+
+    /// The `AICAD-109` curve-construction/evaluation half of
+    /// [`Interpreter::dispatch_builtin`] (`BuiltinFnId::LineCurve`/
+    /// `CircleCurve`/`ArcCurve`/`EllipseCurve`/`EvaluateCurve`), factored
+    /// into its own method rather than inlined there so its own locals do
+    /// not inflate the stack frame of *every* `dispatch_builtin` call
+    /// (including the overwhelming majority that never touch a curve
+    /// builtin at all) — [`DEFAULT_MAX_CALL_DEPTH`]'s own doc comment
+    /// already measured `dispatch_builtin`'s per-call debug-build stack
+    /// footprint empirically once; adding this whole block inline there
+    /// reduced the safe self-recursion margin enough to trip
+    /// `moderately_deep_self_recursion_succeeds_within_the_default_budget`.
+    /// Re-derives its own small `arg`/`quantity`/`spatial_point`/
+    /// `spatial_direction` closures from `params`/`frame` rather than
+    /// receiving `dispatch_builtin`'s own (which would require naming
+    /// their otherwise-anonymous closure types) — the very small
+    /// duplication this costs is exactly what keeps this a genuinely
+    /// separate, independently-sized stack frame.
+    fn dispatch_curve_builtin(
+        &self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let quantity = |value: &Value| -> EvalResult<Quantity> {
+            match value {
+                Value::Number(n) => Ok(Quantity::new(n.magnitude, n.ty)),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_direction = |value: &Value| -> EvalResult<Direction3> {
+            crate::spatial::direction3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let curve = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok((**c).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let curve_construction =
+            |result: Result<AnalyticCurve, CurveConstructionError>| -> EvalResult<Value> {
+                result.map(|c| Value::Curve(Box::new(c))).map_err(|reason| {
+                    RuntimeError::InvalidCurveConstruction { name, span, reason }.into()
+                })
+            };
+        // `AICAD-110`: `List<Point3>` control points, `List<Float>` knot/
+        // weight lists, `List<Int>` multiplicities — every element
+        // converted through the same closures/`crate::spatial` boundary a
+        // scalar argument already uses, applied once per list element.
+        let point_list = |value: &Value| -> EvalResult<Vec<Point3>> {
+            match value {
+                Value::List(items) => items.iter().map(spatial_point).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let float_list = |value: &Value| -> EvalResult<Vec<f64>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `None` for an empty list — the catalogue's own documented
+        // "no optional-parameter mechanism yet" convention
+        // (`BuiltinFnId::BezierCurve`'s own doc comment).
+        let optional_weights = |value: &Value| -> EvalResult<Option<Vec<f64>>> {
+            let weights = float_list(value)?;
+            Ok(if weights.is_empty() {
+                None
+            } else {
+                Some(weights)
+            })
+        };
+        let usize_list = |value: &Value| -> EvalResult<Vec<usize>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude.round() as usize),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let bool_value = |value: &Value| -> EvalResult<bool> {
+            match value {
+                Value::Bool(b) => Ok(*b),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        match id {
+            BuiltinFnId::LineCurve => {
+                let origin = spatial_point(arg(0)?)?;
+                let direction = spatial_direction(arg(1)?)?;
+                Ok(Value::Curve(Box::new(AnalyticCurve::line(
+                    origin, direction,
+                ))))
+            }
+            BuiltinFnId::CircleCurve => {
+                let center = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                let radius = quantity(arg(2)?)?;
+                curve_construction(AnalyticCurve::circle(center, normal, radius))
+            }
+            BuiltinFnId::ArcCurve => {
+                let center = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                let radius = quantity(arg(2)?)?;
+                let start_angle = quantity(arg(3)?)?;
+                let end_angle = quantity(arg(4)?)?;
+                curve_construction(AnalyticCurve::arc(
+                    center,
+                    normal,
+                    radius,
+                    start_angle,
+                    end_angle,
+                ))
+            }
+            BuiltinFnId::EllipseCurve => {
+                let center = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                let major_direction = spatial_direction(arg(2)?)?;
+                let major_radius = quantity(arg(3)?)?;
+                let minor_radius = quantity(arg(4)?)?;
+                curve_construction(AnalyticCurve::ellipse(
+                    center,
+                    normal,
+                    major_direction,
+                    major_radius,
+                    minor_radius,
+                ))
+            }
+            BuiltinFnId::EvaluateCurve => {
+                let c = curve(arg(0)?)?;
+                let u = quantity(arg(1)?)?.magnitude;
+                match c.evaluate(u) {
+                    CurveQueryOutcome::Solutions(mut solutions) if solutions.len() == 1 => {
+                        let sample = solutions.pop().unwrap();
+                        let point = self.point3_value(sample.point, span)?;
+                        let tangent = self.vector3_float_value(sample.tangent, span)?;
+                        self.build_geometry_struct(
+                            "CurveEvaluation",
+                            vec![("point", point), ("tangent", tangent)],
+                            span,
+                        )
+                    }
+                    CurveQueryOutcome::Failed(reason) => {
+                        Err(RuntimeError::CurveEvaluationFailed { span, reason }.into())
+                    }
+                    other => unreachable!(
+                        "AnalyticCurve::evaluate always returns exactly one solution or \
+                         Failed, got {other:?}"
+                    ),
+                }
+            }
+            BuiltinFnId::BezierCurve => {
+                let control_points = point_list(arg(0)?)?;
+                let weights = optional_weights(arg(1)?)?;
+                curve_construction(AnalyticCurve::bezier(control_points, weights))
+            }
+            BuiltinFnId::BSplineCurve => {
+                let degree = usize_value(arg(0)?)?;
+                let control_points = point_list(arg(1)?)?;
+                let knots = float_list(arg(2)?)?;
+                let multiplicities = usize_list(arg(3)?)?;
+                let weights = optional_weights(arg(4)?)?;
+                let periodic = bool_value(arg(5)?)?;
+                curve_construction(AnalyticCurve::bspline(
+                    degree,
+                    control_points,
+                    knots,
+                    multiplicities,
+                    weights,
+                    periodic,
+                ))
+            }
+            BuiltinFnId::TrimCurve => {
+                let c = curve(arg(0)?)?;
+                let u0 = quantity(arg(1)?)?.magnitude;
+                let u1 = quantity(arg(2)?)?.magnitude;
+                curve_construction(AnalyticCurve::trim(c, u0, u1))
+            }
+            BuiltinFnId::OffsetCurve => {
+                let c = curve(arg(0)?)?;
+                let distance = quantity(arg(1)?)?;
+                let normal = spatial_direction(arg(2)?)?;
+                c.offset(distance, Some(normal))
+                    .map(|offset| Value::Curve(Box::new(offset)))
+                    .map_err(|reason| {
+                        RuntimeError::CurveOperationFailed { name, span, reason }.into()
+                    })
+            }
+            BuiltinFnId::ClosestPointOnCurve => {
+                let c = curve(arg(0)?)?;
+                let point = spatial_point(arg(1)?)?;
+                match c.closest_point(point) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for result in solutions {
+                            let parameter_value = Value::Number(NumberValue {
+                                magnitude: result.parameter,
+                                ty: OperandType::Scalar(PrimitiveType::Float),
+                            });
+                            let point_value = self.point3_value(result.point, span)?;
+                            let distance_value = Value::Number(NumberValue {
+                                magnitude: result.distance.magnitude,
+                                ty: OperandType::dimensional(Dimension::Length, None),
+                            });
+                            elements.push(self.build_geometry_struct(
+                                "ClosestPointResult",
+                                vec![
+                                    ("parameter", parameter_value),
+                                    ("point", point_value),
+                                    ("distance", distance_value),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => {
+                        Err(RuntimeError::ClosestPointFailed { span, reason }.into())
+                    }
+                }
+            }
+            BuiltinFnId::InterpolateCurve => {
+                let points = point_list(arg(0)?)?;
+                let tolerance_magnitude = quantity(arg(1)?)?.magnitude;
+                let tolerance: ApproximationTolerance =
+                    ApproximationTolerance::new(tolerance_magnitude, tolerance_magnitude).map_err(
+                        |_| {
+                            Signal::from(RuntimeError::CurveOperationFailed {
+                                name,
+                                span,
+                                reason: CurveOperationError::DegenerateResult,
+                            })
+                        },
+                    )?;
+                cad_geometry_api::interpolate(&points, tolerance)
+                    .map(|curve| Value::Curve(Box::new(curve)))
+                    .map_err(|reason| {
+                        RuntimeError::CurveOperationFailed { name, span, reason }.into()
+                    })
+            }
+            _ => unreachable!(
+                "dispatch_curve_builtin is only ever called for the curve BuiltinFnIds \
+                 guarded by dispatch_builtin's own matches! check"
+            ),
+        }
+    }
+
+    /// The `AICAD-113` surface-construction/evaluation half of
+    /// [`Interpreter::dispatch_builtin`] — the surface-family counterpart of
+    /// [`Interpreter::dispatch_curve_builtin`], factored into its own method
+    /// for the identical stack-frame-size reason (see that method's own doc
+    /// comment).
+    fn dispatch_surface_builtin(
+        &self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let quantity = |value: &Value| -> EvalResult<Quantity> {
+            match value {
+                Value::Number(n) => Ok(Quantity::new(n.magnitude, n.ty)),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_direction = |value: &Value| -> EvalResult<Direction3> {
+            crate::spatial::direction3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let spatial_axis = |value: &Value| -> EvalResult<Axis3> {
+            crate::spatial::axis3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let surface = |value: &Value| -> EvalResult<AnalyticSurface> {
+            match value {
+                Value::Surface(s) => Ok((**s).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `AICAD-114`: `List<List<Point3>>`/`List<List<Float>>` control-net/
+        // weight-grid arguments, one level of `spatial_point`/plain-`Float`
+        // conversion per element — the tensor-product counterpart of
+        // `dispatch_curve_builtin`'s own `point_list`/`float_list` closures.
+        let point_grid = |value: &Value| -> EvalResult<Vec<Vec<Point3>>> {
+            match value {
+                Value::List(rows) => rows
+                    .iter()
+                    .map(|row| match row {
+                        Value::List(items) => items.iter().map(spatial_point).collect(),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let float_list = |value: &Value| -> EvalResult<Vec<f64>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        // `None` for an empty outer list — mirrors `dispatch_curve_builtin`'s
+        // own `optional_weights` "empty list means absent" convention.
+        let optional_weight_grid = |value: &Value| -> EvalResult<Option<Vec<Vec<f64>>>> {
+            match value {
+                Value::List(rows) if rows.is_empty() => Ok(None),
+                Value::List(rows) => {
+                    let grid: Vec<Vec<f64>> =
+                        rows.iter()
+                            .map(|row| match row {
+                                Value::List(items) => items
+                                    .iter()
+                                    .map(|item| match item {
+                                        Value::Number(n) => Ok(n.magnitude),
+                                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }
+                                            .into()),
+                                    })
+                                    .collect(),
+                                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                            })
+                            .collect::<EvalResult<Vec<Vec<f64>>>>()?;
+                    Ok(Some(grid))
+                }
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_list = |value: &Value| -> EvalResult<Vec<usize>> {
+            match value {
+                Value::List(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Number(n) => Ok(n.magnitude.round() as usize),
+                        _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+                    })
+                    .collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let usize_value = |value: &Value| -> EvalResult<usize> {
+            match value {
+                Value::Number(n) => Ok(n.magnitude.round() as usize),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let bool_value = |value: &Value| -> EvalResult<bool> {
+            match value {
+                Value::Bool(b) => Ok(*b),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let surface_construction = |result: Result<
+            AnalyticSurface,
+            cad_geometry_api::SurfaceConstructionError,
+        >|
+         -> EvalResult<Value> {
+            result
+                .map(|s| Value::Surface(Box::new(s)))
+                .map_err(|reason| {
+                    RuntimeError::InvalidSurfaceConstruction { name, span, reason }.into()
+                })
+        };
+        // `AICAD-115`: `trim_surface`'s own `outer`/`holes` curve/curve-list
+        // extraction, mirroring `dispatch_curve_builtin`'s own `curve`
+        // closure.
+        let curve = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok((**c).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let curve_list = |value: &Value| -> EvalResult<Vec<AnalyticCurve>> {
+            match value {
+                Value::List(items) => items.iter().map(curve).collect(),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let trim_loop = |c: AnalyticCurve,
+                         construction_tolerance: cad_units::ConstructionTolerance|
+         -> EvalResult<TrimLoop> {
+            TrimLoop::new(c, construction_tolerance)
+                .map_err(|reason| RuntimeError::InvalidTrimLoop { name, span, reason }.into())
+        };
+        match id {
+            BuiltinFnId::PlaneSurface => {
+                let origin = spatial_point(arg(0)?)?;
+                let normal = spatial_direction(arg(1)?)?;
+                Ok(Value::Surface(Box::new(AnalyticSurface::plane(
+                    origin, normal,
+                ))))
+            }
+            BuiltinFnId::CylinderSurface => {
+                let axis = spatial_axis(arg(0)?)?;
+                let radius = quantity(arg(1)?)?;
+                surface_construction(AnalyticSurface::cylinder(axis, radius))
+            }
+            BuiltinFnId::ConeSurface => {
+                let axis = spatial_axis(arg(0)?)?;
+                let half_angle = quantity(arg(1)?)?;
+                surface_construction(AnalyticSurface::cone(axis, half_angle))
+            }
+            BuiltinFnId::SphereSurface => {
+                let center = spatial_point(arg(0)?)?;
+                let radius = quantity(arg(1)?)?;
+                surface_construction(AnalyticSurface::sphere(center, radius))
+            }
+            BuiltinFnId::TorusSurface => {
+                let axis = spatial_axis(arg(0)?)?;
+                let major_radius = quantity(arg(1)?)?;
+                let minor_radius = quantity(arg(2)?)?;
+                surface_construction(AnalyticSurface::torus(axis, major_radius, minor_radius))
+            }
+            BuiltinFnId::BezierSurface => {
+                let control_points = point_grid(arg(0)?)?;
+                let weights = optional_weight_grid(arg(1)?)?;
+                surface_construction(AnalyticSurface::bezier(control_points, weights))
+            }
+            BuiltinFnId::BSplineSurface => {
+                let degree_u = usize_value(arg(0)?)?;
+                let degree_v = usize_value(arg(1)?)?;
+                let control_points = point_grid(arg(2)?)?;
+                let knots_u = float_list(arg(3)?)?;
+                let multiplicities_u = usize_list(arg(4)?)?;
+                let knots_v = float_list(arg(5)?)?;
+                let multiplicities_v = usize_list(arg(6)?)?;
+                let weights = optional_weight_grid(arg(7)?)?;
+                let periodic_u = bool_value(arg(8)?)?;
+                let periodic_v = bool_value(arg(9)?)?;
+                surface_construction(AnalyticSurface::bspline(
+                    degree_u,
+                    degree_v,
+                    control_points,
+                    knots_u,
+                    multiplicities_u,
+                    knots_v,
+                    multiplicities_v,
+                    weights,
+                    periodic_u,
+                    periodic_v,
+                ))
+            }
+            BuiltinFnId::TrimSurface => {
+                let base = surface(arg(0)?)?;
+                let outer_curve = curve(arg(1)?)?;
+                let hole_curves = curve_list(arg(2)?)?;
+                let tolerance_magnitude = quantity(arg(3)?)?.magnitude;
+                let construction_tolerance = cad_units::ConstructionTolerance::new(
+                    tolerance_magnitude,
+                )
+                .map_err(|reason| {
+                    Signal::from(RuntimeError::InvalidToleranceMagnitude { name, span, reason })
+                })?;
+                let outer = trim_loop(outer_curve, construction_tolerance)?;
+                let holes = hole_curves
+                    .into_iter()
+                    .map(|c| trim_loop(c, construction_tolerance))
+                    .collect::<EvalResult<Vec<TrimLoop>>>()?;
+                AnalyticSurface::trim(base, outer, holes)
+                    .map(|s| Value::Surface(Box::new(s)))
+                    .map_err(|reason| RuntimeError::SurfaceTrimFailed { span, reason }.into())
+            }
+            BuiltinFnId::OffsetSurface => {
+                let s = surface(arg(0)?)?;
+                let distance = quantity(arg(1)?)?;
+                s.offset(distance)
+                    .map(|offset| Value::Surface(Box::new(offset)))
+                    .map_err(|reason| {
+                        RuntimeError::SurfaceOperationFailed { name, span, reason }.into()
+                    })
+            }
+            BuiltinFnId::EvaluateSurface => {
+                let s = surface(arg(0)?)?;
+                let u = quantity(arg(1)?)?.magnitude;
+                let v = quantity(arg(2)?)?.magnitude;
+                match s.evaluate(u, v) {
+                    CurveQueryOutcome::Solutions(mut solutions) if solutions.len() == 1 => {
+                        let sample = solutions.pop().unwrap();
+                        let point = self.point3_value(sample.point, span)?;
+                        let du = self.vector3_float_value(sample.du, span)?;
+                        let dv = self.vector3_float_value(sample.dv, span)?;
+                        let normal = self.vector3_float_value(sample.normal.as_vector3(), span)?;
+                        self.build_geometry_struct(
+                            "SurfaceEvaluation",
+                            vec![("point", point), ("du", du), ("dv", dv), ("normal", normal)],
+                            span,
+                        )
+                    }
+                    CurveQueryOutcome::Failed(reason) => {
+                        Err(RuntimeError::SurfaceEvaluationFailed { span, reason }.into())
+                    }
+                    other => unreachable!(
+                        "AnalyticSurface::evaluate always returns exactly one solution or \
+                         Failed, got {other:?}"
+                    ),
+                }
+            }
+            _ => unreachable!(
+                "dispatch_surface_builtin is only ever called for the surface BuiltinFnIds \
+                 guarded by dispatch_builtin's own matches! check"
+            ),
+        }
+    }
+
+    /// The `AICAD-117` multi-solution curve/surface geometric-query half of
+    /// [`Interpreter::dispatch_builtin`] — `cad_geometry_api::query`'s own
+    /// intersection/projection/distance functions, each already returning
+    /// `cad_geometry_api::QueryOutcome<T>`: genuinely zero solutions
+    /// becomes an empty `Value::List` (a real, successful answer, never an
+    /// error), one solution per element otherwise, and `QueryOutcome::
+    /// Failed` becomes `RuntimeError::GeometricQueryFailed`. Factored into
+    /// its own method for the identical reason
+    /// [`Interpreter::dispatch_curve_builtin`]'s own doc comment gives.
+    fn dispatch_geometric_query_builtin(
+        &self,
+        id: BuiltinFnId,
+        name: &'static str,
+        params: &[HirParam],
+        frame: &Frame,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let arg = |index: usize| -> EvalResult<&Value> {
+            let binding = params
+                .get(index)
+                .unwrap_or_else(|| {
+                    unreachable!(
+                        "cad_hir::builtins::catalogue's own arity for {name:?} must match \
+                         this match's own argument-index usage"
+                    )
+                })
+                .binding;
+            frame
+                .get(&binding)
+                .ok_or(RuntimeError::BuiltinArgumentShape { name, span })
+                .map_err(Signal::from)
+        };
+        let curve = |value: &Value| -> EvalResult<AnalyticCurve> {
+            match value {
+                Value::Curve(c) => Ok((**c).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let surface = |value: &Value| -> EvalResult<AnalyticSurface> {
+            match value {
+                Value::Surface(s) => Ok((**s).clone()),
+                _ => Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            }
+        };
+        let spatial_point = |value: &Value| -> EvalResult<Point3> {
+            crate::spatial::point3_from_value(value).map_err(|reason| {
+                RuntimeError::InvalidSpatialArgument { name, span, reason }.into()
+            })
+        };
+        let tolerance = |value: &Value| -> EvalResult<cad_units::ConstructionTolerance> {
+            let magnitude = match value {
+                Value::Number(n) => n.magnitude,
+                _ => return Err(RuntimeError::BuiltinArgumentShape { name, span }.into()),
+            };
+            cad_units::ConstructionTolerance::new(magnitude).map_err(|reason| {
+                RuntimeError::InvalidToleranceMagnitude { name, reason, span }.into()
+            })
+        };
+        let query_failed = |reason: cad_geometry_api::QueryFailure| -> Signal {
+            RuntimeError::GeometricQueryFailed { name, span, reason }.into()
+        };
+        let length_value = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Length, None),
+            })
+        };
+        let float_value = |magnitude: f64| {
+            Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::Scalar(PrimitiveType::Float),
+            })
+        };
+        match id {
+            BuiltinFnId::IntersectCurves => {
+                let a = curve(arg(0)?)?;
+                let b = curve(arg(1)?)?;
+                let tol = tolerance(arg(2)?)?;
+                match cad_geometry_api::intersect_curves(&a, &b, tol) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for s in solutions {
+                            let point = self.point3_value(s.point, span)?;
+                            elements.push(self.build_geometry_struct(
+                                "CurveIntersectionResult",
+                                vec![
+                                    ("point", point),
+                                    ("parameter_a", float_value(s.parameter_a)),
+                                    ("parameter_b", float_value(s.parameter_b)),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::IntersectCurveSurface => {
+                let c = curve(arg(0)?)?;
+                let s = surface(arg(1)?)?;
+                let tol = tolerance(arg(2)?)?;
+                match cad_geometry_api::intersect_curve_surface(&c, &s, tol) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for hit in solutions {
+                            let point = self.point3_value(hit.point, span)?;
+                            elements.push(self.build_geometry_struct(
+                                "CurveSurfaceIntersectionResult",
+                                vec![
+                                    ("point", point),
+                                    ("curve_parameter", float_value(hit.curve_parameter)),
+                                    ("surface_u", float_value(hit.surface_u)),
+                                    ("surface_v", float_value(hit.surface_v)),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::IntersectSurfaces => {
+                let a = surface(arg(0)?)?;
+                let b = surface(arg(1)?)?;
+                let tol = tolerance(arg(2)?)?;
+                match cad_geometry_api::intersect_surfaces(&a, &b, tol) {
+                    CurveQueryOutcome::Solutions(curves) => Ok(Value::List(
+                        curves
+                            .into_iter()
+                            .map(|c| Value::Curve(Box::new(c)))
+                            .collect(),
+                    )),
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::ProjectPointToSurface => {
+                let s = surface(arg(0)?)?;
+                let point = spatial_point(arg(1)?)?;
+                match s.project_point(point) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        let mut elements = Vec::with_capacity(solutions.len());
+                        for result in solutions {
+                            let point_value = self.point3_value(result.point, span)?;
+                            elements.push(self.build_geometry_struct(
+                                "SurfaceProjectionResult",
+                                vec![
+                                    ("point", point_value),
+                                    ("u", float_value(result.u)),
+                                    ("v", float_value(result.v)),
+                                    ("distance", length_value(result.distance.magnitude)),
+                                ],
+                                span,
+                            )?);
+                        }
+                        Ok(Value::List(elements))
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::DistanceCurveCurve => {
+                let a = curve(arg(0)?)?;
+                let b = curve(arg(1)?)?;
+                match cad_geometry_api::distance_curve_curve(&a, &b) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        self.distance_result_list(solutions, span)
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::DistanceCurveSurface => {
+                let c = curve(arg(0)?)?;
+                let s = surface(arg(1)?)?;
+                match cad_geometry_api::distance_curve_surface(&c, &s) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        self.distance_result_list(solutions, span)
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            BuiltinFnId::DistanceSurfaceSurface => {
+                let a = surface(arg(0)?)?;
+                let b = surface(arg(1)?)?;
+                match cad_geometry_api::distance_surface_surface(&a, &b) {
+                    CurveQueryOutcome::Solutions(solutions) => {
+                        self.distance_result_list(solutions, span)
+                    }
+                    CurveQueryOutcome::Failed(reason) => Err(query_failed(reason)),
+                }
+            }
+            _ => unreachable!(
+                "dispatch_geometric_query_builtin is only ever called for the AICAD-117 \
+                 BuiltinFnIds guarded by dispatch_builtin's own matches! check"
+            ),
+        }
+    }
+
+    /// Builds a `List<DistanceResult>` `Value` from
+    /// `cad_geometry_api::DistanceResult` solutions — shared by every
+    /// `AICAD-117` distance builtin's own dispatch arm above.
+    fn distance_result_list(
+        &self,
+        solutions: Vec<cad_geometry_api::DistanceResult>,
+        span: Span,
+    ) -> EvalResult<Value> {
+        let mut elements = Vec::with_capacity(solutions.len());
+        for result in solutions {
+            let point_a = self.point3_value(result.point_a, span)?;
+            let point_b = self.point3_value(result.point_b, span)?;
+            elements.push(self.build_geometry_struct(
+                "DistanceResult",
+                vec![
+                    (
+                        "distance",
+                        Value::Number(NumberValue {
+                            magnitude: result.distance.magnitude,
+                            ty: OperandType::dimensional(Dimension::Length, None),
+                        }),
+                    ),
+                    ("point_a", point_a),
+                    ("point_b", point_b),
+                ],
+                span,
+            )?);
+        }
+        Ok(Value::List(elements))
+    }
+
+    /// Demand-materializes a kernel-backed query's real result (`AICAD-105`,
+    /// `project/DECISION_LOG.md#DL-25`) and converts it into the exact
+    /// `Value` kind `id`'s own `cad_hir::builtins::catalogue` return type
+    /// promises. `node` must already be the `GeometryQuery` node
+    /// [`Interpreter::dispatch_builtin`] just pushed onto
+    /// [`Interpreter::geometry`] for this same call — see
+    /// [`crate::query_exec`]'s own module doc comment for the full
+    /// architecture.
+    fn execute_kernel_query(
+        &mut self,
+        id: BuiltinFnId,
+        node: GeomId,
+        span: Span,
+    ) -> EvalResult<Value> {
+        self.consume_query_budget(span)?;
+        let name = builtin_name(id);
+        let executor = self
+            .query_executor
+            .ok_or(RuntimeError::KernelQueryUnavailable { name, span })?;
+        let outcome = executor.execute(&self.geometry, node).map_err(|err| {
+            RuntimeError::KernelQueryFailed {
+                name,
+                span,
+                message: err.message,
+            }
+        })?;
+        let value = match (id, outcome) {
+            (BuiltinFnId::IsValid, QueryOutcome::Bool(b)) => Value::Bool(b),
+            (BuiltinFnId::Volume, QueryOutcome::Number(magnitude)) => Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Volume, None),
+            }),
+            (BuiltinFnId::Area, QueryOutcome::Number(magnitude)) => Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::dimensional(Dimension::Area, None),
+            }),
+            // `AICAD-121`: entity counts are plain (dimensionless) `Int`s
+            // -- every runtime numeric scalar collapses to `PrimitiveType::
+            // Float` regardless of its source-declared Int/Float type (see
+            // `crate::value`'s own module doc comment, "Deliberate
+            // simplification").
+            (
+                BuiltinFnId::FaceCount
+                | BuiltinFnId::EdgeCount
+                | BuiltinFnId::VertexCount
+                | BuiltinFnId::WireCount
+                | BuiltinFnId::ShellCount
+                | BuiltinFnId::SolidCount
+                | BuiltinFnId::AdjacentFaceCount,
+                QueryOutcome::Number(magnitude),
+            ) => Value::Number(NumberValue {
+                magnitude,
+                ty: OperandType::Scalar(PrimitiveType::Float),
+            }),
+            (
+                BuiltinFnId::TopologyKindOf | BuiltinFnId::ClassifyPoint,
+                QueryOutcome::Text(text),
+            ) => Value::Str(text),
+            (
+                BuiltinFnId::IsOuterWire
+                | BuiltinFnId::IsSameEntity
+                | BuiltinFnId::IsForwardOriented,
+                QueryOutcome::Bool(b),
+            ) => Value::Bool(b),
+            (BuiltinFnId::VertexPoint, QueryOutcome::Point(p)) => self.point3_value(p, span)?,
+            (BuiltinFnId::EnterRaw, QueryOutcome::Classified(classified)) => {
+                let counter = self
+                    .epoch_counter
+                    .ok_or(RuntimeError::RawTierUnavailable { name, span })?;
+                Value::Raw(counter.mint(classified))
+            }
+            (other, outcome) => unreachable!(
+                "KernelQueryExecutor outcome {outcome:?} does not match query builtin {other:?} \
+                 -- every real implementation must return the exact QueryOutcome shape each \
+                 query-category BuiltinFnId's own doc comment declares"
+            ),
+        };
+        Ok(value)
+    }
+
+    /// Charges one kernel-backed query call against this interpreter's
+    /// [`ResourceBudget::max_kernel_queries`] (`AICAD-105`) — the query
+    /// analogue of [`Interpreter::enter_call`]/[`Interpreter::
+    /// consume_iteration_budget`].
+    fn consume_query_budget(&mut self, span: Span) -> EvalResult<()> {
+        if self.queries_consumed >= self.budget.max_kernel_queries {
+            return Err(RuntimeError::QueryBudgetExceeded { span }.into());
+        }
+        self.queries_consumed += 1;
+        Ok(())
     }
 
     /// Charges one function-call level against this interpreter's
@@ -1655,6 +3734,13 @@ impl<'a> Interpreter<'a> {
         match stmt {
             HirStmt::Let { binding, value, .. } | HirStmt::Var { binding, value, .. } => {
                 let v = self.eval_expr(frame, value)?;
+                // `AICAD-107`: this local's own value provenance, so a
+                // later reference to it (however deep inside a nested
+                // function call) resolves back to the real top-level
+                // bindings it ultimately came from — see `Interpreter::
+                // binding_provenance`'s own doc comment.
+                let provenance = self.provenance_of(value);
+                self.binding_provenance.insert(*binding, provenance);
                 frame.insert(*binding, v);
                 Ok(())
             }
@@ -1669,6 +3755,8 @@ impl<'a> Interpreter<'a> {
                     name: name.clone(),
                     span: *span,
                 })?;
+                let provenance = self.provenance_of(value);
+                self.binding_provenance.insert(binding, provenance);
                 frame.insert(binding, v);
                 Ok(())
             }
@@ -1714,6 +3802,12 @@ impl<'a> Interpreter<'a> {
             HirStmt::While {
                 cond, body, span, ..
             } => {
+                // `AICAD-107`: one `PathFrame::Iteration` per dynamic
+                // `while`-body execution, disambiguating a `RuntimeBuiltin`
+                // geometry call at the same source span executed more than
+                // once by this loop — see `crate::feature_trace::CallPath`'s
+                // own doc comment.
+                let mut iteration: u64 = 0;
                 while self.eval_bool(frame, cond)? {
                     // `AICAD-058`: every `while` iteration now participates
                     // in the same shared iteration budget `for` already
@@ -1724,7 +3818,12 @@ impl<'a> Interpreter<'a> {
                     // 03_TYPE_SYSTEM_UNITS_CONTROL_FLOW.md` §16 says
                     // runtime budgets must protect against.
                     self.consume_iteration_budget(*span)?;
-                    match self.exec_block(frame, body) {
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(*span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    iteration += 1;
+                    match result {
                         Ok(_) => {}
                         Err(Signal::Break(_)) => break,
                         Err(Signal::Continue(_)) => continue,
@@ -1733,23 +3832,31 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(())
             }
-            HirStmt::Loop { body, span, .. } => loop {
-                // Same rationale as `While` above — a bare `loop { }` has
-                // no condition at all, so without this it was even more
-                // trivially unbounded than `while`.
-                self.consume_iteration_budget(*span)?;
-                match self.exec_block(frame, body) {
-                    Ok(_) => {}
-                    Err(Signal::Break(_)) => return Ok(()),
-                    Err(Signal::Continue(_)) => continue,
-                    Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+            HirStmt::Loop { body, span, .. } => {
+                let mut iteration: u64 = 0;
+                loop {
+                    // Same rationale as `While` above — a bare `loop { }`
+                    // has no condition at all, so without this it was even
+                    // more trivially unbounded than `while`.
+                    self.consume_iteration_budget(*span)?;
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(*span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    iteration += 1;
+                    match result {
+                        Ok(_) => {}
+                        Err(Signal::Break(_)) => return Ok(()),
+                        Err(Signal::Continue(_)) => continue,
+                        Err(err @ (Signal::Return(_) | Signal::Error(_))) => return Err(err),
+                    }
                 }
-            },
+            }
             HirStmt::Match {
                 scrutinee, arms, ..
             } => {
                 let value = self.eval_expr(frame, scrutinee)?;
-                self.eval_match(frame, &value, arms, stmt.span())?;
+                self.eval_match(frame, &value, scrutinee, arms, stmt.span())?;
                 Ok(())
             }
             HirStmt::Break { span } => Err(Signal::Break(*span)),
@@ -1788,12 +3895,25 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> EvalResult<()> {
         let iterable_value = self.eval_expr(frame, iterable)?;
+        // `AICAD-107`: the loop variable's own value provenance is the
+        // *iterable* expression's own provenance — computed once here
+        // (matching "`iterable` is evaluated exactly once" above), since
+        // every element drawn from it shares that same upstream
+        // dependency regardless of which element index a given iteration
+        // binds.
+        let iterable_provenance = self.provenance_of(iterable);
         match iterable_value {
             Value::List(items) => {
-                for item in items {
+                for (iteration, item) in (0u64..).zip(items) {
                     self.consume_iteration_budget(span)?;
                     frame.insert(binding, item);
-                    match self.exec_block(frame, body) {
+                    self.binding_provenance
+                        .insert(binding, iterable_provenance.clone());
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    match result {
                         Ok(_) => {}
                         Err(Signal::Break(_)) => break,
                         Err(Signal::Continue(_)) => continue,
@@ -1844,6 +3964,7 @@ impl<'a> Interpreter<'a> {
                 let elem_ty = start.ty;
                 let end_magnitude = end.magnitude;
                 let mut current = start.magnitude;
+                let mut iteration: u64 = 0;
                 loop {
                     let has_more = if range.inclusive {
                         current <= end_magnitude
@@ -1861,6 +3982,8 @@ impl<'a> Interpreter<'a> {
                             ty: elem_ty,
                         }),
                     );
+                    self.binding_provenance
+                        .insert(binding, iterable_provenance.clone());
                     // Advanced before the body runs (rather than after),
                     // so every exit path below — falling through, `break`,
                     // or `continue` — already has the next value ready;
@@ -1868,7 +3991,12 @@ impl<'a> Interpreter<'a> {
                     // empty" falls out for free from the `has_more` check
                     // above, never an implicit reversal of direction.
                     current += 1.0;
-                    match self.exec_block(frame, body) {
+                    self.call_path_stack
+                        .push(PathFrame::Iteration(span, iteration));
+                    let result = self.exec_block(frame, body);
+                    self.call_path_stack.pop();
+                    iteration += 1;
+                    match result {
                         Ok(_) => {}
                         Err(Signal::Break(_)) => return Ok(()),
                         Err(Signal::Continue(_)) => continue,
@@ -1991,7 +4119,7 @@ impl<'a> Interpreter<'a> {
                 scrutinee, arms, ..
             } => {
                 let value = self.eval_expr(frame, scrutinee)?;
-                self.eval_match(frame, &value, arms, expr.span())
+                self.eval_match(frame, &value, scrutinee, arms, expr.span())
             }
             HirExpr::ListLiteral { elements, .. } => {
                 let mut items = Vec::with_capacity(elements.len());
@@ -2302,11 +4430,18 @@ impl<'a> Interpreter<'a> {
         &mut self,
         frame: &mut Frame,
         scrutinee: &Value,
+        scrutinee_expr: &HirExpr,
         arms: &[HirMatchArm],
         span: Span,
     ) -> EvalResult<Value> {
+        // `AICAD-107`: every pattern-bound local this match introduces
+        // inherits the *whole scrutinee's* own provenance — see
+        // `Interpreter::pattern_matches`'s own doc comment for why a
+        // per-field decomposition is a deliberate, documented
+        // simplification rather than a gap.
+        let scrutinee_provenance = self.provenance_of(scrutinee_expr);
         for arm in arms {
-            if self.pattern_matches(frame, &arm.pattern, scrutinee)? {
+            if self.pattern_matches(frame, &arm.pattern, scrutinee, &scrutinee_provenance)? {
                 return self.eval_expr(frame, &arm.body);
             }
         }
@@ -2316,16 +4451,30 @@ impl<'a> Interpreter<'a> {
     /// Tests one pattern against an already-evaluated scrutinee value,
     /// binding `HirPattern::Binding`'s own fresh name into `frame` when it
     /// matches (unconditionally — a bare binding pattern always matches).
+    ///
+    /// `scrutinee_provenance` (`AICAD-107`) is recorded verbatim as every
+    /// newly-bound pattern variable's own [`Interpreter::
+    /// binding_provenance`] entry — a deliberate simplification: a tuple/
+    /// record destructuring pattern could in principle track which top-level
+    /// binding contributed *which field*, but no evaluated [`Value`] in
+    /// this crate carries that per-field provenance today, so this
+    /// conservatively attributes the *whole* scrutinee's own provenance to
+    /// every field it destructures. Like [`Interpreter::provenance_of`]'s
+    /// own documented approximation, this can only ever over-report a
+    /// dependency, never miss a real one.
     fn pattern_matches(
-        &self,
+        &mut self,
         frame: &mut Frame,
         pattern: &HirPattern,
         scrutinee: &Value,
+        scrutinee_provenance: &[BindingId],
     ) -> EvalResult<bool> {
         match pattern {
             HirPattern::Wildcard { .. } => Ok(true),
             HirPattern::Binding { binding, .. } => {
                 frame.insert(*binding, scrutinee.clone());
+                self.binding_provenance
+                    .insert(*binding, scrutinee_provenance.to_vec());
                 Ok(true)
             }
             HirPattern::Variant { variant, .. } => {
@@ -2350,7 +4499,7 @@ impl<'a> Interpreter<'a> {
                     return Ok(false);
                 }
                 for (elem, value) in elems.iter().zip(values) {
-                    if !self.pattern_matches(frame, elem, value)? {
+                    if !self.pattern_matches(frame, elem, value, scrutinee_provenance)? {
                         return Ok(false);
                     }
                 }
@@ -2383,7 +4532,7 @@ impl<'a> Interpreter<'a> {
                         // regardless (AGENTS.md).
                         return Ok(false);
                     };
-                    if !self.pattern_matches(frame, &field.pattern, value)? {
+                    if !self.pattern_matches(frame, &field.pattern, value, scrutinee_provenance)? {
                         return Ok(false);
                     }
                 }
@@ -2491,6 +4640,115 @@ fn to_arith_op(op: BinaryOp) -> ArithmeticOp {
     }
 }
 
+/// Whether `ty` is the `Geometry` type — `AICAD-107`'s own local copy of
+/// `cad_feature_graph::graph::is_geometry_type`'s identical one-line check
+/// (that crate cannot be depended on from here without creating exactly
+/// the dependency-direction problem `cad_feature_graph::cache`'s own
+/// module doc comment already documents avoiding, in reverse — see
+/// `crate::feature_trace`'s own module doc comment).
+fn is_geometry_type_ref(ty: &HirTypeRef) -> bool {
+    matches!(ty, HirTypeRef::Named { name, .. } if name == "Geometry")
+}
+
+/// Materializes an already-constructed [`AnalyticCurve`] into the existing
+/// kernel edge/wire construction op it maps to (`AICAD-119`, `make_edge`).
+/// `Err` names the reason for an unsupported family — see
+/// [`BuiltinFnId::MakeEdge`]'s own doc comment for the exact coverage.
+fn curve_to_edge_op(curve: &AnalyticCurve) -> Result<GeometryOp, &'static str> {
+    match curve {
+        AnalyticCurve::Circle {
+            center,
+            normal,
+            radius,
+        } => Ok(GeometryOp::CircleWire {
+            center: *center,
+            normal: *normal,
+            radius: *radius,
+        }),
+        AnalyticCurve::Arc {
+            start_angle,
+            end_angle,
+            ..
+        } => {
+            let mid_angle = (start_angle.magnitude + end_angle.magnitude) / 2.0;
+            let point_at = |u: f64| -> Option<Point3> {
+                match curve.evaluate(u) {
+                    CurveQueryOutcome::Solutions(samples) if samples.len() == 1 => {
+                        Some(samples[0].point)
+                    }
+                    _ => None,
+                }
+            };
+            match (
+                point_at(start_angle.magnitude),
+                point_at(mid_angle),
+                point_at(end_angle.magnitude),
+            ) {
+                (Some(start), Some(mid), Some(end)) => Ok(GeometryOp::ArcEdge { start, mid, end }),
+                _ => Err("'make_edge' could not evaluate this arc at its own endpoints"),
+            }
+        }
+        AnalyticCurve::Trimmed { base, u0, u1 } => match base.as_ref() {
+            AnalyticCurve::Line { origin, direction } => Ok(GeometryOp::LineEdge {
+                start: *origin + direction.as_vector3() * *u0,
+                end: *origin + direction.as_vector3() * *u1,
+            }),
+            _ => Err(
+                "'make_edge' only supports a trimmed Line (its trim range becomes the edge's \
+                 own start/end) among trimmed curve families",
+            ),
+        },
+        AnalyticCurve::Line { .. } => Err(
+            "'make_edge' requires a bounded Line — trim it first with 'trim_curve' so it has \
+             two endpoints",
+        ),
+        AnalyticCurve::Ellipse { .. }
+        | AnalyticCurve::Bezier { .. }
+        | AnalyticCurve::BSpline { .. } => {
+            Err("'make_edge' does not yet support this curve family")
+        }
+    }
+}
+
+/// Materializes an already-constructed [`AnalyticSurface`] into the
+/// [`cad_geometry_api::SurfaceSpec`] `make_face_on_surface` needs
+/// (`AICAD-119`) — the same 5 elementary quadric families
+/// `SurfaceSpec` covers. `Err` names the reason for an unsupported family.
+fn surface_to_spec(surface: &AnalyticSurface) -> Result<SurfaceSpec, &'static str> {
+    match surface {
+        AnalyticSurface::Plane { origin, normal } => Ok(SurfaceSpec::Plane {
+            origin: *origin,
+            normal: *normal,
+        }),
+        AnalyticSurface::Cylinder { axis, radius } => Ok(SurfaceSpec::Cylinder {
+            axis: *axis,
+            radius: *radius,
+        }),
+        AnalyticSurface::Cone { axis, half_angle } => Ok(SurfaceSpec::Cone {
+            axis: *axis,
+            half_angle: *half_angle,
+        }),
+        AnalyticSurface::Sphere { center, radius } => Ok(SurfaceSpec::Sphere {
+            center: *center,
+            radius: *radius,
+        }),
+        AnalyticSurface::Torus {
+            axis,
+            major_radius,
+            minor_radius,
+        } => Ok(SurfaceSpec::Torus {
+            axis: *axis,
+            major_radius: *major_radius,
+            minor_radius: *minor_radius,
+        }),
+        AnalyticSurface::Bezier { .. }
+        | AnalyticSurface::BSpline { .. }
+        | AnalyticSurface::Trimmed { .. } => {
+            Err("'make_face_on_surface' does not yet support this surface family")
+        }
+    }
+}
+
 /// The stable name one `BuiltinFnId` variant reports in a
 /// [`RuntimeError::BuiltinArgumentShape`] diagnostic — mirrors
 /// `cad_hir::builtins::catalogue`'s own `name` field exactly (kept as its
@@ -2516,6 +4774,71 @@ fn builtin_name(id: BuiltinFnId) -> &'static str {
         BuiltinFnId::LinearPattern => "linear_pattern",
         BuiltinFnId::RadialPattern => "radial_pattern",
         BuiltinFnId::Shell => "shell",
+        BuiltinFnId::IsValid => "is_valid",
+        BuiltinFnId::Volume => "volume",
+        BuiltinFnId::Area => "area",
+        BuiltinFnId::LineCurve => "line_curve",
+        BuiltinFnId::CircleCurve => "circle_curve",
+        BuiltinFnId::ArcCurve => "arc_curve",
+        BuiltinFnId::EllipseCurve => "ellipse_curve",
+        BuiltinFnId::EvaluateCurve => "evaluate_curve",
+        BuiltinFnId::BezierCurve => "bezier_curve",
+        BuiltinFnId::BSplineCurve => "bspline_curve",
+        BuiltinFnId::TrimCurve => "trim_curve",
+        BuiltinFnId::OffsetCurve => "offset_curve",
+        BuiltinFnId::ClosestPointOnCurve => "closest_point_on_curve",
+        BuiltinFnId::InterpolateCurve => "interpolate_curve",
+        BuiltinFnId::PlaneSurface => "plane_surface",
+        BuiltinFnId::CylinderSurface => "cylinder_surface",
+        BuiltinFnId::ConeSurface => "cone_surface",
+        BuiltinFnId::SphereSurface => "sphere_surface",
+        BuiltinFnId::TorusSurface => "torus_surface",
+        BuiltinFnId::EvaluateSurface => "evaluate_surface",
+        BuiltinFnId::BezierSurface => "bezier_surface",
+        BuiltinFnId::BSplineSurface => "bspline_surface",
+        BuiltinFnId::TrimSurface => "trim_surface",
+        BuiltinFnId::OffsetSurface => "offset_surface",
+        BuiltinFnId::IntersectCurves => "intersect_curves",
+        BuiltinFnId::IntersectCurveSurface => "intersect_curve_surface",
+        BuiltinFnId::IntersectSurfaces => "intersect_surfaces",
+        BuiltinFnId::ProjectPointToSurface => "project_point_to_surface",
+        BuiltinFnId::DistanceCurveCurve => "distance_curve_curve",
+        BuiltinFnId::DistanceCurveSurface => "distance_curve_surface",
+        BuiltinFnId::DistanceSurfaceSurface => "distance_surface_surface",
+        BuiltinFnId::MakeVertex => "make_vertex",
+        BuiltinFnId::MakeEdge => "make_edge",
+        BuiltinFnId::MakeWire => "make_wire",
+        BuiltinFnId::MakeFace => "make_face",
+        BuiltinFnId::MakeFaceOnSurface => "make_face_on_surface",
+        BuiltinFnId::MakeShell => "make_shell",
+        BuiltinFnId::MakeSolid => "make_solid",
+        BuiltinFnId::Compound => "compound",
+        BuiltinFnId::Sew => "sew",
+        BuiltinFnId::Heal => "heal",
+        BuiltinFnId::TopologyKindOf => "topology_kind_of",
+        BuiltinFnId::FaceCount => "face_count",
+        BuiltinFnId::EdgeCount => "edge_count",
+        BuiltinFnId::VertexCount => "vertex_count",
+        BuiltinFnId::WireCount => "wire_count",
+        BuiltinFnId::ShellCount => "shell_count",
+        BuiltinFnId::SolidCount => "solid_count",
+        BuiltinFnId::TopologyFaceAt => "topology_face_at",
+        BuiltinFnId::TopologyEdgeAt => "topology_edge_at",
+        BuiltinFnId::TopologyVertexAt => "topology_vertex_at",
+        BuiltinFnId::AdjacentFaceCount => "adjacent_face_count",
+        BuiltinFnId::AdjacentFaceAt => "adjacent_face_at",
+        BuiltinFnId::IsOuterWire => "is_outer_wire",
+        BuiltinFnId::IsSameEntity => "is_same_entity",
+        BuiltinFnId::IsForwardOriented => "is_forward_oriented",
+        BuiltinFnId::VertexPoint => "vertex_point",
+        BuiltinFnId::ClassifyPoint => "classify_point",
+        BuiltinFnId::EnterRaw => "enter_raw",
+        BuiltinFnId::RawTopologyKindOf => "raw_topology_kind_of",
+        BuiltinFnId::RemoveFace => "remove_face",
+        BuiltinFnId::ReplaceFace => "replace_face",
+        BuiltinFnId::SplitEdge => "split_edge",
+        BuiltinFnId::MergeFaces => "merge_faces",
+        BuiltinFnId::AdoptRaw => "adopt",
     }
 }
 
@@ -2557,6 +4880,8 @@ mod tests {
     use super::*;
     use cad_diagnostics::Diagnostic;
     use cad_hir::lower::LowerResult;
+    use cad_kernel_api::topology::ClassifiedShape;
+    use cad_kernel_api::{KernelId, KernelShape};
     use cad_types::Dimension;
 
     /// Parses, lowers, and type-checks `source`, asserting every phase is
@@ -2813,6 +5138,32 @@ mod tests {
     }
 
     #[test]
+    fn area_literal_evaluates_to_canonical_square_metres() {
+        // `AICAD-102`: `Area`'s own direct unit-literal spelling, source
+        // -> parse -> lower -> typeck -> interpret, round-tripping to the
+        // same canonical (square-metre) representation the derived
+        // `length_times_length_derives_area` path above already produced.
+        let lowered = compiled("fn f() -> Area { return 500mm2; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        // 500 mm^2 = 500 * (1e-3 m)^2 = 500e-6 m^2 = 0.0005 m^2.
+        assert_number_eq(result.clone(), 0.0005);
+        match result {
+            Value::Number(n) => assert_eq!(n.ty, OperandType::dimensional(Dimension::Area, None)),
+            other => panic!("expected a Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn area_literal_and_derived_area_add_to_the_same_canonical_value() {
+        let lowered = compiled("fn f() -> Area { return 500000mm2 + 0.0m2; }");
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        // 500,000 mm^2 = 0.5 m^2.
+        assert_number_eq(result, 0.5);
+    }
+
+    #[test]
     fn dimensional_argument_passed_directly_as_a_value() {
         let lowered = compiled("fn f(a: Length, b: Length) -> Length { return a + b; }");
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
@@ -2941,12 +5292,26 @@ mod tests {
 
     // --- AICAD-071: part body execution ---------------------------------
 
+    /// Finds a *user*-declared binding (`let`/`const`/`part`/...) by name —
+    /// never a `BindingKind::Param`, so a user program's own top-level
+    /// `let base = ...;` cannot collide with an unrelated `RuntimeBuiltin`
+    /// catalogue entry's parameter of the same name (`AICAD-115`'s own
+    /// `trim_surface(base: Surface, ...)` first exposed this: `cad_hir::
+    /// lower::Lowerer::seed_builtins` seeds every catalogue parameter as
+    /// its own global-scope binding too, so a naive name-only search could
+    /// silently return the wrong one — this test helper's own `.find`,
+    /// not a real interpreter bug).
     fn binding_named(lowered: &LowerResult, name: &str) -> BindingId {
         lowered
             .bindings
             .iter()
-            .find(|b| b.name == name)
-            .unwrap_or_else(|| panic!("no binding named '{name}' in {:?}", lowered.bindings))
+            .find(|b| b.name == name && !matches!(b.kind, BindingKind::Param))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no non-parameter binding named '{name}' in {:?}",
+                    lowered.bindings
+                )
+            })
             .id
     }
 
@@ -3012,6 +5377,79 @@ mod tests {
             }
             other => panic!("expected Some(Value::Part), got {other:?}"),
         }
+    }
+
+    // --- AICAD-101: nested part-in-part execution -----------------------
+
+    #[test]
+    fn a_part_nested_inside_another_part_is_evaluated_and_exposed() {
+        let lowered = compiled(
+            "part Wall { \
+                 let sill: Length = 1mm; \
+                 part Door { \
+                     let hinge: Length = 2mm; \
+                 } \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let wall = binding_named(&lowered, "Wall");
+        match interp.global(wall) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].0, "sill");
+                assert_number_eq(fields[0].1.clone(), 0.001);
+                assert_eq!(fields[1].0, "Door");
+                match &fields[1].1 {
+                    Value::Part {
+                        fields: door_fields,
+                        ..
+                    } => {
+                        assert_eq!(door_fields.len(), 1);
+                        assert_eq!(door_fields[0].0, "hinge");
+                        assert_number_eq(door_fields[0].1.clone(), 0.002);
+                    }
+                    other => panic!("expected the nested part's own Value::Part, got {other:?}"),
+                }
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn three_levels_of_part_nesting_all_evaluate() {
+        let lowered = compiled(
+            "part A { \
+                 part B { \
+                     part C { \
+                         let leaf: Length = 3mm; \
+                     } \
+                 } \
+             }",
+        );
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        interp.run_top_level(&lowered.program).unwrap();
+        let a = binding_named(&lowered, "A");
+        let Some(Value::Part {
+            fields: a_fields, ..
+        }) = interp.global(a)
+        else {
+            panic!("expected A to be a Value::Part");
+        };
+        let Value::Part {
+            fields: b_fields, ..
+        } = &a_fields[0].1
+        else {
+            panic!("expected B to be a Value::Part");
+        };
+        let Value::Part {
+            fields: c_fields, ..
+        } = &b_fields[0].1
+        else {
+            panic!("expected C to be a Value::Part");
+        };
+        assert_eq!(c_fields[0].0, "leaf");
+        assert_number_eq(c_fields[0].1.clone(), 0.003);
     }
 
     #[test]
@@ -5109,6 +7547,165 @@ mod tests {
         assert_number_eq(interp.globals[&double_id.0].clone(), 0.2);
     }
 
+    // --- AICAD-104A: part-body params in ParamModel/run_top_level_parametric ---
+
+    #[test]
+    fn a_single_level_part_scoped_param_evaluates_through_the_parametric_path() {
+        let source = "part Wall {\n\
+                       \tparam width: Length = 40mm;\n\
+                       \tlet doubled: Length = width * 2.0;\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model
+            .find_by_name("Wall.width")
+            .expect("part-scoped param is modeled and resolvable by its qualified name");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.04);
+        let wall = binding_named(&lowered, "Wall");
+        match interp.global(wall) {
+            Some(Value::Part { fields, .. }) => {
+                assert_eq!(fields[0].0, "width");
+                assert_number_eq(fields[0].1.clone(), 0.04);
+                assert_eq!(fields[1].0, "doubled");
+                assert_number_eq(fields[1].1.clone(), 0.08);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_param_nested_two_levels_deep_evaluates_through_the_parametric_path() {
+        let source = "part Wall {\n\
+                       \tpart Door {\n\
+                       \t\tparam hinge_offset: Length = 5mm;\n\
+                       \t}\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let hinge_id = model
+            .find_by_name("Wall.Door.hinge_offset")
+            .expect("a param nested two levels deep is modeled with a two-element scope");
+        let decl = model.decl(hinge_id).unwrap();
+        assert_eq!(decl.scope, vec!["Wall".to_string(), "Door".to_string()]);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        assert_number_eq(interp.globals[&hinge_id.0].clone(), 0.005);
+    }
+
+    #[test]
+    fn overriding_a_part_scoped_param_recomputes_its_dependent_and_updates_the_parts_field() {
+        let source = "part Wall {\n\
+                       \tparam width: Length = 40mm;\n\
+                       \tlet doubled: Length = width * 2.0;\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let width_id = model.find_by_name("Wall.width").unwrap();
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(width_id, dimensional(0.1, Dimension::Length));
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect("edit/rebuild should succeed");
+
+        // The override, not the stale default, is what the part's own
+        // exposed field and the dependent `let` both observe.
+        let wall = binding_named(&lowered, "Wall");
+        match interp.global(wall) {
+            Some(Value::Part { fields, .. }) => {
+                assert_number_eq(fields[0].1.clone(), 0.1);
+                assert_number_eq(fields[1].1.clone(), 0.2);
+            }
+            other => panic!("expected Some(Value::Part), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_param_in_one_part_can_depend_on_a_top_level_param_and_vice_versa() {
+        let source = "param scale: Float = 2.0;\n\
+                       part Wall {\n\
+                       \tparam width: Length = 40mm * scale;\n\
+                       }\n\
+                       let derived_from_part: Length = 1mm;\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let scale_id = model.find_by_name("scale").unwrap();
+        let width_id = model.find_by_name("Wall.width").unwrap();
+        assert_eq!(
+            model.decl(width_id).unwrap().depends_on,
+            vec![scale_id],
+            "a part-scoped param's dependency on a top-level param is recorded"
+        );
+
+        let mut overrides = crate::params::ParamOverrides::new();
+        overrides.insert(scale_id, number(4.0));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(&lowered.program, &model, &overrides, Some(&checked))
+            .expect("edit/rebuild should succeed");
+        assert_number_eq(interp.globals[&width_id.0].clone(), 0.16);
+    }
+
+    #[test]
+    fn identical_param_leaf_names_in_two_different_part_scopes_never_collide() {
+        let source = "part Left {\n\
+                       \tparam width: Length = 1mm;\n\
+                       }\n\
+                       part Right {\n\
+                       \tparam width: Length = 2mm;\n\
+                       }\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        assert_eq!(
+            model.find_by_name("width"),
+            None,
+            "a bare leaf name colliding across two different part scopes must fail closed, \
+             never pick an arbitrary one of the two"
+        );
+        let left = model
+            .find_by_name("Left.width")
+            .expect("qualified lookup resolves");
+        let right = model
+            .find_by_name("Right.width")
+            .expect("qualified lookup resolves");
+        assert_ne!(left, right);
+
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        assert_number_eq(interp.globals[&left.0].clone(), 0.001);
+        assert_number_eq(interp.globals[&right.0].clone(), 0.002);
+    }
+
     #[test]
     fn override_with_wrong_type_is_a_structured_diagnostic_not_a_silent_coercion() {
         let source = "param width: Length = 40mm;\n";
@@ -5337,5 +7934,2267 @@ mod tests {
             box_range.end <= range.start,
             "box is built before hole's own nodes"
         );
+    }
+
+    // --- Kernel-backed queries (AICAD-105, project/DECISION_LOG.md#DL-25) ---
+
+    /// A fake [`KernelQueryExecutor`] for tests that must not depend on a
+    /// real kernel context (`cad-runtime` must not depend on
+    /// `cad-occt-bridge` — see `crate::query_exec`'s own module doc
+    /// comment): returns a fixed [`QueryOutcome`] (or a fixed failure) for
+    /// every call, proving `Interpreter`'s own dispatch/conversion/budget
+    /// logic in isolation from any real kernel dispatch.
+    struct FakeQueryExecutor {
+        outcome: Result<QueryOutcome, String>,
+    }
+
+    impl FakeQueryExecutor {
+        fn returning(outcome: QueryOutcome) -> Self {
+            FakeQueryExecutor {
+                outcome: Ok(outcome),
+            }
+        }
+
+        fn failing(message: &str) -> Self {
+            FakeQueryExecutor {
+                outcome: Err(message.to_string()),
+            }
+        }
+    }
+
+    impl KernelQueryExecutor for FakeQueryExecutor {
+        fn execute(
+            &self,
+            _graph: &cad_geometry_api::GeometryGraph,
+            _node: GeomId,
+        ) -> Result<QueryOutcome, crate::query_exec::KernelQueryError> {
+            self.outcome
+                .clone()
+                .map_err(|message| crate::query_exec::KernelQueryError { message })
+        }
+    }
+
+    #[test]
+    fn kernel_query_without_a_configured_executor_fails_cleanly() {
+        let source = "fn f() -> Bool { let b = box(1mm, 1mm, 1mm); return is_valid(b); }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E130");
+    }
+
+    #[test]
+    fn is_valid_returns_the_executors_real_value_and_drives_if_control_flow() {
+        let source = "fn f() -> Int { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 if is_valid(b) { return 1; } else { return 0; } \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 1.0);
+
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(false));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn volume_returns_a_volume_dimensioned_number() {
+        let source = "fn f() -> Volume { let b = box(1mm, 1mm, 1mm); return volume(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Number(0.5));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let value = interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(value, dimensional(0.5, Dimension::Volume));
+    }
+
+    #[test]
+    fn area_returns_an_area_dimensioned_number() {
+        let source = "fn f() -> Area { let b = box(1mm, 1mm, 1mm); return area(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Number(0.25));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let value = interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(value, dimensional(0.25, Dimension::Area));
+    }
+
+    #[test]
+    fn kernel_query_executor_failure_is_reported_as_kernel_query_failed() {
+        let source = "fn f() -> Bool { let b = box(1mm, 1mm, 1mm); return is_valid(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::failing("kernel exploded");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E131");
+    }
+
+    #[test]
+    fn kernel_query_budget_exceeded_is_a_clean_error() {
+        let source = "fn f() -> Int { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 var i = 0; \
+                 while i < 5 { \
+                     let ok = is_valid(b); \
+                     i = i + 1; \
+                 } \
+                 return i; \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_resource_budget(ResourceBudget {
+                    max_kernel_queries: 3,
+                    ..ResourceBudget::default()
+                })
+                .with_query_executor(&executor);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "BUDGET-E003");
+    }
+
+    #[test]
+    fn resource_usage_accounts_for_kernel_queries_consumed() {
+        let source = "fn f() -> Bool { let b = box(1mm, 1mm, 1mm); return is_valid(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        interp.call_by_name("f", vec![]).unwrap();
+        let usage = interp.resource_usage();
+        assert_eq!(usage.queries_consumed, 1);
+        assert_eq!(usage.max_kernel_queries, DEFAULT_QUERY_BUDGET);
+    }
+
+    // --- AICAD-107: feature identity/dependency/provenance through
+    //     ordinary language abstraction (project/DECISION_LOG.md#DL-27) ---
+
+    #[test]
+    fn geometry_built_through_a_user_function_is_traced() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\n\
+                       let base = make();\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "geometry built inside a helper function's own body must still be traced, not \
+             become invisible to the feature system merely because it was reached through a \
+             function call"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+        assert_eq!(interp.trace()[0].scope, Vec::<String>::new());
+    }
+
+    #[test]
+    fn two_separate_calls_to_the_same_helper_function_are_not_collapsed() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\n\
+                       let a = make();\n\
+                       let b = make();\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            2,
+            "two separate call sites to the same helper must each get their own traced \
+             feature, never collapsed into one just because the helper's own name repeats"
+        );
+        assert_ne!(interp.trace()[0].path, interp.trace()[1].path);
+    }
+
+    #[test]
+    fn repeated_geometry_calls_inside_a_loop_get_distinct_call_paths() {
+        let source = "fn f() -> Int {\n\
+                       \tvar i = 0;\n\
+                       \twhile i < 3 {\n\
+                       \t\tlet b = box(1mm, 1mm, 1mm);\n\
+                       \t\ti = i + 1;\n\
+                       \t}\n\
+                       \treturn i;\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            3,
+            "the same call expression executed three times by a loop must be traced three times"
+        );
+        let paths: std::collections::HashSet<_> =
+            interp.trace().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths.len(),
+            3,
+            "each loop iteration's own box(...) call must get its own distinct CallPath, never \
+             collapsing onto a single bare-span identity"
+        );
+    }
+
+    #[test]
+    fn repeated_geometry_calls_inside_a_for_loop_get_distinct_call_paths() {
+        // `exec_for`'s own iteration-frame push/pop is a genuinely separate
+        // code path from `while`/`loop`'s (a different loop construct
+        // entirely, over a `List<T>`), so this is real, not redundant,
+        // coverage alongside `repeated_geometry_calls_inside_a_loop_get_
+        // distinct_call_paths` above.
+        let source = "fn f() -> Int {\n\
+                       \tvar total = 0;\n\
+                       \tfor i in 0..3 {\n\
+                       \t\tlet b = box(1mm, 1mm, 1mm);\n\
+                       \t\ttotal = total + i;\n\
+                       \t}\n\
+                       \treturn total;\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("f", vec![]).unwrap();
+        assert_eq!(interp.trace().len(), 3);
+        let paths: std::collections::HashSet<_> =
+            interp.trace().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths.len(),
+            3,
+            "each for-loop iteration's own box(...) call must get its own distinct CallPath"
+        );
+    }
+
+    #[test]
+    fn binding_refs_resolve_through_a_helper_functions_own_parameter() {
+        let source = "param radius: Length = 4mm;\n\
+                       fn make_boss(w: Length) -> Geometry { return cylinder(w, 12mm); }\n\
+                       let boss = make_boss(radius);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        let radius_id = model.find_by_name("radius").unwrap();
+        assert_eq!(interp.trace().len(), 1);
+        assert_eq!(
+            interp.trace()[0].binding_refs,
+            vec![radius_id.0],
+            "a scalar argument threaded through a helper function's own parameter must still \
+             resolve back to the real top-level param it ultimately came from, so an edit to \
+             that param correctly marks this feature dirty"
+        );
+    }
+
+    #[test]
+    fn binding_refs_resolve_through_two_levels_of_helper_function_nesting() {
+        let source = "param radius: Length = 4mm;\n\
+                       fn inner(w: Length) -> Geometry { return cylinder(w, 12mm); }\n\
+                       fn outer(w: Length) -> Geometry { return inner(w); }\n\
+                       let boss = outer(radius);\n";
+        let (lowered, checked) = param_model_and_checked(source);
+        let model = crate::params::ParamModel::build(&lowered.program).expect("no cycle");
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp
+            .run_top_level_parametric(
+                &lowered.program,
+                &model,
+                &crate::params::ParamOverrides::new(),
+                Some(&checked),
+            )
+            .expect("parametric run should succeed");
+        let radius_id = model.find_by_name("radius").unwrap();
+        assert_eq!(interp.trace().len(), 1);
+        assert_eq!(interp.trace()[0].binding_refs, vec![radius_id.0]);
+    }
+
+    #[test]
+    fn only_the_taken_branch_of_an_if_expression_is_traced() {
+        let source = "fn f(flag: Bool) -> Geometry {\n\
+                       \tif flag {\n\
+                       \t\treturn box(1mm, 1mm, 1mm);\n\
+                       \t} else {\n\
+                       \t\treturn cylinder(1mm, 1mm);\n\
+                       \t}\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("f", vec![Value::Bool(true)]).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "only the branch actually taken at run time builds a feature -- the untaken branch \
+             never executes, so it is correctly absent from the trace rather than guessed at"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+    }
+
+    #[test]
+    fn geometry_built_through_a_helper_inside_a_part_keeps_the_parts_scope() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\n\
+                       part Wall {\n\
+                       \tlet base = make();\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(interp.trace().len(), 1);
+        assert_eq!(
+            interp.trace()[0].scope,
+            vec!["Wall".to_string()],
+            "a helper function's own declaration site (top level, outside any part) must not \
+             determine scope -- only which part-nested let's evaluation reached it dynamically \
+             does"
+        );
+    }
+
+    #[test]
+    fn geometry_inputs_resolve_across_a_helper_function_boundary() {
+        let source = "fn make_base() -> Geometry { return box(10mm, 10mm, 10mm); }\n\
+                       let base = make_base();\n\
+                       let hole = cylinder(1mm, 10mm);\n\
+                       let drilled = cut(base, hole);\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(interp.trace().len(), 3);
+        let cut_entry = interp
+            .trace()
+            .iter()
+            .find(|e| e.op == BuiltinFnId::Cut)
+            .expect("cut was traced");
+        let base_entry = interp
+            .trace()
+            .iter()
+            .find(|e| e.op == BuiltinFnId::Box)
+            .expect("box was traced");
+        assert!(
+            cut_entry.geometry_inputs.contains(&base_entry.path),
+            "cut's own base argument must resolve back to the box(...) call made deep inside \
+             make_base(), even though cut(...) itself is called directly at top level"
+        );
+    }
+
+    #[test]
+    fn geom_id_path_resolves_the_producing_call_for_a_value_built_through_a_helper() {
+        let source = "fn make() -> Geometry { return box(1mm, 1mm, 1mm); }\nlet base = make();\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        let base_binding = binding_named(&lowered, "base");
+        let Some(Value::Geometry(id)) = interp.global(base_binding) else {
+            panic!("base should have evaluated to a Geometry value");
+        };
+        assert!(
+            interp.geom_id_path(*id).is_some(),
+            "a top-level binding's own Geometry value, even one produced deep inside a helper \
+             function, must resolve back to the CallPath that produced it"
+        );
+    }
+
+    #[test]
+    fn recursive_helper_building_geometry_at_each_depth_gets_distinct_call_paths() {
+        // `build(n)`'s base case (`n <= 0`) returns a bare `box(...)` at one
+        // source span; its recursive case combines a *different* `box(...)`
+        // span with `build(n - 1)`'s own result via `cut`. Called with
+        // `n = 2`: the base-case `box` fires once (only `build(0)` reaches
+        // it), the recursive-case `box`/`cut` pair fires twice each
+        // (`build(2)`/`build(1)`), for five traced calls total -- every one
+        // of them at its own distinct `CallPath`, the recursive-case pair
+        // disambiguated purely by the growing `PathFrame::Call` stack
+        // (`build(n - 1)`'s own call expression is one fixed span, reached
+        // at increasing depth), with no separate recursion-depth counter
+        // needed.
+        let source = "fn build(n: Int) -> Geometry {\n\
+                       \tif n <= 0 {\n\
+                       \t\treturn box(1mm, 1mm, 1mm);\n\
+                       \t}\n\
+                       \treturn cut(build(n - 1), box(2mm, 2mm, 2mm));\n\
+                       }\n";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.call_by_name("build", vec![number(2.0)]).unwrap();
+        assert_eq!(interp.trace().len(), 5);
+        let paths: std::collections::HashSet<_> =
+            interp.trace().iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths.len(),
+            5,
+            "every traced call across every recursion depth must get its own distinct CallPath"
+        );
+    }
+
+    // --- AICAD-109: analytic curve construction/evaluation ---
+
+    #[test]
+    fn line_curve_and_evaluate_curve_reproduce_the_analytic_point_and_tangent() {
+        let source = "\
+            fn p() -> Length { \
+                let c = line_curve( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                ); \
+                let e = evaluate_curve(c, 0.005); \
+                return e.point.x; \
+            } \
+            fn t() -> Float { \
+                let c = line_curve( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                ); \
+                let e = evaluate_curve(c, 0.005); \
+                return e.tangent.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("p", vec![]).unwrap(), 0.005);
+        assert_number_eq(interp.call_by_name("t", vec![]).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn circle_curve_and_evaluate_curve_reproduce_the_analytic_point_and_tangent() {
+        let source = "\
+            fn p() -> Length { \
+                let c = circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 2mm, \
+                ); \
+                let e = evaluate_curve(c, 0.0); \
+                return e.point.x; \
+            } \
+            fn t() -> Float { \
+                let c = circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 2mm, \
+                ); \
+                let e = evaluate_curve(c, 0.0); \
+                return e.tangent.y; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // At u = 0, `circle_curve`'s deterministic reference direction
+        // (`Frame3::from_z`) places the point at `(radius, 0, 0)` and the
+        // tangent at `(0, radius, 0)` — see `AnalyticCurve::evaluate`'s own
+        // doc comment.
+        assert_number_eq(interp.call_by_name("p", vec![]).unwrap(), 0.002);
+        assert_number_eq(interp.call_by_name("t", vec![]).unwrap(), 0.002);
+    }
+
+    #[test]
+    fn ellipse_curve_and_evaluate_curve_reproduce_the_major_axis_endpoint() {
+        let source = "fn f() -> Length { \
+                 let c = ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     major_radius = 20mm, \
+                     minor_radius = 10mm, \
+                 ); \
+                 let e = evaluate_curve(c, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.02);
+    }
+
+    #[test]
+    fn arc_curve_evaluates_its_own_start_endpoint() {
+        let source = "fn f() -> Length { \
+                 let c = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 let e = evaluate_curve(c, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn arc_curve_evaluation_outside_its_own_domain_is_a_structured_error() {
+        let source = "fn f() -> Length { \
+                 let c = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 let e = evaluate_curve(c, 2.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E133");
+    }
+
+    #[test]
+    fn circle_curve_rejects_a_non_positive_radius() {
+        let source = "fn f() -> Curve { \
+                 return circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 0mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    #[test]
+    fn ellipse_curve_rejects_a_major_direction_not_perpendicular_to_normal() {
+        let source = "fn f() -> Curve { \
+                 return ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_radius = 20mm, \
+                     minor_radius = 10mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    #[test]
+    fn line_curve_rejects_a_degenerate_direction() {
+        let source = "fn f() -> Curve { \
+                 return line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = 0.0), \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E128");
+    }
+
+    #[test]
+    fn a_curve_value_can_be_bound_and_passed_through_an_ordinary_helper_function() {
+        // Proves a `Curve` value flows through ordinary lexical
+        // binding/function-call argument passing exactly like any other
+        // value (`AICAD-109` deliberately needs no `cad_feature_graph`/
+        // `feature_trace` integration — see this task's own report).
+        let source = "\
+            fn make() -> Curve { \
+                return circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 3mm, \
+                ); \
+            } \
+            fn f() -> Length { \
+                let c = make(); \
+                let e = evaluate_curve(c, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.003);
+    }
+
+    // --- AICAD-110: Bezier/B-spline construction/evaluation ---
+
+    #[test]
+    fn bezier_curve_evaluates_a_known_quadratic_point() {
+        let source = "fn f() -> Length { \
+                 let c = bezier_curve( \
+                     control_points = [ \
+                         Point3(x = 0mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 2mm, z = 0mm), \
+                         Point3(x = 2mm, y = 0mm, z = 0mm), \
+                     ], \
+                     weights = [], \
+                 ); \
+                 let e = evaluate_curve(c, 0.5); \
+                 return e.point.y; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // B(0.5) = 0.25*P0 + 0.5*P1 + 0.25*P2 -> y = 0.5 * 2mm = 1mm.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn bezier_curve_with_weights_reproduces_an_exact_arc_point() {
+        let source = "fn f() -> Length { \
+                 let c = bezier_curve( \
+                     control_points = [ \
+                         Point3(x = 1m, y = 0m, z = 0m), \
+                         Point3(x = 1m, y = 1m, z = 0m), \
+                         Point3(x = 0m, y = 1m, z = 0m), \
+                     ], \
+                     weights = [1.0, 0.70710678118, 1.0], \
+                 ); \
+                 let e = evaluate_curve(c, 0.5); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let result = interp.call_by_name("f", vec![]).unwrap();
+        match result {
+            Value::Number(n) => {
+                assert!((n.magnitude - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6)
+            }
+            other => panic!("expected a Number, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bspline_curve_passes_through_a_control_point_at_its_own_knot() {
+        let source = "fn f() -> Length { \
+                 let c = bspline_curve( \
+                     degree = 1, \
+                     control_points = [ \
+                         Point3(x = 0mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     ], \
+                     knots = [0.0, 1.0, 2.0], \
+                     multiplicities = [2, 1, 2], \
+                     weights = [], \
+                     periodic = false, \
+                 ); \
+                 let e = evaluate_curve(c, 1.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn bezier_curve_rejects_too_few_control_points() {
+        let source = "fn f() -> Curve { \
+                 return bezier_curve( \
+                     control_points = [Point3(x = 0mm, y = 0mm, z = 0mm)], \
+                     weights = [], \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    #[test]
+    fn bspline_curve_rejects_periodic() {
+        let source = "fn f() -> Curve { \
+                 return bspline_curve( \
+                     degree = 1, \
+                     control_points = [ \
+                         Point3(x = 0mm, y = 0mm, z = 0mm), \
+                         Point3(x = 1mm, y = 0mm, z = 0mm), \
+                         Point3(x = 2mm, y = 0mm, z = 0mm), \
+                     ], \
+                     knots = [0.0, 1.0, 2.0], \
+                     multiplicities = [2, 1, 2], \
+                     weights = [], \
+                     periodic = true, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E132");
+    }
+
+    // --- AICAD-111: trim/offset/closest_point/interpolate ---
+
+    #[test]
+    fn trim_curve_restricts_a_circle_to_a_quarter() {
+        let source = "fn f() -> Length { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 let quarter = trim_curve(c, 0.0, 1.5707963267948966); \
+                 let e = evaluate_curve(quarter, 1.5707963267948966); \
+                 return e.point.y; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.001);
+    }
+
+    #[test]
+    fn trim_curve_rejects_evaluation_past_its_own_end() {
+        let source = "fn f() -> Length { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 let quarter = trim_curve(c, 0.0, 1.0); \
+                 let e = evaluate_curve(quarter, 2.0); \
+                 return e.point.y; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E133");
+    }
+
+    #[test]
+    fn offset_curve_on_a_circle_increases_the_radius() {
+        let source = "fn f() -> Length { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 2mm, \
+                 ); \
+                 let bigger = offset_curve( \
+                     c, 1mm, Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let e = evaluate_curve(bigger, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.003);
+    }
+
+    #[test]
+    fn offset_curve_on_an_ellipse_is_a_structured_error() {
+        let source = "fn f() -> Curve { \
+                 let c = ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     major_radius = 2mm, \
+                     minor_radius = 1mm, \
+                 ); \
+                 return offset_curve(c, 1mm, Vector3(x = 0.0, y = 0.0, z = 1.0)); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E134");
+    }
+
+    #[test]
+    fn closest_point_on_curve_returns_exactly_one_result_for_a_line() {
+        let source = "fn f() -> Length { \
+                 let c = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = closest_point_on_curve( \
+                     c, Point3(x = 5mm, y = 3mm, z = 0mm), \
+                 ); \
+                 for r in results { \
+                     return r.point.x; \
+                 } \
+                 return 0mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.005);
+    }
+
+    #[test]
+    fn closest_point_on_curve_from_a_circles_own_center_is_a_structured_error() {
+        let source = "fn f() -> List<ClosestPointResult> { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 return closest_point_on_curve(c, Point3(x = 0mm, y = 0mm, z = 0mm)); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E135");
+    }
+
+    #[test]
+    fn interpolate_curve_passes_through_its_own_endpoints() {
+        let source = "fn f() -> Length { \
+                 let pts = [ \
+                     Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     Point3(x = 1mm, y = 2mm, z = 0mm), \
+                     Point3(x = 3mm, y = 3mm, z = 0mm), \
+                     Point3(x = 4mm, y = 0mm, z = 0mm), \
+                 ]; \
+                 let c = interpolate_curve(pts, 0.000001mm); \
+                 let e = evaluate_curve(c, 1.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.004);
+    }
+
+    #[test]
+    fn interpolate_curve_rejects_too_few_points() {
+        let source = "fn f() -> Curve { \
+                 let pts = [ \
+                     Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     Point3(x = 1mm, y = 0mm, z = 0mm), \
+                 ]; \
+                 return interpolate_curve(pts, 0.001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E134");
+    }
+
+    // --- AICAD-112 Checkpoint A: D25 re-audit ---
+
+    /// `project/DECISION_LOG.md#DL-27` (D25) re-audit for `AICAD-109`-`111`:
+    /// a program mixing real `Geometry`-producing calls with `Curve`-typed
+    /// construction/evaluation, both reached through a helper function,
+    /// must trace *only* the `Geometry` call — curves stay correctly
+    /// invisible to the feature-trace system (they are pure values, never
+    /// a `GeometryGraph` node — see `cad_geometry_api::curve`'s own module
+    /// doc comment), with no spurious entry and no interference with the
+    /// real box's own trace, exactly matching `AICAD-107`'s established
+    /// `is_geometry_type_ref` gate applied generically, not curve-specific
+    /// logic.
+    #[test]
+    fn curve_construction_stays_invisible_to_the_feature_trace_alongside_real_geometry() {
+        let source = "\
+            fn make_geometry() -> Geometry { \
+                return box(1mm, 1mm, 1mm); \
+            } \
+            fn make_curve() -> Curve { \
+                return circle_curve( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 1mm, \
+                ); \
+            } \
+            let base = make_geometry(); \
+            let profile = make_curve(); \
+            let sample = evaluate_curve(profile, 0.0); \
+        ";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "only the real Geometry-producing box() call should be traced; circle_curve()/\
+             evaluate_curve() must not add spurious entries"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+    }
+
+    // --- AICAD-113: analytic surface construction/evaluation ---
+
+    #[test]
+    fn plane_surface_and_evaluate_surface_reproduce_the_analytic_point_and_normal() {
+        let source = "\
+            fn p() -> Length { \
+                let s = plane_surface( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 1mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let e = evaluate_surface(s, 2.0, 3.0); \
+                return e.point.z; \
+            } \
+            fn n() -> Float { \
+                let s = plane_surface( \
+                    origin = Point3(x = 0mm, y = 0mm, z = 1mm), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let e = evaluate_surface(s, 2.0, 3.0); \
+                return e.normal.z; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("p", vec![]).unwrap(), 0.001);
+        assert_number_eq(interp.call_by_name("n", vec![]).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn cylinder_surface_evaluates_a_point_at_the_correct_radius_and_height() {
+        let source = "\
+            fn radius() -> Length { \
+                let s = cylinder_surface( \
+                    axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                  direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                    radius = 5mm, \
+                ); \
+                let e = evaluate_surface(s, 0.0, 0.007); \
+                return e.point.x; \
+            } \
+            fn height() -> Length { \
+                let s = cylinder_surface( \
+                    axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                  direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                    radius = 5mm, \
+                ); \
+                let e = evaluate_surface(s, 0.0, 0.007); \
+                return e.point.z; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("radius", vec![]).unwrap(), 0.005);
+        assert_number_eq(interp.call_by_name("height", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn cone_surface_apex_is_a_structured_degenerate_error() {
+        let source = "fn f() -> Length { \
+                 let s = cone_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     half_angle = 30deg, \
+                 ); \
+                 let e = evaluate_surface(s, 0.0, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn sphere_surface_pole_is_a_structured_degenerate_error() {
+        let source = "fn f() -> Length { \
+                 let s = sphere_surface( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     radius = 5mm, \
+                 ); \
+                 let e = evaluate_surface(s, 0.0, 1.5707963267948966); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn torus_surface_evaluates_a_point_at_the_correct_distance_from_the_main_circle() {
+        let source = "fn f() -> Length { \
+                 let s = torus_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     major_radius = 10mm, \
+                     minor_radius = 3mm, \
+                 ); \
+                 let e = evaluate_surface(s, 0.0, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // At (u, v) = (0, 0), the tube point sits directly outward from the
+        // main circle along +X: 10mm (major) + 3mm (minor) = 13mm.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.013);
+    }
+
+    #[test]
+    fn cylinder_surface_rejects_a_non_positive_radius() {
+        let source = "fn f() -> Surface { \
+                 return cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 0mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    #[test]
+    fn torus_surface_rejects_minor_radius_not_less_than_major() {
+        let source = "fn f() -> Surface { \
+                 return torus_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     major_radius = 5mm, \
+                     minor_radius = 5mm, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    #[test]
+    fn a_surface_value_can_be_bound_and_passed_through_an_ordinary_helper_function() {
+        let source = "\
+            fn make() -> Surface { \
+                return sphere_surface( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    radius = 4mm, \
+                ); \
+            } \
+            fn f() -> Length { \
+                let s = make(); \
+                let e = evaluate_surface(s, 0.0, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.004);
+    }
+
+    /// Mirrors `curve_construction_stays_invisible_to_the_feature_trace_
+    /// alongside_real_geometry` exactly, for `Surface` instead of `Curve` —
+    /// `AICAD-107`'s `is_geometry_type_ref` gate is generic over any
+    /// non-`Geometry` type reference, not curve-specific.
+    #[test]
+    fn surface_construction_stays_invisible_to_the_feature_trace_alongside_real_geometry() {
+        let source = "\
+            fn make_geometry() -> Geometry { \
+                return box(1mm, 1mm, 1mm); \
+            } \
+            fn make_surface() -> Surface { \
+                return sphere_surface( \
+                    center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                    radius = 1mm, \
+                ); \
+            } \
+            let base = make_geometry(); \
+            let profile = make_surface(); \
+            let sample = evaluate_surface(profile, 0.0, 0.0); \
+        ";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        interp.run_top_level(&lowered.program).unwrap();
+        assert_eq!(
+            interp.trace().len(),
+            1,
+            "only the real Geometry-producing box() call should be traced; sphere_surface()/\
+             evaluate_surface() must not add spurious entries"
+        );
+        assert_eq!(interp.trace()[0].op, BuiltinFnId::Box);
+    }
+
+    // --- AICAD-114: Bezier/B-spline/NURBS surface construction/evaluation ---
+
+    #[test]
+    fn bezier_surface_and_evaluate_surface_reproduce_a_known_bilinear_point() {
+        let source = "fn f() -> Length { \
+                 let s = bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+                 let e = evaluate_surface(s, 0.5, 0.5); \
+                 return e.point.z; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // z(u, v) = 10mm * u * v -> z(0.5, 0.5) = 2.5mm.
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0025);
+    }
+
+    #[test]
+    fn bspline_surface_bidegree_one_matches_the_equivalent_bezier_surface() {
+        let source = "\
+            fn bezier() -> Length { \
+                let s = bezier_surface( \
+                    control_points = [ \
+                        [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                        [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                    ], \
+                    weights = [], \
+                ); \
+                let e = evaluate_surface(s, 0.3, 0.8); \
+                return e.point.z; \
+            } \
+            fn bspline() -> Length { \
+                let s = bspline_surface( \
+                    degree_u = 1, \
+                    degree_v = 1, \
+                    control_points = [ \
+                        [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                        [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                    ], \
+                    knots_u = [0.0, 1.0], \
+                    multiplicities_u = [2, 2], \
+                    knots_v = [0.0, 1.0], \
+                    multiplicities_v = [2, 2], \
+                    weights = [], \
+                    periodic_u = false, \
+                    periodic_v = false, \
+                ); \
+                let e = evaluate_surface(s, 0.3, 0.8); \
+                return e.point.z; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let bezier_z = interp.call_by_name("bezier", vec![]).unwrap();
+        let bspline_z = interp.call_by_name("bspline", vec![]).unwrap();
+        match (bezier_z, bspline_z) {
+            (Value::Number(a), Value::Number(b)) => {
+                assert!((a.magnitude - b.magnitude).abs() < 1e-9)
+            }
+            other => panic!("expected two Numbers, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bspline_surface_rejects_periodic() {
+        let source = "fn f() -> Surface { \
+                 return bspline_surface( \
+                     degree_u = 1, \
+                     degree_v = 1, \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                     ], \
+                     knots_u = [0.0, 1.0], \
+                     multiplicities_u = [2, 2], \
+                     knots_v = [0.0, 1.0], \
+                     multiplicities_v = [2, 2], \
+                     weights = [], \
+                     periodic_u = true, \
+                     periodic_v = false, \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    #[test]
+    fn bezier_surface_rejects_a_ragged_control_net() {
+        let source = "fn f() -> Surface { \
+                 return bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E136");
+    }
+
+    // --- AICAD-115: trimmed-surface semantic model ---
+
+    #[test]
+    fn trim_surface_and_evaluate_surface_accept_inside_and_reject_outside() {
+        // `outer`'s own `radius`/`plane_surface`'s own `origin` are given in
+        // whole metres (not `mm`) specifically so their canonical magnitude
+        // matches `evaluate_surface`'s own raw (unitless) `u`/`v` arguments
+        // directly, without a unit-conversion factor to track by hand.
+        let source = "\
+            fn inside() -> Length { \
+                let base = plane_surface( \
+                    origin = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let outer = circle_curve( \
+                    center = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 10m, \
+                ); \
+                let trimmed = trim_surface(base, outer, [], 0.001mm); \
+                let e = evaluate_surface(trimmed, 0.0, 0.0); \
+                return e.point.x; \
+            } \
+            fn outside() -> Length { \
+                let base = plane_surface( \
+                    origin = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let outer = circle_curve( \
+                    center = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 10m, \
+                ); \
+                let trimmed = trim_surface(base, outer, [], 0.001mm); \
+                let e = evaluate_surface(trimmed, 20.0, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("inside", vec![]).unwrap(), 0.0);
+        let err = interp.call_by_name("outside", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn trim_surface_with_a_hole_excludes_points_inside_the_hole() {
+        let source = "\
+            fn build(u: Float) -> Length { \
+                let base = plane_surface( \
+                    origin = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                ); \
+                let outer = circle_curve( \
+                    center = Point3(x = 0m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                    radius = 10m, \
+                ); \
+                let hole = circle_curve( \
+                    center = Point3(x = 3m, y = 0m, z = 0m), \
+                    normal = Vector3(x = 0.0, y = 0.0, z = -1.0), \
+                    radius = 2m, \
+                ); \
+                let trimmed = trim_surface(base, outer, [hole], 0.001mm); \
+                let e = evaluate_surface(trimmed, u, 0.0); \
+                return e.point.x; \
+            }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        // Outside the hole (hole spans u in [1, 5]): succeeds.
+        assert_number_eq(
+            interp.call_by_name("build", vec![number(5.5)]).unwrap(),
+            5.5,
+        );
+        // Inside the hole: rejected.
+        let err = interp.call_by_name("build", vec![number(3.0)]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E137");
+    }
+
+    #[test]
+    fn trim_surface_rejects_an_unclosed_loop() {
+        let source = "fn f() -> Surface { \
+                 let base = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let outer = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 10mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 return trim_surface(base, outer, [], 0.001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E138");
+    }
+
+    #[test]
+    fn trim_surface_rejects_a_hole_with_the_wrong_orientation() {
+        let source = "fn f() -> Surface { \
+                 let base = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let outer = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 10mm, \
+                 ); \
+                 let hole = circle_curve( \
+                     center = Point3(x = 3mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 2mm, \
+                 ); \
+                 return trim_surface(base, outer, [hole], 0.001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E139");
+    }
+
+    // --- AICAD-116: bounded surface offset ---
+
+    #[test]
+    fn offset_surface_and_evaluate_surface_reproduce_the_adjusted_cylinder_radius() {
+        let source = "fn f() -> Length { \
+                 let s = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 5mm, \
+                 ); \
+                 let widened = offset_surface(s, 2mm); \
+                 let e = evaluate_surface(widened, 0.0, 0.0); \
+                 return e.point.x; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn offset_surface_rejects_a_degenerate_result() {
+        let source = "fn f() -> Surface { \
+                 let s = sphere_surface( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     radius = 5mm, \
+                 ); \
+                 return offset_surface(s, -10mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E141");
+    }
+
+    #[test]
+    fn offset_surface_rejects_an_unsupported_family() {
+        let source = "fn f() -> Surface { \
+                 let s = bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 10mm, z = 0mm)], \
+                         [Point3(x = 10mm, y = 0mm, z = 0mm), Point3(x = 10mm, y = 10mm, z = 10mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+                 return offset_surface(s, 1mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E141");
+    }
+
+    // --- AICAD-117: multi-solution geometric queries ---
+
+    #[test]
+    fn intersect_curves_finds_the_crossing_point_of_two_lines() {
+        let source = "fn f() -> Length { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 2mm, y = -1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0), \
+                 ); \
+                 let results = intersect_curves(a, b, 0.000001mm); \
+                 var count = 0; \
+                 var x = 0mm; \
+                 for r in results { \
+                     count = count + 1; \
+                     x = r.point.x; \
+                 } \
+                 if count == 1 { \
+                     return x; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.002);
+    }
+
+    #[test]
+    fn intersect_curves_of_parallel_lines_is_a_real_empty_list_not_an_error() {
+        let source = "fn f() -> Int { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = intersect_curves(a, b, 0.000001mm); \
+                 var count = 0; \
+                 for r in results { \
+                     count = count + 1; \
+                 } \
+                 return count; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn intersect_curves_of_coincident_lines_is_a_structured_error() {
+        let source = "fn f() -> List<CurveIntersectionResult> { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 3mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 return intersect_curves(a, b, 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E142");
+    }
+
+    #[test]
+    fn intersect_curve_surface_finds_where_a_line_crosses_a_plane() {
+        let source = "fn f() -> Length { \
+                 let l = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = -5mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let p = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let results = intersect_curve_surface(l, p, 0.000001mm); \
+                 var count = 0; \
+                 var z = -1mm; \
+                 for r in results { \
+                     count = count + 1; \
+                     z = r.point.z; \
+                 } \
+                 if count == 1 { \
+                     return z; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn intersect_surfaces_of_two_planes_returns_a_usable_line_curve() {
+        let source = "fn f() -> Length { \
+                 let a = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let b = plane_surface( \
+                     origin = Point3(x = 5mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = intersect_surfaces(a, b, 0.000001mm); \
+                 var count = 0; \
+                 var x = 0mm; \
+                 for c in results { \
+                     count = count + 1; \
+                     let e = evaluate_curve(c, 0.0); \
+                     x = e.point.x; \
+                 } \
+                 if count == 1 { \
+                     return x; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.005);
+    }
+
+    #[test]
+    fn intersect_surfaces_of_unsupported_families_is_a_structured_error() {
+        let source = "fn f() -> List<Curve> { \
+                 let a = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 2mm, \
+                 ); \
+                 let b = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), \
+                     radius = 2mm, \
+                 ); \
+                 return intersect_surfaces(a, b, 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E142");
+    }
+
+    #[test]
+    fn project_point_to_surface_returns_the_orthogonal_foot_on_a_plane() {
+        let source = "fn f() -> Length { \
+                 let p = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let results = project_point_to_surface( \
+                     p, Point3(x = 3mm, y = 4mm, z = 7mm), \
+                 ); \
+                 for r in results { \
+                     return r.distance; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn distance_curve_curve_between_two_parallel_lines() {
+        let source = "fn f() -> Length { \
+                 let a = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let b = line_curve( \
+                     origin = Point3(x = 0mm, y = 3mm, z = 4mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let results = distance_curve_curve(a, b); \
+                 for r in results { \
+                     return r.distance; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.005);
+    }
+
+    #[test]
+    fn distance_curve_surface_between_a_line_and_a_sphere_it_misses() {
+        let source = "fn f() -> Length { \
+                 let l = line_curve( \
+                     origin = Point3(x = -10mm, y = 10mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let s = sphere_surface( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     radius = 3mm, \
+                 ); \
+                 let results = distance_curve_surface(l, s); \
+                 for r in results { \
+                     return r.distance; \
+                 } \
+                 return -1mm; \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_number_eq(interp.call_by_name("f", vec![]).unwrap(), 0.007);
+    }
+
+    #[test]
+    fn distance_surface_surface_between_two_unbounded_families_is_a_structured_error() {
+        let source = "fn f() -> List<DistanceResult> { \
+                 let a = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let b = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 5mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 2mm, \
+                 ); \
+                 return distance_surface_surface(a, b); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E142");
+    }
+
+    // --- AICAD-119: general topology construction ---
+
+    fn assert_is_geometry(value: Value) {
+        assert!(
+            matches!(value, Value::Geometry(_)),
+            "expected Value::Geometry, got {value:?}"
+        );
+    }
+
+    #[test]
+    fn make_vertex_builds_a_geometry_value_from_a_point3() {
+        let source = "fn f() -> Geometry { \
+                 return make_vertex(Point3(x = 1mm, y = 2mm, z = 3mm)); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_a_trimmed_line_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let c = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 let bounded = trim_curve(c, 0.0, 0.01); \
+                 return make_edge(bounded); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_an_untrimmed_line_is_unsupported() {
+        let source = "fn f() -> Geometry { \
+                 let c = line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E143");
+    }
+
+    #[test]
+    fn make_edge_from_an_arc_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let c = arc_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                     start_angle = 0deg, \
+                     end_angle = 90deg, \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_a_full_circle_builds_a_closed_wire_geometry_value() {
+        // A full circle has no natural single start/end point for OCCT's
+        // own edge model, so `make_edge` produces a closed wire here
+        // rather than an open edge -- disclosed in `BuiltinFnId::MakeEdge`'s
+        // own doc comment, not silently pretended uniform with the Arc/
+        // trimmed-Line cases above.
+        let source = "fn f() -> Geometry { \
+                 let c = circle_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 1mm, \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_an_ellipse_is_unsupported() {
+        let source = "fn f() -> Geometry { \
+                 let c = ellipse_curve( \
+                     center = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     major_direction = Vector3(x = 1.0, y = 0.0, z = 0.0), \
+                     major_radius = 2mm, \
+                     minor_radius = 1mm, \
+                 ); \
+                 return make_edge(c); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E143");
+    }
+
+    #[test]
+    fn make_wire_then_make_face_builds_a_planar_face_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 return make_face(wire); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_face_on_surface_builds_a_face_on_a_cylinder() {
+        let source = "fn f() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0.001mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0.001mm, y = 0mm, z = 0.001mm), \
+                     direction = Vector3(x = 0.0, y = 0.0, z = -1.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0.001mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 let cyl = cylinder_surface( \
+                     axis = Axis3(origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                                   direction = Vector3(x = 0.0, y = 0.0, z = 1.0)), \
+                     radius = 5mm, \
+                 ); \
+                 return make_face_on_surface(cyl, wire, []); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_face_on_surface_rejects_a_bezier_surface() {
+        let source = "fn f() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0]); \
+                 let bez = bezier_surface( \
+                     control_points = [ \
+                         [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 1mm, z = 0mm)], \
+                         [Point3(x = 1mm, y = 0mm, z = 0mm), Point3(x = 1mm, y = 1mm, z = 0mm)], \
+                     ], \
+                     weights = [], \
+                 ); \
+                 return make_face_on_surface(bez, wire, []); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E143");
+    }
+
+    #[test]
+    fn make_shell_make_solid_and_compound_build_geometry_values() {
+        let source = "fn build_shell() -> Geometry { \
+                 let v = make_vertex(Point3(x = 0mm, y = 0mm, z = 0mm)); \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 let face = make_face(wire); \
+                 let sh = make_shell([face]); \
+                 let c = compound([v, sh]); \
+                 return c; \
+             } \
+             fn solid_from_open_shell() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 let face = make_face(wire); \
+                 let sh = make_shell([face]); \
+                 return make_solid(sh, []); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("build_shell", vec![]).unwrap());
+        // `make_solid` itself succeeds structurally even from a single-face
+        // (open) shell -- `Shape::make_solid`'s own documented contract;
+        // validity is a separate, later evidence question (`is_valid`),
+        // not this call's own success.
+        assert_is_geometry(
+            interp
+                .call_by_name("solid_from_open_shell", vec![])
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn make_shell_rejects_an_empty_face_list() {
+        let source = "fn f() -> Geometry { return make_shell([]); }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "GEOM-E004");
+    }
+
+    #[test]
+    fn compound_rejects_an_empty_shape_list() {
+        let source = "fn f() -> Geometry { return compound([]); }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "GEOM-E004");
+    }
+
+    // --- AICAD-120: sewing/healing ---
+
+    #[test]
+    fn sew_of_a_box_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let b = box(dx = 1mm, dy = 1mm, dz = 1mm); \
+                 return sew([b], 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn sew_rejects_an_empty_shape_list() {
+        let source = "fn f() -> Geometry { return sew([], 0.000001mm); }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "GEOM-E004");
+    }
+
+    #[test]
+    fn heal_of_a_box_builds_a_geometry_value() {
+        let source = "fn f() -> Geometry { \
+                 let b = box(dx = 1mm, dy = 1mm, dz = 1mm); \
+                 return heal(b, 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    // --- AICAD-121: deterministic topology traversal/inspection --------
+
+    #[test]
+    fn topology_face_at_edge_at_vertex_at_and_adjacent_face_at_build_geometry_values() {
+        let sources = [
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return topology_face_at(b, 0); }",
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return topology_edge_at(b, 0); }",
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return topology_vertex_at(b, 0); }",
+            "fn f() -> Geometry { let b = box(1mm, 1mm, 1mm); return adjacent_face_at(b, 0, 0); }",
+        ];
+        for source in sources {
+            let lowered = compiled(source);
+            let mut interp =
+                Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+            assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+        }
+    }
+
+    #[test]
+    fn topology_kind_of_returns_the_executors_real_string() {
+        let source = "fn f() -> String { let b = box(1mm, 1mm, 1mm); return topology_kind_of(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Text("Solid".to_string()));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Str("Solid".to_string())
+        );
+    }
+
+    #[test]
+    fn face_count_edge_count_vertex_count_wire_count_shell_count_and_solid_count_return_plain_numbers()
+     {
+        let cases = [
+            ("face_count", 6.0),
+            ("edge_count", 12.0),
+            ("vertex_count", 8.0),
+            ("wire_count", 6.0),
+            ("shell_count", 1.0),
+            ("solid_count", 1.0),
+        ];
+        for (builtin, expected) in cases {
+            let source =
+                format!("fn f() -> Int {{ let b = box(1mm, 1mm, 1mm); return {builtin}(b); }}");
+            let lowered = compiled(&source);
+            let executor = FakeQueryExecutor::returning(QueryOutcome::Number(expected));
+            let mut interp =
+                Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", &source)
+                    .with_query_executor(&executor);
+            assert_eq!(
+                interp.call_by_name("f", vec![]).unwrap(),
+                number(expected),
+                "builtin {builtin} did not return the expected plain count"
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_face_count_returns_a_plain_number() {
+        let source = "fn f() -> Int { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 return adjacent_face_count(b, 0); \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Number(2.0));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_eq!(interp.call_by_name("f", vec![]).unwrap(), number(2.0));
+    }
+
+    #[test]
+    fn is_outer_wire_is_same_entity_and_is_forward_oriented_return_the_executors_real_bool() {
+        let source_outer = "fn f() -> Bool { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let face = topology_face_at(b, 0); \
+                 let wire = topology_edge_at(b, 0); \
+                 return is_outer_wire(face, wire); \
+             }";
+        let lowered = compiled(source_outer);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp = Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source_outer,
+        )
+        .with_query_executor(&executor);
+        assert_eq!(interp.call_by_name("f", vec![]).unwrap(), Value::Bool(true));
+
+        let source_same = "fn f() -> Bool { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let f0 = topology_face_at(b, 0); \
+                 let f1 = topology_face_at(b, 0); \
+                 return is_same_entity(f0, f1); \
+             }";
+        let lowered = compiled(source_same);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(false));
+        let mut interp = Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source_same,
+        )
+        .with_query_executor(&executor);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Bool(false)
+        );
+
+        let source_forward = "fn f() -> Bool { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 return is_forward_oriented(b); \
+             }";
+        let lowered = compiled(source_forward);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Bool(true));
+        let mut interp = Interpreter::new(
+            &lowered.program,
+            &lowered.bindings,
+            "test.aicad",
+            source_forward,
+        )
+        .with_query_executor(&executor);
+        assert_eq!(interp.call_by_name("f", vec![]).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn vertex_point_returns_a_real_point3_struct() {
+        let source = "fn f() -> Point3 { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let v = topology_vertex_at(b, 0); \
+                 return vertex_point(v); \
+             }";
+        let lowered = compiled(source);
+        let executor =
+            FakeQueryExecutor::returning(QueryOutcome::Point(Point3::new(0.001, 0.002, 0.003)));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        match interp.call_by_name("f", vec![]).unwrap() {
+            Value::Struct { fields, .. } => {
+                assert_eq!(fields.len(), 3);
+                assert_number_eq(fields[0].1.clone(), 0.001);
+                assert_number_eq(fields[1].1.clone(), 0.002);
+                assert_number_eq(fields[2].1.clone(), 0.003);
+            }
+            other => panic!("expected Value::Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_point_returns_the_executors_real_classification_string() {
+        let source = "fn f() -> String { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 return classify_point(b, Point3(x = 0.5mm, y = 0.5mm, z = 0.5mm), 0.000001mm); \
+             }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(QueryOutcome::Text("Inside".to_string()));
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Str("Inside".to_string())
+        );
+    }
+
+    #[test]
+    fn topology_kind_of_without_a_configured_executor_fails_cleanly() {
+        let source = "fn f() -> String { let b = box(1mm, 1mm, 1mm); return topology_kind_of(b); }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E130");
+    }
+
+    // --- AICAD-122: controlled raw/unsafe geometry tier -----------------
+
+    fn fake_classified_outcome() -> QueryOutcome {
+        QueryOutcome::Classified(ClassifiedShape::new(
+            TopologyKind::Solid,
+            KernelShape::from_id(KernelId {
+                context_id: 1,
+                slot: 0,
+                generation: 1,
+            }),
+        ))
+    }
+
+    #[test]
+    fn enter_raw_then_raw_topology_kind_of_round_trips_within_one_epoch() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let source = "fn f() -> String { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let r = enter_raw(b); \
+                 return raw_topology_kind_of(r); \
+             }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor)
+                .with_epoch_counter(&counter);
+        assert_eq!(
+            interp.call_by_name("f", vec![]).unwrap(),
+            Value::Str("Solid".to_string())
+        );
+    }
+
+    #[test]
+    fn enter_raw_without_a_configured_epoch_counter_fails_cleanly() {
+        let source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered = compiled(source);
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E144");
+    }
+
+    #[test]
+    fn enter_raw_without_a_configured_executor_fails_cleanly() {
+        let source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source);
+        let err = interp.call_by_name("f", vec![]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E130");
+    }
+
+    /// D22's "wrong context" case: a `Raw` handle minted by one session's
+    /// own `EpochCounter` is rejected outright by a *different* session's
+    /// counter, even though neither counter has ever advanced -- `Epoch`
+    /// equality is tagged with counter identity, not just generation
+    /// number (`cad_references::raw_handle`'s own established invariant,
+    /// re-proven here through `raw_topology_kind_of`'s real dispatch
+    /// wiring rather than only the underlying `RawHandle` primitive).
+    /// `call_by_name`'s own `Vec<Value>` argument list is what lets this
+    /// test inject a real `Value::Raw` produced by one interpreter run
+    /// directly into a second, independent run -- exactly the only way
+    /// two sessions could ever share a value in practice (never through
+    /// `.aicad` source itself, which has no way to persist a value across
+    /// separate top-level program runs).
+    #[test]
+    fn raw_topology_kind_of_rejects_a_handle_minted_by_a_different_epoch_counter() {
+        let counter_a = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let enter_source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered_enter = compiled(enter_source);
+        let mut interp_a = Interpreter::new(
+            &lowered_enter.program,
+            &lowered_enter.bindings,
+            "test.aicad",
+            enter_source,
+        )
+        .with_query_executor(&executor)
+        .with_epoch_counter(&counter_a);
+        let raw_value = interp_a.call_by_name("f", vec![]).unwrap();
+
+        let counter_b = EpochCounter::new();
+        let check_source = "fn f(r: Raw) -> String { return raw_topology_kind_of(r); }";
+        let lowered_check = compiled(check_source);
+        let mut interp_b = Interpreter::new(
+            &lowered_check.program,
+            &lowered_check.bindings,
+            "test.aicad",
+            check_source,
+        )
+        .with_epoch_counter(&counter_b);
+        let err = interp_b.call_by_name("f", vec![raw_value]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E145");
+    }
+
+    /// D22's "stale/dropped-and-rebuilt-owner" case: a `Raw` handle
+    /// minted by a session's own counter is rejected once *that same*
+    /// counter advances (a real regeneration round, mirroring
+    /// `ParametricBuildSession::rebuild`'s own `epoch.advance()` call) --
+    /// distinct from the previous test's "different counter identity"
+    /// case, this one proves the *generation* half of `Epoch` equality.
+    #[test]
+    fn raw_topology_kind_of_rejects_a_handle_after_its_own_counter_advances() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let enter_source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered_enter = compiled(enter_source);
+        let mut interp = Interpreter::new(
+            &lowered_enter.program,
+            &lowered_enter.bindings,
+            "test.aicad",
+            enter_source,
+        )
+        .with_query_executor(&executor)
+        .with_epoch_counter(&counter);
+        let raw_value = interp.call_by_name("f", vec![]).unwrap();
+
+        counter.advance();
+
+        let check_source = "fn f(r: Raw) -> String { return raw_topology_kind_of(r); }";
+        let lowered_check = compiled(check_source);
+        let mut interp2 = Interpreter::new(
+            &lowered_check.program,
+            &lowered_check.bindings,
+            "test.aicad",
+            check_source,
+        )
+        .with_epoch_counter(&counter);
+        let err = interp2.call_by_name("f", vec![raw_value]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E145");
+    }
+
+    // --- AICAD-124: explicit raw-to-safe adoption ---
+
+    #[test]
+    fn adopt_pushes_an_adopt_raw_node_carrying_the_epoch_checked_handle() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        let source = "fn f() -> Geometry { \
+                 let b = box(1mm, 1mm, 1mm); \
+                 let r = enter_raw(b); \
+                 return adopt(r); \
+             }";
+        let lowered = compiled(source);
+        let mut interp =
+            Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", source)
+                .with_query_executor(&executor)
+                .with_epoch_counter(&counter);
+        let value = interp.call_by_name("f", vec![]).unwrap();
+        let geom_id = match value {
+            Value::Geometry(id) => id,
+            other => panic!("expected Value::Geometry, got {other:?}"),
+        };
+        let node = interp
+            .geometry_graph()
+            .get(geom_id)
+            .expect("adopt's own node must exist in the graph");
+        match &node.kind {
+            cad_geometry_api::GeometryNodeKind::Construct(
+                cad_geometry_api::GeometryOp::AdoptRaw(handle),
+            ) => {
+                let expected = match fake_classified_outcome() {
+                    QueryOutcome::Classified(c) => c.shape,
+                    _ => unreachable!(),
+                };
+                assert_eq!(*handle, expected);
+            }
+            other => panic!("expected GeometryOp::AdoptRaw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adopt_without_a_configured_epoch_counter_fails_cleanly() {
+        let counter = EpochCounter::new();
+        let executor = FakeQueryExecutor::returning(fake_classified_outcome());
+        // `enter_raw` itself needs a configured counter to mint `r` in the
+        // first place -- isolate `adopt`'s own check by minting `r` in one
+        // interpreter (with a counter) and calling `adopt` in a second,
+        // counter-less one, mirroring `raw_topology_kind_of`'s own
+        // cross-interpreter test pattern.
+        let enter_source = "fn f() -> Raw { let b = box(1mm, 1mm, 1mm); return enter_raw(b); }";
+        let lowered_enter = compiled(enter_source);
+        let mut interp_enter = Interpreter::new(
+            &lowered_enter.program,
+            &lowered_enter.bindings,
+            "test.aicad",
+            enter_source,
+        )
+        .with_query_executor(&executor)
+        .with_epoch_counter(&counter);
+        let raw_value = interp_enter.call_by_name("f", vec![]).unwrap();
+
+        let adopt_source = "fn f(r: Raw) -> Geometry { return adopt(r); }";
+        let lowered_adopt = compiled(adopt_source);
+        let mut interp_adopt = Interpreter::new(
+            &lowered_adopt.program,
+            &lowered_adopt.bindings,
+            "test.aicad",
+            adopt_source,
+        );
+        let err = interp_adopt.call_by_name("f", vec![raw_value]).unwrap_err();
+        assert_eq!(diag_code(&err), "RUNTIME-E144");
     }
 }

@@ -136,6 +136,22 @@ foreach(_lib IN LISTS OCCT_STEP_LIBS)
   endif()
 endforeach()
 
+# TKShHealing provides both BRepBuilderAPI_Sewing and ShapeFix_Shape
+# (AICAD-120: sewing/healing) -- confirmed empirically via `nm -D` symbol
+# lookup across every installed TK*.so, not guessed from documentation.
+set(OCCT_HEALING_LIBS
+  TKShHealing
+)
+
+foreach(_lib IN LISTS OCCT_HEALING_LIBS)
+  if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
+    message(FATAL_ERROR
+      "OCCT discovery: required module library '${_lib}' (for sewing/"
+      "healing, AICAD-120) is not among OpenCASCADE_LIBRARIES reported by "
+      "the discovered installation (${OpenCASCADE_LIBRARIES}).")
+  endif()
+endforeach()
+
 foreach(_lib IN LISTS OCCT_PROBE_LIBS)
   if(NOT _lib IN_LIST OpenCASCADE_LIBRARIES)
     message(FATAL_ERROR
@@ -163,7 +179,7 @@ add_library(aicad_occt_bridge SHARED src/aicad_occt_bridge.cpp)
 target_include_directories(aicad_occt_bridge PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(aicad_occt_bridge SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 target_link_directories(aicad_occt_bridge PRIVATE ${OpenCASCADE_LIBRARY_DIR})
-target_link_libraries(aicad_occt_bridge PRIVATE ${OCCT_PROBE_LIBS} ${OCCT_SWEEP_LOFT_LIBS} ${OCCT_BOOLEAN_LIBS} ${OCCT_FILLET_LIBS} ${OCCT_MESH_LIBS} ${OCCT_STEP_LIBS} Threads::Threads)
+target_link_libraries(aicad_occt_bridge PRIVATE ${OCCT_PROBE_LIBS} ${OCCT_SWEEP_LOFT_LIBS} ${OCCT_BOOLEAN_LIBS} ${OCCT_FILLET_LIBS} ${OCCT_MESH_LIBS} ${OCCT_STEP_LIBS} ${OCCT_HEALING_LIBS} Threads::Threads)
 
 add_executable(abi_boundary_test tests/abi_boundary_test.cpp)
 target_include_directories(abi_boundary_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

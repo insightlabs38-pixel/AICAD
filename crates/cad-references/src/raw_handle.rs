@@ -149,7 +149,13 @@ impl EpochCounter {
 /// silently returning topology that may no longer exist or mean the same
 /// thing, matching D22's "explicitly invalid once its owning context/epoch
 /// is invalid."
-#[derive(Debug, Clone, Copy)]
+///
+/// `PartialEq`/`Eq` (added by `AICAD-122`, bounded on `T: PartialEq`/`Eq`)
+/// compare both the payload and the minting epoch -- two handles minted in
+/// different epochs are never equal even with identical payloads, matching
+/// this type's own "epoch-bound" identity (a source-level `Value::Raw`
+/// needs ordinary value equality to exist at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RawHandle<T> {
     payload: T,
     epoch: Epoch,

@@ -10,6 +10,7 @@ publish.workspace = true
 cad-ast = { path = "../cad-ast" }
 cad-diagnostics = { path = "../cad-diagnostics" }
 cad-hir = { path = "../cad-hir" }
+cad-runtime = { path = "../cad-runtime" }
 
 [dev-dependencies]
 cad-parser = { path = "../cad-parser" }

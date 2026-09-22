@@ -15,6 +15,7 @@
 mod arithmetic;
 mod dimension_vector;
 mod registry;
+mod tolerance;
 
 pub use arithmetic::{
     ArithmeticOp, DimensionalArithmeticError, OperandType, check_binary_arithmetic,
@@ -25,3 +26,4 @@ pub use registry::{
     UNITS, UnitConversionError, UnitDef, convert_absolute, convert_delta, from_canonical_absolute,
     from_canonical_delta, lookup, lookup_any, to_canonical_absolute, to_canonical_delta,
 };
+pub use tolerance::{ApproximationTolerance, ConstructionTolerance, ToleranceError};

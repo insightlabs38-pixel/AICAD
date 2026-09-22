@@ -1478,3 +1478,77 @@ Stage 0 work but should stay visible:
   either is a real (if small) design choice this sweep should surface,
   not quietly re-decide by leaving the current silent-truncation
   behavior as an unexamined default.
+
+  **Resolved by `AICAD-101`:** chose unbounded recursive depth (the first
+  alternative above), not a diagnostic-rejected bound. `Interpreter::
+  eval_part_body` and `cad-cli`'s `collect_geometry_globals` (the two
+  call sites actually capped at one level by a non-recursive loop) now
+  recurse into a nested `HirItem::Part` to any depth; `FeatureGraph::
+  build_items`, `collect_scoped_bindings`, and `lower_items_scoped` were
+  already self-recursive in code (their "one level" doc comments were
+  incorrect, not their behavior) and needed only doc corrections plus
+  test coverage. See `project/DECISION_LOG.md#DL-36` and
+  `project/reports/AICAD-101.md` for the full evidence.
+
+- **`make_edge`/`make_face_on_surface` topology construction only bridges
+  the original Stage-2 analytic curve/surface families into real kernel
+  B-rep topology — `AICAD-110`'s Bezier/B-spline curves, `AICAD-114`'s
+  Bezier/B-spline surfaces, and `AICAD-115`'s trimmed surfaces (even of
+  an analytic base) are all rejected with an explicit
+  `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` diagnostic** (found while building
+  `AICAD-127`'s own difficult-freeform corpus). `crates/cad-runtime/
+  src/interp.rs`'s `curve_to_edge_op` only matches `Circle`/`Arc`/a
+  trimmed `Line`; its own `surface_to_surface_spec` only matches
+  `Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`. Every rejection is a clean,
+  immediately-surfaced diagnostic, never a crash/hang/silent-wrong
+  result, so this is not a fail-closed-safety defect — but it does mean
+  the docs/plan/16 §6 target categories that fundamentally need a real
+  face or solid (not just an evaluable surface value) are unreachable
+  through the current public `.aicad` surface for anything beyond the
+  five analytic quadric families. `AICAD-127`'s own corpus
+  (`project/benchmarks/stage5_freeform_corpus/README.md`) proves the
+  affected freeform geometry's exact value-level math instead of a
+  face/solid it cannot yet construct, and turns the gap itself into
+  adversarial evidence (`held_out/06`/`07`) that the rejection is
+  explicit. Closing this gap is ordinary future implementation work
+  (wiring the two dispatch functions to OCCT's own matching
+  `Geom_BSplineCurve`/`Geom_BSplineSurface`/pcurve-trim constructors), not
+  an architecture decision — recorded here as a real, disclosed scope gap
+  so a later task does not rediscover it from scratch.
+
+- **`is_geometry_type`/`is_geometry_type_ref`'s own "geometry-typed
+  parameter" check does not recognize `List<Geometry>`, only a bare
+  `Geometry`** (found while building `AICAD-129`'s own bounded
+  inspectability fixture — `crates/cad-cli/tests/
+  stage5_inspectability_fixture.rs`). `cad_feature_graph::graph::
+  Builder::resolve_geometry_expr`'s own static classification
+  (`crates/cad-feature-graph/src/graph.rs`) and `cad_runtime::interp::
+  Interpreter::call`'s own identical dynamic-trace classification
+  (`crates/cad-runtime/src/interp.rs`) both gate on this same check, so
+  every `RuntimeBuiltin` whose signature takes `List<Geometry>`
+  (`make_wire`'s `edges`, `make_shell`'s `faces`, `compound`'s `shapes`,
+  `sew`'s first argument, `merge_faces`'/`remove_face`'s `face_indices`
+  is `List<Int>` and unaffected, but their own `raw` argument's sibling
+  list-of-geometry patterns elsewhere would be) never records that
+  parameter's own list *elements* as `geometry_inputs` edges in either
+  `FeatureGraph`/`TraceFeatureGraph`'s own public dependency-graph API —
+  each element's own reference is still captured as an ordinary
+  `parameters`/`binding_refs` entry (via `provenance_of`), just not as a
+  `geometry_inputs` graph edge specifically. **What this does and does
+  not establish:** `AICAD-129`'s own fixture confirms only the
+  introspection-API-level fact above (`square`'s own `geometry_inputs` is
+  empty for a `make_wire([bottom, right, top, left])` call, while
+  `square_face`'s own single-`Geometry`-parameter `geometry_inputs`
+  correctly names `square`) — it does **not** confirm or rule out whether
+  `TraceFeatureGraph::dirty_set`'s own real incremental-rebuild dirty-
+  propagation is still correct for this case via the separate
+  `binding_refs`/`provenance_of` resolution path (plausible, since that
+  path is populated independently, but not verified by this fixture,
+  which exercises neither `dirty_set` nor `ParametricBuildSession::
+  rebuild` for a `List<Geometry>`-consuming node). A future task should
+  either add that specific incremental-rebuild regression (a `make_wire`/
+  `make_shell`/`compound`/`sew` node, dirty an upstream edge/face's own
+  parameter, rebuild, confirm the downstream node is/is not correctly
+  marked dirty) or extend `is_geometry_type`/`is_geometry_type_ref` to
+  recognize `List<Geometry>` and make `geometry_inputs` itself complete —
+  recorded here rather than left an unstated assumption either way.

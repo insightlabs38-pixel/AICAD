@@ -81,6 +81,7 @@ dependencies = [
  "cad-diagnostics",
  "cad-hir",
  "cad-parser",
+ "cad-runtime",
 ]
 
 [[package]]
@@ -90,6 +91,7 @@ dependencies = [
  "cad-ast",
  "cad-diagnostics",
  "cad-kernel-api",
+ "cad-references",
  "cad-types",
  "cad-units",
 ]
@@ -170,7 +172,10 @@ version = "0.0.0"
 name = "cad-query"
 version = "0.0.0"
 dependencies = [
+ "cad-ast",
  "cad-diagnostics",
+ "cad-geometry-api",
+ "cad-geometry-runtime",
  "cad-kernel-api",
  "cad-occt-bridge",
  "cad-references",
@@ -220,4 +225,5 @@ version = "0.0.0"
 dependencies = [
  "cad-kernel-api",
  "cad-occt-bridge",
+ "cad-units",
 ]

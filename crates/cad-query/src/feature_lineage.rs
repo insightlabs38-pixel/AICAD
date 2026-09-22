@@ -43,8 +43,10 @@
 //! classification is computable from real evidence against a real build,
 //! per `AGENTS.md`'s evidence rule.
 
+use cad_geometry_api::OperationReport;
+use cad_kernel_api::topology::ClassifiedShape;
 use cad_kernel_api::{KernelError, KernelResult};
-use cad_occt_bridge::{Lineage, Shape};
+use cad_occt_bridge::{Lineage, OcctContext, Shape};
 use cad_references::EntityKind;
 
 /// The state a **prior** (pre-operation) entity is classified into,
@@ -251,6 +253,260 @@ pub fn classify_feature_lineage<'ctx>(
     })
 }
 
+/// [`classify_feature_lineage`]'s own raw-tier counterpart (`AICAD-125`):
+/// classifies `prior_entities` and `result_shape`'s own current
+/// faces/edges into the same six-state model, sourced from a raw-edit
+/// chain's own real `OperationReport<ClassifiedShape>` evidence
+/// (`AICAD-122`-`124`, propagated across the whole chain by
+/// `cad_geometry_runtime::raw_lineage::RawLineageIndex`) instead of a live
+/// `cad_occt_bridge::Lineage` query — a raw edit chain has no native OCCT
+/// history object of its own once it crosses back into the safe tier via
+/// `adopt`, so there is nothing for a `Lineage`-backed
+/// [`classify_feature_lineage`] call to query.
+///
+/// # Algorithm
+///
+/// For each `prior_entities` member, walks it forward through `steps` in
+/// order: at each step, if the entity's own *current* live shape matches
+/// (via [`Shape::is_same`]) an entry in that step's own `deleted` list, the
+/// entity's own lineage strand ends there (no successor); a `modified`/
+/// `split`/`merged` match replaces the current shape with its own
+/// evidenced successor(s); no match at all carries the current shape
+/// forward unchanged into the next step. An entity never mentioned by any
+/// step is `Unchanged` (matching [`classify_feature_lineage`]'s own
+/// identical convention: proven by finding itself, unaltered, among
+/// `result_shape`'s own current entities, not merely by the absence of
+/// evidence). One caveat this sharing does not have: an entity from
+/// `prior_entities` that is genuinely outside the scope of every step
+/// `steps` records evidence for (e.g. a face of the chain's own origin
+/// shape that no raw edit in the chain ever selected, because a
+/// `merge_faces`-shaped step only ever narrows to the faces it was asked
+/// to merge, never the whole shape) legitimately classifies `Unchanged`
+/// with **zero** successors in `result_shape` — honest ("this entity was
+/// never part of what this chain's own adopted result narrowed down to"),
+/// never a fabricated match.
+///
+/// `ctx` resolves every step's own [`ClassifiedShape`] payload back into a
+/// live, comparable `Shape<'ctx>` (`cad_occt_bridge::Shape::resolve`) —
+/// every resolve failure is a real [`FeatureLineageError::Kernel`], never
+/// silently skipped, since a step's own just-produced evidence handle
+/// failing to resolve would itself be a real bug in the raw tier, not a
+/// legitimate "no evidence" outcome.
+pub fn classify_raw_edit_lineage<'ctx>(
+    ctx: &'ctx OcctContext,
+    kind: EntityKind,
+    prior_entities: Vec<Shape<'ctx>>,
+    result_shape: &Shape<'ctx>,
+    steps: &[OperationReport<ClassifiedShape>],
+) -> LResult<FeatureLineageReport<'ctx>> {
+    let results = enumerate(kind, result_shape)?;
+    let resolved_steps: Vec<ResolvedStep<'ctx>> = steps
+        .iter()
+        .map(|step| resolve_step(ctx, step))
+        .collect::<LResult<_>>()?;
+
+    let mut prior_records: Vec<PriorEntityRecord<'ctx>> = Vec::with_capacity(prior_entities.len());
+    let mut result_predecessors: Vec<Vec<usize>> = vec![Vec::new(); results.len()];
+
+    for (prior_index, entity) in prior_entities.into_iter().enumerate() {
+        let (deleted, successors) = walk_raw_chain(&entity, &resolved_steps)?;
+
+        let state = if deleted {
+            PriorEntityState::Deleted
+        } else if successors.is_empty() {
+            PriorEntityState::Unchanged
+        } else if successors.len() == 1 {
+            PriorEntityState::Modified
+        } else {
+            PriorEntityState::Split
+        };
+
+        let mut successor_indices = Vec::new();
+        match state {
+            PriorEntityState::Deleted => {}
+            PriorEntityState::Unchanged => {
+                successor_indices.extend(matching_indices(&entity, &results)?);
+            }
+            PriorEntityState::Modified | PriorEntityState::Split => {
+                for successor in &successors {
+                    successor_indices.extend(matching_indices(successor, &results)?);
+                }
+                successor_indices.sort_unstable();
+                successor_indices.dedup();
+            }
+        }
+
+        for &result_index in &successor_indices {
+            result_predecessors[result_index].push(prior_index);
+        }
+
+        prior_records.push(PriorEntityRecord {
+            entity,
+            state,
+            successors: successor_indices,
+        });
+    }
+
+    let result_records = results
+        .into_iter()
+        .zip(result_predecessors)
+        .map(|(entity, predecessors)| {
+            let origin = match predecessors.len() {
+                0 => Some(ResultEntityOrigin::New),
+                1 => None,
+                _ => Some(ResultEntityOrigin::Merged),
+            };
+            ResultEntityRecord {
+                entity,
+                origin,
+                predecessors,
+            }
+        })
+        .collect();
+
+    Ok(FeatureLineageReport {
+        prior: prior_records,
+        results: result_records,
+    })
+}
+
+/// One raw-edit step's own [`OperationReport`], with every
+/// [`ClassifiedShape`] payload already resolved into a live, comparable
+/// `Shape<'ctx>` — see [`classify_raw_edit_lineage`]'s own doc comment.
+struct ResolvedStep<'ctx> {
+    deleted: Vec<Shape<'ctx>>,
+    modified: Vec<(Shape<'ctx>, Shape<'ctx>)>,
+    split: Vec<(Shape<'ctx>, Vec<Shape<'ctx>>)>,
+    merged: Vec<(Vec<Shape<'ctx>>, Shape<'ctx>)>,
+}
+
+fn resolve_step<'ctx>(
+    ctx: &'ctx OcctContext,
+    step: &OperationReport<ClassifiedShape>,
+) -> LResult<ResolvedStep<'ctx>> {
+    let resolve = |classified: &ClassifiedShape| -> LResult<Shape<'ctx>> {
+        Shape::resolve(ctx, classified.shape).map_err(FeatureLineageError::from)
+    };
+    Ok(ResolvedStep {
+        deleted: step.deleted.iter().map(resolve).collect::<LResult<_>>()?,
+        modified: step
+            .modified
+            .iter()
+            .map(|(old, new)| Ok((resolve(old)?, resolve(new)?)))
+            .collect::<LResult<_>>()?,
+        split: step
+            .split
+            .iter()
+            .map(|(old, pieces)| {
+                Ok((
+                    resolve(old)?,
+                    pieces.iter().map(resolve).collect::<LResult<_>>()?,
+                ))
+            })
+            .collect::<LResult<_>>()?,
+        merged: step
+            .merged
+            .iter()
+            .map(|(olds, result)| {
+                Ok((
+                    olds.iter().map(resolve).collect::<LResult<_>>()?,
+                    resolve(result)?,
+                ))
+            })
+            .collect::<LResult<_>>()?,
+    })
+}
+
+/// Walks `start` forward through `steps` in order — see
+/// [`classify_raw_edit_lineage`]'s own doc comment for the algorithm.
+/// Returns `(true, [])` if `start`'s own lineage strand was deleted at any
+/// step (whether directly, or because every one of its own successors was
+/// itself later deleted); `(false, [])` if `start` was never mentioned by
+/// any step at all (the `Unchanged` case); `(false, successors)` otherwise
+/// (one entry: `Modified`; two or more: `Split`/collapsed-into-a-shared-
+/// merge-result, both already meaning the same "more than one surviving
+/// counterpart" to the caller).
+fn walk_raw_chain<'ctx>(
+    start: &Shape<'ctx>,
+    steps: &[ResolvedStep<'ctx>],
+) -> LResult<(bool, Vec<Shape<'ctx>>)> {
+    let mut current: Vec<Shape<'ctx>> = vec![start.duplicate().map_err(FeatureLineageError::from)?];
+    let mut touched = false;
+
+    for step in steps {
+        let mut next: Vec<Shape<'ctx>> = Vec::new();
+        for candidate in &current {
+            if step
+                .deleted
+                .iter()
+                .any(|d| d.is_same(candidate).unwrap_or(false))
+            {
+                touched = true;
+                continue;
+            }
+            if let Some((_, new)) = step
+                .modified
+                .iter()
+                .find(|(old, _)| old.is_same(candidate).unwrap_or(false))
+            {
+                next.push(new.duplicate().map_err(FeatureLineageError::from)?);
+                touched = true;
+                continue;
+            }
+            if let Some((_, pieces)) = step
+                .split
+                .iter()
+                .find(|(old, _)| old.is_same(candidate).unwrap_or(false))
+            {
+                for piece in pieces {
+                    next.push(piece.duplicate().map_err(FeatureLineageError::from)?);
+                }
+                touched = true;
+                continue;
+            }
+            if let Some((_, merged_result)) = step
+                .merged
+                .iter()
+                .find(|(olds, _)| olds.iter().any(|o| o.is_same(candidate).unwrap_or(false)))
+            {
+                next.push(
+                    merged_result
+                        .duplicate()
+                        .map_err(FeatureLineageError::from)?,
+                );
+                touched = true;
+                continue;
+            }
+            next.push(candidate.duplicate().map_err(FeatureLineageError::from)?);
+        }
+
+        // Dedupe by `is_same` -- e.g. two merged sibling strands both
+        // resolving to the exact same `merged_result` this step.
+        let mut deduped: Vec<Shape<'ctx>> = Vec::with_capacity(next.len());
+        for shape in next {
+            let already_present = deduped
+                .iter()
+                .map(|d| d.is_same(&shape))
+                .collect::<KernelResult<Vec<bool>>>()
+                .map_err(FeatureLineageError::from)?
+                .into_iter()
+                .any(|same| same);
+            if !already_present {
+                deduped.push(shape);
+            }
+        }
+        current = deduped;
+        if current.is_empty() {
+            return Ok((true, Vec::new()));
+        }
+    }
+
+    if !touched {
+        return Ok((false, Vec::new()));
+    }
+    Ok((false, current))
+}
+
 fn enumerate<'ctx>(kind: EntityKind, shape: &Shape<'ctx>) -> LResult<Vec<Shape<'ctx>>> {
     match kind {
         EntityKind::Face => {
@@ -416,5 +672,276 @@ mod tests {
             err,
             FeatureLineageError::UnsupportedEntityKind(EntityKind::Solid)
         );
+    }
+
+    // --- AICAD-125: `classify_raw_edit_lineage` ---
+
+    fn classified(shape: &Shape<'_>) -> ClassifiedShape {
+        ClassifiedShape::new(shape.topology_kind().unwrap(), shape.handle())
+    }
+
+    #[test]
+    fn a_single_remove_face_step_deletes_exactly_the_removed_face() {
+        let context = OcctContext::new().unwrap();
+        let base = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let prior: Vec<_> = (0..base.face_count().unwrap())
+            .map(|i| base.get_face(i).unwrap())
+            .collect();
+        let removed_face = base.get_face(0).unwrap();
+        let removed = classified(&removed_face);
+        let result = base.remove_face(&[0], false, 1e-6).unwrap();
+
+        let mut report = OperationReport::empty();
+        report.deleted.push(removed);
+
+        let classification =
+            classify_raw_edit_lineage(&context, EntityKind::Face, prior, &result, &[report])
+                .unwrap();
+
+        assert_eq!(classification.prior.len(), 6);
+        let deleted: Vec<_> = classification
+            .prior
+            .iter()
+            .filter(|r| r.state == PriorEntityState::Deleted)
+            .collect();
+        assert_eq!(deleted.len(), 1);
+        assert!(deleted[0].successors.is_empty());
+        let unchanged = classification
+            .prior
+            .iter()
+            .filter(|r| r.state == PriorEntityState::Unchanged)
+            .count();
+        assert_eq!(unchanged, 5, "every untouched face survives unchanged");
+        // Every surviving face is real: `results` still has all 5.
+        assert_eq!(classification.results.len(), 5);
+        assert!(
+            classification.results.iter().all(|r| r.origin.is_none()),
+            "no ordinary carry-forward face is misclassified New/Merged"
+        );
+    }
+
+    #[test]
+    fn a_two_step_chain_composes_evidence_across_both_steps() {
+        let context = OcctContext::new().unwrap();
+        let base = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let prior: Vec<_> = (0..base.face_count().unwrap())
+            .map(|i| base.get_face(i).unwrap())
+            .collect();
+
+        let removed_first_face = base.get_face(0).unwrap();
+        let removed_first = classified(&removed_first_face);
+        let mut step_a = OperationReport::empty();
+        step_a.deleted.push(removed_first);
+        let after_first = base.remove_face(&[0], false, 1e-6).unwrap();
+
+        let removed_second_face = after_first.get_face(0).unwrap();
+        let removed_second = classified(&removed_second_face);
+        let mut step_b = OperationReport::empty();
+        step_b.deleted.push(removed_second);
+        let after_second = after_first.remove_face(&[0], false, 1e-6).unwrap();
+
+        let classification = classify_raw_edit_lineage(
+            &context,
+            EntityKind::Face,
+            prior,
+            &after_second,
+            &[step_a, step_b],
+        )
+        .unwrap();
+
+        let deleted = classification
+            .prior
+            .iter()
+            .filter(|r| r.state == PriorEntityState::Deleted)
+            .count();
+        assert_eq!(deleted, 2, "both removed faces are traced across the chain");
+        let unchanged = classification
+            .prior
+            .iter()
+            .filter(|r| r.state == PriorEntityState::Unchanged)
+            .count();
+        assert_eq!(unchanged, 4);
+        assert_eq!(classification.results.len(), 4);
+    }
+
+    #[test]
+    fn a_replace_face_step_reports_the_old_face_as_modified() {
+        let context = OcctContext::new().unwrap();
+        let base = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let replacement_source = context.create_box(2.0, 2.0, 2.0).unwrap();
+        let replacement = replacement_source.get_face(0).unwrap();
+
+        let prior: Vec<_> = (0..base.face_count().unwrap())
+            .map(|i| base.get_face(i).unwrap())
+            .collect();
+        let old_face_shape = base.get_face(0).unwrap();
+        let old_face = classified(&old_face_shape);
+        let replacement_classified = classified(&replacement);
+        let result = base.replace_face(0, &replacement, false, 1e-6).unwrap();
+
+        let mut report = OperationReport::empty();
+        report.modified.push((old_face, replacement_classified));
+
+        let classification =
+            classify_raw_edit_lineage(&context, EntityKind::Face, prior, &result, &[report])
+                .unwrap();
+
+        let modified: Vec<_> = classification
+            .prior
+            .iter()
+            .filter(|r| r.state == PriorEntityState::Modified)
+            .collect();
+        assert_eq!(modified.len(), 1);
+        assert_eq!(modified[0].successors.len(), 1);
+    }
+
+    #[test]
+    fn a_face_never_mentioned_by_any_step_is_unchanged_with_no_successors_when_absent_from_the_result()
+     {
+        // A `merge_faces`-shaped step only ever narrows evidence to the
+        // faces it was actually asked to merge -- an unselected face of
+        // the chain's own origin shape is legitimately `Unchanged` (never
+        // mentioned) even though it does not appear at all in a `result_
+        // shape` that only contains the merged output (see this module's
+        // own doc comment, "one caveat this sharing does not have").
+        let context = OcctContext::new().unwrap();
+        let base = context.create_box(1.0, 1.0, 1.0).unwrap();
+        let prior: Vec<_> = (0..base.face_count().unwrap())
+            .map(|i| base.get_face(i).unwrap())
+            .collect();
+        // A result shape with no faces in common with `base` at all --
+        // stands in for "the adopted result narrowed down to something
+        // this face was never part of."
+        let unrelated_result = context.create_box(5.0, 5.0, 5.0).unwrap();
+
+        let classification =
+            classify_raw_edit_lineage(&context, EntityKind::Face, prior, &unrelated_result, &[])
+                .unwrap();
+
+        assert!(
+            classification
+                .prior
+                .iter()
+                .all(|r| r.state == PriorEntityState::Unchanged && r.successors.is_empty())
+        );
+    }
+
+    /// A `merge_faces`-shaped step's own `merged` evidence: both
+    /// contributing prior faces classify `Modified` (one real successor
+    /// each — the same shared merged face), and the merged result itself
+    /// classifies `ResultEntityOrigin::Merged` (two real predecessors) —
+    /// never an arbitrary pick of one contributing face, matching
+    /// `classify_feature_lineage`'s own established `Merged` semantics one
+    /// evidence source over.
+    #[test]
+    fn a_merge_step_classifies_both_contributors_modified_and_the_result_merged() {
+        use cad_geometry_api::{FaceOrientation, GeometryGraph, GeometryOp, SurfaceSpec};
+        use cad_geometry_runtime::{NodeResult, dispatch_graph};
+        use cad_kernel_api::{Direction3, Point3};
+
+        fn edge_adjacent_square(
+            graph: &mut GeometryGraph,
+            x_offset: f64,
+        ) -> cad_geometry_api::GeomId {
+            let mut edge = |x0: f64, y0: f64, x1: f64, y1: f64| {
+                graph
+                    .push_op(
+                        GeometryOp::LineEdge {
+                            start: Point3::new(x0 + x_offset, y0, 0.0),
+                            end: Point3::new(x1 + x_offset, y1, 0.0),
+                        },
+                        cad_ast::Span::new(0, 1),
+                    )
+                    .unwrap()
+            };
+            let e0 = edge(0.0, 0.0, 1.0, 0.0);
+            let e1 = edge(1.0, 0.0, 1.0, 1.0);
+            let e2 = edge(1.0, 1.0, 0.0, 1.0);
+            let e3 = edge(0.0, 1.0, 0.0, 0.0);
+            let wire = graph
+                .push_op(
+                    GeometryOp::WireFromEdges {
+                        edges: vec![e0, e1, e2, e3],
+                    },
+                    cad_ast::Span::new(0, 1),
+                )
+                .unwrap();
+            graph
+                .push_op(
+                    GeometryOp::MakeFaceOnSurface {
+                        surface: SurfaceSpec::Plane {
+                            origin: Point3::ORIGIN,
+                            normal: Direction3::Z,
+                        },
+                        outer: wire,
+                        holes: vec![],
+                        orientation: FaceOrientation::Forward,
+                    },
+                    cad_ast::Span::new(0, 1),
+                )
+                .unwrap()
+        }
+
+        let context = OcctContext::new().unwrap();
+        let mut graph = GeometryGraph::new();
+        let face1 = edge_adjacent_square(&mut graph, 0.0);
+        let face2 = edge_adjacent_square(&mut graph, 1.0);
+        let sewn_id = graph
+            .push_op(
+                GeometryOp::Sew {
+                    shapes: vec![face1, face2],
+                    tolerance: cad_geometry_api::Quantity::of(1e-6, cad_types::Dimension::Length),
+                },
+                cad_ast::Span::new(0, 1),
+            )
+            .unwrap();
+        let results = dispatch_graph(&graph, &context).unwrap();
+        let NodeResult::Shape(sewn) = &results[sewn_id.index() as usize] else {
+            panic!("expected a Shape result");
+        };
+        assert_eq!(sewn.face_count().unwrap(), 2, "not yet merged");
+
+        let prior_f0 = sewn.get_face(0).unwrap();
+        let prior_f1 = sewn.get_face(1).unwrap();
+        let input0 = classified(&prior_f0);
+        let input1 = classified(&prior_f1);
+        let merged_shape = sewn.merge_faces(&[0, 1]).unwrap();
+        assert_eq!(
+            merged_shape.face_count().unwrap(),
+            1,
+            "two coplanar adjacent faces fully merge into one"
+        );
+        let merged_face = merged_shape.get_face(0).unwrap();
+        let merged_classified = classified(&merged_face);
+
+        let mut report = OperationReport::empty();
+        report
+            .merged
+            .push((vec![input0, input1], merged_classified));
+
+        let prior_entities = vec![sewn.get_face(0).unwrap(), sewn.get_face(1).unwrap()];
+        let classification = classify_raw_edit_lineage(
+            &context,
+            EntityKind::Face,
+            prior_entities,
+            &merged_shape,
+            &[report],
+        )
+        .unwrap();
+
+        assert_eq!(classification.prior.len(), 2);
+        assert!(
+            classification
+                .prior
+                .iter()
+                .all(|r| r.state == PriorEntityState::Modified && r.successors == vec![0]),
+            "both contributing faces must classify Modified with the same single successor"
+        );
+        assert_eq!(classification.results.len(), 1);
+        assert_eq!(
+            classification.results[0].origin,
+            Some(ResultEntityOrigin::Merged)
+        );
+        assert_eq!(classification.results[0].predecessors, vec![0, 1]);
     }
 }

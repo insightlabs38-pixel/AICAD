@@ -270,6 +270,679 @@ pub enum BuiltinFnId {
     /// `docs/plan/04_HIGH_LEVEL_MODELING_API.md`'s own `inward: Bool =
     /// true` default with no separate parameter needed for it.
     Shell,
+    /// `is_valid(target: Geometry) -> Bool` (`AICAD-105`,
+    /// `project/DECISION_LOG.md#DL-23`/`DL-25`). A kernel-backed query, not
+    /// a construction op — see [`BuiltinCategory::Query`]'s own doc
+    /// comment. Dispatches to `GeometryQuery::IsValid`, demand-materialized
+    /// through `cad_runtime::query_exec::KernelQueryExecutor` so its real
+    /// result can drive ordinary source control flow immediately.
+    IsValid,
+    /// `volume(target: Geometry) -> Volume` (`AICAD-105`). Dispatches to
+    /// `GeometryQuery::Volume`. See [`BuiltinFnId::IsValid`]'s own doc
+    /// comment for the query-dispatch mechanism.
+    Volume,
+    /// `area(target: Geometry) -> Area` (`AICAD-105`). Dispatches to
+    /// `GeometryQuery::Area`. See [`BuiltinFnId::IsValid`]'s own doc
+    /// comment for the query-dispatch mechanism.
+    Area,
+    /// `line_curve(origin: Point3, direction: Vector3<Float>) -> Curve`
+    /// (`AICAD-109`). Builds a `cad_geometry_api::curve::AnalyticCurve::
+    /// Line` — a [`BuiltinCategory::Value`] builtin: pure data assembly, no
+    /// `GeometryGraph` node and no kernel call (`AnalyticCurve`'s own doc
+    /// comment: "constructing one is pure data assembly, never a kernel
+    /// call").
+    LineCurve,
+    /// `circle_curve(center: Point3, normal: Vector3<Float>, radius:
+    /// Length) -> Curve` (`AICAD-109`). Builds a validated
+    /// `AnalyticCurve::Circle` (`cad_geometry_api::curve::AnalyticCurve::
+    /// circle`) — rejects a non-finite/non-positive `radius`. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    CircleCurve,
+    /// `arc_curve(center: Point3, normal: Vector3<Float>, radius: Length,
+    /// start_angle: Angle, end_angle: Angle) -> Curve` (`AICAD-109`).
+    /// Builds a validated `AnalyticCurve::Arc` — rejects a non-finite/
+    /// non-positive `radius` or a `start_angle >= end_angle`. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    ArcCurve,
+    /// `ellipse_curve(center: Point3, normal: Vector3<Float>,
+    /// major_direction: Vector3<Float>, major_radius: Length, minor_radius:
+    /// Length) -> Curve` (`AICAD-109`). Builds a validated
+    /// `AnalyticCurve::Ellipse` — rejects a non-finite/non-positive radius,
+    /// `major_radius < minor_radius`, or a `major_direction` not
+    /// perpendicular to `normal`. See [`BuiltinFnId::LineCurve`]'s own doc
+    /// comment for the category.
+    EllipseCurve,
+    /// `evaluate_curve(curve: Curve, u: Float) -> CurveEvaluation`
+    /// (`AICAD-109`). Evaluates any [`BuiltinFnId::LineCurve`]/
+    /// [`BuiltinFnId::CircleCurve`]/[`BuiltinFnId::ArcCurve`]/
+    /// [`BuiltinFnId::EllipseCurve`]-constructed `Curve` at parameter `u`
+    /// via `cad_geometry_api::curve::AnalyticCurve::evaluate` — a
+    /// closed-form computation (see that method's own doc comment for each
+    /// family's parameter convention), never a kernel call. A degenerate
+    /// curve or an out-of-domain `u` (an `Arc`'s own restricted range) is a
+    /// structured `RuntimeError`, never a silently wrong point. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    EvaluateCurve,
+    /// `bezier_curve(control_points: List<Point3>, weights: List<Float>)
+    /// -> Curve` (`AICAD-110`). Builds a validated `cad_geometry_api::
+    /// curve::AnalyticCurve::Bezier` (`AnalyticCurve::bezier`) — rejects
+    /// fewer than 2 control points, or (when `weights` is non-empty) a
+    /// length mismatch or a non-positive/non-finite weight. An empty
+    /// `weights` list means a plain (non-rational) Bezier — `docs/plan/
+    /// 05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own `weights: List<Float>?`
+    /// spelling is an *optional* parameter, which the closed `RuntimeBuiltin`
+    /// catalogue (`cad_hir::builtins::BuiltinFnSpec`) has no mechanism for
+    /// yet (no existing catalogue entry has ever needed one — every
+    /// existing optional-shaped signature in `docs/plan` was already
+    /// narrowed away, e.g. `plate`'s own missing `corner_radius`); an
+    /// empty list plays that same "absent" role using a mechanism the
+    /// catalogue already fully supports. See [`BuiltinFnId::LineCurve`]'s
+    /// own doc comment for the category.
+    BezierCurve,
+    /// `bspline_curve(degree: Int, control_points: List<Point3>, knots:
+    /// List<Float>, multiplicities: List<Int>, weights: List<Float>,
+    /// periodic: Bool) -> Curve` (`AICAD-110`). Builds a validated
+    /// `AnalyticCurve::BSpline` (`AnalyticCurve::bspline`) — see that
+    /// constructor's own doc comment for the full validation list.
+    /// `periodic: true` is rejected (`CurveConstructionError::
+    /// UnsupportedPeriodic`) rather than silently ignored — a documented
+    /// `AICAD-110` scope limitation, not a default value standing in for
+    /// an unsupported case. `weights` follows [`BuiltinFnId::BezierCurve`]'s
+    /// own "empty list means non-rational" convention. See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    BSplineCurve,
+    /// `trim_curve(curve: Curve, u0: Float, u1: Float) -> Curve`
+    /// (`AICAD-111`). Builds a validated `AnalyticCurve::Trimmed`
+    /// (`AnalyticCurve::trim`) — rejects a non-finite `u0`/`u1`,
+    /// `u0 >= u1`, or (when `curve` already has a bounded
+    /// `AnalyticCurve::domain`) a `[u0, u1]` that is not a sub-range of
+    /// it. See [`BuiltinFnId::LineCurve`]'s own doc comment for the
+    /// category.
+    TrimCurve,
+    /// `offset_curve(curve: Curve, distance: Length, normal:
+    /// Vector3<Float>) -> Curve` (`AICAD-111`). Exact for `Line`/`Circle`/
+    /// `Arc` (`AnalyticCurve::offset`); every other family reports
+    /// `CurveOperationError::UnsupportedFamily` (exact offsetting is not,
+    /// in general, expressible in the same family — see that error
+    /// variant's own doc comment). `normal` is always required (the
+    /// catalogue has no optional-parameter mechanism — see
+    /// [`BuiltinFnId::BezierCurve`]'s own doc comment) even though only a
+    /// `Line` offset actually consumes it. See [`BuiltinFnId::LineCurve`]'s
+    /// own doc comment for the category.
+    OffsetCurve,
+    /// `closest_point_on_curve(curve: Curve, point: Point3) ->
+    /// List<ClosestPointResult>` (`AICAD-111`). Every point on `curve`
+    /// closest to `point` (`AnalyticCurve::closest_point`) — **every**
+    /// local-minimum solution found, never an arbitrary single one, per
+    /// `AGENTS.md`'s "ambiguity is an error, never an arbitrary
+    /// selection": a target equidistant from more than one point on the
+    /// curve returns every one of them as a separate list element. A
+    /// genuinely degenerate query (e.g. a circle's own center) is a
+    /// structured `RuntimeError`, never a silently empty list standing in
+    /// for "could not tell." See [`BuiltinFnId::LineCurve`]'s own doc
+    /// comment for the category.
+    ClosestPointOnCurve,
+    /// `interpolate_curve(points: List<Point3>, tolerance: Length) ->
+    /// Curve` (`AICAD-111`). Fits an *exact* interpolating cubic B-spline
+    /// through `points` (`cad_geometry_api::curve::interpolate`) —
+    /// `tolerance` bounds only the achieved numerical residual the linear
+    /// solve itself may leave, never a target approximation error (this
+    /// builtin interpolates exactly, it does not least-squares-fit). See
+    /// [`BuiltinFnId::LineCurve`]'s own doc comment for the category.
+    InterpolateCurve,
+    /// `plane_surface(origin: Point3, normal: Vector3<Float>) -> Surface`
+    /// (`AICAD-113`). Builds a `cad_geometry_api::surface::AnalyticSurface::
+    /// Plane` — a [`BuiltinCategory::Value`] builtin, mirroring
+    /// [`BuiltinFnId::LineCurve`]'s own "pure data assembly, never a kernel
+    /// call" category exactly, applied to the surface-family counterpart of
+    /// `Curve`.
+    PlaneSurface,
+    /// `cylinder_surface(axis: Axis3, radius: Length) -> Surface`
+    /// (`AICAD-113`). Builds a validated `AnalyticSurface::Cylinder`
+    /// (`AnalyticSurface::cylinder`) — rejects a non-finite/non-positive
+    /// `radius`. See [`BuiltinFnId::PlaneSurface`]'s own doc comment for the
+    /// category.
+    CylinderSurface,
+    /// `cone_surface(axis: Axis3, half_angle: Angle) -> Surface`
+    /// (`AICAD-113`). Builds a validated `AnalyticSurface::Cone` — rejects a
+    /// `half_angle` outside `(0, pi/2)`. See [`BuiltinFnId::PlaneSurface`]'s
+    /// own doc comment for the category.
+    ConeSurface,
+    /// `sphere_surface(center: Point3, radius: Length) -> Surface`
+    /// (`AICAD-113`). Builds a validated `AnalyticSurface::Sphere` —
+    /// rejects a non-finite/non-positive `radius`. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    SphereSurface,
+    /// `torus_surface(axis: Axis3, major_radius: Length, minor_radius:
+    /// Length) -> Surface` (`AICAD-113`). Builds a validated
+    /// `AnalyticSurface::Torus` — rejects a non-finite/non-positive radius
+    /// or `minor_radius >= major_radius` (Stage-5's initial "ring torus
+    /// only" scope — see `SurfaceConstructionError::
+    /// MinorNotLessThanMajor`'s own doc comment). See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    TorusSurface,
+    /// `evaluate_surface(surface: Surface, u: Float, v: Float) ->
+    /// SurfaceEvaluation` (`AICAD-113`). Evaluates any surface builtin's
+    /// constructed `Surface` at `(u, v)` via `cad_geometry_api::surface::
+    /// AnalyticSurface::evaluate` — a closed-form computation (see that
+    /// method's own doc comment for each family's parameter convention),
+    /// never a kernel call. A genuine parametrization singularity (e.g. a
+    /// sphere's own pole) or an out-of-domain `(u, v)` is a structured
+    /// `RuntimeError`, never a silently wrong point/normal. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    EvaluateSurface,
+    /// `bezier_surface(control_points: List<List<Point3>>, weights:
+    /// List<List<Float>>) -> Surface` (`AICAD-114`). Builds a validated
+    /// `cad_geometry_api::surface::AnalyticSurface::Bezier`
+    /// (`AnalyticSurface::bezier`) — `control_points[i]` is one row along
+    /// `u`, `control_points[i][j]` the control point at `(i, j)`; rejects a
+    /// non-rectangular net, fewer than 2 rows/columns, or (when `weights`
+    /// is non-empty) a shape mismatch or a non-positive/non-finite weight.
+    /// An empty `weights` list means a plain (non-rational) surface,
+    /// mirroring [`BuiltinFnId::BezierCurve`]'s own "no optional-parameter
+    /// mechanism" convention. See [`BuiltinFnId::PlaneSurface`]'s own doc
+    /// comment for the category.
+    BezierSurface,
+    /// `bspline_surface(degree_u: Int, degree_v: Int, control_points:
+    /// List<List<Point3>>, knots_u: List<Float>, multiplicities_u:
+    /// List<Int>, knots_v: List<Float>, multiplicities_v: List<Int>,
+    /// weights: List<List<Float>>, periodic_u: Bool, periodic_v: Bool) ->
+    /// Surface` (`AICAD-114`). Builds a validated `AnalyticSurface::BSpline`
+    /// (`AnalyticSurface::bspline`) — see that constructor's own doc
+    /// comment for the full validation list, applied once per direction.
+    /// `periodic_u`/`periodic_v: true` is rejected
+    /// (`SurfaceConstructionError::UnsupportedPeriodic`), mirroring
+    /// [`BuiltinFnId::BSplineCurve`]'s own identical scope limitation. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    BSplineSurface,
+    /// `trim_surface(base: Surface, outer: Curve, holes: List<Curve>,
+    /// tolerance: Length) -> Surface` (`AICAD-115`). Builds a validated
+    /// `cad_geometry_api::surface::AnalyticSurface::Trimmed`
+    /// (`AnalyticSurface::trim`) — `outer`/each element of `holes` is a
+    /// `Curve` read as a closed loop in `base`'s own `(u, v)` parameter
+    /// plane (`cad_geometry_api::surface::TrimLoop::new`, `tolerance` its
+    /// own `project/DECISION_LOG.md#DL-26` modeling/construction
+    /// tolerance). Rejects an unclosed/non-planar/degenerate loop, a hole
+    /// oriented the same way as the outer boundary, or a loop sample
+    /// outside `base`'s own valid domain — see `AnalyticSurface::trim`'s
+    /// own doc comment for the full validation. See
+    /// [`BuiltinFnId::PlaneSurface`]'s own doc comment for the category.
+    TrimSurface,
+    /// `offset_surface(surface: Surface, distance: Length) -> Surface`
+    /// (`AICAD-116`). Exact for `Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`
+    /// (`cad_geometry_api::surface::AnalyticSurface::offset`); every other
+    /// family reports `SurfaceOperationError::UnsupportedFamily` (exact
+    /// offsetting of a Bezier/B-spline/trimmed surface is not, in general,
+    /// expressible in the same family — see that error variant's own doc
+    /// comment). See [`BuiltinFnId::PlaneSurface`]'s own doc comment for the
+    /// category.
+    OffsetSurface,
+    /// `intersect_curves(a: Curve, b: Curve, tolerance: Length) ->
+    /// List<CurveIntersectionResult>` (`AICAD-117`,
+    /// `cad_geometry_api::intersect_curves`). Every transversal crossing
+    /// point, in a deterministic order — genuinely zero is a real answer,
+    /// never a failure; a coincident/overlapping pair (or a tangency with
+    /// no well-formed finite point) is a structured `RuntimeError`, never a
+    /// silently empty or arbitrary result. See [`BuiltinFnId::LineCurve`]'s
+    /// own doc comment for the category.
+    IntersectCurves,
+    /// `intersect_curve_surface(curve: Curve, surface: Surface, tolerance:
+    /// Length) -> List<CurveSurfaceIntersectionResult>` (`AICAD-117`,
+    /// `cad_geometry_api::intersect_curve_surface`). Mirrors
+    /// [`BuiltinFnId::IntersectCurves`]'s own cardinality/failure
+    /// convention for the curve/surface case.
+    IntersectCurveSurface,
+    /// `intersect_surfaces(a: Surface, b: Surface, tolerance: Length) ->
+    /// List<Curve>` (`AICAD-117`, `cad_geometry_api::intersect_surfaces`).
+    /// Exact only for `Plane`-`Plane`/`Plane`-`Sphere`/`Sphere`-`Sphere`
+    /// (every other pair's intersection curve is not representable by
+    /// `Curve`'s own closed family set — a structural, not merely
+    /// narrow-effort, limit, reported `RuntimeError::Unsupported`); `0` or
+    /// `1` list elements (never more — every supported pair's intersection
+    /// is a single connected curve). See [`BuiltinFnId::LineCurve`]'s own
+    /// doc comment for the category.
+    IntersectSurfaces,
+    /// `project_point_to_surface(surface: Surface, point: Point3) ->
+    /// List<SurfaceProjectionResult>` (`AICAD-117`,
+    /// `cad_geometry_api::surface::AnalyticSurface::project_point`). The
+    /// surface-family counterpart of [`BuiltinFnId::ClosestPointOnCurve`] —
+    /// every local-minimum-distance point, never an arbitrary single one.
+    ProjectPointToSurface,
+    /// `distance_curve_curve(a: Curve, b: Curve) -> List<DistanceResult>`
+    /// (`AICAD-117`, `cad_geometry_api::distance_curve_curve`). The
+    /// achieved minimum distance and a witness point on each curve; more
+    /// than one element only when genuinely tied (e.g. two parallel skew
+    /// lines). See [`BuiltinFnId::LineCurve`]'s own doc comment for the
+    /// category.
+    DistanceCurveCurve,
+    /// `distance_curve_surface(curve: Curve, surface: Surface) ->
+    /// List<DistanceResult>` (`AICAD-117`,
+    /// `cad_geometry_api::distance_curve_surface`). Mirrors
+    /// [`BuiltinFnId::DistanceCurveCurve`] for the curve/surface case;
+    /// `RuntimeError::Unsupported` for a `Surface::Trimmed` or a genuinely
+    /// unsupported `Line`-vs-family combination (see
+    /// `cad_geometry_api::query`'s own module doc comment).
+    DistanceCurveSurface,
+    /// `distance_surface_surface(a: Surface, b: Surface) ->
+    /// List<DistanceResult>` (`AICAD-117`,
+    /// `cad_geometry_api::distance_surface_surface`). Mirrors
+    /// [`BuiltinFnId::DistanceCurveCurve`] for the surface/surface case;
+    /// `RuntimeError::Unsupported` when both surfaces are unbounded
+    /// (`Plane`/`Cylinder`/`Cone`) or either is `Surface::Trimmed`.
+    DistanceSurfaceSurface,
+    /// `make_vertex(point: Point3) -> Geometry` (`AICAD-119`). Pushes a
+    /// `GeometryOp::MakeVertex` node — a [`BuiltinCategory::Construction`]
+    /// builtin, the base case of the vertex->edge->wire->face->shell->
+    /// solid pipeline this batch completes.
+    MakeVertex,
+    /// `make_edge(curve: Curve) -> Geometry` (`AICAD-119`). Materializes an
+    /// already-constructed `Curve` value into real kernel topology by
+    /// pushing the matching existing `GeometryOp` — `Line` must already be
+    /// `trim_curve`-bounded (an infinite `Line` has no two endpoints to
+    /// build an edge from) and maps to `GeometryOp::LineEdge`; `Arc` maps
+    /// to `GeometryOp::ArcEdge` (its 3 defining points obtained via
+    /// `AnalyticCurve::evaluate`, reusing that already-tested trigonometry
+    /// rather than re-deriving it here); a full `Circle` maps to
+    /// `GeometryOp::CircleWire`, producing a closed *wire* rather than an
+    /// open edge — disclosed here, not silently pretended uniform, since a
+    /// full circle has no natural single start/end point for OCCT's own
+    /// edge model. `Ellipse`/`Bezier`/`BSpline`/any other `Trimmed` base
+    /// is `RuntimeError::Unsupported` (no matching kernel construction op
+    /// exists yet for those families — a structural limit, not a missing
+    /// case check).
+    MakeEdge,
+    /// `make_wire(edges: List<Geometry>) -> Geometry` (`AICAD-119`).
+    /// Pushes `GeometryOp::WireFromEdges` — this exact op has existed since
+    /// `AICAD-022`; this is its first source-language exposure, following
+    /// [`BuiltinFnId::Plate`]'s own "domain-meaningful name over an
+    /// existing op" precedent (here, the op simply had no builtin name
+    /// yet at all).
+    MakeWire,
+    /// `make_face(wire: Geometry) -> Geometry` (`AICAD-119`). Pushes
+    /// `GeometryOp::MakeFace` — a *planar* face inferred from `wire`'s own
+    /// geometry, no holes, no explicit surface (see
+    /// [`BuiltinFnId::MakeFaceOnSurface`] for the holes-and-explicit-
+    /// surface-capable general form). Like [`BuiltinFnId::MakeWire`], this
+    /// exposes an op that has existed since `AICAD-023` under its first
+    /// source-language name.
+    MakeFace,
+    /// `make_face_on_surface(surface: Surface, outer: Geometry, holes:
+    /// List<Geometry>) -> Geometry` (`AICAD-119`). Materializes an
+    /// already-constructed `Surface` value into a new
+    /// `GeometryOp::MakeFaceOnSurface` node bounded by the already-real
+    /// kernel wire `outer` (plus `holes`) — bounded to the same 5
+    /// elementary quadric families `cad_geometry_api::ir::SurfaceSpec`
+    /// covers (`Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`);
+    /// `RuntimeError::Unsupported` for `Bezier`/`BSpline`/`Trimmed` (no
+    /// matching kernel construction op exists yet for those families,
+    /// mirroring [`BuiltinFnId::MakeEdge`]'s own identical structural
+    /// limit on the curve side). Always builds on `outer`'s forward
+    /// orientation — no source-level control over
+    /// `cad_geometry_api::ir::FaceOrientation::Reversed` yet (a narrower
+    /// scope than the underlying op, not a missing capability at the
+    /// kernel layer).
+    MakeFaceOnSurface,
+    /// `make_shell(faces: List<Geometry>) -> Geometry` (`AICAD-119`).
+    /// Pushes `GeometryOp::MakeShell` — a structural container only, no
+    /// sewing/gap-closing (`AICAD-120`'s job): faces that do not already
+    /// share identical edges produce an open/non-manifold shell under
+    /// `is_valid`, not a silently repaired one.
+    MakeShell,
+    /// `make_solid(shell: Geometry, voids: List<Geometry>) -> Geometry`
+    /// (`AICAD-119`). Pushes `GeometryOp::MakeSolid` — `shell` need not be
+    /// closed for this call to succeed; see that op's own doc comment for
+    /// why construction success here is even less evidence of validity
+    /// than usual (`is_valid`/`volume` afterward are the real evidence).
+    MakeSolid,
+    /// `compound(shapes: List<Geometry>) -> Geometry` (`AICAD-119`). Pushes
+    /// `GeometryOp::Compound` — groups any mix of already-built kinds
+    /// (vertex/edge/wire/face/shell/solid) with no closure/connectivity
+    /// requirement to fail.
+    Compound,
+    /// `sew(shapes: List<Geometry>, tolerance: Length) -> Geometry`
+    /// (`AICAD-120`). Pushes `GeometryOp::Sew` — merges/relabels
+    /// coincident boundaries among `shapes` at `tolerance` (a modeling/
+    /// construction-domain length, `project/DECISION_LOG.md#DL-24` domain
+    /// 2; see `cad_validation::RepairPolicy`). Deliberately narrower than
+    /// `docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own
+    /// `sew(shapes, tolerance, non_manifold=false)` signature: no
+    /// `non_manifold` override yet (mirrors `Transform`'s own "escalate
+    /// rather than guess an ambiguous signature" precedent). This op alone
+    /// never proves validity — `is_valid`/`area`/`volume` on its result
+    /// are the required separate evidence, exactly like every `AICAD-119`
+    /// construction op.
+    Sew,
+    /// `heal(shape: Geometry, tolerance: Length) -> Geometry` (`AICAD-120`).
+    /// Pushes `GeometryOp::Heal` — same tolerance domain as
+    /// [`BuiltinFnId::Sew`]. Deliberately narrower than `docs/plan/
+    /// 05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md`'s own `heal(shape, profile,
+    /// tolerance?, max_tolerance?)` signature: no healing-profile/max-
+    /// tolerance parameters yet. Healing never invents missing geometry;
+    /// an unclosable input can be silently demoted to a lesser
+    /// topological kind by the underlying kernel call, so `is_valid` on
+    /// this op's own result is never sufficient evidence alone that
+    /// healing produced a genuine repair of the ORIGINAL shape's own
+    /// kind — see `cad_occt_bridge::HealReport::kind_changed`'s own doc
+    /// comment (not yet source-exposed; call `is_valid` before and after
+    /// as the source-level substitute for now).
+    Heal,
+    /// `topology_kind_of(shape: Geometry) -> String` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::TopologyKindOf` — one of `"Vertex"`/
+    /// `"Edge"`/`"Wire"`/`"Face"`/`"Shell"`/`"Solid"`, kernel-neutral
+    /// (never an OCCT `TopAbs_ShapeEnum` value). A `Compound`/
+    /// `CompSolid`/generic-`Shape` argument is `RuntimeError::
+    /// KernelQueryFailed`, not a guessed answer — it has no single
+    /// classifiable entity kind.
+    TopologyKindOf,
+    /// `face_count(shape: Geometry) -> Int` (`AICAD-121`). Dispatches
+    /// `GeometryQuery::EntityCount { kind: TopologyKind::Face, .. }`. See
+    /// [`BuiltinFnId::TopologyKindOf`]'s own doc comment for the category.
+    FaceCount,
+    /// `edge_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    EdgeCount,
+    /// `vertex_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    VertexCount,
+    /// `wire_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    WireCount,
+    /// `shell_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    ShellCount,
+    /// `solid_count(shape: Geometry) -> Int` (`AICAD-121`). See
+    /// [`BuiltinFnId::FaceCount`]'s own doc comment.
+    SolidCount,
+    /// `topology_face_at(shape: Geometry, index: Int) -> Geometry`
+    /// (`AICAD-121`). Pushes `GeometryOp::GetFace` — this exact op has
+    /// existed since `AICAD-076` (used internally by `extrude`/
+    /// `revolve`), never under its own standalone traversal name until
+    /// now. `index` is a raw, epoch-bound kernel-enumeration-order index
+    /// (`docs/plan/05_LOW_LEVEL_GEOMETRY_TOPOLOGY_API.md` §6: "Indices
+    /// are permitted only when an algorithm intentionally depends on the
+    /// current transient topology enumeration") — `face_count`'s own
+    /// result is `[0, face_count(shape))`'s exclusive upper bound.
+    /// Deterministic/repeatable for one shape instance, but not a
+    /// promised canonical/geometric order (`is_same_entity` is the
+    /// intended way to recognize a specific face across independent
+    /// enumerations, not index stability).
+    TopologyFaceAt,
+    /// `topology_edge_at(shape: Geometry, index: Int) -> Geometry`
+    /// (`AICAD-121`). Pushes the new `GeometryOp::GetEdge` — see
+    /// [`BuiltinFnId::TopologyFaceAt`]'s own doc comment.
+    TopologyEdgeAt,
+    /// `topology_vertex_at(shape: Geometry, index: Int) -> Geometry`
+    /// (`AICAD-121`). Pushes the new `GeometryOp::GetVertex` — see
+    /// [`BuiltinFnId::TopologyFaceAt`]'s own doc comment. `wire`
+    /// enumeration is deliberately not given an indexed-access twin here
+    /// (only `wire_count`) — a smaller, symmetric follow-up if a future
+    /// task needs it; not a missing kernel capability
+    /// (`Shape::get_wire` already exists and is used internally, e.g. by
+    /// `is_outer_wire`'s own dispatch).
+    TopologyVertexAt,
+    /// `adjacent_face_count(shape: Geometry, edge_index: Int) -> Int`
+    /// (`AICAD-121`). Dispatches `GeometryQuery::AdjacentFaceCount` —
+    /// reports how many faces are adjacent to (bounded by) `shape`'s own
+    /// edge `edge_index` before one is selected by
+    /// [`BuiltinFnId::AdjacentFaceAt`]'s own raw index.
+    AdjacentFaceCount,
+    /// `adjacent_face_at(shape: Geometry, edge_index: Int,
+    /// adjacent_index: Int) -> Geometry` (`AICAD-121`). Pushes the new
+    /// `GeometryOp::GetAdjacentFace` — the construction counterpart of
+    /// [`BuiltinFnId::AdjacentFaceCount`].
+    AdjacentFaceAt,
+    /// `is_outer_wire(face: Geometry, wire: Geometry) -> Bool`
+    /// (`AICAD-121`). Dispatches `GeometryQuery::IsOuterWire` — the
+    /// `boundary(outer|inner)` predicate `docs/plan/
+    /// 06_REFERENCES_QUERIES_FEATURE_DAG.md` §6 names, at the low-level
+    /// layer. False for any of `face`'s own inner (hole) wires, and false
+    /// if `wire` does not bound `face` at all.
+    IsOuterWire,
+    /// `is_same_entity(a: Geometry, b: Geometry) -> Bool` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::IsSameEntity` — whether `a`/`b` address
+    /// the SAME underlying topological entity (`TShape` + `Location`,
+    /// ignoring `Orientation`), never comparing raw handle identity. The
+    /// safe mechanism every traversal builtin in this batch needs: each
+    /// independently-obtained ephemeral handle
+    /// (`topology_face_at`/`topology_edge_at`/.../`adjacent_face_at`) can
+    /// be recognized as "the same entity as an earlier one" without ever
+    /// exposing a native handle as durable identity.
+    IsSameEntity,
+    /// `is_forward_oriented(shape: Geometry) -> Bool` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::IsForwardOriented` — `true` for a
+    /// top-level `TopAbs_Orientation` of FORWARD; REVERSED, INTERNAL, and
+    /// EXTERNAL (the latter two rare seam/degenerate-edge markers) all
+    /// report `false`, a deliberate, disclosed simplification (see
+    /// `cad_occt_bridge::Shape::is_forward_oriented`'s own doc comment)
+    /// rather than a full 4-way orientation result.
+    IsForwardOriented,
+    /// `vertex_point(vertex: Geometry) -> Point3` (`AICAD-121`).
+    /// Dispatches `GeometryQuery::VertexPoint` — `vertex` must address a
+    /// shape of exactly kind Vertex. The first `Query`-category builtin
+    /// whose result is a struct (`Point3`), not `Bool`/`Number`/`String`
+    /// — widens `cad_runtime::query_exec::QueryOutcome` with a new
+    /// `Point` variant.
+    VertexPoint,
+    /// `classify_point(solid: Geometry, point: Point3, tolerance: Length)
+    /// -> String` (`AICAD-121`). Dispatches `GeometryQuery::
+    /// ClassifyPoint` — one of `"Inside"`/`"Outside"`/`"OnBoundary"`
+    /// (`cad_occt_bridge::PointClassification`'s own `Debug` rendering).
+    /// `solid` must address a shape containing at least one Solid;
+    /// `tolerance` is the classifier's own boundary tolerance (a
+    /// representation/validity-domain length, `project/DECISION_LOG.md
+    /// #DL-24` domain 1 — distinct from `Sew`/`Heal`'s modeling/
+    /// construction-domain tolerance).
+    ClassifyPoint,
+    /// `enter_raw(target: Geometry) -> Raw` (`AICAD-122`, `project/
+    /// DECISION_LOG.md#DL-24` (D22)). The sole, explicit, auditable entry
+    /// point into the controlled raw/unsafe geometry tier: materializes
+    /// `target`, classifies its own topological kind, and mints the result
+    /// into a `cad_geometry_api::raw::RawGeometry` bound to the calling
+    /// session's current epoch (`cad_references::raw_handle::EpochCounter`,
+    /// `AICAD-093`/`094`). A `Query`-category builtin (a real kernel call
+    /// happens now), even though its own result is not a plain scalar —
+    /// see [`BuiltinFnId::VertexPoint`]'s own precedent for a struct-typed
+    /// `Query` result.
+    EnterRaw,
+    /// `raw_topology_kind_of(raw: Raw) -> String` (`AICAD-122`). Reads the
+    /// topological kind `raw` was classified as at `enter_raw` time,
+    /// re-checking `raw`'s own minting epoch against the session's
+    /// *current* epoch first — a stale or foreign-session handle fails
+    /// explicitly (`RuntimeError::RawHandleStale`) rather than returning
+    /// topology that may no longer exist. Unlike `EnterRaw`, this makes no
+    /// further kernel call and pushes no `GeometryGraph`/`GeometryQuery`
+    /// node: the classified kind was already captured in full at entry, so
+    /// reading it back is pure epoch-checked data access — see
+    /// [`BuiltinCategory::Raw`]'s own doc comment.
+    RawTopologyKindOf,
+    /// `remove_face(raw: Raw, face_indices: List<Int>, heal: Bool,
+    /// tolerance: Length) -> Raw` (`AICAD-123`, `project/DECISION_LOG.md
+    /// #DL-24` (D22); `project/DECISION_LOG.md#DL-2` D2 functional/value
+    /// semantics). Deletes the faces at `face_indices` (raw 0-based
+    /// indices into `raw`'s own face list) from `raw`, optionally healing
+    /// the result at `tolerance` afterward. `raw` is unchanged; a
+    /// genuinely new `Raw` value is returned, minted at the calling
+    /// session's current epoch. `BuiltinCategory::Raw`: a real kernel call
+    /// happens through the already-materialized handle (see
+    /// `BuiltinCategory::Raw`'s own doc comment), never a
+    /// `GeometryGraph`/`GeometryQuery` node.
+    RemoveFace,
+    /// `replace_face(raw: Raw, face_index: Int, replacement: Raw, heal:
+    /// Bool, tolerance: Length) -> Raw` (`AICAD-123`). Replaces the face
+    /// at `face_index` (a raw 0-based index into `raw`'s own face list)
+    /// with `replacement` (itself a Face-kind `Raw` value, independently
+    /// entered via `enter_raw`) throughout `raw`, optionally healing the
+    /// result afterward. Both `raw` and `replacement` are unchanged.
+    ReplaceFace,
+    /// `split_edge(raw: Raw, params: List<Float>) -> List<Raw>`
+    /// (`AICAD-123`). Splits `raw`'s own underlying curve at `params`
+    /// (strictly increasing, each strictly interior to the edge's own
+    /// parameter range), producing `params.len() + 1` new `Raw` edge
+    /// values in ascending-parameter order. `raw` must address a shape of
+    /// exactly kind Edge.
+    SplitEdge,
+    /// `merge_faces(raw: Raw, face_indices: List<Int>) -> List<Raw>`
+    /// (`AICAD-123`). Merges the faces at `face_indices` (raw 0-based
+    /// indices into `raw`'s own face list, at least 2) into as few faces
+    /// as their shared underlying geometry allows, returning every
+    /// resulting face as its own `Raw` value (one element if the inputs
+    /// fully merged; more than one if they did not). A `List<Raw>` return
+    /// — not a single `Raw` — specifically because the merged result's own
+    /// top-level container (commonly a Compound) is not itself a
+    /// classifiable `TopologyKind`; each individual resulting Face is.
+    MergeFaces,
+    /// `adopt(raw: Raw) -> Geometry` (`AICAD-124`, `project/DECISION_LOG.md
+    /// #DL-24` (D22)). The sole, explicit exit from the raw/unsafe tier
+    /// back into safe semantic geometry: resolves and **re-validates**
+    /// `raw` (`cad_geometry_runtime::adoption::adopt_raw`), producing a
+    /// genuinely new `Geometry` value (a new `GeomId`/kernel slot, never
+    /// the raw handle's own identity) on success. `Construction`-category
+    /// — unlike every other construction builtin, this one's own kernel
+    /// dispatch can and does fail for an unsupported/invalid input
+    /// (`RuntimeError::GeometryConstruction`), since D22 requires
+    /// adoption to reject rather than merely note invalidity.
+    AdoptRaw,
+}
+
+/// The category/effect metadata `project/DECISION_LOG.md#DL-23` requires
+/// the closed `RuntimeBuiltin` catalogue to carry as it scales
+/// (`project/DECISION_LOG.md#DL-23`'s own "category/effect metadata"
+/// requirement). Every entry is exactly one of:
+///
+/// - [`BuiltinCategory::Construction`]: builds/extends the caller's
+///   `cad_geometry_api::ir::GeometryGraph` (a `GeometryOp` node) and
+///   returns a `Geometry` value — pure with respect to the kernel (no
+///   kernel call happens until a later dispatch phase materializes the
+///   whole graph).
+/// - [`BuiltinCategory::Query`]: pushes a `GeometryQuery` node and — per
+///   `project/DECISION_LOG.md#DL-25`'s demand-materialization policy —
+///   synchronously executes it through `cad_runtime::query_exec::
+///   KernelQueryExecutor` during evaluation, returning an ordinary typed
+///   AICAD value a program can immediately branch on. This is a real
+///   effect (a kernel call happens now, not at some later dispatch phase),
+///   which is exactly why this category exists as its own metadata rather
+///   than being folded into `Construction`.
+/// - [`BuiltinCategory::Value`] (`AICAD-109`): computes an ordinary typed
+///   AICAD value directly, with **no** `GeometryGraph`/`GeometryQuery` node
+///   and **no** kernel call at all — e.g. analytic curve construction/
+///   evaluation, which is closed-form (`cad_geometry_api::curve::
+///   AnalyticCurve`'s own doc comment: "pure data assembly, never a kernel
+///   call"). Distinct from `Query`: nothing here demand-materializes
+///   through a live kernel context, so this category never touches
+///   `cad_runtime::query_exec::KernelQueryExecutor` or the query budget —
+///   `project/DECISION_LOG.md#DL-23`'s own "category... metadata" is
+///   explicitly extensible for exactly this kind of scaling.
+/// - [`BuiltinCategory::Raw`] (`AICAD-122`, D22): reads directly from an
+///   already-materialized `cad_runtime::value::Value::Raw` handle, checked
+///   against the calling session's own `EpochCounter`. Distinct from
+///   `Query`: no `GeometryGraph`/`GeometryQuery` node is pushed and no
+///   further kernel call happens (the raw tier's own kernel-backed *entry*
+///   point, `BuiltinFnId::EnterRaw`, is itself `Query`-category — this
+///   category is for what happens *after* entry). `AICAD-123`/`124`
+///   (functional raw editing, raw-to-safe adoption) extend this category
+///   with further raw-handle operations, some of which do call into the
+///   kernel through the already-materialized handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinCategory {
+    Construction,
+    Query,
+    Value,
+    Raw,
+}
+
+impl BuiltinFnId {
+    /// This builtin's category — see [`BuiltinCategory`]'s own doc
+    /// comment. A `match` here (not a lookup table) so the compiler
+    /// enforces every [`BuiltinFnId::ALL`] entry has exactly one category,
+    /// the same exhaustiveness guarantee `cad_runtime::interp::
+    /// Interpreter::dispatch_builtin`'s own match already gives every
+    /// entry exactly one dispatch path.
+    pub fn category(self) -> BuiltinCategory {
+        match self {
+            BuiltinFnId::Box
+            | BuiltinFnId::Cylinder
+            | BuiltinFnId::Transform
+            | BuiltinFnId::Union
+            | BuiltinFnId::Cut
+            | BuiltinFnId::Intersect
+            | BuiltinFnId::Fillet
+            | BuiltinFnId::Chamfer
+            | BuiltinFnId::Plate
+            | BuiltinFnId::Extrude
+            | BuiltinFnId::Revolve
+            | BuiltinFnId::Hole
+            | BuiltinFnId::Pocket
+            | BuiltinFnId::Mirror
+            | BuiltinFnId::LinearPattern
+            | BuiltinFnId::RadialPattern
+            | BuiltinFnId::Shell
+            | BuiltinFnId::MakeVertex
+            | BuiltinFnId::MakeEdge
+            | BuiltinFnId::MakeWire
+            | BuiltinFnId::MakeFace
+            | BuiltinFnId::MakeFaceOnSurface
+            | BuiltinFnId::MakeShell
+            | BuiltinFnId::MakeSolid
+            | BuiltinFnId::Compound
+            | BuiltinFnId::Sew
+            | BuiltinFnId::Heal
+            | BuiltinFnId::TopologyFaceAt
+            | BuiltinFnId::TopologyEdgeAt
+            | BuiltinFnId::TopologyVertexAt
+            | BuiltinFnId::AdjacentFaceAt
+            | BuiltinFnId::AdoptRaw => BuiltinCategory::Construction,
+            BuiltinFnId::IsValid
+            | BuiltinFnId::Volume
+            | BuiltinFnId::Area
+            | BuiltinFnId::TopologyKindOf
+            | BuiltinFnId::FaceCount
+            | BuiltinFnId::EdgeCount
+            | BuiltinFnId::VertexCount
+            | BuiltinFnId::WireCount
+            | BuiltinFnId::ShellCount
+            | BuiltinFnId::SolidCount
+            | BuiltinFnId::AdjacentFaceCount
+            | BuiltinFnId::IsOuterWire
+            | BuiltinFnId::IsSameEntity
+            | BuiltinFnId::IsForwardOriented
+            | BuiltinFnId::VertexPoint
+            | BuiltinFnId::ClassifyPoint
+            | BuiltinFnId::EnterRaw => BuiltinCategory::Query,
+            BuiltinFnId::RawTopologyKindOf
+            | BuiltinFnId::RemoveFace
+            | BuiltinFnId::ReplaceFace
+            | BuiltinFnId::SplitEdge
+            | BuiltinFnId::MergeFaces => BuiltinCategory::Raw,
+            BuiltinFnId::LineCurve
+            | BuiltinFnId::CircleCurve
+            | BuiltinFnId::ArcCurve
+            | BuiltinFnId::EllipseCurve
+            | BuiltinFnId::EvaluateCurve
+            | BuiltinFnId::BezierCurve
+            | BuiltinFnId::BSplineCurve
+            | BuiltinFnId::TrimCurve
+            | BuiltinFnId::OffsetCurve
+            | BuiltinFnId::ClosestPointOnCurve
+            | BuiltinFnId::InterpolateCurve
+            | BuiltinFnId::PlaneSurface
+            | BuiltinFnId::CylinderSurface
+            | BuiltinFnId::ConeSurface
+            | BuiltinFnId::SphereSurface
+            | BuiltinFnId::TorusSurface
+            | BuiltinFnId::EvaluateSurface
+            | BuiltinFnId::BezierSurface
+            | BuiltinFnId::BSplineSurface
+            | BuiltinFnId::TrimSurface
+            | BuiltinFnId::OffsetSurface
+            | BuiltinFnId::IntersectCurves
+            | BuiltinFnId::IntersectCurveSurface
+            | BuiltinFnId::IntersectSurfaces
+            | BuiltinFnId::ProjectPointToSurface
+            | BuiltinFnId::DistanceCurveCurve
+            | BuiltinFnId::DistanceCurveSurface
+            | BuiltinFnId::DistanceSurfaceSurface => BuiltinCategory::Value,
+        }
+    }
 }
 
 // --- The standard type environment (`AICAD-076A`, `project/DECISION_LOG.md#DL-21`) ---
@@ -314,7 +987,7 @@ impl BuiltinFnId {
     /// Every catalogue entry, in a fixed, stable order (declaration order
     /// above) — used both by `crate::lower::Lowerer::seed_builtins` (to
     /// seed bindings) and by this module's own tests.
-    pub const ALL: [BuiltinFnId; 17] = [
+    pub const ALL: [BuiltinFnId; 82] = [
         BuiltinFnId::Box,
         BuiltinFnId::Cylinder,
         BuiltinFnId::Transform,
@@ -332,6 +1005,71 @@ impl BuiltinFnId {
         BuiltinFnId::LinearPattern,
         BuiltinFnId::RadialPattern,
         BuiltinFnId::Shell,
+        BuiltinFnId::IsValid,
+        BuiltinFnId::Volume,
+        BuiltinFnId::Area,
+        BuiltinFnId::LineCurve,
+        BuiltinFnId::CircleCurve,
+        BuiltinFnId::ArcCurve,
+        BuiltinFnId::EllipseCurve,
+        BuiltinFnId::EvaluateCurve,
+        BuiltinFnId::BezierCurve,
+        BuiltinFnId::BSplineCurve,
+        BuiltinFnId::TrimCurve,
+        BuiltinFnId::OffsetCurve,
+        BuiltinFnId::ClosestPointOnCurve,
+        BuiltinFnId::InterpolateCurve,
+        BuiltinFnId::PlaneSurface,
+        BuiltinFnId::CylinderSurface,
+        BuiltinFnId::ConeSurface,
+        BuiltinFnId::SphereSurface,
+        BuiltinFnId::TorusSurface,
+        BuiltinFnId::EvaluateSurface,
+        BuiltinFnId::BezierSurface,
+        BuiltinFnId::BSplineSurface,
+        BuiltinFnId::TrimSurface,
+        BuiltinFnId::OffsetSurface,
+        BuiltinFnId::IntersectCurves,
+        BuiltinFnId::IntersectCurveSurface,
+        BuiltinFnId::IntersectSurfaces,
+        BuiltinFnId::ProjectPointToSurface,
+        BuiltinFnId::DistanceCurveCurve,
+        BuiltinFnId::DistanceCurveSurface,
+        BuiltinFnId::DistanceSurfaceSurface,
+        BuiltinFnId::MakeVertex,
+        BuiltinFnId::MakeEdge,
+        BuiltinFnId::MakeWire,
+        BuiltinFnId::MakeFace,
+        BuiltinFnId::MakeFaceOnSurface,
+        BuiltinFnId::MakeShell,
+        BuiltinFnId::MakeSolid,
+        BuiltinFnId::Compound,
+        BuiltinFnId::Sew,
+        BuiltinFnId::Heal,
+        BuiltinFnId::TopologyKindOf,
+        BuiltinFnId::FaceCount,
+        BuiltinFnId::EdgeCount,
+        BuiltinFnId::VertexCount,
+        BuiltinFnId::WireCount,
+        BuiltinFnId::ShellCount,
+        BuiltinFnId::SolidCount,
+        BuiltinFnId::TopologyFaceAt,
+        BuiltinFnId::TopologyEdgeAt,
+        BuiltinFnId::TopologyVertexAt,
+        BuiltinFnId::AdjacentFaceCount,
+        BuiltinFnId::AdjacentFaceAt,
+        BuiltinFnId::IsOuterWire,
+        BuiltinFnId::IsSameEntity,
+        BuiltinFnId::IsForwardOriented,
+        BuiltinFnId::VertexPoint,
+        BuiltinFnId::ClassifyPoint,
+        BuiltinFnId::EnterRaw,
+        BuiltinFnId::RawTopologyKindOf,
+        BuiltinFnId::RemoveFace,
+        BuiltinFnId::ReplaceFace,
+        BuiltinFnId::SplitEdge,
+        BuiltinFnId::MergeFaces,
+        BuiltinFnId::AdoptRaw,
     ];
 }
 
@@ -343,9 +1081,17 @@ fn named(name: &str) -> HirTypeRef {
 }
 
 fn list_of(elem: &str) -> HirTypeRef {
+    list_of_ref(named(elem))
+}
+
+/// `List<elem>` for an already-built `elem` type reference (`AICAD-114`) —
+/// [`list_of`]'s own general form, needed for a nested `List<List<Point3>>`
+/// control-net/weight-grid parameter (`bezier_surface`/`bspline_surface`),
+/// which `list_of`'s `&str`-only signature cannot express.
+fn list_of_ref(elem: HirTypeRef) -> HirTypeRef {
     HirTypeRef::Generic {
         name: "List".to_string(),
-        args: vec![named(elem)],
+        args: vec![elem],
         span: Span::new(0, 0),
     }
 }
@@ -363,6 +1109,14 @@ fn vector3_of(elem: &str) -> HirTypeRef {
         args: vec![named(elem)],
         span: Span::new(0, 0),
     }
+}
+
+/// `Vector3<Float>` — the concrete instantiation every existing struct-
+/// typed builtin parameter already uses for a plain direction/vector
+/// (`extrude`/`revolve`/`hole`/... above), reused unchanged for the new
+/// `AICAD-109` curve builtins.
+fn direction3() -> HirTypeRef {
+    vector3_of("Float")
 }
 
 /// One catalogue entry: a runtime-backed function's name and signature,
@@ -544,6 +1298,498 @@ pub fn catalogue() -> Vec<BuiltinFnSpec> {
             ],
             return_ty: named("Geometry"),
         },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsValid,
+            name: "is_valid",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Volume,
+            name: "volume",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Volume"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Area,
+            name: "area",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Area"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::LineCurve,
+            name: "line_curve",
+            params: vec![("origin", named("Point3")), ("direction", direction3())],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::CircleCurve,
+            name: "circle_curve",
+            params: vec![
+                ("center", named("Point3")),
+                ("normal", direction3()),
+                ("radius", named("Length")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ArcCurve,
+            name: "arc_curve",
+            params: vec![
+                ("center", named("Point3")),
+                ("normal", direction3()),
+                ("radius", named("Length")),
+                ("start_angle", named("Angle")),
+                ("end_angle", named("Angle")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EllipseCurve,
+            name: "ellipse_curve",
+            params: vec![
+                ("center", named("Point3")),
+                ("normal", direction3()),
+                ("major_direction", direction3()),
+                ("major_radius", named("Length")),
+                ("minor_radius", named("Length")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EvaluateCurve,
+            name: "evaluate_curve",
+            params: vec![("curve", named("Curve")), ("u", named("Float"))],
+            return_ty: named("CurveEvaluation"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BezierCurve,
+            name: "bezier_curve",
+            params: vec![
+                ("control_points", list_of("Point3")),
+                ("weights", list_of("Float")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BSplineCurve,
+            name: "bspline_curve",
+            params: vec![
+                ("degree", named("Int")),
+                ("control_points", list_of("Point3")),
+                ("knots", list_of("Float")),
+                ("multiplicities", list_of("Int")),
+                ("weights", list_of("Float")),
+                ("periodic", named("Bool")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TrimCurve,
+            name: "trim_curve",
+            params: vec![
+                ("curve", named("Curve")),
+                ("u0", named("Float")),
+                ("u1", named("Float")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::OffsetCurve,
+            name: "offset_curve",
+            params: vec![
+                ("curve", named("Curve")),
+                ("distance", named("Length")),
+                ("normal", direction3()),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ClosestPointOnCurve,
+            name: "closest_point_on_curve",
+            params: vec![("curve", named("Curve")), ("point", named("Point3"))],
+            return_ty: list_of("ClosestPointResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::InterpolateCurve,
+            name: "interpolate_curve",
+            params: vec![
+                ("points", list_of("Point3")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::PlaneSurface,
+            name: "plane_surface",
+            params: vec![("origin", named("Point3")), ("normal", direction3())],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::CylinderSurface,
+            name: "cylinder_surface",
+            params: vec![("axis", named("Axis3")), ("radius", named("Length"))],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ConeSurface,
+            name: "cone_surface",
+            params: vec![("axis", named("Axis3")), ("half_angle", named("Angle"))],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::SphereSurface,
+            name: "sphere_surface",
+            params: vec![("center", named("Point3")), ("radius", named("Length"))],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TorusSurface,
+            name: "torus_surface",
+            params: vec![
+                ("axis", named("Axis3")),
+                ("major_radius", named("Length")),
+                ("minor_radius", named("Length")),
+            ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EvaluateSurface,
+            name: "evaluate_surface",
+            params: vec![
+                ("surface", named("Surface")),
+                ("u", named("Float")),
+                ("v", named("Float")),
+            ],
+            return_ty: named("SurfaceEvaluation"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BezierSurface,
+            name: "bezier_surface",
+            params: vec![
+                ("control_points", list_of_ref(list_of("Point3"))),
+                ("weights", list_of_ref(list_of("Float"))),
+            ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::BSplineSurface,
+            name: "bspline_surface",
+            params: vec![
+                ("degree_u", named("Int")),
+                ("degree_v", named("Int")),
+                ("control_points", list_of_ref(list_of("Point3"))),
+                ("knots_u", list_of("Float")),
+                ("multiplicities_u", list_of("Int")),
+                ("knots_v", list_of("Float")),
+                ("multiplicities_v", list_of("Int")),
+                ("weights", list_of_ref(list_of("Float"))),
+                ("periodic_u", named("Bool")),
+                ("periodic_v", named("Bool")),
+            ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TrimSurface,
+            name: "trim_surface",
+            params: vec![
+                ("base", named("Surface")),
+                ("outer", named("Curve")),
+                ("holes", list_of("Curve")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::OffsetSurface,
+            name: "offset_surface",
+            params: vec![("surface", named("Surface")), ("distance", named("Length"))],
+            return_ty: named("Surface"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IntersectCurves,
+            name: "intersect_curves",
+            params: vec![
+                ("a", named("Curve")),
+                ("b", named("Curve")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: list_of("CurveIntersectionResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IntersectCurveSurface,
+            name: "intersect_curve_surface",
+            params: vec![
+                ("curve", named("Curve")),
+                ("surface", named("Surface")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: list_of("CurveSurfaceIntersectionResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IntersectSurfaces,
+            name: "intersect_surfaces",
+            params: vec![
+                ("a", named("Surface")),
+                ("b", named("Surface")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: list_of("Curve"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ProjectPointToSurface,
+            name: "project_point_to_surface",
+            params: vec![("surface", named("Surface")), ("point", named("Point3"))],
+            return_ty: list_of("SurfaceProjectionResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::DistanceCurveCurve,
+            name: "distance_curve_curve",
+            params: vec![("a", named("Curve")), ("b", named("Curve"))],
+            return_ty: list_of("DistanceResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::DistanceCurveSurface,
+            name: "distance_curve_surface",
+            params: vec![("curve", named("Curve")), ("surface", named("Surface"))],
+            return_ty: list_of("DistanceResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::DistanceSurfaceSurface,
+            name: "distance_surface_surface",
+            params: vec![("a", named("Surface")), ("b", named("Surface"))],
+            return_ty: list_of("DistanceResult"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeVertex,
+            name: "make_vertex",
+            params: vec![("point", named("Point3"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeEdge,
+            name: "make_edge",
+            params: vec![("curve", named("Curve"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeWire,
+            name: "make_wire",
+            params: vec![("edges", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeFace,
+            name: "make_face",
+            params: vec![("wire", named("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeFaceOnSurface,
+            name: "make_face_on_surface",
+            params: vec![
+                ("surface", named("Surface")),
+                ("outer", named("Geometry")),
+                ("holes", list_of("Geometry")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeShell,
+            name: "make_shell",
+            params: vec![("faces", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MakeSolid,
+            name: "make_solid",
+            params: vec![("shell", named("Geometry")), ("voids", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Compound,
+            name: "compound",
+            params: vec![("shapes", list_of("Geometry"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Sew,
+            name: "sew",
+            params: vec![
+                ("shapes", list_of("Geometry")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::Heal,
+            name: "heal",
+            params: vec![("shape", named("Geometry")), ("tolerance", named("Length"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyKindOf,
+            name: "topology_kind_of",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("String"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::FaceCount,
+            name: "face_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EdgeCount,
+            name: "edge_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::VertexCount,
+            name: "vertex_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::WireCount,
+            name: "wire_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ShellCount,
+            name: "shell_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::SolidCount,
+            name: "solid_count",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyFaceAt,
+            name: "topology_face_at",
+            params: vec![("shape", named("Geometry")), ("index", named("Int"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyEdgeAt,
+            name: "topology_edge_at",
+            params: vec![("shape", named("Geometry")), ("index", named("Int"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::TopologyVertexAt,
+            name: "topology_vertex_at",
+            params: vec![("shape", named("Geometry")), ("index", named("Int"))],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::AdjacentFaceCount,
+            name: "adjacent_face_count",
+            params: vec![("shape", named("Geometry")), ("edge_index", named("Int"))],
+            return_ty: named("Int"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::AdjacentFaceAt,
+            name: "adjacent_face_at",
+            params: vec![
+                ("shape", named("Geometry")),
+                ("edge_index", named("Int")),
+                ("adjacent_index", named("Int")),
+            ],
+            return_ty: named("Geometry"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsOuterWire,
+            name: "is_outer_wire",
+            params: vec![("face", named("Geometry")), ("wire", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsSameEntity,
+            name: "is_same_entity",
+            params: vec![("a", named("Geometry")), ("b", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::IsForwardOriented,
+            name: "is_forward_oriented",
+            params: vec![("shape", named("Geometry"))],
+            return_ty: named("Bool"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::VertexPoint,
+            name: "vertex_point",
+            params: vec![("vertex", named("Geometry"))],
+            return_ty: named("Point3"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ClassifyPoint,
+            name: "classify_point",
+            params: vec![
+                ("solid", named("Geometry")),
+                ("point", named("Point3")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("String"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::EnterRaw,
+            name: "enter_raw",
+            params: vec![("target", named("Geometry"))],
+            return_ty: named("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::RawTopologyKindOf,
+            name: "raw_topology_kind_of",
+            params: vec![("raw", named("Raw"))],
+            return_ty: named("String"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::RemoveFace,
+            name: "remove_face",
+            params: vec![
+                ("raw", named("Raw")),
+                ("face_indices", list_of("Int")),
+                ("heal", named("Bool")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::ReplaceFace,
+            name: "replace_face",
+            params: vec![
+                ("raw", named("Raw")),
+                ("face_index", named("Int")),
+                ("replacement", named("Raw")),
+                ("heal", named("Bool")),
+                ("tolerance", named("Length")),
+            ],
+            return_ty: named("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::SplitEdge,
+            name: "split_edge",
+            params: vec![("raw", named("Raw")), ("params", list_of("Float"))],
+            return_ty: list_of("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::MergeFaces,
+            name: "merge_faces",
+            params: vec![("raw", named("Raw")), ("face_indices", list_of("Int"))],
+            return_ty: list_of("Raw"),
+        },
+        BuiltinFnSpec {
+            id: BuiltinFnId::AdoptRaw,
+            name: "adopt",
+            params: vec![("raw", named("Raw"))],
+            return_ty: named("Geometry"),
+        },
     ]
 }
 
@@ -561,6 +1807,48 @@ mod tests {
                 1,
                 "expected exactly one catalogue entry for {id:?}"
             );
+        }
+    }
+
+    /// `project/DECISION_LOG.md#DL-23`'s own "category/effect metadata"
+    /// requirement: every catalogue entry has exactly one
+    /// [`BuiltinCategory`], `BuiltinFnId::category` is a total match (a
+    /// compile error, not a test failure, if a variant is ever missed —
+    /// this test is the *evidence* that guarantee holds, not the guarantee
+    /// itself), and a `Construction` builtin always returns `Geometry`
+    /// while a `Query` builtin never does — the exact distinction
+    /// `cad_feature_graph::graph::FeatureGraph::resolve_geometry_expr`'s
+    /// own `is_geometry_type` check already relies on to keep a
+    /// scalar-returning query out of the feature DAG.
+    #[test]
+    fn every_catalogue_entry_has_a_category_consistent_with_its_return_type() {
+        for spec in catalogue() {
+            let is_geometry_return = matches!(
+                &spec.return_ty,
+                HirTypeRef::Named { name, .. } if name == "Geometry"
+            );
+            match spec.id.category() {
+                BuiltinCategory::Construction => assert!(
+                    is_geometry_return,
+                    "'{}' is Construction but does not return Geometry",
+                    spec.name
+                ),
+                BuiltinCategory::Query => assert!(
+                    !is_geometry_return,
+                    "'{}' is Query but returns Geometry",
+                    spec.name
+                ),
+                BuiltinCategory::Value => assert!(
+                    !is_geometry_return,
+                    "'{}' is Value but returns Geometry",
+                    spec.name
+                ),
+                BuiltinCategory::Raw => assert!(
+                    !is_geometry_return,
+                    "'{}' is Raw but returns Geometry",
+                    spec.name
+                ),
+            }
         }
     }
 

@@ -102,11 +102,21 @@
 //! geometric-construction tolerance directly (`native/occt_bridge/src/
 //! aicad_occt_bridge.cpp`'s `aicad_occt_shell`/`aicad_occt_offset`, both
 //! already pass a literal `1e-6` to their own OCCT join calls) -- not a
-//! query-matching policy, so DL-26 does not apply to it.
+//! query-matching policy, so DL-26's "no *new* domain may invent a
+//! default" restriction does not apply to it. It *is* however a real
+//! instance of DL-26 domain 2 ("modeling/construction" --
+//! `project/DECISION_LOG.md#DL-26`), so `AICAD-106` gives it the typed
+//! [`cad_units::ConstructionTolerance`] wrapper ([`point_classify_tolerance`])
+//! rather than leaving it a bare `f64` -- the exact magnitude (`1e-7`,
+//! deliberately distinct from `ConstructionTolerance::
+//! SHELL_OFFSET_DEFAULT_MAGNITUDE`'s own `1e-6`) is unchanged, never
+//! silently reused from a sibling domain/call site per DL-26's own "no
+//! domain may silently inherit another domain's values" rule.
 
 use cad_kernel_api::{Direction3 as KernelDirection3, KernelError, KernelResult, Vector3};
 use cad_occt_bridge::{PointClassification, Shape};
 use cad_references::{AnyRef, EntityKind, FeatureAnchor};
+use cad_units::ConstructionTolerance;
 
 use crate::predicate::{
     AdjacencyTarget, BoundaryKind, DirectionComparison, GeometryPredicate, RelativeDirection,
@@ -114,9 +124,17 @@ use crate::predicate::{
 };
 use crate::value::{Comparison, Direction3, Frame3, Magnitude, Point3 as QueryPoint3};
 
-/// An OCCT-algorithm input for [`Shape::classify_point`], not a
-/// query-matching tolerance policy -- see this module's own doc comment.
-const POINT_CLASSIFY_TOLERANCE: f64 = 1e-7;
+/// The raw magnitude behind [`point_classify_tolerance`] -- see this
+/// module's own doc comment for why this exact value (not
+/// `ConstructionTolerance::SHELL_OFFSET_DEFAULT_MAGNITUDE`) is used here.
+const POINT_CLASSIFY_TOLERANCE_MAGNITUDE: f64 = 1e-7;
+
+/// [`Shape::classify_point`]'s own DL-26 domain-2 (modeling/construction)
+/// tolerance, typed per `AICAD-106` -- see this module's own doc comment.
+fn point_classify_tolerance() -> ConstructionTolerance {
+    ConstructionTolerance::new(POINT_CLASSIFY_TOLERANCE_MAGNITUDE)
+        .expect("POINT_CLASSIFY_TOLERANCE_MAGNITUDE is a known-valid finite positive magnitude")
+}
 
 /// A relative floating-point-representation-noise allowance for
 /// [`approx_eq`] -- see this module's own doc comment on why this is not
@@ -549,10 +567,10 @@ fn eval_contains(candidate: &Candidate<'_>, point: &QueryPoint3) -> EvalResult<b
         return Ok(false);
     }
     let kernel_point = to_kernel_point(*point);
-    match candidate
-        .shape
-        .classify_point(kernel_point, POINT_CLASSIFY_TOLERANCE)
-    {
+    match candidate.shape.classify_point(
+        kernel_point,
+        point_classify_tolerance().canonical_magnitude(),
+    ) {
         Ok(classification) => Ok(matches!(
             classification,
             PointClassification::Inside | PointClassification::OnBoundary
@@ -735,7 +753,7 @@ fn eval_inside<'ctx>(
     for volume in &volumes {
         let classification = volume
             .shape
-            .classify_point(point, POINT_CLASSIFY_TOLERANCE)?;
+            .classify_point(point, point_classify_tolerance().canonical_magnitude())?;
         if matches!(
             classification,
             PointClassification::Inside | PointClassification::OnBoundary

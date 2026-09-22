@@ -470,6 +470,146 @@ unsafe extern "C" {
         tolerance: f64,
         out_classification: *mut c_int,
     ) -> c_int;
+
+    // --- AICAD-119: general topology construction ---
+    pub fn aicad_occt_make_vertex(
+        context: *mut aicad_occt_context_t,
+        point: *const f64, // [f64; 3]
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_plane(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        origin: *const f64, // [f64; 3]
+        normal: *const f64, // [f64; 3]
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_cylinder(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        axis_origin: *const f64,    // [f64; 3]
+        axis_direction: *const f64, // [f64; 3]
+        radius: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_cone(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        axis_origin: *const f64,    // [f64; 3]
+        axis_direction: *const f64, // [f64; 3]
+        half_angle_radians: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_sphere(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        center: *const f64, // [f64; 3]
+        radius: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_torus(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        axis_origin: *const f64,    // [f64; 3]
+        axis_direction: *const f64, // [f64; 3]
+        major_radius: f64,
+        minor_radius: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_shell(
+        context: *mut aicad_occt_context_t,
+        faces: *const aicad_shape_handle_t,
+        face_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_solid(
+        context: *mut aicad_occt_context_t,
+        outer_shell: aicad_shape_handle_t,
+        voids: *const aicad_shape_handle_t,
+        void_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_compound(
+        context: *mut aicad_occt_context_t,
+        shapes: *const aicad_shape_handle_t,
+        shape_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+
+    // --- AICAD-120: sewing/healing ---
+    pub fn aicad_occt_sew(
+        context: *mut aicad_occt_context_t,
+        shapes: *const aicad_shape_handle_t,
+        shape_count: usize,
+        tolerance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+        out_lineage: *mut aicad_lineage_handle_t,
+        out_report: *mut aicad_sew_report_t,
+    ) -> c_int;
+    pub fn aicad_occt_heal(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        tolerance: f64,
+        out_handle: *mut aicad_shape_handle_t,
+        out_report: *mut aicad_heal_report_t,
+    ) -> c_int;
+
+    // --- AICAD-121: safe topology inspection ---
+    pub fn aicad_occt_shape_kind(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_kind: *mut c_int,
+    ) -> c_int;
+    pub fn aicad_occt_shape_is_forward_oriented(
+        context: *mut aicad_occt_context_t,
+        handle: aicad_shape_handle_t,
+        out_is_forward: *mut c_int,
+    ) -> c_int;
+
+    // --- AICAD-123: functional raw topology editing ---
+    pub fn aicad_occt_remove_face(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        faces_to_remove: *const aicad_shape_handle_t,
+        face_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_replace_face(
+        context: *mut aicad_occt_context_t,
+        shape_handle: aicad_shape_handle_t,
+        old_face_handle: aicad_shape_handle_t,
+        new_face_handle: aicad_shape_handle_t,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_split_edge(
+        context: *mut aicad_occt_context_t,
+        edge_handle: aicad_shape_handle_t,
+        params: *const f64,
+        param_count: usize,
+        out_handles: *mut aicad_shape_handle_t,
+        out_handle_count: *mut usize,
+    ) -> c_int;
+    pub fn aicad_occt_merge_faces(
+        context: *mut aicad_occt_context_t,
+        faces: *const aicad_shape_handle_t,
+        face_count: usize,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
 }
 
 /// Mirrors `aicad_tessellation_counts_t` field-for-field: `size_t
@@ -482,7 +622,10 @@ pub struct aicad_tessellation_counts_t {
 
 /// Mirrors `aicad_validation_report_t` field-for-field: `int is_valid;
 /// size_t invalid_vertex_count; size_t invalid_edge_count; size_t
-/// invalid_wire_count; size_t invalid_face_count;`.
+/// invalid_wire_count; size_t invalid_face_count; size_t
+/// invalid_shell_count; size_t invalid_solid_count;`. The last two fields
+/// were added by `AICAD-119` alongside this batch's own shell/solid
+/// construction paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct aicad_validation_report_t {
@@ -491,4 +634,30 @@ pub struct aicad_validation_report_t {
     pub invalid_edge_count: usize,
     pub invalid_wire_count: usize,
     pub invalid_face_count: usize,
+    pub invalid_shell_count: usize,
+    pub invalid_solid_count: usize,
+}
+
+/// Mirrors `aicad_sew_report_t` field-for-field: `int changed; int
+/// is_valid; size_t free_edge_count; size_t multiple_edge_count; size_t
+/// degenerated_shape_count;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_sew_report_t {
+    pub changed: c_int,
+    pub is_valid: c_int,
+    pub free_edge_count: usize,
+    pub multiple_edge_count: usize,
+    pub degenerated_shape_count: usize,
+}
+
+/// Mirrors `aicad_heal_report_t` field-for-field: `int changed; int
+/// is_valid_before; int is_valid_after; int kind_changed;`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct aicad_heal_report_t {
+    pub changed: c_int,
+    pub is_valid_before: c_int,
+    pub is_valid_after: c_int,
+    pub kind_changed: c_int,
 }
