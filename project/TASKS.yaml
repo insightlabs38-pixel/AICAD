@@ -4323,3 +4323,457 @@ tasks:
   - the Stage-5 gate would need to waive a failed invariant or conceal a known limitation
   - Stage-5 evidence materially invalidates a provisional Stage-6 architecture/semantic assumption; record it for owner reconciliation
     instead of silently promoting Stage 6
+- id: AICAD-131
+  stage: 6
+  status: todo
+  batch: S6-00
+  title: Stabilize Stage-5 compatibility and close prerequisite geometry/dependency gaps
+  depends_on: []
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Freeze the Stage-5 spatial, query, reference, lineage, exact-geometry, and incremental-regeneration contracts Stage 6 relies on, and close the two known Stage-5 prerequisite gaps before assembly implementation begins, without reopening D26-D30.
+  acceptance:
+    - Compatibility fixtures cover nested source identity, stable semantic references, pose-safe geometry subjects, lineage/adoption evidence, exact-geometry behavior, and incremental regeneration before Stage-6 assembly semantics are layered on top.
+    - Bezier/B-spline curves and surfaces, plus trimmed surfaces, can be converted into real kernel topology through `make_edge` / `make_face_on_surface` for supported mathematically/topologically valid inputs; supported cases no longer return `UNSUPPORTED_TOPOLOGY_CONSTRUCTION`, while invalid inputs fail deterministically with structured diagnostics.
+    - `List<Geometry>` builtin parameters participate in `geometry_inputs` for both `FeatureGraph` and `TraceFeatureGraph`, and generic-list geometry dependencies drive correct dirty-set / incremental invalidation rather than remaining invisible.
+    - Focused regression fixtures prove the new freeform-to-topology and `List<Geometry>` dependency behavior without weakening existing Stage-4/5 fail-closed semantic-reference, lineage, exactness, or determinism guarantees.
+    - AICAD-132 and later Stage-6 work may rely on these two repaired prerequisite paths only after the AICAD-131 evidence and required tests pass.
+  required_checks: [focused Stage-5 compatibility fixtures, freeform-to-kernel-topology construction and invalid-input diagnostics, List<Geometry> geometry_inputs and dirty-set invalidation fixtures for FeatureGraph and TraceFeatureGraph, existing semantic-reference harness, existing active example suite]
+  report: project/reports/AICAD-131.md
+  escalate_if: [actual Stage-5 behavior contradicts D26-D30 or prevents cross-instance semantic references, either prerequisite fix requires new public semantics beyond approved Stage-5 contracts, either fix cannot be completed without weakening an existing invariant or gate]
+
+- id: AICAD-132
+  stage: 6
+  status: todo
+  batch: S6-01
+  title: Implement general interfaces/protocols and bounded generics
+  depends_on: [AICAD-131]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Provide the D27 language machinery used by assemblies without assembly-only compiler magic.
+  acceptance: [interfaces/conformance and bounded generics are ordinary typed language mechanisms, mechanical-interface use requires no named compiler special case, diagnostics are deterministic and source-traceable]
+  required_checks: [positive and negative conformance fixtures, bounded-generic type tests, deterministic diagnostics]
+  report: project/reports/AICAD-132.md
+  escalate_if: [D27 cannot express required mechanical-interface conformance without new public semantics]
+
+- id: AICAD-133
+  stage: 6
+  status: todo
+  batch: S6-01
+  title: Implement assembly semantic identity primitives
+  depends_on: [AICAD-131]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Establish the distinct D26 assembly identity domains before assembly realization exists.
+  acceptance: [definition identity logical-instance identity nested-occurrence/path identity configuration-slot identity external-asset identity semantic-topology identity and BOM identity remain distinct, identities are deterministic reproducible and type-safe, no identity derives from topology indices solver variables filesystem paths or BOM rows]
+  required_checks: [identity-domain type tests, deterministic serialization/rebuild tests, collision/adversarial fixtures]
+  report: project/reports/AICAD-133.md
+  escalate_if: [any required identity domain would have to collapse or alias another D26 domain]
+
+- id: AICAD-134
+  stage: 6
+  status: todo
+  batch: S6-02
+  title: Implement component-definition and logical-instance semantic IR
+  depends_on: [AICAD-132, AICAD-133]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Represent reusable component definitions separately from logical instances and realized geometry.
+  acceptance: [definitions and instances are distinct semantic entities, shared definitions stay shared under reuse and parameterization, realized geometry occurrence is never authoritative assembly identity]
+  required_checks: [definition reuse fixtures, repeated-instance identity tests, parameterized definition rebuild tests]
+  report: project/reports/AICAD-134.md
+  escalate_if: [ordinary language abstraction would erase feature identity dependencies provenance incremental behavior or reference support]
+
+- id: AICAD-135
+  stage: 6
+  status: todo
+  batch: S6-02
+  title: Implement local/world frames and rigid instance poses
+  depends_on: [AICAD-134]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Reuse Stage-5 spatial semantics for deterministic instance pose composition and inversion.
+  acceptance: [local/world pose composition is typed and deterministic, pose changes preserve logical identity and semantic-reference identity, frame conventions are explicit and kernel-neutral]
+  required_checks: [composition/inverse round trips, nested-frame fixtures, pose-only reference-durability tests]
+  report: project/reports/AICAD-135.md
+  escalate_if: [Stage-5 frame semantics cannot support deterministic nested instance poses]
+
+- id: AICAD-136
+  stage: 6
+  status: todo
+  batch: S6-02
+  title: Implement nested-assembly dependency graph and cycle diagnostics
+  depends_on: [AICAD-134, AICAD-135]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Model assembly nesting/dependencies separately from solver relation graphs.
+  acceptance: [nested definitions and instances resolve deterministically, shared definitions remain shared, illegal cycles fail with source-traceable diagnostics, assembly dependency graph is not conflated with numerical solver graph]
+  required_checks: [nested/reused definition fixtures, cycle diagnostics, deterministic graph-order tests]
+  report: project/reports/AICAD-136.md
+  escalate_if: [nesting semantics require a new public identity rule]
+
+- id: AICAD-137
+  stage: 6
+  status: todo
+  batch: S6-03
+  title: Implement assembly-level semantic-reference addressing
+  depends_on: [AICAD-133, AICAD-136]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Compose logical instance paths with Stage-4/5 semantic geometry recipes for cross-instance references.
+  acceptance: [pose-only changes preserve references, cross-instance ambiguity fails closed, definition/configuration changes follow explicit durability rules, no topology index or native handle becomes semantic identity]
+  required_checks: [cross-instance resolved ambiguous broken fixtures, pose perturbation corpus, split/merge/edit lineage fixtures]
+  report: project/reports/AICAD-137.md
+  escalate_if: [Stage-5 geometry/reference behavior prevents fail-closed cross-instance semantic references]
+
+- id: AICAD-138
+  stage: 6
+  status: todo
+  batch: S6-03
+  title: Implement reusable mechanical-interface semantics
+  depends_on: [AICAD-132, AICAD-137]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Build mechanical interfaces on D27 general nominal interfaces/protocols plus typed frames references and parameters.
+  acceptance: [mechanical interfaces are ordinary reusable semantic values/conformance contracts, static conformance and geometry-dependent compatibility remain distinguishable, no assembly-only compiler intrinsic is introduced]
+  required_checks: [interface conformance fixtures, typed frame/reference compatibility tests, incompatible-interface diagnostics]
+  report: project/reports/AICAD-138.md
+  escalate_if: [mechanical interfaces require compiler magic outside D27]
+
+- id: AICAD-139
+  stage: 6
+  status: todo
+  batch: S6-04
+  title: Implement solver-neutral mate relation IR
+  depends_on: [AICAD-137, AICAD-138]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Represent mates as AICAD-owned typed semantic relations over stable assembly subjects.
+  acceptance: [mate identity subjects and semantics are inspectable without a solver, solver IDs weights and native expressions are absent from public semantics, source/provenance evidence is stable]
+  required_checks: [mate IR round trips, relation identity tests, solver-absence inspection tests]
+  report: project/reports/AICAD-139.md
+  escalate_if: [a solver backend would define public mate meaning]
+
+- id: AICAD-140
+  stage: 6
+  status: todo
+  batch: S6-04
+  title: Implement solver-neutral joint and coordinate IR
+  depends_on: [AICAD-139]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Represent approved joint families and coordinates independently of backend parameterization.
+  acceptance: [joint families and coordinates are typed dimensionally correct and inspectable without a solver, limits and coordinate conventions are explicit, backend parameterization is non-authoritative]
+  required_checks: [joint-family type fixtures, coordinate/limit validation, solver-absence inspection tests]
+  report: project/reports/AICAD-140.md
+  escalate_if: [joint semantics cannot be stated independently of a numerical backend]
+
+- id: AICAD-141
+  stage: 6
+  status: todo
+  batch: S6-04
+  title: Checkpoint A - semantic assembly graph interfaces references mates and joints
+  depends_on: [AICAD-140]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Prove the semantic assembly model works without any numerical solver.
+  acceptance: [a nested multi-instance fixture resolves definitions paths frames semantic references interfaces mates and joints with no numerical solver present, serialized observation and identities are deterministic, no topology-index or solver-native identity leaks]
+  required_checks: [Checkpoint-A canonical fixture, clean rebuild determinism, semantic-reference perturbation suite]
+  report: project/reports/AICAD-141.md
+  escalate_if: [Checkpoint A requires weakening D26 D27 or D28]
+
+- id: AICAD-142
+  stage: 6
+  status: todo
+  batch: S6-05
+  title: Define numerical assembly-solver adapter contract
+  depends_on: [AICAD-141]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Lower AICAD semantic relation graphs to replaceable numerical backends and map results back deterministically.
+  acceptance: [adapter contract accepts semantic-neutral numeric inputs and returns poses residuals convergence and diagnostics, mock/alternate adapters are conformance-testable, backend objects never become public semantic identifiers]
+  required_checks: [mock adapter conformance, alternate-adapter mapping fixture, structured failure tests]
+  report: project/reports/AICAD-142.md
+  escalate_if: [replaceable adapter boundary cannot preserve AICAD-owned semantics]
+
+- id: AICAD-143
+  stage: 6
+  status: todo
+  batch: S6-05
+  title: Implement deterministic grounding initial-pose and representative-pose semantics
+  depends_on: [AICAD-142]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Make gauge/root and underconstrained representative-pose policy explicit before relying on a solver.
+  acceptance: [grounding/root policy is explicit, underconstrained assemblies report remaining DOF, relation insertion order and initial guesses do not arbitrarily change source-visible pose semantics]
+  required_checks: [gauge-equivalence fixtures, relation-order permutations, initial-guess perturbations, underconstraint fixtures]
+  report: project/reports/AICAD-143.md
+  escalate_if: [deterministic representative-pose policy is insufficient for an approved relation family]
+
+- id: AICAD-144
+  stage: 6
+  status: todo
+  batch: S6-05
+  title: Implement baseline assembly numerical solver
+  depends_on: [AICAD-142, AICAD-143]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Provide one bounded deterministic numerical backend behind the solver-neutral adapter.
+  acceptance: [baseline relation set solves through the adapter, convergence/residual evidence is structured, failure never leaves partial authoritative poses, backend implementation does not redefine public relation semantics]
+  required_checks: [baseline relation solve corpus, deterministic repeated solves, nonconvergence/failure fixtures]
+  report: project/reports/AICAD-144.md
+  escalate_if: [numerical behavior would need to define public mate/joint semantics]
+
+- id: AICAD-145
+  stage: 6
+  status: todo
+  batch: S6-06
+  title: Implement degrees-of-freedom analysis
+  depends_on: [AICAD-142, AICAD-144]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Report remaining semantic DOF with explanatory assembly evidence.
+  acceptance: [known mechanisms report expected DOF, results identify relevant semantic subjects/relations, numerical rank thresholds are explicit solver-policy evidence rather than identity]
+  required_checks: [free rigid body hinge slider fixed and nested mechanism DOF fixtures, threshold-boundary tests]
+  report: project/reports/AICAD-145.md
+  escalate_if: [DOF semantics cannot be separated from backend-specific variables]
+
+- id: AICAD-146
+  stage: 6
+  status: todo
+  batch: S6-06
+  title: Implement redundancy and conflict diagnostics
+  depends_on: [AICAD-144, AICAD-145]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Distinguish inconsistent and redundant assembly relations using stable semantic evidence.
+  acceptance: [conflict redundancy and ordinary underconstraint are structurally distinct, diagnostics reference stable relations instances and semantic refs, native solver variables are not the user contract]
+  required_checks: [redundant/contradictory relation fixtures, minimal explanatory evidence tests, deterministic diagnostic ordering]
+  report: project/reports/AICAD-146.md
+  escalate_if: [structured conflict/redundancy cannot be expressed without exposing backend variables]
+
+- id: AICAD-147
+  stage: 6
+  status: todo
+  batch: S6-06
+  title: Implement baseline kinematic evaluation
+  depends_on: [AICAD-140, AICAD-144, AICAD-145]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Evaluate approved mechanisms over typed bounded joint coordinates while preserving assembly identity.
+  acceptance: [joint-coordinate evaluation respects typed limits and deterministic poses, instance/reference identity is preserved through motion, dynamics and time integration remain out of scope]
+  required_checks: [hinge slider and nested mechanism sweeps, coordinate-limit fixtures, reference durability through motion]
+  report: project/reports/AICAD-147.md
+  escalate_if: [kinematic evaluation requires unapproved dynamics or mutable identity semantics]
+
+- id: AICAD-148
+  stage: 6
+  status: todo
+  batch: S6-06
+  title: Checkpoint B - solver-neutral pose DOF conflict and kinematic realization
+  depends_on: [AICAD-146, AICAD-147]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Prove deterministic solver-neutral realization across canonical mechanisms.
+  acceptance: [hinge slider and nested mechanism fixtures pass pose DOF conflict and motion checks, adapter replacement preserves public meaning, relation-order perturbation yields equivalent normalized results]
+  required_checks: [Checkpoint-B corpus, adapter substitution test, relation-order and initial-pose perturbation campaign]
+  report: project/reports/AICAD-148.md
+  escalate_if: [Checkpoint B requires backend-specific semantics or nondeterministic observable pose]
+
+- id: AICAD-149
+  stage: 6
+  status: todo
+  batch: S6-07
+  title: Implement immutable configuration overlays
+  depends_on: [AICAD-133, AICAD-148]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Implement D29 configurations as immutable semantic overlays over stable authoritative model state.
+  acceptance: [configuration identity and resolution are deterministic, base model state is not destructively mutated, overlays preserve provenance and logical identity]
+  required_checks: [overlay immutability tests, deterministic resolution/rebuild, base-state preservation fixtures]
+  report: project/reports/AICAD-149.md
+  escalate_if: [configuration semantics require destructive mutation or identity loss]
+
+- id: AICAD-150
+  stage: 6
+  status: todo
+  batch: S6-07
+  title: Implement configuration validity rules
+  depends_on: [AICAD-149]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Evaluate typed declarative configuration rules without a bespoke hidden rule language.
+  acceptance: [rules evaluate deterministically with source evidence, dependency cycles are diagnosed where applicable, ordinary expressions are reused when sufficient]
+  required_checks: [valid/invalid rule fixtures, cycle diagnostics, deterministic evaluation order]
+  report: project/reports/AICAD-150.md
+  escalate_if: [required configuration policy cannot be represented by D29 plus existing language semantics]
+
+- id: AICAD-151
+  stage: 6
+  status: todo
+  batch: S6-07
+  title: Implement suppression with stable logical identity
+  depends_on: [AICAD-149, AICAD-150]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Make suppression an inactive overlay state rather than deletion.
+  acceptance: [suppressed subjects remain traceable and identities are not recycled, references mates and BOM behavior across suppression are deterministic and explicit, reactivation restores the same logical subject]
+  required_checks: [suppress/reactivate identity fixtures, reference/mate behavior tests, BOM suppression tests]
+  report: project/reports/AICAD-151.md
+  escalate_if: [suppression would require destructive deletion or identity recycling]
+
+- id: AICAD-152
+  stage: 6
+  status: todo
+  batch: S6-08
+  title: Implement replacement and variant selection
+  depends_on: [AICAD-132, AICAD-138, AICAD-149, AICAD-151]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Bind stable logical slots to compatible concrete definitions while keeping logical and concrete identities distinct.
+  acceptance: [replacement uses D27 conformance, unavailable semantic outputs fail closed, provenance references and BOM explicitly reflect selected variants without overwriting slot identity]
+  required_checks: [compatible/incompatible replacement fixtures, missing-output fail-closed tests, identity/provenance/BOM variant tests]
+  report: project/reports/AICAD-152.md
+  escalate_if: [replacement cannot preserve logical identity/provenance or needs assembly-only conformance semantics]
+
+- id: AICAD-153
+  stage: 6
+  status: todo
+  batch: S6-08
+  title: Implement external-asset component identity and provenance
+  depends_on: [AICAD-133, AICAD-137]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Implement D30 stable external-asset identity independent of paths import indices and native handles.
+  acceptance: [asset records include content digest importer/settings and provenance identity, changed content or import settings invalidate deterministically, filesystem path STEP entity number and native index are non-authoritative]
+  required_checks: [same-content/different-path fixtures, changed-content invalidation, importer-setting identity tests, imported-reference tests]
+  report: project/reports/AICAD-153.md
+  escalate_if: [external assets require filesystem or kernel identity]
+
+- id: AICAD-154
+  stage: 6
+  status: todo
+  batch: S6-09
+  title: Implement deterministic BOM semantics
+  depends_on: [AICAD-134, AICAD-151, AICAD-152, AICAD-153]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Derive BOM structure from semantic definitions instances configurations and purchasing identity rather than geometry occurrences.
+  acceptance: [nested quantities aggregate deterministically, suppression replacement and external components change BOM only through explicit semantic rules, purchasing identity remains distinct from assembly and topology identity]
+  required_checks: [nested quantity fixtures, suppression/replacement BOM tests, deterministic ordering and identity tests]
+  report: project/reports/AICAD-154.md
+  escalate_if: [BOM generation would collapse D26 identity domains]
+
+- id: AICAD-155
+  stage: 6
+  status: todo
+  batch: S6-09
+  title: Implement static interference/collision query baseline
+  depends_on: [AICAD-137, AICAD-148, AICAD-151, AICAD-152]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Provide deterministic static interference results over semantic assembly subjects using explicit tolerance policy.
+  acceptance: [results identify logical instances and semantic geometry subjects, approved contact states are distinguished under explicit tolerance policy, ordering is independent of native traversal/acceleration structure]
+  required_checks: [separated/touching/interfering fixtures, tolerance-boundary tests, deterministic-order tests, configuration/replacement fixtures]
+  report: project/reports/AICAD-155.md
+  escalate_if: [Stage-5 query/tolerance contracts are insufficient for deterministic assembly interference]
+
+- id: AICAD-156
+  stage: 6
+  status: todo
+  batch: S6-09
+  title: Checkpoint C - configurations external assets BOM and interference
+  depends_on: [AICAD-150, AICAD-151, AICAD-152, AICAD-153, AICAD-154, AICAD-155]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Prove configuration and engineering-output semantics on one nested configurable assembly.
+  acceptance: [fixture exercises suppression replacement imported component BOM and interference, logical references are preserved or explicitly broken according to documented rules, rebuild depends only on source configuration and locked asset identity]
+  required_checks: [Checkpoint-C canonical fixture, clean rebuild determinism, configuration churn and locked-asset perturbations]
+  report: project/reports/AICAD-156.md
+  escalate_if: [Checkpoint C requires destructive configuration identity or path/native external-asset identity]
+
+- id: AICAD-157
+  stage: 6
+  status: todo
+  batch: S6-10
+  title: Build canonical realistic assembly corpus
+  depends_on: [AICAD-156]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Maintain realistic source-first assembly fixtures with machine-checked engineering expectations.
+  acceptance: [hinge slider gearbox-or-actuator nested-or-robot-arm vendor-component and replacement/configuration fixtures are covered, expected pose DOF conflicts interference BOM and reference outcomes are machine checked, fixtures use current public source syntax]
+  required_checks: [automated canonical assembly corpus, clean rebuild and deterministic-output checks]
+  report: project/reports/AICAD-157.md
+  escalate_if: [a realistic fixture exposes a semantic gap requiring a new owner decision]
+
+- id: AICAD-158
+  stage: 6
+  status: todo
+  batch: S6-11
+  title: Run adversarial identity solver configuration and bounded-scale campaign
+  depends_on: [AICAD-157]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Stress the semantic model against ambiguity singularity churn nesting and bounded scale without relaxing invariants.
+  acceptance: [symmetry singularity overconstraint underconstraint nesting configuration churn imported geometry and larger bounded instance sets never cause arbitrary identity pose or reference reassignment, resource limits are measured and explicit, zero silent-wrong identity/reference outcomes are accepted]
+  required_checks: [adversarial campaign, repeated-order/seed perturbations where applicable, bounded resource measurements]
+  report: project/reports/AICAD-158.md
+  escalate_if: [adversarial evidence exposes nondeterministic public semantics or requires invariant weakening]
+
+- id: AICAD-159
+  stage: 6
+  status: todo
+  batch: S6-11
+  title: Expose structured assembly CLI/API inspection and maintain current examples
+  depends_on: [AICAD-157, AICAD-158]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Make assembly semantics inspectable through stable structured tooling and maintained executable examples.
+  acceptance: [versioned machine-stable output exposes definitions instances paths interfaces relations poses DOF conflicts configurations BOM and interference without private solver/native objects, active assembly examples run automatically, human help/docs use canonical terminology]
+  required_checks: [structured-schema tests, CLI golden tests, active example suite, documentation command smoke]
+  report: project/reports/AICAD-159.md
+  escalate_if: [stable inspection requires exposing solver/native implementation identity]
+
+- id: AICAD-160
+  stage: 6
+  status: todo
+  batch: S6-12
+  title: Prepare Stage-6 owner hard-gate packet
+  depends_on: [AICAD-159]
+  plan_references:
+  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+  objective: Produce the final evidence packet and recommendation without promoting or implementing Stage 7.
+  acceptance: [Checkpoints A B and C are complete, canonical and adversarial evidence demonstrates solver replaceability deterministic identity pose and configuration behavior structured tooling and current examples, all material limitations and resource observations are explicit, exactly one advisory PASS PASS-WITH-CONDITIONS or DO-NOT-PASS recommendation is recorded, no Stage-7 global IDs are assigned and no Stage-7 implementation begins]
+  required_checks: [cargo fmt/clippy/workspace test, complete active example suite, semantic-reference and assembly adversarial campaigns, representative clean-user CLI/build checks]
+  report: project/reports/AICAD-160.md
+  escalate_if: [the Stage-6 gate would need to waive a failed invariant conceal a material limitation or invent a Stage-7 owner decision]

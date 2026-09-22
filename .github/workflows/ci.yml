@@ -7,6 +7,7 @@ on:
       - claude/aicad-stage4-transition
       - claude/aicad-stage4-dev
       - claude/aicad-stage5-transition
+      - claude/aicad-stage6-transition
   pull_request:
   workflow_dispatch:
 
@@ -40,6 +41,9 @@ jobs:
       - name: AICAD-079C transition diff whitespace check
         if: github.ref_name == 'claude/aicad-stage4-transition'
         run: git diff --check 9e2db88cbbfe9097364fcbfc3ab8115b07b63efd HEAD
+      - name: Stage-5 to Stage-6 transition diff whitespace check
+        if: github.ref_name == 'claude/aicad-stage6-transition'
+        run: git diff --check 697847cb2f33f6ab75bdc71911bbbcdd993039ba HEAD
 
   clippy:
     name: clippy

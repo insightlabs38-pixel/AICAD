@@ -1814,3 +1814,50 @@ working around the ruling.
 - Consequences: no new `.aicad` source syntax; no change to non-part-scoped parameter semantics; part-local parameter identity keeps an explicit scope path, never globally flattened to a bare name. `ParametricBuildSession::set_param` now accepts a part-scoped param's fully qualified dotted path (or its bare name when unambiguous) with no signature change (it already delegated name resolution to `ParamModel::find_by_name`).
 - Affected RFCs/tasks/stages: `AICAD-104A` (`project/reports/AICAD-104A.md`); new coverage in `crates/cad-runtime/src/params.rs` and `crates/cad-runtime/src/interp.rs` (`#[cfg(test)]`), and `crates/cad-cli/tests/stage5_part_scoped_param_rebuild.rs` (production path).
 - Supersedes: the "part-body params are a future extension" sentence in `crates/cad-runtime/src/params.rs`'s own module doc comment (rewritten in place, per this decision).
+
+---
+
+## DL-38: Stage 5 passed — owner approval of the AICAD-130 PASS gate
+
+- Date: 2026-09-22
+- Resolves: Stage-5 exit gate (`project/CURRENT_STAGE.md`); not an
+  `OWNER_DECISIONS.md` item.
+- Decision: **Stage 5 has passed.** The owner reviewed and accepts
+  `project/gates/stage-5-gate.md` / `AICAD-130`'s PASS recommendation and
+  authorizes progression into the Stage-5 -> Stage-6 transition. The
+  approved Stage-5 implementation is merged to `main` at
+  `697847cb2f33f6ab75bdc71911bbbcdd993039ba`. This decision authorizes
+  transition planning/documentation only: Stage-6 implementation remains
+  unauthorized until the owner separately reviews and merges the
+  `claude/aicad-stage6-transition` branch. Stage 7 and later stages remain
+  provisional/non-executable.
+- Rationale: `AICAD-130` independently re-audited the complete Stage-5
+  queue and recommended PASS after clean workspace, native OCCT,
+  semantic-reference, adversarial/corpus, checkpoint, and maintained-example
+  evidence. Its disclosed limitations are retained as explicit
+  carry-forwards rather than hidden or converted into passing evidence;
+  none contradicts the resolved Stage-6 semantic decisions D26-D30.
+- Alternatives considered: withholding Stage-5 approval solely because of
+  the disclosed freeform-topology and `List<Geometry>` dependency gaps
+  (rejected — the gate records them as explicit, fail-closed/nonblocking
+  limitations and the transition promotes them into executable Stage-6
+  compatibility constraints rather than assuming them solved); authorizing
+  Stage-6 implementation in the same decision (rejected — the transition
+  itself must be owner-reviewed and merged first).
+- Affected RFCs/tasks: closes Stage 5 (`AICAD-101` through `AICAD-130`,
+  including `AICAD-104A`); authorizes only the Stage-5 -> Stage-6
+  reconciliation/transition; `AICAD-131` through `AICAD-160` remain
+  non-executable until the transition is owner-merged.
+- Supersedes: none (first Stage-5 pass ruling; does not reopen D25-D30 or
+  any other owner decision).
+
+---
+
+## DL-39: Stage-6 queue approved — implementation authorized
+
+- Date: 2026-09-22
+- Resolves: the Stage-6 implementation-authorization boundary left open by `DL-38`.
+- Decision: **The final Stage-6 queue is approved and Stage 6 is in progress.** The owner reviewed AICAD-131..160, batches S6-00..S6-12, checkpoints AICAD-141/AICAD-148/AICAD-156, the AICAD-160 final hard gate, and the transition report; the owner authorizes merge of `claude/aicad-stage6-transition` and Stage-6 implementation from that exact merged `main` HEAD. The durable approval record is `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md`.
+- AICAD-131 scope: approval explicitly includes fixing both prerequisite gaps there: supported Bezier/B-spline/trimmed geometry to real kernel topology construction, and first-class `List<Geometry>` dependency/dirty-set invalidation in `FeatureGraph` and `TraceFeatureGraph`. AICAD-132/133 stay blocked until AICAD-131 passes.
+- Consequences: Stage 6 is the active development stage. Create `claude/aicad-stage6-dev` from the exact transition merge commit and execute the fixed queue beginning with AICAD-131. D25-D30 and D11 remain unchanged. Stage 7 remains provisional/non-executable.
+- Supersedes: only the `DL-38` restriction that Stage-6 implementation remained unauthorized pending separate owner transition approval; no D-numbered semantic decision is superseded.
