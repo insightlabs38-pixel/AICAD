@@ -6,8 +6,8 @@
 - **Merged Stage-5 `main` HEAD:** `697847cb2f33f6ab75bdc71911bbbcdd993039ba`.
 - **Final Stage-5 task:** AICAD-130 (`99b0777c235b00a06252ea28d7c8c8db5fd6e1a4`).
 - **Final Stage-5 gate:** PASS recommended; owner approval is recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.
-- **Stage-5 -> Stage-6 transition:** COMPLETE on `claude/aicad-stage6-transition`, pending owner review/merge.
-- **Stage 6 — Assemblies, configurations, and kinematics:** FINAL QUEUE PREPARED, **NOT YET AUTHORIZED FOR IMPLEMENTATION** until this transition is owner-merged.
+- **Stage-5 -> Stage-6 transition:** COMPLETE AND OWNER APPROVED; approval is recorded in `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-39`.
+- **Stage 6 — Assemblies, configurations, and kinematics:** **ACTIVE / IN PROGRESS; IMPLEMENTATION AUTHORIZED.** AICAD-131 is the first executable task after this approved transition is canonical on `main`.
 - **Stage 7:** PROVISIONAL / NON-EXECUTABLE.
 
 ## Stage-6 queue
@@ -33,8 +33,6 @@ D25-D30 and D11 remain authoritative. In particular:
 
 ## Execution boundary
 
-Do **not** execute AICAD-131 or create the Stage-6 development branch while this transition branch is awaiting owner merge.
-
-After the owner merges this transition to `main`, create `claude/aicad-stage6-dev` from that exact merged `main` HEAD and begin AICAD-131.
+Stage-6 implementation is owner-authorized by `DL-39`. Canonical implementation must occur on `claude/aicad-stage6-dev` created from the exact approved Stage-5 -> Stage-6 transition merge commit on `main`; begin with AICAD-131 and execute the fixed queue in order.
 
 Do not implement Stage 7.
