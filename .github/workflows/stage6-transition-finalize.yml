@@ -1,0 +1,102 @@
+name: Finalize Stage 6 canonical task promotion
+
+on:
+  push:
+    branches:
+      - claude/aicad-stage6-transition
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    name: promote reviewed Stage 6 queue into canonical TASKS.yaml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Promote and validate Stage 6 task entries
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          tasks_path = Path("project/TASKS.yaml")
+          final_path = Path("project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml")
+          tasks = tasks_path.read_text(encoding="utf-8")
+          final = final_path.read_text(encoding="utf-8")
+
+          if "\ntasks:\n" not in final:
+              raise SystemExit("STAGE6_FINAL.yaml has no tasks section")
+          promoted = final.split("\ntasks:\n", 1)[1].strip() + "\n"
+
+          # Match the canonical TASKS.yaml task-entry vocabulary while retaining
+          # the transition file's stage/batch/objective detail.
+          promoted = promoted.replace("  stage: 6\n", "  stage: 6\n  status: todo\n")
+          promoted = promoted.replace("  required_tests:", "  required_checks:")
+          promoted = promoted.replace("  evidence:", "  report:")
+          promoted = promoted.replace("  owner_escalation:", "  escalate_if:")
+
+          lines = promoted.splitlines()
+          canonical = []
+          for line in lines:
+              canonical.append(line)
+              if line.startswith("  depends_on:"):
+                  canonical.extend([
+                      "  plan_references:",
+                      "  - project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml",
+                      "  - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md",
+                  ])
+          promoted = "\n".join(canonical).rstrip() + "\n"
+
+          if "- id: AICAD-131\n" not in tasks:
+              tasks = tasks.rstrip() + "\n" + promoted
+              tasks_path.write_text(tasks, encoding="utf-8")
+
+          result = tasks_path.read_text(encoding="utf-8")
+          expected = [f"AICAD-{n:03d}" for n in range(131, 161)]
+          for task_id in expected:
+              count = result.count(f"- id: {task_id}\n")
+              if count != 1:
+                  raise SystemExit(f"{task_id}: expected exactly one canonical entry, found {count}")
+          if result.count("- id: AICAD-130\n") != 1:
+              raise SystemExit("AICAD-130 historical entry was not preserved exactly once")
+          if "- id: AICAD-161\n" in result:
+              raise SystemExit("unexpected Stage-7/later global ID promotion")
+
+          for task_id in expected:
+              start = result.index(f"- id: {task_id}\n")
+              next_start = result.find("\n- id: ", start + 1)
+              section = result[start:] if next_start < 0 else result[start:next_start]
+              for required in (
+                  "  stage: 6\n",
+                  "  status: todo\n",
+                  "  batch:",
+                  "  title:",
+                  "  depends_on:",
+                  "  objective:",
+                  "  acceptance:",
+                  "  required_checks:",
+                  "  report:",
+                  "  escalate_if:",
+              ):
+                  if required not in section:
+                      raise SystemExit(f"{task_id}: missing {required.strip()}")
+          print("Stage-6 canonical task promotion validated: AICAD-131..AICAD-160")
+          PY
+          python3 scripts/ci/stage4_task_audit.py --check
+          git diff --check
+      - name: Commit canonical queue and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "insightlabs38-pixel"
+          git config user.email "insightlabs38@gmail.com"
+          git rm .github/workflows/stage6-transition-finalize.yml
+          git add project/TASKS.yaml
+          if git diff --cached --quiet; then
+            echo "No canonical task promotion change required."
+            exit 0
+          fi
+          git commit -m "planning: promote Stage 6 queue into canonical tasks"
+          git push origin HEAD:claude/aicad-stage6-transition
