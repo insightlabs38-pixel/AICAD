@@ -5,6 +5,7 @@
 - **Approved gate:** AICAD-130
 - **Approval date:** 2026-09-22
 - **Owner:** insightlabs38-pixel
+- **Decision-log record:** `project/DECISION_LOG.md#DL-38`
 - **Merged Stage-5 base:** `697847cb2f33f6ab75bdc71911bbbcdd993039ba`
 
 The Stage 5 evidence package and final owner gate have been reviewed and approved by the owner.

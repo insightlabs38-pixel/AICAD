@@ -5,7 +5,7 @@
 - **Stage 5 — Advanced Programmable Geometry & Robust Topology:** COMPLETE, OWNER APPROVED, AND MERGED.
 - **Merged Stage-5 `main` HEAD:** `697847cb2f33f6ab75bdc71911bbbcdd993039ba`.
 - **Final Stage-5 task:** AICAD-130 (`99b0777c235b00a06252ea28d7c8c8db5fd6e1a4`).
-- **Final Stage-5 gate:** PASS recommended; owner approval is recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md`.
+- **Final Stage-5 gate:** PASS recommended; owner approval is recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.
 - **Stage-5 -> Stage-6 transition:** COMPLETE on `claude/aicad-stage6-transition`, pending owner review/merge.
 - **Stage 6 — Assemblies, configurations, and kinematics:** FINAL QUEUE PREPARED, **NOT YET AUTHORIZED FOR IMPLEMENTATION** until this transition is owner-merged.
 - **Stage 7:** PROVISIONAL / NON-EXECUTABLE.
