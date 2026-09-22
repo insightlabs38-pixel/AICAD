@@ -4,10 +4,10 @@ stage: 5
 from_stage: 4
 to_stage: 5
 name: Stage 5 - programmable geometry substrate
-status: implementation-authorized
+status: gate-packet-prepared-awaiting-owner-review
 last_completed_stage: 4
-last_completed_task: AICAD-129
-next_task: AICAD-130
+last_completed_task: AICAD-130
+next_task: none - roadmap development stopped pending owner review of project/gates/stage-5-gate.md
 implementation_authorized: true
 
 ## Authoritative current state
@@ -59,7 +59,7 @@ not change the AICAD-102..104 queue below.
 | S5-07 | AICAD-122..124 | **done** |
 | S5-08 | AICAD-125..126 | **done** |
 | S5-09 | AICAD-127..129 | **done** |
-| S5-10 | AICAD-130 | not started |
+| S5-10 | AICAD-130 | **done** |
 
 ## Later stages
 
@@ -74,4 +74,12 @@ Future promotion follows `project/planning/transitions/stage4-to-stage5/STAGE_PR
 
 ## Current stop rule
 
-Work exactly one fixed batch per invocation, in order, starting with `S5-00`. Do not combine batches, reorder tasks, or begin later-stage work early. The agent implementing Stage 5 does not approve stage progression to Stage 6; that remains a separate future owner gate.
+All Stage-5 batches (`S5-00` through `S5-10`, `AICAD-101` through
+`AICAD-130`) are complete. `AICAD-130` prepared `project/gates/
+stage-5-gate.md`, an advisory PASS recommendation. Per `AGENTS.md`'s
+"FINAL STOP RULE": **roadmap development stops here.** No future
+invocation may begin Stage-6 implementation, finalize/activate the
+provisional Stage-6/7 queues, or assign final global Stage-6 AICAD IDs
+without a separate, later, explicit owner approval recorded in `project/
+DECISION_LOG.md`. Only the owner may review the gate packet, approve
+Stage 5, and authorize the Stage-5 -> Stage-6 reconciliation.

@@ -60,65 +60,40 @@ D2 functional/value semantics; D5 deterministic equivalence separation; D6 kerne
 
 ## Current stop rule and exact next action
 
-Batch `S5-08` (`AICAD-125..126`) is complete — see `project/reports/
-AICAD-125.md`/`AICAD-126.md` (superseded detail retired from this file per
-its own "current state, not an appended diary" convention).
+**Stage 5 is complete: all batches `S5-00`..`S5-10` (`AICAD-101`..`130`)
+are done.** `AICAD-130` (sole task of `S5-10`) independently re-audited
+every `AICAD-101..129` acceptance item against current source and a fresh
+full test/CI run, and produced the final Stage-5 owner gate packet:
+`project/gates/stage-5-gate.md` (short cross-reference:
+`project/reports/AICAD-130.md`). **Recommendation: PASS** (advisory only —
+the agent does not approve Stage 5).
 
-**Batch `S5-09` (`AICAD-127..129`) is complete.** See `project/reports/
-AICAD-127.md`/`128.md`/`129.md` for full detail. Summary:
+Gate-packet highlights (full detail in the gate file, not repeated here
+per this file's own "current state, not an appended diary" convention):
 
-- `AICAD-127` froze `project/benchmarks/stage5_freeform_corpus/` (4
-  `public` + 3 `held_out` fixtures, exact/closed-form checked evidence),
-  proven by `stage5_freeform_corpus.rs` (7/7). **Central finding**:
-  `make_edge`/`make_face_on_surface` (topology construction, `AICAD-119`)
-  only bridge the original Stage-2 analytic families (`Circle`/`Arc`/
-  trimmed-`Line`; `Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`) into real
-  kernel B-rep topology — a Bezier/B-spline curve/surface (`AICAD-110`/
-  `114`), or any `trim_surface` result (`AICAD-115`), is rejected with an
-  explicit `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` diagnostic, never silently.
-  `AICAD-110`/`114`/`115` gave `.aicad` real freeform curve/surface
-  **values** (kernel-free construction/evaluation/trim/intersection/
-  projection/distance), but `AICAD-119`'s topology dispatch was never
-  extended to accept them. Recorded in `project/OWNER_DECISIONS.md`
-  (ordinary future implementation work, not an architecture ruling).
-- `AICAD-128` ran 8 adversarial cases (`stage5_adversarial_campaign.rs`,
-  8/8): near-degenerate + multi-scale circular faces (1nm/1km radius,
-  area exact to ~1e-16 relative error), tangent spheres
-  (`intersect_surfaces` fails the whole build explicitly with
-  `GeometricQueryFailed`, not an empty `List`), periodic circle
-  wraparound, a sew tolerance boundary (real threshold: 7/6 edges/
-  vertices inside tolerance vs. 8/8 outside), a self-intersecting
-  B-spline's closest-point query, a 64-edge polygon (~30ms, exact area),
-  deterministic repeat-build (bit-identical), and a malformed B-spline
-  knot vector (rejected explicitly). **No reproducible defect found.**
-- `AICAD-129` audited the core-vs-library boundary (no open registration,
-  no kernel-type leakage above the already-sanctioned `cad-query`/
-  `cad-cli` boundary, no compiler intrinsic — all confirmed by targeted
-  grep across the relevant crates) and proved the inspectability chain
-  (`stage5_inspectability_fixture.rs`, 4/4): Layers 1/4 (typed-call
-  diagnostics; reference evidence) via the real `cad build --json`/`cad
-  refs check --json` JSON text contract; Layers 2/3 (feature/provenance/
-  dependency; Geometry IR/kernel result) via the public
-  `FeatureGraph`/`ParametricBuildSession` Rust API (`docs/plan/17`'s
-  fuller `cad inspect`/`explain`/`why` commands remain correctly
-  unimplemented placeholders). **Discovered finding**: `List<Geometry>`
-  builtin parameters (`make_wire`/`make_shell`/`compound`/`sew`) are
-  invisible to `geometry_inputs` in both `FeatureGraph` and
-  `TraceFeatureGraph` (only a bare `Geometry` param is recognized) —
-  recorded in `OWNER_DECISIONS.md`; does **not** establish whether real
-  incremental-rebuild dirty-propagation is affected (separate
-  `binding_refs`/provenance path untested by this fixture) — a future
-  task should verify or fix, not assumed either way. Also added an
-  explicit teaching/realistic **Class** column and Stage-5 checkpoint
-  coverage section to `examples/README.md`.
+- Full re-run evidence, all green: `cargo fmt`/`clippy` clean, `cargo test
+  --workspace` 1830 passed/0 failed (95 binaries), native OCCT CTest
+  18/18, `semantic_ref_harness.py validate`/`self-test` both `ok`, 14
+  ACTIVE examples building cleanly, all three internal checkpoints
+  (`AICAD-112`/`118`/`126`) independently re-confirmed PASS.
+- `D21`-`D25`/`D27`/`D6`/`D7` compatibility re-verified directly against
+  source, not cited from prior reports; zero surviving silent-wrong
+  reference regressions; zero scope creep (no assembly/configuration/
+  requirement/packaging crate touched anywhere in Stage 5).
+- Two structural limitations carried forward for Stage-6 planning (both
+  pre-existing, disclosed by `AICAD-127`/`129`, recorded in `project/
+  OWNER_DECISIONS.md`'s "Non-decision items" section, not new this task):
+  freeform (Bezier/B-spline) curves/surfaces and trimmed surfaces cannot
+  yet become real kernel topology (`make_edge`/`make_face_on_surface`
+  reject them explicitly); `List<Geometry>` builtin parameters are
+  invisible to `geometry_inputs` in `FeatureGraph`/`TraceFeatureGraph`,
+  with real incremental-rebuild dirty-set interaction left unverified.
 
-All required checks pass as of `AICAD-129`: `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
-`cargo test -p cad-cli --test active_examples` (3/3, 14 ACTIVE examples),
-the full `cargo test --workspace` (1830 passed, 0 failed).
-
-Per the fixed batch order, the next invocation begins `S5-10`
-(`AICAD-130`, final Stage-5 owner gate packet), which depends on every
-prior Stage-5 task (satisfied).
+Per `AGENTS.md`'s **FINAL STOP RULE**, roadmap development stops here. No
+future invocation may begin Stage-6 implementation, finalize/activate the
+provisional Stage-6/7 queues, or assign final global Stage-6 AICAD IDs.
+Only the owner may review `project/gates/stage-5-gate.md`, approve Stage 5
+in `project/DECISION_LOG.md`, and authorize the Stage-5 -> Stage-6
+reconciliation and Stage 6 itself.
 
 Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.
