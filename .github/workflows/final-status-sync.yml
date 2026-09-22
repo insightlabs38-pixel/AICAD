@@ -1,0 +1,24 @@
+name: Final transition status sync
+on: [push]
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: claude/aicad-stage6-transition
+      - shell: bash
+        run: |
+          sed -i 's/status: FINAL_PENDING_TRANSITION_MERGE/status: FINAL_OWNER_APPROVED_ACTIVE/' project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+          sed -i 's#execution_rule: Executable only after the owner merges the Stage-5 -> Stage-6 transition. Stage 7 remains provisional.#execution_rule: Owner-approved for execution after this transition is canonical on main; begin with AICAD-131 on the Stage-6 development branch. Stage 7 remains provisional/non-executable.#' project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+          sed -i 's#- \*\*Status:\*\* FINALIZED — executable only after owner merge of the Stage-5 -> Stage-6 transition#- **Status:** OWNER APPROVED / ACTIVE — Stage 6 is in progress; execute from the exact approved transition merge on `main`#' project/planning/transitions/stage5-to-stage6/STAGE6_FINAL_BATCHES.md
+          python3 -c 'from pathlib import Path; p=Path("project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md"); s=p.read_text(); s=s.replace("- Owner approval: APPROVED and durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.", "- Stage-5 owner approval: APPROVED and durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.\n- Stage-6 queue/implementation approval: APPROVED and durably recorded in `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-39`.", 1); s=s.replace("None discovered that blocks the first Stage-6 task. D26-D30 remain resolved and authoritative.", "None blocks Stage-6 entry. The owner has approved the final Stage-6 queue and authorized implementation; D26-D30 remain resolved and authoritative.", 1); p.write_text(s)'
+          git diff --check
+          rm .github/workflows/final-status-sync.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml project/planning/transitions/stage5-to-stage6/STAGE6_FINAL_BATCHES.md project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md .github/workflows/final-status-sync.yml
+          git commit -m 'governance: synchronize approved Stage 6 transition status'
+          git push origin HEAD:claude/aicad-stage6-transition
