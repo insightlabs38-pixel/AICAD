@@ -12,7 +12,7 @@
 
 ## Stage-6 queue
 
-The final Stage-6 queue contains 30 tasks, **AICAD-131 through AICAD-160**, in fixed batches S6-00 through S6-12. AICAD-131 is the mandatory compatibility-and-remediation prerequisite: it must close the Stage-5 freeform/trimmed-to-kernel-topology construction gap and the `List<Geometry>` dependency/invalidation gap before AICAD-132/133. Checkpoints are AICAD-141, AICAD-148, and AICAD-156; AICAD-160 is the final Stage-6 owner hard gate.
+The final Stage-6 queue contains 30 tasks, **AICAD-131 through AICAD-160**, in fixed batches S6-00 through S6-12. AICAD-131 is the mandatory compatibility-and-remediation prerequisite: it must close the Stage-5 freeform/trimmed-to-kernel-topology construction gap and the `List<Geometry>` dependency/invalidation gap before AICAD-132/133. Both repairs are part of AICAD-131 itself, not deferred follow-up tasks. Checkpoints are AICAD-141, AICAD-148, and AICAD-156; AICAD-160 is the final Stage-6 owner hard gate.
 
 Canonical transition detail:
 
