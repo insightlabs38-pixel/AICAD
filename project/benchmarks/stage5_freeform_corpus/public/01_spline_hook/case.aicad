@@ -1,11 +1,12 @@
-// Spline-defined hook/bend profile. `make_edge`/topology construction does
-// not yet accept a Bezier/B-spline curve family directly (AICAD-119's own
-// `curve_to_edge_op` only covers Circle/Arc/trimmed-Line -- see
-// `held_out/07_spline_edge_construction_unsupported` and this corpus's own
-// README "Discovered capability gap" section); this fixture instead proves
-// the hook's own exact value-level geometry: clamped-endpoint identity and
-// a real closest-point-on-curve query, matching `examples/curves/
-// cable_routing_path.aicad`'s own established realistic-curve-use pattern.
+// Spline-defined hook/bend profile. This fixture proves the hook's own
+// exact value-level geometry: clamped-endpoint identity and a real
+// closest-point-on-curve query, matching `examples/curves/
+// cable_routing_path.aicad`'s own established realistic-curve-use
+// pattern -- deliberately not a `make_edge` call (frozen evidence stays
+// value-level here; `held_out/07_spline_edge_construction_unsupported`
+// now exercises the identical hook curve through `make_edge` itself,
+// since `AICAD-131` closed the `curve_to_edge_op` capability gap
+// `held_out/06`/`07` originally recorded).
 let hook: Curve = bspline_curve(
     degree = 3,
     control_points = [

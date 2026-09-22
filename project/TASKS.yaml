@@ -4325,7 +4325,7 @@ tasks:
     instead of silently promoting Stage 6
 - id: AICAD-131
   stage: 6
-  status: todo
+  status: done
   batch: S6-00
   title: Stabilize Stage-5 compatibility and close prerequisite geometry/dependency gaps
   depends_on: []

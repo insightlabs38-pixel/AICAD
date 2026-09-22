@@ -268,6 +268,33 @@ fn dispatch_op<'ctx>(
         GeometryOp::ArcEdge { start, mid, end } => {
             kernel_op(id, span, "ArcEdge", ctx.make_arc_edge(*start, *mid, *end))?
         }
+        GeometryOp::BezierEdge {
+            control_points,
+            weights,
+        } => kernel_op(
+            id,
+            span,
+            "BezierEdge",
+            ctx.make_bezier_edge(control_points, weights.as_deref()),
+        )?,
+        GeometryOp::BSplineEdge {
+            degree,
+            control_points,
+            knots,
+            multiplicities,
+            weights,
+        } => kernel_op(
+            id,
+            span,
+            "BSplineEdge",
+            ctx.make_bspline_edge(
+                *degree,
+                control_points,
+                knots,
+                multiplicities,
+                weights.as_deref(),
+            ),
+        )?,
         GeometryOp::WireFromEdges { edges } => {
             let edge_shapes = shape_operands(results, id, edges, span)?;
             kernel_op(
@@ -426,6 +453,36 @@ fn dispatch_op<'ctx>(
                     *axis,
                     mag(major_radius),
                     mag(minor_radius),
+                    reversed,
+                ),
+                SurfaceSpec::Bezier {
+                    control_points,
+                    weights,
+                } => outer_shape.make_face_on_bezier_surface(
+                    &hole_shapes,
+                    control_points,
+                    weights.as_deref(),
+                    reversed,
+                ),
+                SurfaceSpec::BSpline {
+                    degree_u,
+                    degree_v,
+                    control_points,
+                    knots_u,
+                    multiplicities_u,
+                    knots_v,
+                    multiplicities_v,
+                    weights,
+                } => outer_shape.make_face_on_bspline_surface(
+                    &hole_shapes,
+                    *degree_u,
+                    *degree_v,
+                    control_points,
+                    knots_u,
+                    multiplicities_u,
+                    knots_v,
+                    multiplicities_v,
+                    weights.as_deref(),
                     reversed,
                 ),
             };
@@ -713,6 +770,8 @@ fn op_input_ids(op: &GeometryOp) -> Vec<GeomId> {
         | GeometryOp::LineEdge { .. }
         | GeometryOp::CircleWire { .. }
         | GeometryOp::ArcEdge { .. }
+        | GeometryOp::BezierEdge { .. }
+        | GeometryOp::BSplineEdge { .. }
         | GeometryOp::AdoptRaw(_) => Vec::new(),
         GeometryOp::WireFromEdges { edges } => edges.clone(),
         GeometryOp::MakeFace { wire } => vec![*wire],

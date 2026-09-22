@@ -1,11 +1,12 @@
 // A twisted, variable-section lateral surface family: a 20mm square base
 // (z=0) ruled to a 10mm square top (z=30mm) rotated 45 degrees about the
 // z axis, standing in for a combined "variable-section sweep" + "twisted
-// loft" (no single sweep/loft builtin is exposed to .aicad, and
-// `make_face_on_surface`/topology construction does not yet accept a
-// Bezier/B-spline surface family at all -- see `held_out/
-// 06_freeform_surface_construction_unsupported` and this corpus's own
-// README "Discovered capability gap" section). Each `side*` is a genuine
+// loft" (no single sweep/loft builtin is exposed to .aicad). This
+// fixture's own frozen evidence for the `side*` surfaces stays
+// value-level (`AICAD-131` closed the `make_face_on_surface` capability
+// gap that originally motivated this split -- see `held_out/
+// 06_near_degenerate_extreme_twist` and this corpus's own README
+// "Discovered capability gap" section). Each `side*` is a genuine
 // doubly-curved (degree_u=1/degree_v=1 ruled) ".aicad Surface" value;
 // this fixture proves its exact bilinear evaluation identities. The
 // planar bottom/top caps use only the Line/Circle-family topology

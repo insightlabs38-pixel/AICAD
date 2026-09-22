@@ -1522,6 +1522,21 @@ impl<'a> Interpreter<'a> {
                     if let Value::Geometry(id) = &value {
                         geometry_input_ids.push(*id);
                     }
+                } else if is_geometry_list_type_ref(&param.ty) {
+                    // `AICAD-131`: a `List<Geometry>` parameter (`make_wire`'s
+                    // `edges`, `make_shell`'s `faces`, ...) contributes every
+                    // element's own producing call as its own
+                    // `geometry_inputs` edge, exactly like a bare `Geometry`
+                    // parameter does one element at a time — not a scalar
+                    // `parameters`/`binding_refs` entry (a list of geometry
+                    // values has no scalar-provenance meaning of its own).
+                    if let Value::List(items) = &value {
+                        for item in items {
+                            if let Value::Geometry(id) = item {
+                                geometry_input_ids.push(*id);
+                            }
+                        }
+                    }
                 } else {
                     trace_parameters.push((param.name.clone(), expr.span()));
                     for b in &provenance {
@@ -4650,6 +4665,18 @@ fn is_geometry_type_ref(ty: &HirTypeRef) -> bool {
     matches!(ty, HirTypeRef::Named { name, .. } if name == "Geometry")
 }
 
+/// Whether `ty` is exactly `List<Geometry>` (`AICAD-131`) — the
+/// `List`-of-geometry counterpart of [`is_geometry_type_ref`], mirroring
+/// `cad_feature_graph::graph::is_geometry_list_type`'s identical check
+/// (see [`is_geometry_type_ref`]'s own doc comment for why this crate
+/// keeps its own local copy rather than depending on that one). Matches
+/// `make_wire`/`make_shell`/`make_solid`/`compound`/`sew`'s own
+/// `list_of("Geometry")`-declared parameters (`cad_hir::builtins`) —
+/// never a nested `List<List<Point3>>` or any other generic shape.
+fn is_geometry_list_type_ref(ty: &HirTypeRef) -> bool {
+    matches!(ty, HirTypeRef::Generic { name, args, .. } if name == "List" && args.len() == 1 && is_geometry_type_ref(&args[0]))
+}
+
 /// Materializes an already-constructed [`AnalyticCurve`] into the existing
 /// kernel edge/wire construction op it maps to (`AICAD-119`, `make_edge`).
 /// `Err` names the reason for an unsupported family — see
@@ -4702,11 +4729,41 @@ fn curve_to_edge_op(curve: &AnalyticCurve) -> Result<GeometryOp, &'static str> {
             "'make_edge' requires a bounded Line — trim it first with 'trim_curve' so it has \
              two endpoints",
         ),
-        AnalyticCurve::Ellipse { .. }
-        | AnalyticCurve::Bezier { .. }
-        | AnalyticCurve::BSpline { .. } => {
-            Err("'make_edge' does not yet support this curve family")
+        // `AICAD-131`: closes the capability gap `project/benchmarks/
+        // stage5_freeform_corpus/README.md` recorded -- a Bezier/B-spline
+        // curve now materializes into a real kernel edge exactly like the
+        // original analytic families above.
+        AnalyticCurve::Bezier {
+            control_points,
+            weights,
+        } => Ok(GeometryOp::BezierEdge {
+            control_points: control_points.clone(),
+            weights: weights.clone(),
+        }),
+        AnalyticCurve::BSpline {
+            degree,
+            control_points,
+            knots,
+            multiplicities,
+            weights,
+            periodic,
+        } => {
+            // Unreachable via `AnalyticCurve::bspline` (rejects
+            // `periodic: true` at construction) -- defended here anyway
+            // per this module's own "never panics" convention, matching
+            // `AnalyticCurve::domain`'s identical defensiveness.
+            if *periodic {
+                return Err("'make_edge' does not support a periodic B-spline curve");
+            }
+            Ok(GeometryOp::BSplineEdge {
+                degree: *degree,
+                control_points: control_points.clone(),
+                knots: knots.clone(),
+                multiplicities: multiplicities.clone(),
+                weights: weights.clone(),
+            })
         }
+        AnalyticCurve::Ellipse { .. } => Err("'make_edge' does not yet support this curve family"),
     }
 }
 
@@ -4741,11 +4798,55 @@ fn surface_to_spec(surface: &AnalyticSurface) -> Result<SurfaceSpec, &'static st
             major_radius: *major_radius,
             minor_radius: *minor_radius,
         }),
-        AnalyticSurface::Bezier { .. }
-        | AnalyticSurface::BSpline { .. }
-        | AnalyticSurface::Trimmed { .. } => {
-            Err("'make_face_on_surface' does not yet support this surface family")
+        // `AICAD-131`: closes the capability gap `project/benchmarks/
+        // stage5_freeform_corpus/README.md` recorded -- a Bezier/B-spline
+        // surface now materializes into a real kernel face exactly like
+        // the original analytic families above.
+        AnalyticSurface::Bezier {
+            control_points,
+            weights,
+        } => Ok(SurfaceSpec::Bezier {
+            control_points: control_points.clone(),
+            weights: weights.clone(),
+        }),
+        AnalyticSurface::BSpline {
+            degree_u,
+            degree_v,
+            control_points,
+            knots_u,
+            multiplicities_u,
+            knots_v,
+            multiplicities_v,
+            weights,
+            periodic_u,
+            periodic_v,
+        } => {
+            // Unreachable via `AnalyticSurface::bspline` (rejects either
+            // periodic flag at construction) -- defended here anyway, see
+            // `curve_to_edge_op`'s identical `AnalyticCurve::BSpline` arm.
+            if *periodic_u || *periodic_v {
+                return Err("'make_face_on_surface' does not support a periodic B-spline surface");
+            }
+            Ok(SurfaceSpec::BSpline {
+                degree_u: *degree_u,
+                degree_v: *degree_v,
+                control_points: control_points.clone(),
+                knots_u: knots_u.clone(),
+                multiplicities_u: multiplicities_u.clone(),
+                knots_v: knots_v.clone(),
+                multiplicities_v: multiplicities_v.clone(),
+                weights: weights.clone(),
+            })
         }
+        // A trimmed surface's own boundary is supplied separately, as
+        // `make_face_on_surface`'s explicit `outer`/`holes` kernel wires
+        // -- its embedded `TrimLoop` is a value-level (`evaluate_surface`/
+        // `trim_surface`) domain restriction, not a second, redundant
+        // topology-construction boundary, so this unwraps to `base`
+        // recursively rather than rejecting outright (closes the same
+        // capability gap for "any `trim_surface` result, even of an
+        // already-supported analytic base").
+        AnalyticSurface::Trimmed { base, .. } => surface_to_spec(base),
     }
 }
 
@@ -9686,12 +9787,26 @@ mod tests {
     }
 
     #[test]
-    fn make_face_on_surface_rejects_a_bezier_surface() {
+    fn make_face_on_surface_builds_a_face_on_a_bezier_surface() {
+        // `AICAD-131`: a bidegree-(1,1) Bezier surface over a real 4-edge
+        // closed wire matching its own four corners -- was rejected with
+        // `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` before this task closed the
+        // capability gap `project/benchmarks/stage5_freeform_corpus/
+        // README.md` recorded.
         let source = "fn f() -> Geometry { \
                  let e0 = make_edge(trim_curve(line_curve( \
                      origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
                      direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
-                 let wire = make_wire([e0]); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
                  let bez = bezier_surface( \
                      control_points = [ \
                          [Point3(x = 0mm, y = 0mm, z = 0mm), Point3(x = 0mm, y = 1mm, z = 0mm)], \
@@ -9703,8 +9818,72 @@ mod tests {
              }";
         let lowered = compiled(source);
         let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
-        let err = interp.call_by_name("f", vec![]).unwrap_err();
-        assert_eq!(diag_code(&err), "RUNTIME-E143");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_edge_from_a_bspline_curve_builds_a_geometry_value() {
+        // `AICAD-131`: the same clamped-cubic hook `bspline_curve` as
+        // `held_out/07_spline_edge_construction_unsupported` in the
+        // frozen freeform corpus, now a real kernel edge instead of
+        // `UNSUPPORTED_TOPOLOGY_CONSTRUCTION`.
+        let source = "fn f() -> Geometry { \
+                 let hook: Curve = bspline_curve( \
+                     degree = 3, \
+                     control_points = [ \
+                         Point3(x = 0mm, y = 0mm, z = 0mm), \
+                         Point3(x = 0mm, y = 45mm, z = 0mm), \
+                         Point3(x = 25mm, y = 60mm, z = 0mm), \
+                         Point3(x = 45mm, y = 40mm, z = 0mm), \
+                         Point3(x = 30mm, y = 15mm, z = 0mm), \
+                     ], \
+                     knots = [0.0, 0.5, 1.0], \
+                     multiplicities = [4, 1, 4], \
+                     weights = [1.0, 1.0, 1.0, 1.0, 1.0], \
+                     periodic = false, \
+                 ); \
+                 return make_edge(hook); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
+    }
+
+    #[test]
+    fn make_face_on_surface_builds_a_face_on_a_trimmed_analytic_base() {
+        // `AICAD-131`: a `Trimmed` surface (`trim_surface`) whose own
+        // `base` is a plain, already-supported `Plane` -- previously
+        // rejected outright (`surface_to_spec` had no `Trimmed` arm at
+        // all), even though the base family alone was never the problem.
+        let source = "fn f() -> Geometry { \
+                 let e0 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e1 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 0mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = 1.0, z = 0.0)), 0.0, 0.001)); \
+                 let e2 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 1mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = -1.0, y = 0.0, z = 0.0)), 0.0, 0.001)); \
+                 let e3 = make_edge(trim_curve(line_curve( \
+                     origin = Point3(x = 0mm, y = 1mm, z = 0mm), \
+                     direction = Vector3(x = 0.0, y = -1.0, z = 0.0)), 0.0, 0.001)); \
+                 let wire = make_wire([e0, e1, e2, e3]); \
+                 let base: Surface = plane_surface( \
+                     origin = Point3(x = 0mm, y = 0mm, z = 0mm), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                 ); \
+                 let outer: Curve = circle_curve( \
+                     center = Point3(x = 0.5m, y = 0.5m, z = 0m), \
+                     normal = Vector3(x = 0.0, y = 0.0, z = 1.0), \
+                     radius = 0.3m, \
+                 ); \
+                 let trimmed: Surface = trim_surface(base, outer, [], 0.000001m); \
+                 return make_face_on_surface(trimmed, wire, []); \
+             }";
+        let lowered = compiled(source);
+        let mut interp = Interpreter::new(&lowered.program, &lowered.bindings, "test.aicad", "");
+        assert_is_geometry(interp.call_by_name("f", vec![]).unwrap());
     }
 
     #[test]

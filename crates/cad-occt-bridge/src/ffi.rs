@@ -119,6 +119,24 @@ unsafe extern "C" {
         edge_count: usize,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;
+    pub fn aicad_occt_make_bezier_edge(
+        context: *mut aicad_occt_context_t,
+        control_points: *const f64, // flat [f64; 3 * control_point_count]
+        control_point_count: usize,
+        weights: *const f64, // [f64; control_point_count] or null
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_bspline_edge(
+        context: *mut aicad_occt_context_t,
+        degree: usize,
+        control_points: *const f64, // flat [f64; 3 * control_point_count]
+        control_point_count: usize,
+        knots: *const f64,            // [f64; knot_count]
+        multiplicities: *const usize, // [usize; knot_count]
+        knot_count: usize,
+        weights: *const f64, // [f64; control_point_count] or null
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
     pub fn aicad_occt_make_face_from_wire(
         context: *mut aicad_occt_context_t,
         wire_handle: aicad_shape_handle_t,
@@ -528,6 +546,39 @@ unsafe extern "C" {
         axis_direction: *const f64, // [f64; 3]
         major_radius: f64,
         minor_radius: f64,
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    pub fn aicad_occt_make_face_on_bezier_surface(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        control_points: *const f64, // flat [f64; 3 * rows * cols], row-major
+        rows: usize,
+        cols: usize,
+        weights: *const f64, // [f64; rows * cols] or null
+        outer_reversed: c_int,
+        out_handle: *mut aicad_shape_handle_t,
+    ) -> c_int;
+    #[allow(clippy::too_many_arguments)]
+    pub fn aicad_occt_make_face_on_bspline_surface(
+        context: *mut aicad_occt_context_t,
+        outer_wire: aicad_shape_handle_t,
+        holes: *const aicad_shape_handle_t,
+        hole_count: usize,
+        degree_u: usize,
+        degree_v: usize,
+        control_points: *const f64, // flat [f64; 3 * rows * cols], row-major
+        rows: usize,
+        cols: usize,
+        knots_u: *const f64,
+        multiplicities_u: *const usize,
+        knot_u_count: usize,
+        knots_v: *const f64,
+        multiplicities_v: *const usize,
+        knot_v_count: usize,
+        weights: *const f64, // [f64; rows * cols] or null
         outer_reversed: c_int,
         out_handle: *mut aicad_shape_handle_t,
     ) -> c_int;

@@ -298,25 +298,50 @@ fn evaluating_outside_a_trim_loop_fails_the_build_explicitly_never_silently() {
 // ---- held_out/06_near_degenerate_extreme_twist ----
 
 #[test]
-fn freeform_surface_topology_construction_is_explicitly_rejected_never_silent() {
-    let message = build_err(
+fn freeform_surface_topology_construction_now_builds_and_exposes_the_near_degeneracy() {
+    // `AICAD-131` closed the capability gap this fixture originally
+    // exercised (`make_face_on_surface` now accepts a Bezier/B-spline
+    // surface) -- per this fixture's own `case.md` "Follow-up" note,
+    // revisited here to exercise the originally-intended question: does
+    // OCCT itself reject or numerically mishandle the 0.001mm sliver?
+    // Measured (not assumed): construction succeeds structurally, but
+    // `is_valid` reports `false` -- Stage-1 kernel policy #14
+    // ("construction success is not evidence of validity") in its
+    // starkest form, exactly like `make_solid_from_a_non_closed_shell_
+    // succeeds_structurally_but_is_reported_invalid` (`cad-occt-bridge`).
+    // This is still the required adversarial evidence: an explicit,
+    // structured, measurable outcome, never a panic/hang/silent-wrong
+    // success.
+    let (ctx, source) = build_ok(
         "project/benchmarks/stage5_freeform_corpus/held_out/06_near_degenerate_extreme_twist/case.aicad",
     );
+    let session = ParametricBuildSession::new("case.aicad", &source, &ctx).expect(
+        "the near-degenerate sliver fixture should build cleanly through the real production path",
+    );
     assert!(
-        message.contains("UNSUPPORTED") || message.to_lowercase().contains("does not yet support"),
-        "expected an explicit unsupported-topology-construction rejection, got: {message:?}"
+        !bool_value(global(&session, "sliver_face_valid")),
+        "expected OCCT to report the 0.001mm-sliver face invalid"
     );
 }
 
 // ---- held_out/07_spline_edge_construction_unsupported ----
 
 #[test]
-fn freeform_curve_edge_construction_is_explicitly_rejected_never_silent() {
-    let message = build_err(
+fn freeform_curve_edge_construction_now_builds_a_valid_edge() {
+    // `AICAD-131` closed the capability gap this fixture originally
+    // exercised (`make_edge` now accepts a Bezier/B-spline curve). Unlike
+    // `06`'s own surface-side sliver, this hook curve is not itself
+    // near-degenerate (it is the identical clamped cubic B-spline as
+    // `public/01_spline_hook`), so the revisited outcome is a real,
+    // valid kernel edge, not a second invalidity data point.
+    let (ctx, source) = build_ok(
         "project/benchmarks/stage5_freeform_corpus/held_out/07_spline_edge_construction_unsupported/case.aicad",
     );
+    let session = ParametricBuildSession::new("case.aicad", &source, &ctx).expect(
+        "the spline-hook edge fixture should build cleanly through the real production path",
+    );
     assert!(
-        message.contains("UNSUPPORTED") || message.to_lowercase().contains("does not yet support"),
-        "expected an explicit unsupported-topology-construction rejection, got: {message:?}"
+        bool_value(global(&session, "hook_edge_valid")),
+        "expected the hook curve's own edge to be a valid B-rep"
     );
 }

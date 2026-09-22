@@ -213,6 +213,9 @@ fn layer2_feature_dependency_graph_is_inspectable_through_the_public_feature_gra
 
     let bottom = find_named("bottom");
     assert_eq!(bottom.op, BuiltinFnId::MakeEdge);
+    let right = find_named("right");
+    let top = find_named("top");
+    let left = find_named("left");
 
     let square = find_named("square");
     assert_eq!(square.op, BuiltinFnId::MakeWire);
@@ -226,28 +229,22 @@ fn layer2_feature_dependency_graph_is_inspectable_through_the_public_feature_gra
          single-Geometry 'wire' parameter is a real, inspectable dependency edge"
     );
 
-    // **Discovered, narrowly-scoped limitation** (not assumed in
-    // advance): `is_geometry_type` (`crates/cad-feature-graph/src/
-    // graph.rs`) only recognizes a bare `Geometry`-typed parameter, not a
-    // `List<Geometry>` one -- so `make_wire`'s own `edges: List<Geometry>`
-    // parameter is classified as a scalar "parameter," not a
-    // `geometry_inputs` edge, and `square`'s own dependency on its four
-    // edge nodes is invisible to *this specific* `geometry_inputs`
-    // introspection field. The same `is_geometry_type_ref` gate exists in
-    // the real production trace mechanism too (`cad_runtime::interp::
-    // Interpreter::call`), so this is not merely a stale/superseded API's
-    // own quirk. This is recorded as an observed inspectability-API gap,
-    // not a claimed incremental-rebuild/dirty-set correctness defect --
-    // this fixture does not exercise `dirty_set`/`rebuild` at all, and a
-    // separate `binding_refs`/provenance-resolution mechanism may still
-    // carry the real dependency there; verifying that is out of this
-    // bounded fixture's own scope. See `project/reports/AICAD-129.md`'s
-    // own "Inspectability chain" section and `project/OWNER_DECISIONS.md`.
-    assert!(
-        square.geometry_inputs.is_empty(),
-        "if this now contains the four edge FeatureIds, `List<Geometry>` \
-         tracking has been fixed -- update this assertion (and the finding \
-         in AICAD-129.md) to match, rather than leaving a stale expectation"
+    // `AICAD-131` closed the gap this assertion originally recorded:
+    // `is_geometry_type` (`crates/cad-feature-graph/src/graph.rs`) now
+    // also recognizes `List<Geometry>` (`is_geometry_list_type`), so
+    // `make_wire`'s own `edges: List<Geometry>` parameter contributes a
+    // real `geometry_inputs` edge per element, in declared order -- the
+    // same `is_geometry_list_type_ref` gate was added to the real
+    // production trace mechanism too (`cad_runtime::interp::
+    // Interpreter::call`), not merely this inspection-only API. See
+    // `project/reports/AICAD-129.md`'s "Inspectability chain" section and
+    // `project/reports/AICAD-131.md`.
+    assert_eq!(
+        square.geometry_inputs,
+        vec![bottom.id, right.id, top.id, left.id],
+        "'square' should depend on all four edge nodes, in declared order -- \
+         make_wire's own List<Geometry> 'edges' parameter is now a real, \
+         inspectable dependency edge per element"
     );
 }
 

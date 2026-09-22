@@ -3,10 +3,12 @@
 // bilinear (degree_u = degree_v = 1) Bezier patch -- a real doubly-ruled,
 // non-planar ("twisted") freeform surface value, standing in for the
 // "custom impeller blade surface" corpus category (docs/plan/16 S5).
-// `make_face_on_surface` does not yet accept a Bezier/B-spline surface
-// (see this corpus's own README "Discovered capability gap"), so this
-// fixture proves the surface's own exact value-level construction, not a
-// kernel B-rep face.
+// This fixture's own frozen evidence is deliberately value-level, not a
+// topology build (`AICAD-131` closed the `make_face_on_surface`
+// capability gap that originally motivated this split -- see this
+// corpus's own README "Discovered capability gap" section and
+// `cad-occt-bridge`/`cad-runtime`'s own focused `AICAD-131` regression
+// fixtures for a real bilinear-patch kernel face).
 let root_le: Point3 = Point3(x = 0mm, y = 0mm, z = 0mm);
 let root_te: Point3 = Point3(x = 0mm, y = 40mm, z = 0mm);
 let tip_le: Point3 = Point3(x = 15mm, y = 25mm, z = 80mm);

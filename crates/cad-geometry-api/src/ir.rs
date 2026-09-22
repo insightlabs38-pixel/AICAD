@@ -219,8 +219,14 @@ pub struct WireIndex(pub usize);
 /// where an unsupported family is rejected — see that crate's own
 /// `dispatch_topology_builtin`). Field shapes deliberately mirror
 /// [`crate::surface::AnalyticSurface`]'s own `Plane`/`Cylinder`/`Cone`/
-/// `Sphere`/`Torus` variants exactly.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// `Sphere`/`Torus`/`Bezier`/`BSpline` variants exactly (minus `Trimmed`,
+/// which has no construction op of its own here — `surface_to_spec`
+/// unwraps a trimmed surface to its own `base` recursively, since a
+/// `MakeFaceOnSurface` op already takes its own explicit `outer`/`holes`
+/// kernel wires rather than an embedded parametric trim loop). Not
+/// `Copy` (unlike Stage-1's own original 5 elementary families): the
+/// `Bezier`/`BSpline` variants own a `Vec`-shaped control net.
+#[derive(Debug, Clone, PartialEq)]
 pub enum SurfaceSpec {
     Plane {
         origin: Point3,
@@ -242,6 +248,31 @@ pub enum SurfaceSpec {
         axis: Axis3,
         major_radius: Quantity,
         minor_radius: Quantity,
+    },
+    /// A (possibly rational) tensor-product Bezier surface (`AICAD-131`,
+    /// `Shape::make_face_on_bezier_surface`) — mirrors
+    /// [`crate::surface::AnalyticSurface::Bezier`]'s own
+    /// `control_points`/`weights` shape exactly.
+    Bezier {
+        control_points: Vec<Vec<Point3>>,
+        weights: Option<Vec<Vec<f64>>>,
+    },
+    /// A (possibly rational), non-periodic-in-both-directions tensor-
+    /// product B-spline surface (`AICAD-131`, `Shape::
+    /// make_face_on_bspline_surface`) — mirrors [`crate::surface::
+    /// AnalyticSurface::BSpline`]'s own fields exactly (minus
+    /// `periodic_u`/`periodic_v`, always `false` by the time a value
+    /// reaches this op — [`crate::surface::AnalyticSurface::bspline`]
+    /// rejects either periodic flag at construction).
+    BSpline {
+        degree_u: usize,
+        degree_v: usize,
+        control_points: Vec<Vec<Point3>>,
+        knots_u: Vec<f64>,
+        multiplicities_u: Vec<usize>,
+        knots_v: Vec<f64>,
+        multiplicities_v: Vec<usize>,
+        weights: Option<Vec<Vec<f64>>>,
     },
 }
 
@@ -305,6 +336,28 @@ pub enum GeometryOp {
         start: Point3,
         mid: Point3,
         end: Point3,
+    },
+    /// An edge on a (possibly rational) Bezier curve of degree
+    /// `control_points.len() - 1` (`AICAD-131`, `OcctContext::
+    /// make_bezier_edge`) — mirrors [`crate::curve::AnalyticCurve::
+    /// Bezier`]'s own `control_points`/`weights` shape exactly.
+    /// `control_points.len() >= 2`.
+    BezierEdge {
+        control_points: Vec<Point3>,
+        weights: Option<Vec<f64>>,
+    },
+    /// An edge on a (possibly rational), non-periodic B-spline curve of
+    /// the given `degree` (`AICAD-131`, `OcctContext::make_bspline_edge`)
+    /// — mirrors [`crate::curve::AnalyticCurve::BSpline`]'s own fields
+    /// exactly (minus `periodic`, always `false` by the time a value
+    /// reaches this op — [`crate::curve::AnalyticCurve::bspline`] rejects
+    /// `periodic: true` at construction).
+    BSplineEdge {
+        degree: usize,
+        control_points: Vec<Point3>,
+        knots: Vec<f64>,
+        multiplicities: Vec<usize>,
+        weights: Option<Vec<f64>>,
     },
     /// Assembles a wire from an ordered list of edges
     /// (`OcctContext::make_wire_from_edges`). `edges` must be non-empty.
@@ -823,6 +876,8 @@ impl GeometryGraph {
                 Self::check_dimension(radius, Dimension::Length, "CircleWire.radius", span)?;
             }
             GeometryOp::ArcEdge { .. } => {}
+            GeometryOp::BezierEdge { .. } => {}
+            GeometryOp::BSplineEdge { .. } => {}
             GeometryOp::WireFromEdges { edges } => {
                 Self::check_non_empty(edges, "WireFromEdges.edges", span)?;
                 self.check_geometry_operands(edges, span)?;
@@ -944,6 +999,7 @@ impl GeometryGraph {
                             span,
                         )?;
                     }
+                    SurfaceSpec::Bezier { .. } | SurfaceSpec::BSpline { .. } => {}
                 }
             }
             GeometryOp::MakeShell { faces } => {

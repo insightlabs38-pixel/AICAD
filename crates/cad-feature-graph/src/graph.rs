@@ -571,17 +571,19 @@ impl<'a> Builder<'a> {
                     return Ok(None);
                 }
                 let fn_name = spec.name;
-                let param_flags: Vec<(&'static str, bool)> = spec
-                    .params
-                    .iter()
-                    .map(|(pname, pty)| (*pname, is_geometry_type(pty)))
-                    .collect();
-                let slots = resolve_slots(&param_flags, fn_name, args, *span)?;
+                // Cloned out of `spec` (rather than iterated by reference)
+                // so this loop's own `self.resolve_geometry_expr` calls
+                // below do not need to keep `self.catalogue` (and therefore
+                // `spec`) borrowed for their entire duration.
+                let params = spec.params.clone();
+                let param_names: Vec<&'static str> =
+                    params.iter().map(|(pname, _)| *pname).collect();
+                let slots = resolve_slots(&param_names, fn_name, args, *span)?;
 
-                let mut geometry_inputs = Vec::with_capacity(param_flags.len());
-                let mut parameters = Vec::with_capacity(param_flags.len());
-                for ((pname, is_geometry), arg_expr) in param_flags.iter().zip(slots.iter()) {
-                    if *is_geometry {
+                let mut geometry_inputs = Vec::with_capacity(params.len());
+                let mut parameters = Vec::with_capacity(params.len());
+                for ((pname, pty), arg_expr) in params.iter().zip(slots.iter()) {
+                    if is_geometry_type(pty) {
                         let child =
                             self.resolve_geometry_expr(arg_expr, scope)?
                                 .ok_or_else(|| FeatureGraphError::UnresolvedGeometryInput {
@@ -589,6 +591,34 @@ impl<'a> Builder<'a> {
                                     span: arg_expr.span(),
                                 })?;
                         geometry_inputs.push(child);
+                    } else if is_geometry_list_type(pty) {
+                        // `AICAD-131`: a `List<Geometry>` parameter
+                        // (`make_wire`'s `edges`, `make_shell`'s `faces`, ...)
+                        // contributes every element's own producing node as
+                        // its own `geometry_inputs` edge, mirroring a bare
+                        // `Geometry` parameter one element at a time. Every
+                        // current call site supplies this as a direct list
+                        // literal (`make_wire([e0, e1, ...])`) -- an indirect
+                        // `List<Geometry>`-typed variable is not yet a
+                        // recognized shape, per this module's own "ambiguity
+                        // is an error" fail-closed convention, not silently
+                        // treated as an opaque scalar parameter.
+                        let HirExpr::ListLiteral { elements, .. } = arg_expr else {
+                            return Err(FeatureGraphError::UnresolvedGeometryInput {
+                                context: format!("{fn_name}.{pname}"),
+                                span: arg_expr.span(),
+                            });
+                        };
+                        for element in elements {
+                            let child =
+                                self.resolve_geometry_expr(element, scope)?.ok_or_else(|| {
+                                    FeatureGraphError::UnresolvedGeometryInput {
+                                        context: format!("{fn_name}.{pname}"),
+                                        span: element.span(),
+                                    }
+                                })?;
+                            geometry_inputs.push(child);
+                        }
                     } else {
                         parameters.push((*pname, *arg_expr));
                     }
@@ -659,19 +689,28 @@ fn is_geometry_type(ty: &HirTypeRef) -> bool {
     matches!(ty, HirTypeRef::Named { name, .. } if name == "Geometry")
 }
 
+/// Whether `ty` is exactly `List<Geometry>` (`AICAD-131`) — the
+/// `List`-of-geometry counterpart of [`is_geometry_type`]. Matches
+/// `make_wire`/`make_shell`/`make_solid`/`compound`/`sew`'s own
+/// `list_of("Geometry")`-declared parameters (`cad_hir::builtins`), never
+/// a nested `List<List<Point3>>` or any other generic shape.
+fn is_geometry_list_type(ty: &HirTypeRef) -> bool {
+    matches!(ty, HirTypeRef::Generic { name, args, .. } if name == "List" && args.len() == 1 && is_geometry_type(&args[0]))
+}
+
 /// Resolves `args` (an already-type-checked call's own argument list)
-/// against `params` (`(declared parameter name, is-Geometry)` pairs, in
-/// declared order), mirroring `cad_runtime::interp::Interpreter::call`'s
-/// own identical positional-then-named slot-filling algorithm exactly (see
-/// that function's own body) — but over borrowed `HirExpr`s, never
-/// evaluated `Value`s, since this crate has no interpreter.
+/// against `param_names` (declared parameter names, in declared order),
+/// mirroring `cad_runtime::interp::Interpreter::call`'s own identical
+/// positional-then-named slot-filling algorithm exactly (see that
+/// function's own body) — but over borrowed `HirExpr`s, never evaluated
+/// `Value`s, since this crate has no interpreter.
 fn resolve_slots<'e>(
-    params: &[(&'static str, bool)],
+    param_names: &[&'static str],
     fn_name: &'static str,
     args: &'e [HirArg],
     span: Span,
 ) -> Result<Vec<&'e HirExpr>, FeatureGraphError> {
-    let mut slots: Vec<Option<&'e HirExpr>> = vec![None; params.len()];
+    let mut slots: Vec<Option<&'e HirExpr>> = vec![None; param_names.len()];
     let mut next_positional = 0usize;
     for arg in args {
         match arg {
@@ -690,9 +729,9 @@ fn resolve_slots<'e>(
                 value,
                 ..
             } => {
-                let idx = params
+                let idx = param_names
                     .iter()
-                    .position(|(pname, _)| pname == arg_name)
+                    .position(|pname| pname == arg_name)
                     .ok_or(FeatureGraphError::MalformedBuiltinCall {
                         name: fn_name,
                         span,

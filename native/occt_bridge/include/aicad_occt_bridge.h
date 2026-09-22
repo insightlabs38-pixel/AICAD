@@ -249,6 +249,41 @@ aicad_occt_status_t aicad_occt_make_wire_from_edges(aicad_occt_context_t* contex
                                                      size_t edge_count,
                                                      aicad_shape_handle_t* out_handle);
 
+/* --- AICAD-131: freeform (Bezier/B-spline) curve/surface -> kernel
+ * topology construction, closing the capability gap `project/benchmarks/
+ * stage5_freeform_corpus/README.md` recorded (make_edge/
+ * make_face_on_surface previously covered only the elementary Circle/
+ * Arc/Line and Plane/Cylinder/Cone/Sphere/Torus families). --- */
+
+/* Constructs an edge on a (possibly rational) Bezier curve of degree
+ * `control_point_count - 1`. `control_points` is a flat, row-major
+ * `[x0,y0,z0, x1,y1,z1, ...]` array of `control_point_count` points
+ * (`control_point_count >= 2`); `weights` is `control_point_count`
+ * positive finite values for a rational curve, or NULL for a plain
+ * (non-rational) one. */
+aicad_occt_status_t aicad_occt_make_bezier_edge(aicad_occt_context_t* context,
+                                                 const double* control_points,
+                                                 size_t control_point_count,
+                                                 const double* weights,
+                                                 aicad_shape_handle_t* out_handle);
+
+/* Constructs an edge on a (possibly rational), non-periodic B-spline
+ * curve of the given `degree` -- `aicad_occt_make_bezier_edge`'s
+ * general-degree counterpart. `knots`/`multiplicities` is `knot_count`
+ * DISTINCT knot values each repeated `multiplicities[i]` times (never
+ * pre-expanded), mirroring `cad_geometry_api::curve::AnalyticCurve::
+ * BSpline`'s own convention exactly -- the same shape OCCT's own
+ * `Geom_BSplineCurve` constructor expects. */
+aicad_occt_status_t aicad_occt_make_bspline_edge(aicad_occt_context_t* context,
+                                                  size_t degree,
+                                                  const double* control_points,
+                                                  size_t control_point_count,
+                                                  const double* knots,
+                                                  const size_t* multiplicities,
+                                                  size_t knot_count,
+                                                  const double* weights,
+                                                  aicad_shape_handle_t* out_handle);
+
 /* --- AICAD-023: planar face from a closed wire. --- */
 
 /* Builds a planar face bounded by `wire_handle`, which must address a
@@ -1154,6 +1189,46 @@ aicad_occt_status_t aicad_occt_make_face_on_torus(aicad_occt_context_t* context,
                                                    double minor_radius,
                                                    int outer_reversed,
                                                    aicad_shape_handle_t* out_handle);
+
+/* AICAD-131: see aicad_occt_make_face_on_plane's own doc comment; the
+ * surface is a (possibly rational) tensor-product Bezier surface of
+ * bidegree `(rows - 1, cols - 1)`. `control_points` is a flat, row-major
+ * (`u` outer index, `v` inner index) `rows * cols` point array;
+ * `weights` is the same shape for a rational surface, or NULL. */
+aicad_occt_status_t aicad_occt_make_face_on_bezier_surface(aicad_occt_context_t* context,
+                                                             aicad_shape_handle_t outer_wire,
+                                                             const aicad_shape_handle_t* holes,
+                                                             size_t hole_count,
+                                                             const double* control_points,
+                                                             size_t rows,
+                                                             size_t cols,
+                                                             const double* weights,
+                                                             int outer_reversed,
+                                                             aicad_shape_handle_t* out_handle);
+
+/* AICAD-131: see aicad_occt_make_face_on_bezier_surface's own doc
+ * comment; the general-degree tensor-product B-spline counterpart,
+ * non-periodic in both directions, mirroring
+ * aicad_occt_make_bspline_edge's own knot/multiplicity convention
+ * independently per parametric direction. */
+aicad_occt_status_t aicad_occt_make_face_on_bspline_surface(aicad_occt_context_t* context,
+                                                              aicad_shape_handle_t outer_wire,
+                                                              const aicad_shape_handle_t* holes,
+                                                              size_t hole_count,
+                                                              size_t degree_u,
+                                                              size_t degree_v,
+                                                              const double* control_points,
+                                                              size_t rows,
+                                                              size_t cols,
+                                                              const double* knots_u,
+                                                              const size_t* multiplicities_u,
+                                                              size_t knot_u_count,
+                                                              const double* knots_v,
+                                                              const size_t* multiplicities_v,
+                                                              size_t knot_v_count,
+                                                              const double* weights,
+                                                              int outer_reversed,
+                                                              aicad_shape_handle_t* out_handle);
 
 /* Assembles `faces` into one shell (`BRep_Builder::MakeShell` + `Add` per
  * face, in order) -- a structural container only, exactly like a

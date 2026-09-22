@@ -268,6 +268,97 @@ impl OcctContext {
         })
     }
 
+    /// Constructs an edge on a (possibly rational) Bezier curve of degree
+    /// `control_points.len() - 1` (`AICAD-131`). `control_points.len() >=
+    /// 2`; `weights` is `control_points.len()` positive finite values for
+    /// a rational curve, or `None` for a plain (non-rational) one.
+    pub fn make_bezier_edge(
+        &self,
+        control_points: &[Point3],
+        weights: Option<&[f64]>,
+    ) -> KernelResult<Shape<'_>> {
+        let flat: Vec<f64> = control_points
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
+        let weights_ptr = weights.map_or(std::ptr::null(), <[f64]>::as_ptr);
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `flat` is a valid, live, contiguous array of
+        // `control_points.len() * 3` f64s for the duration of this call;
+        // `weights_ptr` is either null or a valid, live array of
+        // `control_points.len()` f64s (`weights`'s own length, enforced by
+        // this method's own contract, mirrors `Geom_BezierCurve`'s
+        // requirement); `self.raw`/`&mut handle` as in `create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_bezier_edge(
+                self.raw,
+                flat.as_ptr(),
+                control_points.len(),
+                weights_ptr,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Constructs an edge on a (possibly rational), non-periodic B-spline
+    /// curve of the given `degree` (`AICAD-131`) --
+    /// [`OcctContext::make_bezier_edge`]'s general-degree counterpart.
+    /// `knots`/`multiplicities` is `knots.len()` DISTINCT knot values each
+    /// repeated `multiplicities[i]` times (never pre-expanded), mirroring
+    /// `cad_geometry_api::curve::AnalyticCurve::BSpline`'s own convention
+    /// exactly.
+    pub fn make_bspline_edge(
+        &self,
+        degree: usize,
+        control_points: &[Point3],
+        knots: &[f64],
+        multiplicities: &[usize],
+        weights: Option<&[f64]>,
+    ) -> KernelResult<Shape<'_>> {
+        let flat: Vec<f64> = control_points
+            .iter()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
+        let weights_ptr = weights.map_or(std::ptr::null(), <[f64]>::as_ptr);
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `flat`/`knots`/`multiplicities` are each valid, live,
+        // contiguous arrays for the duration of this call (`knots.len()
+        // == multiplicities.len()`, this method's own contract);
+        // `weights_ptr` as in `make_bezier_edge`; `self.raw`/`&mut handle`
+        // as in `create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_bspline_edge(
+                self.raw,
+                degree,
+                flat.as_ptr(),
+                control_points.len(),
+                knots.as_ptr(),
+                multiplicities.as_ptr(),
+                knots.len(),
+                weights_ptr,
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self,
+            id: handle_to_id(handle),
+        })
+    }
+
     /// Joins an ordered list of edges (each owned by this context) into
     /// one wire (AICAD-022).
     pub fn make_wire_from_edges<'ctx>(
@@ -886,6 +977,140 @@ impl<'ctx> Shape<'ctx> {
                 direction.as_ptr(),
                 major_radius,
                 minor_radius,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_plane`], on a (possibly rational)
+    /// tensor-product Bezier surface of bidegree `(control_points.len() -
+    /// 1, control_points[0].len() - 1)` (`AICAD-131`). `control_points`
+    /// is a rectangular control net (`control_points[i].len()` identical
+    /// for every row); `weights` is the same shape for a rational
+    /// surface, or `None`.
+    pub fn make_face_on_bezier_surface(
+        &self,
+        holes: &[&Shape<'ctx>],
+        control_points: &[Vec<Point3>],
+        weights: Option<&[Vec<f64>]>,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let rows = control_points.len();
+        let cols = control_points.first().map_or(0, Vec::len);
+        let flat: Vec<f64> = control_points
+            .iter()
+            .flatten()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
+        let flat_weights: Option<Vec<f64>> =
+            weights.map(|rows| rows.iter().flatten().copied().collect());
+        let weights_ptr = flat_weights
+            .as_deref()
+            .map_or(std::ptr::null(), <[f64]>::as_ptr);
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: `flat` is a valid, live, contiguous array of `rows *
+        // cols * 3` f64s for the duration of this call; `weights_ptr` is
+        // either null or a valid, live array of `rows * cols` f64s;
+        // `hole_handles` as in `make_face_on_plane`; `self.context.raw`/
+        // `self.raw_handle()`/`&mut handle` as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_bezier_surface(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                flat.as_ptr(),
+                rows,
+                cols,
+                weights_ptr,
+                c_int::from(reversed),
+                &mut handle,
+            )
+        };
+        status_result(status)?;
+        Ok(Shape {
+            context: self.context,
+            id: handle_to_id(handle),
+        })
+    }
+
+    /// Same as [`Shape::make_face_on_bezier_surface`], on a (possibly
+    /// rational), non-periodic-in-both-directions tensor-product B-spline
+    /// surface of the given `degree_u`/`degree_v` (`AICAD-131`) --
+    /// [`Shape::make_face_on_bezier_surface`]'s general-degree
+    /// counterpart, mirroring [`OcctContext::make_bspline_edge`]'s own
+    /// knot/multiplicity convention independently per parametric
+    /// direction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn make_face_on_bspline_surface(
+        &self,
+        holes: &[&Shape<'ctx>],
+        degree_u: usize,
+        degree_v: usize,
+        control_points: &[Vec<Point3>],
+        knots_u: &[f64],
+        multiplicities_u: &[usize],
+        knots_v: &[f64],
+        multiplicities_v: &[usize],
+        weights: Option<&[Vec<f64>]>,
+        reversed: bool,
+    ) -> KernelResult<Shape<'ctx>> {
+        let rows = control_points.len();
+        let cols = control_points.first().map_or(0, Vec::len);
+        let flat: Vec<f64> = control_points
+            .iter()
+            .flatten()
+            .flat_map(|p| [p.x, p.y, p.z])
+            .collect();
+        let flat_weights: Option<Vec<f64>> =
+            weights.map(|rows| rows.iter().flatten().copied().collect());
+        let weights_ptr = flat_weights
+            .as_deref()
+            .map_or(std::ptr::null(), <[f64]>::as_ptr);
+        let hole_handles: Vec<ffi::aicad_shape_handle_t> =
+            holes.iter().map(|hole| id_to_handle(hole.id)).collect();
+        let mut handle = ffi::aicad_shape_handle_t {
+            context_id: 0,
+            slot: 0,
+            generation: 0,
+        };
+        // SAFETY: see `make_face_on_bezier_surface` above for `flat`/
+        // `weights_ptr`/`hole_handles`; `knots_u`/`multiplicities_u`/
+        // `knots_v`/`multiplicities_v` are each valid, live, contiguous
+        // arrays for the duration of this call (`knots_u.len() ==
+        // multiplicities_u.len()`, likewise for `_v`, this method's own
+        // contract); `self.context.raw`/`self.raw_handle()`/`&mut handle`
+        // as in `is_valid`/`create_box`.
+        let status = unsafe {
+            ffi::aicad_occt_make_face_on_bspline_surface(
+                self.context.raw,
+                self.raw_handle(),
+                hole_handles.as_ptr(),
+                hole_handles.len(),
+                degree_u,
+                degree_v,
+                flat.as_ptr(),
+                rows,
+                cols,
+                knots_u.as_ptr(),
+                multiplicities_u.as_ptr(),
+                knots_u.len(),
+                knots_v.as_ptr(),
+                multiplicities_v.as_ptr(),
+                knots_v.len(),
+                weights_ptr,
                 c_int::from(reversed),
                 &mut handle,
             )
@@ -4191,6 +4416,144 @@ mod tests {
                 .make_face_on_cone(&[], axis, std::f64::consts::FRAC_PI_4, false)
                 .is_ok()
         );
+    }
+
+    // --- AICAD-131: freeform (Bezier/B-spline) curve/surface topology ---
+
+    #[test]
+    fn make_bezier_edge_builds_a_valid_edge_spanning_its_own_endpoints() {
+        let context = OcctContext::new().unwrap();
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(5.0, 10.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+        ];
+        let edge = context.make_bezier_edge(&points, None).unwrap();
+        assert!(edge.is_valid().unwrap());
+        let bb = edge.bounding_box().unwrap();
+        // OCCT's own bounding-box computation carries a small inherent
+        // gap tolerance (~1e-7), not bit-exact -- 1e-6 mirrors this
+        // crate's own established bounding-box test tolerance elsewhere.
+        assert!((bb.max.x - bb.min.x - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn make_bezier_edge_rejects_fewer_than_two_control_points() {
+        let context = OcctContext::new().unwrap();
+        let points = [Point3::ORIGIN];
+        assert_eq!(
+            context.make_bezier_edge(&points, None).unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_bezier_edge_rejects_a_non_positive_weight() {
+        let context = OcctContext::new().unwrap();
+        let points = [Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)];
+        let weights = [1.0, 0.0];
+        assert_eq!(
+            context
+                .make_bezier_edge(&points, Some(&weights))
+                .unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_bspline_edge_builds_a_valid_clamped_cubic_hook() {
+        let context = OcctContext::new().unwrap();
+        let control_points = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 45.0, 0.0),
+            Point3::new(25.0, 60.0, 0.0),
+            Point3::new(45.0, 40.0, 0.0),
+            Point3::new(30.0, 15.0, 0.0),
+        ];
+        let knots = [0.0, 0.5, 1.0];
+        let multiplicities = [4, 1, 4];
+        let edge = context
+            .make_bspline_edge(3, &control_points, &knots, &multiplicities, None)
+            .unwrap();
+        assert!(edge.is_valid().unwrap());
+    }
+
+    #[test]
+    fn make_bspline_edge_rejects_a_degree_too_high_for_its_own_control_point_count() {
+        let context = OcctContext::new().unwrap();
+        let control_points = [Point3::ORIGIN, Point3::new(1.0, 0.0, 0.0)];
+        let knots = [0.0, 1.0];
+        let multiplicities = [2, 2];
+        assert_eq!(
+            context
+                .make_bspline_edge(3, &control_points, &knots, &multiplicities, None)
+                .unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    fn bilinear_patch_wire_and_control_points<'ctx>(
+        context: &'ctx OcctContext,
+    ) -> (Shape<'ctx>, Vec<Vec<Point3>>) {
+        let c00 = Point3::new(0.0, 0.0, 0.0);
+        let c01 = Point3::new(0.0, 10.0, 2.0);
+        let c10 = Point3::new(10.0, 0.0, 2.0);
+        let c11 = Point3::new(10.0, 10.0, 0.0);
+        let e0 = context.make_line_edge(c00, c01).unwrap();
+        let e1 = context.make_line_edge(c01, c11).unwrap();
+        let e2 = context.make_line_edge(c11, c10).unwrap();
+        let e3 = context.make_line_edge(c10, c00).unwrap();
+        let wire = context.make_wire_from_edges(&[&e0, &e1, &e2, &e3]).unwrap();
+        (wire, vec![vec![c00, c01], vec![c10, c11]])
+    }
+
+    #[test]
+    fn make_face_on_bezier_surface_builds_a_face_on_a_bilinear_patch() {
+        let context = OcctContext::new().unwrap();
+        let (wire, control_points) = bilinear_patch_wire_and_control_points(&context);
+        let face = wire
+            .make_face_on_bezier_surface(&[], &control_points, None, false)
+            .unwrap();
+        // Construction success is not evidence of validity (Stage-1
+        // kernel policy #14, matching `make_face_on_sphere_torus_cone_
+        // construct_without_error`'s own precedent) -- validate() must
+        // simply complete without error.
+        assert!(face.validate().is_ok());
+    }
+
+    #[test]
+    fn make_face_on_bezier_surface_rejects_too_small_a_control_net() {
+        let context = OcctContext::new().unwrap();
+        let (wire, _) = bilinear_patch_wire_and_control_points(&context);
+        let single_row = vec![vec![Point3::ORIGIN, Point3::new(1.0, 0.0, 0.0)]];
+        assert_eq!(
+            wire.make_face_on_bezier_surface(&[], &single_row, None, false)
+                .unwrap_err(),
+            KernelError::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn make_face_on_bspline_surface_builds_the_same_bilinear_patch_as_bezier() {
+        let context = OcctContext::new().unwrap();
+        let (wire, control_points) = bilinear_patch_wire_and_control_points(&context);
+        let knots = [0.0, 1.0];
+        let multiplicities = [2, 2];
+        let face = wire
+            .make_face_on_bspline_surface(
+                &[],
+                1,
+                1,
+                &control_points,
+                &knots,
+                &multiplicities,
+                &knots,
+                &multiplicities,
+                None,
+                false,
+            )
+            .unwrap();
+        assert!(face.validate().is_ok());
     }
 
     // --- AICAD-120: sewing/healing ---

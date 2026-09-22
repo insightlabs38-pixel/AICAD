@@ -2,20 +2,26 @@
 
 ## State
 
-Stage 5 is complete, owner-approved, and merged to `main` at `697847cb2f33f6ab75bdc71911bbbcdd993039ba`. AICAD-130 is the final Stage-5 task and its gate recommends PASS. Owner approval is durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.
+Stage 5 is complete, owner-approved, and merged to `main` at `697847cb2f33f6ab75bdc71911bbbcdd993039ba`. The Stage-5 -> Stage-6 transition and final Stage-6 queue are owner-approved (`project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md` / `project/DECISION_LOG.md#DL-39`).
 
-The Stage-5 -> Stage-6 transition and final Stage-6 queue are owner-approved. Stage 6 is now the active, in-progress stage and implementation is authorized by `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md` / `project/DECISION_LOG.md#DL-39`. No Stage-6 implementation task is marked complete by this approval.
+Stage 6 batch `S6-00` (`AICAD-131`) is done — see `project/reports/AICAD-131.md`. Both Stage-5 prerequisite gaps are closed:
+
+- `make_edge`/`make_face_on_surface` now materialize Bezier/B-spline curves/surfaces into real kernel topology (`GeometryOp::BezierEdge`/`BSplineEdge`, `SurfaceSpec::Bezier`/`BSpline`, new native `aicad_occt_make_bezier_edge`/`make_bspline_edge`/`make_face_on_bezier_surface`/`make_face_on_bspline_surface`); a trimmed surface (`AnalyticSurface::Trimmed`) unwraps to its own `base` recursively.
+- `List<Geometry>` builtin parameters (`make_wire`'s `edges`, `compound`'s `shapes`, etc.) now participate in `geometry_inputs` in both `FeatureGraph` and `TraceFeatureGraph` (`is_geometry_list_type`/`is_geometry_list_type_ref`), with a dedicated incremental-rebuild regression (`crates/cad-cli/tests/stage5_list_geometry_dependency.rs`) proving correct dirty-set/reuse behavior through `ParametricBuildSession`.
+
+`project/benchmarks/stage5_freeform_corpus/held_out/06`/`07` were revisited (not removed) per their own prior "Follow-up" notes; `public/01`-`03` stay intentionally value-level. `project/OWNER_DECISIONS.md`'s two matching non-decision items each carry a "Resolved by `AICAD-131`" note.
 
 ## Next executable work
 
-1. use `claude/aicad-stage6-dev` created from the exact approved transition merge commit on `main`;
-2. execute AICAD-131 first;
-3. proceed one bounded task at a time through AICAD-160 and fixed batches S6-00..S6-12;
-4. stop at the Stage-6 owner hard gate before any Stage-7 promotion or implementation.
+1. Batch `S6-01` (`AICAD-132`, `AICAD-133`) is next: general interfaces/protocols + bounded generics (D27), then distinct deterministic assembly identity primitives (D26).
+2. Proceed one bounded task at a time through `AICAD-160` and fixed batches `S6-02`..`S6-12`.
+3. Stop at the Stage-6 owner hard gate (`AICAD-160`) before any Stage-7 promotion or implementation.
 
 ## Stage-6 queue
 
 - Range: AICAD-131..AICAD-160 (30 tasks)
+- Done: AICAD-131 (batch S6-00)
+- Next: AICAD-132/133 (batch S6-01)
 - Checkpoint A: AICAD-141
 - Checkpoint B: AICAD-148
 - Checkpoint C: AICAD-156
@@ -25,10 +31,9 @@ The Stage-5 -> Stage-6 transition and final Stage-6 queue are owner-approved. St
 
 ## Evidence-sensitive carry-forwards
 
-- Stage-5 advanced curve/surface values and operations, trimmed geometry values, geometric queries, supported topology construction/healing/inspection, raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration, and maintained examples are established.
-- Bezier/B-spline curves and surfaces, plus trimmed surfaces, cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; AICAD-131 must implement supported conversion paths while preserving deterministic structured failure for invalid inputs.
-- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; AICAD-131 must make them first-class geometry dependencies and prove dirty-set/incremental invalidation before later Stage-6 tasks rely on them.
-- Keep Stage-5 numerical/resource limitations explicit rather than generalizing tested evidence.
+- Stage-5 advanced curve/surface values and operations, trimmed geometry values, geometric queries, topology construction/healing/inspection (now including Bezier/B-spline/trimmed families, `AICAD-131`), raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration (now including `List<Geometry>` dependency edges, `AICAD-131`), and maintained examples are established.
+- `Ellipse` curves and periodic B-spline curves/surfaces remain unsupported by `make_edge`/`make_face_on_surface` — a disclosed, narrow, unaffected scope limit, not a new gap.
+- Keep Stage-5/6 numerical/resource limitations explicit rather than generalizing tested evidence.
 
 ## Authoritative owner decisions
 

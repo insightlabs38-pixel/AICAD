@@ -253,6 +253,11 @@ add_executable(step_import_test tests/step_import_test.cpp)
 target_include_directories(step_import_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(step_import_test PRIVATE aicad_occt_bridge Threads::Threads)
 
+# --- AICAD-131: freeform (Bezier/B-spline) topology construction ---
+add_executable(freeform_topology_test tests/freeform_topology_test.cpp)
+target_include_directories(freeform_topology_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(freeform_topology_test PRIVATE aicad_occt_bridge Threads::Threads)
+
 enable_testing()
 add_test(NAME occt_probe COMMAND occt_probe)
 set_tests_properties(occt_probe PROPERTIES TIMEOUT 60)
@@ -290,6 +295,8 @@ add_test(NAME step_export_test COMMAND step_export_test)
 set_tests_properties(step_export_test PROPERTIES TIMEOUT 60)
 add_test(NAME step_import_test COMMAND step_import_test)
 set_tests_properties(step_import_test PROPERTIES TIMEOUT 60)
+add_test(NAME freeform_topology_test COMMAND freeform_topology_test)
+set_tests_properties(freeform_topology_test PROPERTIES TIMEOUT 60)
 
 # --- AICAD-018: install rules ---
 #

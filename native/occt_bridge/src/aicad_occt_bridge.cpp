@@ -44,7 +44,12 @@
 #include <GProp_GProps.hxx>
 #include <GeomAbs_CurveType.hxx>
 #include <GeomAbs_SurfaceType.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BSplineSurface.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <Geom_BezierSurface.hxx>
 #include <Geom_Curve.hxx>
+#include <Geom_Surface.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
@@ -58,6 +63,11 @@
 #include <TopLoc_Location.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TColStd_Array1OfInteger.hxx>
+#include <TColStd_Array1OfReal.hxx>
+#include <TColStd_Array2OfReal.hxx>
+#include <TColgp_Array1OfPnt.hxx>
+#include <TColgp_Array2OfPnt.hxx>
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -523,6 +533,84 @@ aicad_occt_status_t BooleanWithLineage(aicad_occt_context_t* context,
   }
 }
 
+// --- AICAD-131 helpers: flat-array marshaling for Bezier/B-spline
+// curve/surface construction, shared by aicad_occt_make_bezier_edge/
+// _make_bspline_edge/_make_face_on_bezier_surface/
+// _make_face_on_bspline_surface below. Each `Fill*` helper validates as
+// it copies and returns false (leaving `out` partially written but never
+// read on that path) on the first invalid value, matching this file's
+// own "reject with INVALID_ARGUMENT before touching OCCT" convention for
+// caller-supplied data that OCCT's own constructors would otherwise
+// reject via a thrown exception. ---
+
+bool FillPoles1D(const double* flat, size_t count, TColgp_Array1OfPnt& out) {
+  for (size_t i = 0; i < count; ++i) {
+    const double* p = flat + 3 * i;
+    if (!IsFinite3(p)) {
+      return false;
+    }
+    out.SetValue(static_cast<Standard_Integer>(i + 1), ToPnt(p));
+  }
+  return true;
+}
+
+bool FillWeights1D(const double* flat, size_t count, TColStd_Array1OfReal& out) {
+  for (size_t i = 0; i < count; ++i) {
+    if (!std::isfinite(flat[i]) || !(flat[i] > 0.0)) {
+      return false;
+    }
+    out.SetValue(static_cast<Standard_Integer>(i + 1), flat[i]);
+  }
+  return true;
+}
+
+bool FillPoles2D(const double* flat, size_t rows, size_t cols, TColgp_Array2OfPnt& out) {
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      const double* p = flat + 3 * (i * cols + j);
+      if (!IsFinite3(p)) {
+        return false;
+      }
+      out.SetValue(static_cast<Standard_Integer>(i + 1), static_cast<Standard_Integer>(j + 1),
+                   ToPnt(p));
+    }
+  }
+  return true;
+}
+
+bool FillWeights2D(const double* flat, size_t rows, size_t cols, TColStd_Array2OfReal& out) {
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      const double w = flat[i * cols + j];
+      if (!std::isfinite(w) || !(w > 0.0)) {
+        return false;
+      }
+      out.SetValue(static_cast<Standard_Integer>(i + 1), static_cast<Standard_Integer>(j + 1), w);
+    }
+  }
+  return true;
+}
+
+// Builds 1-based knot/multiplicity arrays from `knot_count` DISTINCT,
+// strictly increasing knot values each repeated `multiplicities[i]`
+// times (never pre-expanded) -- `cad_geometry_api::curve::
+// AnalyticCurve::BSpline`'s own convention, and the exact shape OCCT's
+// own Geom_BSplineCurve/Geom_BSplineSurface constructors expect.
+bool FillKnots(const double* knots, const size_t* multiplicities, size_t knot_count,
+               TColStd_Array1OfReal& out_knots, TColStd_Array1OfInteger& out_mults) {
+  double previous = 0.0;
+  for (size_t i = 0; i < knot_count; ++i) {
+    if (!std::isfinite(knots[i]) || (i > 0 && !(knots[i] > previous)) || multiplicities[i] == 0) {
+      return false;
+    }
+    previous = knots[i];
+    out_knots.SetValue(static_cast<Standard_Integer>(i + 1), knots[i]);
+    out_mults.SetValue(static_cast<Standard_Integer>(i + 1),
+                        static_cast<Standard_Integer>(multiplicities[i]));
+  }
+  return true;
+}
+
 }  // namespace
 
 extern "C" {
@@ -927,6 +1015,99 @@ aicad_occt_status_t aicad_occt_make_wire_from_edges(aicad_occt_context_t* contex
       }
     }
     *out_handle = context->shapes.Insert(context->id, make_wire.Wire());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_bezier_edge(aicad_occt_context_t* context,
+                                                 const double* control_points,
+                                                 size_t control_point_count,
+                                                 const double* weights,
+                                                 aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (control_points == nullptr || out_handle == nullptr || control_point_count < 2) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    TColgp_Array1OfPnt poles(1, static_cast<Standard_Integer>(control_point_count));
+    if (!FillPoles1D(control_points, control_point_count, poles)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    Handle(Geom_BezierCurve) curve;
+    if (weights != nullptr) {
+      TColStd_Array1OfReal pole_weights(1, static_cast<Standard_Integer>(control_point_count));
+      if (!FillWeights1D(weights, control_point_count, pole_weights)) {
+        return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+      }
+      curve = new Geom_BezierCurve(poles, pole_weights);
+    } else {
+      curve = new Geom_BezierCurve(poles);
+    }
+    BRepBuilderAPI_MakeEdge make_edge(curve);
+    if (!make_edge.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_edge.Edge());
+    return AICAD_OCCT_OK;
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_bspline_edge(aicad_occt_context_t* context,
+                                                  size_t degree,
+                                                  const double* control_points,
+                                                  size_t control_point_count,
+                                                  const double* knots,
+                                                  const size_t* multiplicities,
+                                                  size_t knot_count,
+                                                  const double* weights,
+                                                  aicad_shape_handle_t* out_handle) {
+  aicad_occt_status_t status = CheckContext(context);
+  if (status != AICAD_OCCT_OK) {
+    return status;
+  }
+  if (control_points == nullptr || knots == nullptr || multiplicities == nullptr ||
+      out_handle == nullptr || degree < 1 || control_point_count < degree + 1 ||
+      knot_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    TColgp_Array1OfPnt poles(1, static_cast<Standard_Integer>(control_point_count));
+    if (!FillPoles1D(control_points, control_point_count, poles)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    TColStd_Array1OfReal knot_array(1, static_cast<Standard_Integer>(knot_count));
+    TColStd_Array1OfInteger mult_array(1, static_cast<Standard_Integer>(knot_count));
+    if (!FillKnots(knots, multiplicities, knot_count, knot_array, mult_array)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    Handle(Geom_BSplineCurve) curve;
+    if (weights != nullptr) {
+      TColStd_Array1OfReal pole_weights(1, static_cast<Standard_Integer>(control_point_count));
+      if (!FillWeights1D(weights, control_point_count, pole_weights)) {
+        return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+      }
+      curve = new Geom_BSplineCurve(poles, pole_weights, knot_array, mult_array,
+                                     static_cast<Standard_Integer>(degree));
+    } else {
+      curve = new Geom_BSplineCurve(poles, knot_array, mult_array,
+                                     static_cast<Standard_Integer>(degree));
+    }
+    BRepBuilderAPI_MakeEdge make_edge(curve);
+    if (!make_edge.IsDone()) {
+      return AICAD_OCCT_ERR_OPERATION_FAILED;
+    }
+    *out_handle = context->shapes.Insert(context->id, make_edge.Edge());
     return AICAD_OCCT_OK;
   } catch (const Standard_Failure&) {
     return AICAD_OCCT_ERR_OPERATION_FAILED;
@@ -3534,6 +3715,121 @@ aicad_occt_status_t aicad_occt_make_face_on_torus(aicad_occt_context_t* context,
   gp_Torus torus(axis, major_radius, minor_radius);
   return MakeFaceOnSurface(context, torus, outer_wire, holes, hole_count, outer_reversed,
                             out_handle);
+}
+
+// AICAD-131: unlike aicad_occt_make_face_on_plane/_cylinder/_cone/
+// _sphere/_torus (each a thin argument-marshaling wrapper around the
+// shared MakeFaceOnSurface<Surface> template), Bezier/B-spline surface
+// construction can itself throw (invalid pole/knot data), so this and
+// aicad_occt_make_face_on_bspline_surface build their own Handle(Geom_
+// Surface) inside a try/catch before delegating to that same template
+// via its Handle(Geom_Surface) instantiation (BRepBuilderAPI_MakeFace
+// has a constructor overload taking `const Handle(Geom_Surface)&`
+// directly, exactly like the gp_Pln/gp_Cylinder/... overloads the other
+// four callers use).
+aicad_occt_status_t aicad_occt_make_face_on_bezier_surface(aicad_occt_context_t* context,
+                                                             aicad_shape_handle_t outer_wire,
+                                                             const aicad_shape_handle_t* holes,
+                                                             size_t hole_count,
+                                                             const double* control_points,
+                                                             size_t rows,
+                                                             size_t cols,
+                                                             const double* weights,
+                                                             int outer_reversed,
+                                                             aicad_shape_handle_t* out_handle) {
+  if (control_points == nullptr || rows < 2 || cols < 2) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    TColgp_Array2OfPnt poles(1, static_cast<Standard_Integer>(rows), 1,
+                              static_cast<Standard_Integer>(cols));
+    if (!FillPoles2D(control_points, rows, cols, poles)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    Handle(Geom_BezierSurface) bezier;
+    if (weights != nullptr) {
+      TColStd_Array2OfReal pole_weights(1, static_cast<Standard_Integer>(rows), 1,
+                                         static_cast<Standard_Integer>(cols));
+      if (!FillWeights2D(weights, rows, cols, pole_weights)) {
+        return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+      }
+      bezier = new Geom_BezierSurface(poles, pole_weights);
+    } else {
+      bezier = new Geom_BezierSurface(poles);
+    }
+    Handle(Geom_Surface) surface = bezier;
+    return MakeFaceOnSurface(context, surface, outer_wire, holes, hole_count, outer_reversed,
+                              out_handle);
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
+}
+
+aicad_occt_status_t aicad_occt_make_face_on_bspline_surface(aicad_occt_context_t* context,
+                                                              aicad_shape_handle_t outer_wire,
+                                                              const aicad_shape_handle_t* holes,
+                                                              size_t hole_count,
+                                                              size_t degree_u,
+                                                              size_t degree_v,
+                                                              const double* control_points,
+                                                              size_t rows,
+                                                              size_t cols,
+                                                              const double* knots_u,
+                                                              const size_t* multiplicities_u,
+                                                              size_t knot_u_count,
+                                                              const double* knots_v,
+                                                              const size_t* multiplicities_v,
+                                                              size_t knot_v_count,
+                                                              const double* weights,
+                                                              int outer_reversed,
+                                                              aicad_shape_handle_t* out_handle) {
+  if (control_points == nullptr || knots_u == nullptr || multiplicities_u == nullptr ||
+      knots_v == nullptr || multiplicities_v == nullptr || degree_u < 1 || degree_v < 1 ||
+      rows < degree_u + 1 || cols < degree_v + 1 || knot_u_count == 0 || knot_v_count == 0) {
+    return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+  }
+  try {
+    TColgp_Array2OfPnt poles(1, static_cast<Standard_Integer>(rows), 1,
+                              static_cast<Standard_Integer>(cols));
+    if (!FillPoles2D(control_points, rows, cols, poles)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    TColStd_Array1OfReal knot_u_array(1, static_cast<Standard_Integer>(knot_u_count));
+    TColStd_Array1OfInteger mult_u_array(1, static_cast<Standard_Integer>(knot_u_count));
+    if (!FillKnots(knots_u, multiplicities_u, knot_u_count, knot_u_array, mult_u_array)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    TColStd_Array1OfReal knot_v_array(1, static_cast<Standard_Integer>(knot_v_count));
+    TColStd_Array1OfInteger mult_v_array(1, static_cast<Standard_Integer>(knot_v_count));
+    if (!FillKnots(knots_v, multiplicities_v, knot_v_count, knot_v_array, mult_v_array)) {
+      return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+    }
+    Handle(Geom_BSplineSurface) bspline;
+    if (weights != nullptr) {
+      TColStd_Array2OfReal pole_weights(1, static_cast<Standard_Integer>(rows), 1,
+                                         static_cast<Standard_Integer>(cols));
+      if (!FillWeights2D(weights, rows, cols, pole_weights)) {
+        return AICAD_OCCT_ERR_INVALID_ARGUMENT;
+      }
+      bspline = new Geom_BSplineSurface(poles, pole_weights, knot_u_array, knot_v_array,
+                                         mult_u_array, mult_v_array,
+                                         static_cast<Standard_Integer>(degree_u),
+                                         static_cast<Standard_Integer>(degree_v));
+    } else {
+      bspline = new Geom_BSplineSurface(poles, knot_u_array, knot_v_array, mult_u_array,
+                                         mult_v_array, static_cast<Standard_Integer>(degree_u),
+                                         static_cast<Standard_Integer>(degree_v));
+    }
+    Handle(Geom_Surface) surface = bspline;
+    return MakeFaceOnSurface(context, surface, outer_wire, holes, hole_count, outer_reversed,
+                              out_handle);
+  } catch (const Standard_Failure&) {
+    return AICAD_OCCT_ERR_OPERATION_FAILED;
+  } catch (...) {
+    return AICAD_OCCT_ERR_INTERNAL;
+  }
 }
 
 aicad_occt_status_t aicad_occt_make_shell(aicad_occt_context_t* context,

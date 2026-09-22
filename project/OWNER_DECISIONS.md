@@ -1516,6 +1516,21 @@ Stage 0 work but should stay visible:
   an architecture decision — recorded here as a real, disclosed scope gap
   so a later task does not rediscover it from scratch.
 
+  **Resolved by `AICAD-131`:** `curve_to_edge_op`/`surface_to_spec` now
+  also dispatch `Bezier`/`BSpline` (curve and surface) into a real
+  `Geom_BezierCurve`/`Geom_BSplineCurve`/`Geom_BezierSurface`/
+  `Geom_BSplineSurface` kernel edge/face (`GeometryOp::BezierEdge`/
+  `BSplineEdge`, `SurfaceSpec::Bezier`/`BSpline`, new
+  `aicad_occt_make_bezier_edge`/`make_bspline_edge`/
+  `make_face_on_bezier_surface`/`make_face_on_bspline_surface` native
+  bridge functions); `AnalyticSurface::Trimmed` unwraps to its own `base`
+  recursively (its embedded `TrimLoop` is a value-level domain
+  restriction, not a second topology boundary — the caller's own explicit
+  `outer`/`holes` wires remain the actual face boundary). `Ellipse`
+  remains unsupported (unaffected scope). See
+  `project/benchmarks/stage5_freeform_corpus/README.md`'s own "Capability
+  gap closed by `AICAD-131`" section and `project/reports/AICAD-131.md`.
+
 - **`is_geometry_type`/`is_geometry_type_ref`'s own "geometry-typed
   parameter" check does not recognize `List<Geometry>`, only a bare
   `Geometry`** (found while building `AICAD-129`'s own bounded
@@ -1552,3 +1567,19 @@ Stage 0 work but should stay visible:
   marked dirty) or extend `is_geometry_type`/`is_geometry_type_ref` to
   recognize `List<Geometry>` and make `geometry_inputs` itself complete —
   recorded here rather than left an unstated assumption either way.
+
+  **Resolved by `AICAD-131`:** added `is_geometry_list_type`/
+  `is_geometry_list_type_ref` (`cad_feature_graph::graph`/
+  `cad_runtime::interp`) recognizing exactly `List<Geometry>`. A
+  `List<Geometry>` parameter now contributes each element's own producing
+  node as a real `geometry_inputs` edge, in declared order, in both
+  `FeatureGraph` (a direct list-literal argument; an indirect
+  `List<Geometry>`-typed variable is a structured `UnresolvedGeometryInput`
+  error, not silently treated as an opaque scalar parameter — no current
+  call site uses that indirect form) and `TraceFeatureGraph` (via
+  `cad_runtime::feature_trace::TraceEntry::geometry_inputs`, driven by the
+  interpreter's own real `Value::List` at each call). Confirmed by a
+  dedicated `dirty_set`/rebuild regression (`crates/cad-cli/tests/
+  stage5_list_geometry_dependency.rs`) — the specific incremental-rebuild
+  question this item left open is now answered, not merely the
+  introspection-API fact. See `project/reports/AICAD-131.md`.

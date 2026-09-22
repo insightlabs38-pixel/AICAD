@@ -2,14 +2,15 @@
 // 0.001mm long (a genuine, constructible, but extremely thin sliver --
 // not a literal zero-length edge, which `line_curve`/`trim_curve` cannot
 // express at all), bounded by a real wire and passed to
-// `make_face_on_surface`. Expected outcome, confirmed empirically (not
-// assumed): `make_face_on_surface` rejects *any* Bezier/B-spline surface
-// today with an explicit `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` diagnostic
-// (`crates/cad-runtime/src/interp.rs`'s own `surface_to_surface_spec`) --
-// so this near-degenerate case never reaches OCCT at all, and the
-// required evidence is "explicit structured rejection, never a
-// panic/hang/silent-wrong success," not a specific validity verdict. See
-// this corpus's own README "Discovered capability gap" section.
+// `make_face_on_surface`. `AICAD-131` closed the capability gap this
+// fixture originally exercised (`make_face_on_surface` now accepts a
+// Bezier/B-spline surface, `crates/cad-runtime/src/interp.rs`'s own
+// `surface_to_spec`), so this near-degenerate case now actually reaches
+// OCCT: construction succeeds structurally, but `sliver_face_valid` is
+// measured `false` -- required evidence is "explicit, structured,
+// measurable outcome, never a panic/hang/silent-wrong success," not a
+// specific validity verdict. See this corpus's own README "Discovered
+// capability gap" section.
 let p: Point3 = Point3(x = 0mm, y = 0mm, z = 0mm);
 let p_prime: Point3 = Point3(x = 0.001mm, y = 0mm, z = 0mm);
 let q: Point3 = Point3(x = 50mm, y = 0mm, z = 0mm);

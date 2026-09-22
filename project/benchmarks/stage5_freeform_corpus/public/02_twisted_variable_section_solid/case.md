@@ -16,14 +16,15 @@ faces (`side0..side3`) is a `degree_u=1, degree_v=1` (bilinear, ruled)
 (differently sized, rotated) top edge — a genuine doubly-curved surface
 wherever the two ruling edges are not parallel/coplanar.
 
-**Why no solid here:** `make_face_on_surface` does not yet accept a
-Bezier/B-spline surface family (`interp.rs`'s `surface_to_surface_spec`
-only covers `Plane`/`Cylinder`/`Cone`/`Sphere`/`Torus`) — confirmed
-empirically. See this corpus's own `README.md` "Discovered capability
-gap" section and `held_out/06_near_degenerate_extreme_twist`. This
-fixture proves the lateral surfaces' own exact bilinear value-level
-identities, plus real kernel topology for the two planar caps (built from
-`Line`-family edges, which *are* supported today).
+**Why no solid here:** this fixture's own frozen evidence for the lateral
+surfaces stays value-level. `AICAD-131` closed the `make_face_on_surface`
+capability gap that originally motivated this split (`interp.rs`'s
+`surface_to_spec` now also covers `Bezier`/`BSpline`) — see this corpus's
+own `README.md` "Discovered capability gap" section and `held_out/
+06_near_degenerate_extreme_twist`, now revisited with a real kernel face.
+This fixture still proves the lateral surfaces' own exact bilinear
+value-level identities, plus real kernel topology for the two planar caps
+(built from `Line`-family edges).
 
 **Checked evidence:**
 

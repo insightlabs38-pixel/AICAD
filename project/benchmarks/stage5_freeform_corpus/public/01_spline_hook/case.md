@@ -8,13 +8,13 @@ profile in the z=0 plane, plus a real `closest_point_on_curve` query
 against a fixed obstacle point — the same realistic-curve-use pattern as
 `examples/curves/cable_routing_path.aicad`.
 
-**Why no `make_edge`/face here:** `make_edge` does not yet accept a
-Bezier/B-spline curve family (`crates/cad-runtime/src/interp.rs`'s
-`curve_to_edge_op` only covers `Circle`/`Arc`/trimmed-`Line`) — confirmed
-empirically while building this fixture, not assumed. See this corpus's
-own `README.md` "Discovered capability gap" section and
-`held_out/07_spline_edge_construction_unsupported`. This fixture proves
-the spline's own exact value-level math instead.
+**Why no `make_edge`/face here:** this fixture's own frozen evidence is
+deliberately value-level, not a topology build. `AICAD-131` closed the
+capability gap that originally motivated this split (`make_edge` did not
+yet accept a Bezier/B-spline curve family) — see this corpus's own
+`README.md` "Discovered capability gap" section — and
+`held_out/07_spline_edge_construction_unsupported` now builds the
+identical hook curve through `make_edge` as its own revisited evidence.
 
 **Checked evidence (exact, independent, no kernel measurement):**
 

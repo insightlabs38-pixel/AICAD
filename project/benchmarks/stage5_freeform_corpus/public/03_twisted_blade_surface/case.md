@@ -7,9 +7,11 @@
 a shorter, twisted, spanwise-offset tip chord (z=80mm) — a genuine
 doubly-ruled, non-planar freeform surface.
 
-**Why no face here:** same discovered gap as `02` — `make_face_on_surface`
-does not yet accept a Bezier surface family. This fixture proves the
-surface's own exact value-level construction only.
+**Why no face here:** this fixture's own frozen evidence stays
+value-level, same as `02`. `AICAD-131` closed the `make_face_on_surface`
+capability gap that originally motivated this split; `cad-occt-bridge`/
+`cad-runtime`'s own focused `AICAD-131` regression fixtures build a real
+bilinear-patch kernel face instead.
 
 **Checked evidence (exact, closed-form, independent of the kernel):**
 
