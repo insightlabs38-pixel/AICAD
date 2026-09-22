@@ -1,5 +1,5 @@
 schema_version: 1
-status: FINAL_PENDING_TRANSITION_MERGE
+status: FINAL_OWNER_APPROVED_ACTIVE
 stage: 6
 name: Assemblies, configurations, and kinematics
 id_range: AICAD-131..AICAD-160
@@ -9,7 +9,7 @@ promotion_basis:
   final_stage5_task: AICAD-130
   final_gate: PASS_RECOMMENDED_AND_OWNER_APPROVED
   owner_decisions: [D26, D27, D28, D29, D30, D11]
-execution_rule: Executable only after the owner merges the Stage-5 -> Stage-6 transition. Stage 7 remains provisional.
+execution_rule: Owner-approved for execution after this transition is canonical on main; begin with AICAD-131 on the Stage-6 development branch. Stage 7 remains provisional/non-executable.
 common_required_checks:
   - cargo fmt --all -- --check
   - cargo clippy --workspace --all-targets --all-features -- -D warnings

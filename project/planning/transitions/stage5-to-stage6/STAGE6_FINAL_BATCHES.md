@@ -1,6 +1,6 @@
 # Stage 6 Final Execution Batches
 
-- **Status:** FINALIZED — executable only after owner merge of the Stage-5 -> Stage-6 transition
+- **Status:** OWNER APPROVED / ACTIVE — Stage 6 is in progress; execute from the exact approved transition merge on `main`
 - **Effective date:** 2026-09-22
 - **Stage:** 6 — Assemblies, configurations, and kinematics
 - **Task range:** AICAD-131 through AICAD-160

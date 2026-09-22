@@ -5,7 +5,8 @@
 - Merged Stage-5 `main` HEAD: `697847cb2f33f6ab75bdc71911bbbcdd993039ba`
 - Stage-5 development tip / AICAD-130 commit: `99b0777c235b00a06252ea28d7c8c8db5fd6e1a4`
 - Stage-5 final gate: PASS recommended by AICAD-130 evidence.
-- Owner approval: APPROVED and durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.
+- Stage-5 owner approval: APPROVED and durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.
+- Stage-6 queue/implementation approval: APPROVED and durably recorded in `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-39`.
 - Transition branch: `claude/aicad-stage6-transition`, created from the exact merged Stage-5 `main` HEAD.
 
 No Stage-6 implementation is part of this transition.
@@ -114,7 +115,7 @@ The first two Stage-5 limitations listed in Section 2 are blocking prerequisites
 
 ## 9. Unresolved owner decisions
 
-None discovered that blocks the first Stage-6 task. D26-D30 remain resolved and authoritative.
+None blocks Stage-6 entry. The owner has approved the final Stage-6 queue and authorized implementation; D26-D30 remain resolved and authoritative.
 
 Any new public semantic choice discovered during execution must be escalated rather than inferred.
 
