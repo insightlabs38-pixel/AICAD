@@ -1,0 +1,64 @@
+name: Reconcile Stage 5 limitation wording
+
+on:
+  push:
+    branches:
+      - claude/aicad-stage6-transition
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    name: reconcile final gate limitations into transition artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Patch transition and public documentation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def must_replace(path, old, new):
+              p = Path(path)
+              s = p.read_text(encoding="utf-8")
+              if old not in s:
+                  raise SystemExit(f"expected text not found in {path}: {old}")
+              p.write_text(s.replace(old, new), encoding="utf-8")
+
+          old_limit = "- generic freeform `List<Geometry>` production is not a demonstrated general source-native B-rep construction path, and arbitrary generic `List<Geometry>` invalidation is not treated as proven first-class incremental dependency behavior;"
+          new_limit = "- Bezier/B-spline curves and surfaces, plus trimmed surfaces, are supported as freeform semantic/runtime values but cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; those paths fail explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading;\n- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`, so incremental dirty-set propagation through that generic path is not claimed as proven behavior;"
+          must_replace("README.md", old_limit, new_limit)
+
+          must_replace("docs/user/current-limitations.md", "- Generic freeform `List<Geometry>` production is not treated as a general source-native B-rep construction path.\n- First-class dependency invalidation through arbitrary generic `List<Geometry>` flows is not claimed as independently proven behavior.", "- Bezier/B-spline curves and surfaces, plus trimmed surfaces, cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; unsupported construction fails explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION`.\n- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; first-class dirty-set/incremental invalidation through that generic path is therefore not claimed as independently proven behavior.")
+
+          must_replace("docs/user/modeling/advanced-geometry.md", "- generic freeform `List<Geometry>` production is not a demonstrated general source-native B-rep construction path; downstream top-level/feature construction still has more specific safe-geometry contracts;\n- arbitrary dependency invalidation through generic `List<Geometry>` flows is not treated as independently proven first-class behavior;", "- Bezier/B-spline curves and surfaces, plus trimmed surfaces, are real AICAD values with construction/evaluation/query support, but they cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; unsupported construction fails explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION`;\n- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`, so arbitrary dirty-set/incremental invalidation through that generic path is not treated as independently proven first-class behavior;")
+
+          must_replace("project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md", "1. Generic freeform `List<Geometry>` production is not a demonstrated general source-native B-rep construction path: downstream feature/top-level build paths still consume solid geometry contracts.\n2. First-class dependency invalidation through arbitrary generic `List<Geometry>` flows is not independently proven. Stage-6 assembly dependencies must therefore be explicit and observable rather than assuming this generic path.", "1. Bezier/B-spline curves and surfaces, plus trimmed surfaces, exist as Stage-5 semantic/runtime values but cannot yet become real kernel topology through `make_edge` / `make_face_on_surface`; those paths reject explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading.\n2. `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; dirty-set/incremental invalidation through that generic path is not independently proven. Stage-6 assembly dependencies must therefore be explicit and observable rather than assuming this path.")
+
+          old_accept = "    - Compatibility fixtures cover nested source identity, stable semantic references, pose-safe geometry subjects, lineage/adoption evidence, and the Stage-5 freeform/List<Geometry> dependency limitation.\n    - Stage 6 does not depend on generic freeform List<Geometry> becoming a top-level B-rep construction path unless a later task explicitly proves that dependency necessary."
+          new_accept = "    - Compatibility fixtures cover nested source identity, stable semantic references, pose-safe geometry subjects, lineage/adoption evidence, the explicit freeform-to-topology unsupported boundary, and the `List<Geometry>` dependency-tracking gap.\n    - Stage 6 does not depend on unsupported conversion of Bezier/B-spline curves/surfaces or trimmed surfaces into kernel topology; any such need must be surfaced as an explicit dependency rather than assumed."
+          must_replace("project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml", old_accept, new_accept)
+          must_replace("project/TASKS.yaml", old_accept, new_accept)
+          PY
+
+          grep -q 'UNSUPPORTED_TOPOLOGY_CONSTRUCTION' README.md
+          grep -q 'UNSUPPORTED_TOPOLOGY_CONSTRUCTION' docs/user/current-limitations.md
+          grep -q 'UNSUPPORTED_TOPOLOGY_CONSTRUCTION' docs/user/modeling/advanced-geometry.md
+          grep -q 'UNSUPPORTED_TOPOLOGY_CONSTRUCTION' project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+          grep -q 'explicit freeform-to-topology unsupported boundary' project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml
+          grep -q 'explicit freeform-to-topology unsupported boundary' project/TASKS.yaml
+          python3 scripts/ci/stage4_task_audit.py --check
+          git diff --check
+      - name: Commit corrections and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "insightlabs38-pixel"
+          git config user.email "insightlabs38@gmail.com"
+          git rm .github/workflows/stage5-limitations-reconcile.yml
+          git add README.md docs/user/current-limitations.md docs/user/modeling/advanced-geometry.md project/TASKS.yaml project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
+          git commit -m "docs: correct Stage 5 limitation boundaries"
+          git push origin HEAD:claude/aicad-stage6-transition
