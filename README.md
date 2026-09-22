@@ -4,7 +4,7 @@ AICAD is a programmable, source-first mechanical-engineering platform. Design in
 
 The current system combines typed engineering semantics, parametric/incremental computation, persistent fail-closed semantic topology references, advanced programmable geometry, a kernel-neutral geometry architecture, and an Open CASCADE Technology (OCCT) backend. Source and AICAD-owned semantic state are authoritative; B-rep and STEP files are derived products rather than the editable source of truth.
 
-> **Status:** Stage 5 is complete, owner-approved, and merged. AICAD is pre-1.0 and its language/API surface is still evolving. The Stage-6 assembly/configuration queue is finalized for owner review, but Stage-6 implementation has **not** begun.
+> **Status:** Stage 5 is complete, owner-approved, and merged. **Stage 6 is now the active, in-progress development stage**: the assembly/configuration execution queue is finalized, with AICAD-131 as the first compatibility-and-remediation task. This transition branch is still pending final owner approval/merge, so no Stage-6 product capability is claimed as implemented yet. AICAD is pre-1.0 and its language/API surface is still evolving.
 
 ## What works today
 
@@ -137,13 +137,13 @@ More detail:
 
 AICAD is an evolving pre-1.0 engineering platform, not a drop-in replacement for every mature interactive CAD system. Important current boundaries include:
 
-- assemblies, mates/joints, assembly solving, configurations, BOM, and assembly interference are **not implemented yet**; they are Stage-6 work;
+- assemblies, mates/joints, assembly solving, configurations, BOM, and assembly interference are **not implemented yet**; they are active Stage-6 work;
 - automatic fingerprint-based semantic-reference repair is intentionally not authoritative; fingerprints remain evidence only;
 - source-declared references require explicit candidate scope and fail closed on ambiguity;
 - direct source sketch authoring remains incomplete even though sketch/constraint substrate exists internally;
 - some Safe CAD operations still expose raw topology-local integer selectors alongside the separate persistent-reference system;
-- Bezier/B-spline curves and surfaces, plus trimmed surfaces, are supported as freeform semantic/runtime values but cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; those paths fail explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading;
-- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`, so incremental dirty-set propagation through that generic path is not claimed as proven behavior;
+- Bezier/B-spline curves and surfaces, plus trimmed surfaces, are supported as freeform semantic/runtime values but cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; AICAD-131 is explicitly assigned to close this gap for supported valid inputs while preserving structured failure for invalid inputs;
+- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; AICAD-131 is explicitly assigned to make these dependencies first-class and prove correct dirty-set/incremental invalidation;
 - kernel numerical/non-convergence coverage is bounded by tested operation classes; pathological cases outside that evidence can still fail;
 - a full IDE/GUI, mature package/plugin ecosystem, and broad release-stability guarantees are not current claims.
 
@@ -151,7 +151,7 @@ See [`docs/user/current-limitations.md`](docs/user/current-limitations.md) for t
 
 ## Roadmap
 
-**PLANNED / NOT YET IMPLEMENTED:** Stage 6 establishes semantic assemblies and configurations: distinct definition/instance/occurrence identity, cross-instance semantic references, reusable mechanical interfaces, solver-neutral mates/joints, deterministic pose and DOF behavior, immutable configuration overlays, suppression/replacement, external assets, BOM/interference, realistic/adversarial coverage, and structured tooling.
+**IN PROGRESS:** Stage 6 establishes semantic assemblies and configurations: distinct definition/instance/occurrence identity, cross-instance semantic references, reusable mechanical interfaces, solver-neutral mates/joints, deterministic pose and DOF behavior, immutable configuration overlays, suppression/replacement, external assets, BOM/interference, realistic/adversarial coverage, and structured tooling. AICAD-131 first stabilizes the Stage-5 contracts Stage 6 depends on and closes the two prerequisite geometry/dependency gaps before assembly implementation proceeds.
 
 Stage 7 remains provisional and focuses on verification, requirements/traceability, evidence strength, and realistic/adversarial/performance/AI gates. Provisional later-stage plans are not product commitments.
 
