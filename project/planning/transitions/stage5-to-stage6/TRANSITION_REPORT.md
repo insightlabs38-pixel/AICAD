@@ -7,7 +7,7 @@
 - Stage-5 final gate: PASS recommended by AICAD-130 evidence.
 - Stage-5 owner approval: APPROVED and durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.
 - Stage-6 queue/implementation approval: APPROVED and durably recorded in `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-39`.
-- Transition branch: `claude/aicad-stage6-transition`, created from the exact merged Stage-5 `main` HEAD.
+- Transition branch: `claude/aicad-stage6-transition`, created from the exact merged Stage-5 `main` HEAD and owner-approved for merge to `main`.
 
 No Stage-6 implementation is part of this transition.
 
@@ -83,7 +83,7 @@ No final Stage-7 global AICAD IDs are assigned. No Stage-7 implementation is aut
 
 ## 6. Public documentation and examples
 
-The public surface is synchronized to the completed Stage-5 product:
+The public surface is synchronized to the completed Stage-5 product and active Stage-6 development state:
 
 - root README status/capabilities/limitations/roadmap updated;
 - current user documentation links advanced geometry and current maturity/limitations;
@@ -91,7 +91,7 @@ The public surface is synchronized to the completed Stage-5 product:
 - maintained example categories remain current and expose getting-started, parametric, reference, advanced-geometry, and realistic-model coverage;
 - contribution and security-reporting guidance is concise and truthful.
 
-No historical task report is rewritten and no Stage-6 example/product implementation is introduced.
+No historical task report is rewritten and no Stage-6 example/product implementation is introduced by this transition.
 
 ## 7. Public-readiness findings
 
@@ -99,19 +99,19 @@ The repository now makes the following discoverable from current-facing document
 
 - what AICAD is and its source-first/kernel-neutral positioning;
 - current implemented capabilities through Stage 5;
-- explicit unsupported/deferred/numerical/usability/next-stage limitations;
+- explicit unsupported/deferred/numerical/usability limitations;
 - build and first-model path;
 - maintained examples;
 - persistent semantic-reference model;
 - contribution and security-reporting path;
 - pre-1.0/evolving-language posture;
-- roadmap boundary, including that assemblies/configurations are Stage 6 and not implemented yet.
+- Stage 6 as the active development stage without claiming unfinished Stage-6 capabilities as implemented.
 
 No release SLA, support guarantee, organization infrastructure, or security contact was fabricated.
 
 ## 8. Remaining nonblocking limitations
 
-The first two Stage-5 limitations listed in Section 2 are blocking prerequisites assigned to AICAD-131 and must be fixed before AICAD-132/133. The remaining listed limitations are nonblocking for Stage-6 entry. In addition, AICAD remains pre-1.0; direct sketch authoring and several broader product/UI/package-system surfaces remain incomplete or deferred. Stage-6 assemblies/configurations are planned next-stage work, not a current product claim.
+The first two Stage-5 limitations listed in Section 2 are blocking prerequisites assigned to AICAD-131 and must be fixed before AICAD-132/133. The remaining listed limitations are nonblocking for Stage-6 entry. In addition, AICAD remains pre-1.0; direct sketch authoring and several broader product/UI/package-system surfaces remain incomplete or deferred. Stage-6 assemblies/configurations are active development work, not current implemented product claims.
 
 ## 9. Unresolved owner decisions
 
@@ -136,7 +136,7 @@ Repository CI on the pushed transition head is the authoritative executable vali
 
 ## 11. Exact next action
 
-1. Owner reviews this transition branch.
-2. Owner merges `claude/aicad-stage6-transition` to `main` if accepted.
-3. Only after that merge, create `claude/aicad-stage6-dev` from the exact approved merged `main` HEAD.
-4. Execute AICAD-131 first. Do not begin Stage 7.
+1. Merge the owner-approved `claude/aicad-stage6-transition` branch to `main`.
+2. Create `claude/aicad-stage6-dev` from that exact merged `main` HEAD.
+3. Execute AICAD-131 first, including both prerequisite repairs and compatibility evidence.
+4. Continue the fixed Stage-6 queue in order. Do not begin Stage 7.
