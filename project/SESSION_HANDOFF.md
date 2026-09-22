@@ -4,14 +4,12 @@
 
 Stage 5 is complete, owner-approved, and merged to `main` at `697847cb2f33f6ab75bdc71911bbbcdd993039ba`. AICAD-130 is the final Stage-5 task and its gate recommends PASS. Owner approval is durably recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md` and `project/DECISION_LOG.md#DL-38`.
 
-The Stage-5 -> Stage-6 transition has finalized the Stage-6 queue but does not authorize or implement Stage 6. The transition branch is `claude/aicad-stage6-transition` and must be owner-reviewed/merged before Stage-6 development begins.
+The Stage-5 -> Stage-6 transition and final Stage-6 queue are owner-approved. Stage 6 is now the active, in-progress stage and implementation is authorized by `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md` / `project/DECISION_LOG.md#DL-39`. No Stage-6 implementation task is marked complete by this approval.
 
-## Next executable stage
+## Next executable work
 
-After owner merge of this transition:
-
-1. create `claude/aicad-stage6-dev` from the exact merged `main` HEAD;
-2. execute AICAD-131;
+1. use `claude/aicad-stage6-dev` created from the exact approved transition merge commit on `main`;
+2. execute AICAD-131 first;
 3. proceed one bounded task at a time through AICAD-160 and fixed batches S6-00..S6-12;
 4. stop at the Stage-6 owner hard gate before any Stage-7 promotion or implementation.
 
