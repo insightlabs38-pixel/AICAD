@@ -1,18 +1,18 @@
 # AICAD documentation
 
-AICAD documentation is separated by audience and by authority.
+AICAD documentation is separated by audience and authority.
 
 ## User documentation — `docs/user/`
 
-How to **use AICAD as it exists today**: source language, supported modeling operations, persistent semantic references, CLI workflows, maintained examples, and troubleshooting. Current user documentation describes the completed Stage-4 surface and labels Stage-5 work as planned rather than implemented.
+How to **use AICAD as it exists today**: source language, typed/parametric modeling, persistent semantic references, Stage-5 advanced geometry/topology, CLI workflows, maintained examples, and current limitations. User documentation describes the completed Stage-5 product surface and labels Stage-6 assemblies/configurations as planned rather than implemented.
 
 ## Developer documentation — `docs/developer/`
 
-How the current system works: compiler/runtime pipeline, Geometry IR, kernel boundary, `ParamModel`/`FeatureGraph` incremental rebuilds, semantic-reference resolution and lineage evidence, testing, and contributor workflow.
+How the current system works: compiler/runtime pipeline, Geometry IR, kernel boundary, `ParamModel`/`FeatureGraph` incremental rebuilds, geometry/runtime contracts, semantic-reference resolution and lineage evidence, testing, and contributor workflow.
 
 ## Internal development state/history — `project/`
 
-Active stage/task state, owner decisions, reports, gates, transition records, experiments, and roadmap planning. Historical evidence remains evidence from the time it was written; it is not rewritten to look like current documentation.
+Active stage/task state, owner decisions, reports, gates, transition records, experiments, and roadmap planning. Historical evidence remains evidence from the time it was written; it is not rewritten to look like current product documentation.
 
 ## Frozen foundation plan
 
