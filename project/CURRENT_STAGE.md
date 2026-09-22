@@ -1,85 +1,40 @@
-# Current AICAD Stage
+# Current Stage
 
-stage: 5
-from_stage: 4
-to_stage: 5
-name: Stage 5 - programmable geometry substrate
-status: gate-packet-prepared-awaiting-owner-review
-last_completed_stage: 4
-last_completed_task: AICAD-130
-next_task: none - roadmap development stopped pending owner review of project/gates/stage-5-gate.md
-implementation_authorized: true
+## Lifecycle state
 
-## Authoritative current state
+- **Stage 5 — Advanced Programmable Geometry & Robust Topology:** COMPLETE, OWNER APPROVED, AND MERGED.
+- **Merged Stage-5 `main` HEAD:** `697847cb2f33f6ab75bdc71911bbbcdd993039ba`.
+- **Final Stage-5 task:** AICAD-130 (`99b0777c235b00a06252ea28d7c8c8db5fd6e1a4`).
+- **Final Stage-5 gate:** PASS recommended; owner approval is recorded in `project/approvals/STAGE5_OWNER_APPROVAL.md`.
+- **Stage-5 -> Stage-6 transition:** COMPLETE on `claude/aicad-stage6-transition`, pending owner review/merge.
+- **Stage 6 — Assemblies, configurations, and kinematics:** FINAL QUEUE PREPARED, **NOT YET AUTHORIZED FOR IMPLEMENTATION** until this transition is owner-merged.
+- **Stage 7:** PROVISIONAL / NON-EXECUTABLE.
 
-Stage 4 is **complete, owner-approved, and merged**.
+## Stage-6 queue
 
-- Merged Stage-4 implementation base: `564e6790b67bf2a5b489bca2003a5084a959e937` (PR #13).
-- Final Stage-4 remediation: `AICAD-100A`.
-- Final gate: `project/gates/stage-4-gate.md`.
-- Owner approval date: 2026-09-16.
-- Owner approval record on `main`: `project/approvals/STAGE4_OWNER_APPROVAL.md`, commit `35547025bbe32f350bcdaf2c1556ed2482a2cada`.
-- Decision-log recording: `project/DECISION_LOG.md#DL-34`.
+The final Stage-6 queue contains 30 tasks, **AICAD-131 through AICAD-160**, in fixed batches S6-00 through S6-12. Checkpoints are AICAD-141, AICAD-148, and AICAD-156; AICAD-160 is the final Stage-6 owner hard gate.
 
-The Stage-4 -> Stage-5 transition/planning pass was merged to `main` at `df9334634e09a9793191ea5de40f0aad12032589` (PR #14), finalizing the executable Stage-5 queue for owner review.
+Canonical transition detail:
 
-## Stage-5 queue approval
+- `project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml`
+- `project/planning/transitions/stage5-to-stage6/STAGE6_FINAL_BATCHES.md`
+- `project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md`
 
-The owner has reviewed and **approved** the finalized Stage-5 queue:
+## Governing invariants
 
-- exact task IDs: `AICAD-101` through `AICAD-130`;
-- exact task dependencies and acceptance criteria: `project/TASKS.yaml`;
-- fixed execution batches/checkpoints: `project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md`;
-- transition rationale: `project/planning/transitions/stage4-to-stage5/TRANSITION_REPORT.md`.
-- Owner approval date: 2026-09-18.
-- Owner approval record: `project/approvals/STAGE5_QUEUE_OWNER_APPROVAL.md`.
-- Decision-log recording: `project/DECISION_LOG.md#DL-35`.
+D25-D30 and D11 remain authoritative. In particular:
 
-`claude/aicad-stage5-dev` was created from the exact approved merged head `df9334634e09a9793191ea5de40f0aad12032589`. Stage-5 implementation begins on this branch with `AICAD-101` (batch `S5-00`), in the fixed batch order below.
+- assembly definition, instance, occurrence/path, configuration/variant, external-asset, semantic-topology, and BOM/purchasing identities remain distinct;
+- mechanical interfaces use general interface/protocol semantics;
+- mates/joints are AICAD-owned and solver-neutral;
+- observable pose/DOF/conflict behavior is deterministic and structured;
+- configurations are immutable overlays preserving identity/provenance;
+- external assets are content/provenance identified, not path/kernel identified.
 
-The final queue promotes the four remaining Stage-4/general-language carry-forwards into Batch S5-00: nested `part` semantics, dimensional/spatial source construction including Area, remaining `.aicad` Stage-4 query vocabulary/lowering, and production-path source-query regression proof. It does not enable automatic fingerprint recovery.
+## Execution boundary
 
-## Fixed Stage-5 batches
+Do **not** execute AICAD-131 or create the Stage-6 development branch while this transition branch is awaiting owner merge.
 
-`AICAD-104A` is an owner-requested narrow S5-00 remediation (part-body
-params in `ParamModel`, found by `AICAD-101`'s own limitation sweep) added
-alongside the four originally queued S5-00 tasks — see
-`project/reports/AICAD-104A.md`/`project/DECISION_LOG.md#DL-37`. It does
-not change the AICAD-102..104 queue below.
+After the owner merges this transition to `main`, create `claude/aicad-stage6-dev` from that exact merged `main` HEAD and begin AICAD-131.
 
-| Batch | Tasks | Status |
-|---|---|---|
-| S5-00 | AICAD-101..104, AICAD-104A | **done** |
-| S5-01 | AICAD-105..106 | **done** |
-| S5-02 | AICAD-107..108 | **done** |
-| S5-03 | AICAD-109..112 | **done** |
-| S5-04 | AICAD-113..116 | **done** |
-| S5-05 | AICAD-117..118 | **done** |
-| S5-06 | AICAD-119..121 | **done** |
-| S5-07 | AICAD-122..124 | **done** |
-| S5-08 | AICAD-125..126 | **done** |
-| S5-09 | AICAD-127..129 | **done** |
-| S5-10 | AICAD-130 | **done** |
-
-## Later stages
-
-Stage 6 and Stage 7 are deliberately **provisional and non-executable**:
-
-- `project/planning/transitions/stage4-to-stage5/STAGE6_PROVISIONAL.yaml`
-- `project/planning/transitions/stage4-to-stage5/STAGE7_PROVISIONAL.yaml`
-
-They use local `S6-*` / `S7-*` IDs only. Do not assign global AICAD IDs or execute them until their preceding owner gate and lightweight promotion reconciliation.
-
-Future promotion follows `project/planning/transitions/stage4-to-stage5/STAGE_PROMOTION_POLICY.md`: reconcile actual evidence against provisional assumptions; if no material semantic/architecture conflict exists, do not perform another broad roadmap audit.
-
-## Current stop rule
-
-All Stage-5 batches (`S5-00` through `S5-10`, `AICAD-101` through
-`AICAD-130`) are complete. `AICAD-130` prepared `project/gates/
-stage-5-gate.md`, an advisory PASS recommendation. Per `AGENTS.md`'s
-"FINAL STOP RULE": **roadmap development stops here.** No future
-invocation may begin Stage-6 implementation, finalize/activate the
-provisional Stage-6/7 queues, or assign final global Stage-6 AICAD IDs
-without a separate, later, explicit owner approval recorded in `project/
-DECISION_LOG.md`. Only the owner may review the gate packet, approve
-Stage 5, and authorize the Stage-5 -> Stage-6 reconciliation.
+Do not implement Stage 7.

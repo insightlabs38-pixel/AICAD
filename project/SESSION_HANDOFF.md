@@ -1,99 +1,43 @@
 # Session Handoff
 
-## Canonical state
+## State
 
-**Stage 4 is complete, owner-approved, and merged.**
+Stage 5 is complete, owner-approved, and merged to `main` at `697847cb2f33f6ab75bdc71911bbbcdd993039ba`. AICAD-130 is the final Stage-5 task and its gate recommends PASS.
 
-- Stage-4 merged implementation: `564e6790b67bf2a5b489bca2003a5084a959e937` (PR #13).
-- Final Stage-4 task: `AICAD-100A`.
-- Final Stage-4 gate: `project/gates/stage-4-gate.md`.
-- Owner approval: 2026-09-16, recorded by `project/approvals/STAGE4_OWNER_APPROVAL.md` and `DL-34`.
+The Stage-5 -> Stage-6 transition has finalized the Stage-6 queue but does not authorize or implement Stage 6. The transition branch is `claude/aicad-stage6-transition` and must be owner-reviewed/merged before Stage-6 development begins.
 
-**The Stage-5 queue is approved and implementation is authorized.**
+## Next executable stage
 
-- Owner approval: 2026-09-18, recorded by `project/approvals/STAGE5_QUEUE_OWNER_APPROVAL.md` and `DL-35`.
-- Canonical Stage-5 development branch: `claude/aicad-stage5-dev`, created from the approved merged head `df9334634e09a9793191ea5de40f0aad12032589`.
+After owner merge of this transition:
 
-The active branch is `claude/aicad-stage5-dev`. It is the Stage-5 development branch.
+1. create `claude/aicad-stage6-dev` from the exact merged `main` HEAD;
+2. execute AICAD-131;
+3. proceed one bounded task at a time through AICAD-160 and fixed batches S6-00..S6-12;
+4. stop at the Stage-6 owner hard gate before any Stage-7 promotion or implementation.
 
-## What the transition finalized
+## Stage-6 queue
 
-Stage 5 has an exact executable queue, now approved for implementation:
+- Range: AICAD-131..AICAD-160 (30 tasks)
+- Checkpoint A: AICAD-141
+- Checkpoint B: AICAD-148
+- Checkpoint C: AICAD-156
+- Final owner gate: AICAD-160
+- Queue detail: `project/planning/transitions/stage5-to-stage6/STAGE6_FINAL.yaml`
+- Batches: `project/planning/transitions/stage5-to-stage6/STAGE6_FINAL_BATCHES.md`
 
-- `AICAD-101..AICAD-130` in `project/TASKS.yaml`;
-- fixed batches `S5-00..S5-10` in `project/planning/transitions/stage4-to-stage5/STAGE5_FINAL_BATCHES.md`;
-- transition/reconciliation rationale in `TRANSITION_REPORT.md`;
-- current public/developer documentation and maintained examples synchronized in `DOCUMENTATION_AND_EXAMPLES_SYNC.md`.
+## Evidence-sensitive carry-forwards
 
-Stage-4 carry-forward work is explicit in S5-00: nested `part` behavior, Area/spatial source construction, remaining source-query vocabulary/lowering, and production-path source-query completeness. Automatic fingerprint recovery remains disabled under D7.
+- Stage-5 advanced curves/surfaces, trimmed geometry, geometric queries, topology construction/healing/inspection, raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration, and maintained examples are established.
+- Do not assume generic freeform `List<Geometry>` is a general source-native B-rep construction path.
+- Do not assume arbitrary generic `List<Geometry>` flows provide first-class invalidation; Stage-6 assembly dependencies must be explicit and observable.
+- Keep Stage-5 numerical/resource limitations explicit rather than generalizing tested evidence.
 
-Stage 6 and Stage 7 remain complete but provisional queues; they are not current product commitments.
+## Authoritative owner decisions
 
-## Maintained example invariant
+D25-D30 and D11 remain in force. Do not reopen D26-D30 because an older provisional planning document described them as open.
 
-The current user-facing example inventory is in `examples/README.md`. Every ACTIVE example is registered in `crates/cad-cli/tests/active_examples.rs`.
+Escalate rather than inventing a new public semantic decision if execution would require identity-domain collapse, solver-defined mate/joint semantics, nondeterministic observable pose, destructive configuration identity loss, path/kernel external-asset identity, or weakening fail-closed cross-instance references.
 
-Beginning with Stage 5:
+## Stage 7
 
-- public language/modeling changes update affected ACTIVE examples in the same task/batch;
-- each major checkpoint adds/refreshes representative examples;
-- stale examples are updated or explicitly archived;
-- stress/benchmark fixtures stay out of the primary learning path.
-
-## Stage-5 batch sequence
-
-1. S5-00 / AICAD-101..104 — Stage-4 carry-forward language/query completeness.
-2. S5-01 / AICAD-105..106 — runtime/query/tolerance foundations.
-3. S5-02 / AICAD-107..108 — programmable feature/provenance + geometry value/IR foundations.
-4. S5-03 / AICAD-109..112 — curves + Checkpoint A.
-5. S5-04 / AICAD-113..116 — surfaces.
-6. S5-05 / AICAD-117..118 — intersection/projection/distance + Checkpoint B.
-7. S5-06 / AICAD-119..121 — topology construction/healing/inspection.
-8. S5-07 / AICAD-122..124 — controlled raw geometry/edit/adoption.
-9. S5-08 / AICAD-125..126 — lineage/reference integrity + Checkpoint C.
-10. S5-09 / AICAD-127..129 — realistic/adversarial/example campaign.
-11. S5-10 / AICAD-130 — final Stage-5 owner gate.
-
-## Non-negotiable invariants carried forward
-
-D2 functional/value semantics; D5 deterministic equivalence separation; D6 kernel-neutral public semantics; D7 fail-closed references/no automatic fingerprint recovery; D18 ordinary RuntimeBuiltin calls; D20-D25 type/catalogue/safe-raw/query/tolerance/provenance rules. Raw handles remain epoch-bound and never durable identity. Topology-changing Stage-5 operations must emit resolver-consumable lineage.
-
-## Current stop rule and exact next action
-
-**Stage 5 is complete: all batches `S5-00`..`S5-10` (`AICAD-101`..`130`)
-are done.** `AICAD-130` (sole task of `S5-10`) independently re-audited
-every `AICAD-101..129` acceptance item against current source and a fresh
-full test/CI run, and produced the final Stage-5 owner gate packet:
-`project/gates/stage-5-gate.md` (short cross-reference:
-`project/reports/AICAD-130.md`). **Recommendation: PASS** (advisory only —
-the agent does not approve Stage 5).
-
-Gate-packet highlights (full detail in the gate file, not repeated here
-per this file's own "current state, not an appended diary" convention):
-
-- Full re-run evidence, all green: `cargo fmt`/`clippy` clean, `cargo test
-  --workspace` 1830 passed/0 failed (95 binaries), native OCCT CTest
-  18/18, `semantic_ref_harness.py validate`/`self-test` both `ok`, 14
-  ACTIVE examples building cleanly, all three internal checkpoints
-  (`AICAD-112`/`118`/`126`) independently re-confirmed PASS.
-- `D21`-`D25`/`D27`/`D6`/`D7` compatibility re-verified directly against
-  source, not cited from prior reports; zero surviving silent-wrong
-  reference regressions; zero scope creep (no assembly/configuration/
-  requirement/packaging crate touched anywhere in Stage 5).
-- Two structural limitations carried forward for Stage-6 planning (both
-  pre-existing, disclosed by `AICAD-127`/`129`, recorded in `project/
-  OWNER_DECISIONS.md`'s "Non-decision items" section, not new this task):
-  freeform (Bezier/B-spline) curves/surfaces and trimmed surfaces cannot
-  yet become real kernel topology (`make_edge`/`make_face_on_surface`
-  reject them explicitly); `List<Geometry>` builtin parameters are
-  invisible to `geometry_inputs` in `FeatureGraph`/`TraceFeatureGraph`,
-  with real incremental-rebuild dirty-set interaction left unverified.
-
-Per `AGENTS.md`'s **FINAL STOP RULE**, roadmap development stops here. No
-future invocation may begin Stage-6 implementation, finalize/activate the
-provisional Stage-6/7 queues, or assign final global Stage-6 AICAD IDs.
-Only the owner may review `project/gates/stage-5-gate.md`, approve Stage 5
-in `project/DECISION_LOG.md`, and authorize the Stage-5 -> Stage-6
-reconciliation and Stage 6 itself.
-
-Do not perform another broad architecture audit during Stage-5 -> Stage-6 promotion unless actual Stage-5 evidence invalidates a material provisional assumption.
+Stage 7 remains provisional and non-executable. No final Stage-7 global AICAD IDs exist. See `project/planning/transitions/stage5-to-stage6/STAGE7_RECONCILIATION.md`.
