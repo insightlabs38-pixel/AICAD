@@ -14,8 +14,8 @@ AICAD is pre-1.0. The supported surface is substantial but intentionally bounded
 
 - Some Safe CAD APIs still use topology-local integer face/edge selectors. Persistent semantic references are a separate durability layer; integer selectors are not durable identity.
 - Source-declared semantic references require an explicit candidate scope and fail closed when resolution is ambiguous or broken.
-- Generic freeform `List<Geometry>` production is not treated as a general source-native B-rep construction path.
-- First-class dependency invalidation through arbitrary generic `List<Geometry>` flows is not claimed as independently proven behavior.
+- Bezier/B-spline curves and surfaces, plus trimmed surfaces, cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; unsupported construction fails explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION`.
+- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; first-class dirty-set/incremental invalidation through that generic path is therefore not claimed as independently proven behavior.
 - Some broader language/native ABI capabilities remain bounded to the forms required by current modeling stages.
 
 ## Kernel / numerical limitations

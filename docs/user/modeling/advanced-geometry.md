@@ -36,8 +36,8 @@ Persistent references continue to resolve through AICAD-owned semantic recipes a
 
 The Stage-5 gate records several boundaries that matter to users and later-stage code:
 
-- generic freeform `List<Geometry>` production is not a demonstrated general source-native B-rep construction path; downstream top-level/feature construction still has more specific safe-geometry contracts;
-- arbitrary dependency invalidation through generic `List<Geometry>` flows is not treated as independently proven first-class behavior;
+- Bezier/B-spline curves and surfaces, plus trimmed surfaces, are real AICAD values with construction/evaluation/query support, but they cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; unsupported construction fails explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION`;
+- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`, so arbitrary dirty-set/incremental invalidation through that generic path is not treated as independently proven first-class behavior;
 - numerical/kernel failure coverage is bounded by the operation classes and adversarial cases actually exercised;
 - some raw/lineage behavior is better demonstrated by automated Rust/integration fixtures than by standalone `.aicad` teaching examples because those paths need a live kernel context.
 

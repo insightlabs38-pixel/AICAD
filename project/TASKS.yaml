@@ -4334,8 +4334,8 @@ tasks:
   - project/planning/transitions/stage5-to-stage6/TRANSITION_REPORT.md
   objective: Freeze the Stage-5 spatial, query, reference, lineage, exact-geometry, and incremental-regeneration contracts Stage 6 relies on without reopening D26-D30.
   acceptance:
-    - Compatibility fixtures cover nested source identity, stable semantic references, pose-safe geometry subjects, lineage/adoption evidence, and the Stage-5 freeform/List<Geometry> dependency limitation.
-    - Stage 6 does not depend on generic freeform List<Geometry> becoming a top-level B-rep construction path unless a later task explicitly proves that dependency necessary.
+    - Compatibility fixtures cover nested source identity, stable semantic references, pose-safe geometry subjects, lineage/adoption evidence, the explicit freeform-to-topology unsupported boundary, and the `List<Geometry>` dependency-tracking gap.
+    - Stage 6 does not depend on unsupported conversion of Bezier/B-spline curves/surfaces or trimmed surfaces into kernel topology; any such need must be surfaced as an explicit dependency rather than assumed.
     - Any assembly dependency path introduced later must be first-class and observable rather than relying on the unverified generic List<Geometry> invalidation path.
   required_checks: [focused Stage-5 compatibility fixtures, existing semantic-reference harness, existing active example suite]
   report: project/reports/AICAD-131.md

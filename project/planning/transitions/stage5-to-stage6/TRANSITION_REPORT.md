@@ -32,8 +32,8 @@ The evidence does not contradict D26-D30 or the solver-independence requirement 
 
 ### Material limitations carried forward
 
-1. Generic freeform `List<Geometry>` production is not a demonstrated general source-native B-rep construction path: downstream feature/top-level build paths still consume solid geometry contracts.
-2. First-class dependency invalidation through arbitrary generic `List<Geometry>` flows is not independently proven. Stage-6 assembly dependencies must therefore be explicit and observable rather than assuming this generic path.
+1. Bezier/B-spline curves and surfaces, plus trimmed surfaces, exist as Stage-5 semantic/runtime values but cannot yet become real kernel topology through `make_edge` / `make_face_on_surface`; those paths reject explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading.
+2. `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`; dirty-set/incremental invalidation through that generic path is not independently proven. Stage-6 assembly dependencies must therefore be explicit and observable rather than assuming this path.
 3. Kernel numerical/non-convergence evidence is bounded by tested operation/failure classes, not exhaustive for every pathological model.
 4. Resource/performance observations are evidence from the exercised hosts/corpus, not universal machine guarantees.
 5. Existing bounded language/native ABI limitations that were intentionally deferred remain limitations unless a Stage-6 task actually requires them.

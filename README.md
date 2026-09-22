@@ -142,7 +142,8 @@ AICAD is an evolving pre-1.0 engineering platform, not a drop-in replacement for
 - source-declared references require explicit candidate scope and fail closed on ambiguity;
 - direct source sketch authoring remains incomplete even though sketch/constraint substrate exists internally;
 - some Safe CAD operations still expose raw topology-local integer selectors alongside the separate persistent-reference system;
-- generic freeform `List<Geometry>` production is not a demonstrated general source-native B-rep construction path, and arbitrary generic `List<Geometry>` invalidation is not treated as proven first-class incremental dependency behavior;
+- Bezier/B-spline curves and surfaces, plus trimmed surfaces, are supported as freeform semantic/runtime values but cannot yet be converted into real kernel topology through `make_edge` / `make_face_on_surface`; those paths fail explicitly with `UNSUPPORTED_TOPOLOGY_CONSTRUCTION` rather than silently degrading;
+- `List<Geometry>` builtin parameters are currently invisible to `geometry_inputs` in `FeatureGraph` / `TraceFeatureGraph`, so incremental dirty-set propagation through that generic path is not claimed as proven behavior;
 - kernel numerical/non-convergence coverage is bounded by tested operation classes; pathological cases outside that evidence can still fail;
 - a full IDE/GUI, mature package/plugin ecosystem, and broad release-stability guarantees are not current claims.
 
