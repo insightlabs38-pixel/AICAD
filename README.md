@@ -4,7 +4,7 @@ AICAD is a programmable, source-first mechanical-engineering platform. Design in
 
 The current system combines typed engineering semantics, parametric/incremental computation, persistent fail-closed semantic topology references, advanced programmable geometry, a kernel-neutral geometry architecture, and an Open CASCADE Technology (OCCT) backend. Source and AICAD-owned semantic state are authoritative; B-rep and STEP files are derived products rather than the editable source of truth.
 
-> **Status:** Stage 5 is complete, owner-approved, and merged. **Stage 6 is now the active, in-progress development stage**: the assembly/configuration execution queue is finalized, with AICAD-131 as the first compatibility-and-remediation task. This transition branch is still pending final owner approval/merge, so no Stage-6 product capability is claimed as implemented yet. AICAD is pre-1.0 and its language/API surface is still evolving.
+> **Status:** Stage 5 is complete, owner-approved, and merged. **Stage 6 is the active, in-progress development stage and its execution queue is owner-approved**, with AICAD-131 as the first compatibility-and-remediation task. Stage-6 implementation is authorized, but no Stage-6 product capability is claimed as implemented until its corresponding task evidence passes. AICAD is pre-1.0 and its language/API surface is still evolving.
 
 ## What works today
 
