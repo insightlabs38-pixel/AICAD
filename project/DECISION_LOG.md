@@ -1850,3 +1850,14 @@ working around the ruling.
   non-executable until the transition is owner-merged.
 - Supersedes: none (first Stage-5 pass ruling; does not reopen D25-D30 or
   any other owner decision).
+
+---
+
+## DL-39: Stage-6 queue approved — implementation authorized
+
+- Date: 2026-09-22
+- Resolves: the Stage-6 implementation-authorization boundary left open by `DL-38`.
+- Decision: **The final Stage-6 queue is approved and Stage 6 is in progress.** The owner reviewed AICAD-131..160, batches S6-00..S6-12, checkpoints AICAD-141/AICAD-148/AICAD-156, the AICAD-160 final hard gate, and the transition report; the owner authorizes merge of `claude/aicad-stage6-transition` and Stage-6 implementation from that exact merged `main` HEAD. The durable approval record is `project/approvals/STAGE6_QUEUE_OWNER_APPROVAL.md`.
+- AICAD-131 scope: approval explicitly includes fixing both prerequisite gaps there: supported Bezier/B-spline/trimmed geometry to real kernel topology construction, and first-class `List<Geometry>` dependency/dirty-set invalidation in `FeatureGraph` and `TraceFeatureGraph`. AICAD-132/133 stay blocked until AICAD-131 passes.
+- Consequences: Stage 6 is the active development stage. Create `claude/aicad-stage6-dev` from the exact transition merge commit and execute the fixed queue beginning with AICAD-131. D25-D30 and D11 remain unchanged. Stage 7 remains provisional/non-executable.
+- Supersedes: only the `DL-38` restriction that Stage-6 implementation remained unauthorized pending separate owner transition approval; no D-numbered semantic decision is superseded.
