@@ -29,9 +29,10 @@
 //! construction is deterministic and why it cannot alias another domain.
 //!
 //! `AICAD-134` onward builds the real assembly IR on top of these
-//! primitives: [`component`] (component-definition/logical-instance IR)
-//! and [`frame`] (`AICAD-135`'s local/world instance poses); a later
-//! Stage-6 task adds nested-assembly resolution.
+//! primitives: [`component`] (component-definition/logical-instance IR),
+//! [`frame`] (`AICAD-135`'s local/world instance poses), and [`graph`]
+//! (`AICAD-136`'s deterministic nested-occurrence resolution and
+//! definition-level cycle diagnostics).
 
 pub mod asset;
 pub mod bom;
@@ -39,6 +40,7 @@ pub mod component;
 pub mod configuration;
 pub mod definition;
 pub mod frame;
+pub mod graph;
 mod hash;
 pub mod instance;
 pub mod occurrence;
@@ -54,6 +56,7 @@ pub use component::{
 pub use configuration::ConfigurationSlotId;
 pub use definition::ComponentDefinitionId;
 pub use frame::{LocalPose, WorldPose};
+pub use graph::{AssemblyGraphError, Occurrence, expand};
 pub use instance::LogicalInstanceId;
 pub use occurrence::OccurrencePath;
 pub use topology::OccurrenceTopologyRef;
