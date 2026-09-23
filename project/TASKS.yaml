@@ -4510,7 +4510,7 @@ tasks:
 
 - id: AICAD-143
   stage: 6
-  status: todo
+  status: done
   batch: S6-05
   title: Implement deterministic grounding initial-pose and representative-pose semantics
   depends_on: [AICAD-142]
