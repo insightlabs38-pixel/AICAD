@@ -11,7 +11,12 @@
 //! per that section's own "unless promoted into `specs/language/
 //! grammar.ebnf` by an authorized Stage-4 task" clause — see
 //! `crates/cad-ast/src/item.rs`'s own `Item::Query` doc comment for the
-//! exact syntax this keyword now heads). Other words used only in prose
+//! exact syntax this keyword now heads), and `implements` (`AICAD-132`,
+//! `project/OWNER_DECISIONS.md#D27`: not part of the original Stage-0
+//! grammar sketch, newly reserved by this task alongside promoting the
+//! already-reserved `interface` to a real production — see
+//! `crates/cad-ast/src/item.rs`'s own `Item::Interface` doc comment).
+//! Other words used only in prose
 //! examples elsewhere in `docs/plan/` (`expose`, `unsafe`, `comptime`,
 //! `yield`, `drawing`, `simulation`, `configuration`, ...) remain
 //! deliberately **not** reserved — they are not part of the grammar
@@ -34,6 +39,7 @@ pub enum Keyword {
     Struct,
     Enum,
     Interface,
+    Implements,
     Part,
     Assembly,
     Requirement,
@@ -64,6 +70,7 @@ impl Keyword {
             Keyword::Struct => "struct",
             Keyword::Enum => "enum",
             Keyword::Interface => "interface",
+            Keyword::Implements => "implements",
             Keyword::Part => "part",
             Keyword::Assembly => "assembly",
             Keyword::Requirement => "requirement",
@@ -94,6 +101,7 @@ impl Keyword {
             "struct" => Keyword::Struct,
             "enum" => Keyword::Enum,
             "interface" => Keyword::Interface,
+            "implements" => Keyword::Implements,
             "part" => Keyword::Part,
             "assembly" => Keyword::Assembly,
             "requirement" => Keyword::Requirement,

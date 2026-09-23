@@ -89,15 +89,15 @@
 use crate::builtins::{BuiltinFnSpec, catalogue as builtin_catalogue};
 use crate::hir::{
     FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant, HirExpr,
-    HirField, HirImportPath, HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam,
-    HirPattern, HirProgram, HirQueryArg, HirQueryClause, HirRecordField, HirRecordPatternField,
-    HirStmt, HirTypeParam, HirVariantPayload,
+    HirField, HirImportPath, HirImportedName, HirInterfaceRef, HirItem, HirLiteral, HirMatchArm,
+    HirParam, HirPattern, HirProgram, HirQueryArg, HirQueryClause, HirRecordField,
+    HirRecordPatternField, HirStmt, HirTypeParam, HirVariantPayload,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
 use cad_ast::{
     Arg, Block, BlockExpr, ElseBranch, ElseClause, EnumVariant, Expr, FnParam, Item, Literal,
-    MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type, UnaryOp,
+    MatchArm, MatchArmBody, Pattern, Program, Span, Spanned, Stmt, Type, TypeParam, UnaryOp,
 };
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
 use cad_types::{AffineKind, PrimitiveType};
@@ -356,26 +356,26 @@ impl<'a> Lowerer<'a> {
     /// diagnose` walk — inserting them there would let a type parameter
     /// shadow, or be shadowed by, an unrelated value binding, which
     /// nothing in D17 authorizes.
-    fn mint_type_params(&mut self, type_params: &[Spanned<String>]) -> Vec<BindingId> {
+    fn mint_type_params(&mut self, type_params: &[TypeParam]) -> Vec<BindingId> {
         let mut seen: HashMap<&str, Span> = HashMap::new();
         let mut ids = Vec::with_capacity(type_params.len());
         for param in type_params {
-            if let Some(&first_span) = seen.get(param.node.as_str()) {
+            if let Some(&first_span) = seen.get(param.name.node.as_str()) {
                 self.diagnostics.push(duplicate_type_parameter_diagnostic(
                     self.file,
                     self.source,
-                    param,
+                    &param.name,
                     first_span,
                 ));
             } else {
-                seen.insert(param.node.as_str(), param.span);
+                seen.insert(param.name.node.as_str(), param.name.span);
             }
             let id = BindingId::new(self.bindings.len() as u32);
             self.bindings.push(Binding {
                 id,
-                name: param.node.clone(),
+                name: param.name.node.clone(),
                 kind: BindingKind::TypeParam,
-                span: param.span,
+                span: param.name.span,
             });
             ids.push(id);
         }
@@ -464,6 +464,9 @@ impl<'a> Lowerer<'a> {
                     type_params,
                     variants: variant_ids,
                 }
+            }
+            Item::Interface { name, .. } => {
+                DeclaredItem::Simple(self.mint(name, BindingKind::Interface))
             }
             Item::Part { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Part)),
             Item::Query { name, .. } => DeclaredItem::Simple(self.mint(name, BindingKind::Query)),
@@ -558,6 +561,7 @@ impl<'a> Lowerer<'a> {
                 Item::Struct {
                     name,
                     type_params,
+                    implements,
                     fields,
                     span,
                 },
@@ -569,6 +573,7 @@ impl<'a> Lowerer<'a> {
                 binding,
                 name: name.node.clone(),
                 type_params: lower_type_params(type_params, &type_param_ids),
+                implements: lower_implements_clause(implements),
                 fields: fields
                     .iter()
                     .map(|field| HirField {
@@ -607,14 +612,38 @@ impl<'a> Lowerer<'a> {
                     .collect(),
                 span: *span,
             },
-            (Item::Part { name, items, span }, DeclaredItem::Simple(binding)) => {
+            (
+                Item::Part {
+                    name,
+                    implements,
+                    items,
+                    span,
+                },
+                DeclaredItem::Simple(binding),
+            ) => {
                 self.push_scope();
                 let items = self.lower_items(items);
                 self.pop_scope();
                 HirItem::Part {
                     binding,
                     name: name.node.clone(),
+                    implements: lower_implements_clause(implements),
                     items,
+                    span: *span,
+                }
+            }
+            (Item::Interface { name, fields, span }, DeclaredItem::Simple(binding)) => {
+                HirItem::Interface {
+                    binding,
+                    name: name.node.clone(),
+                    fields: fields
+                        .iter()
+                        .map(|field| HirField {
+                            name: field.name.node.clone(),
+                            ty: lower_type(&field.ty),
+                            span: field.span,
+                        })
+                        .collect(),
                     span: *span,
                 }
             }
@@ -1455,15 +1484,34 @@ fn duplicate_type_parameter_diagnostic(
 
 /// Zips a declaration's own syntactic type-parameter names with the fresh
 /// `BindingId`s `Lowerer::mint_type_params` already minted for them, in
-/// the same order, into the HIR-layer `HirTypeParam` list.
-fn lower_type_params(type_params: &[Spanned<String>], ids: &[BindingId]) -> Vec<HirTypeParam> {
+/// the same order, into the HIR-layer `HirTypeParam` list. Each
+/// parameter's own bound names (`AICAD-132`) are carried through
+/// unresolved, exactly like `HirField::ty`'s own `HirTypeRef` convention —
+/// resolving them against a declared `interface` is `crate::typeck::
+/// Checker`'s job.
+fn lower_type_params(type_params: &[TypeParam], ids: &[BindingId]) -> Vec<HirTypeParam> {
     type_params
         .iter()
         .zip(ids)
         .map(|(param, &binding)| HirTypeParam {
             binding,
-            name: param.node.clone(),
+            name: param.name.node.clone(),
+            bounds: lower_implements_clause(&param.bounds),
             span: param.span,
+        })
+        .collect()
+}
+
+/// Lowers a `struct`/`part`'s own `implements A, B` clause, or a type
+/// parameter's own `T: A + B` bound list — both are the same unresolved
+/// "named interface reference" shape (`AICAD-132`, `project/
+/// OWNER_DECISIONS.md#D27`).
+fn lower_implements_clause(names: &[Spanned<String>]) -> Vec<HirInterfaceRef> {
+    names
+        .iter()
+        .map(|name| HirInterfaceRef {
+            name: name.node.clone(),
+            span: name.span,
         })
         .collect()
 }

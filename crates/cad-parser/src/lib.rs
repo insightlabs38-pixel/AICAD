@@ -21,7 +21,7 @@
 use cad_ast::{
     Arg, BinaryOp, Block, BlockExpr, ElseBranch, ElseClause, EnumVariant, Expr, Field, FnParam,
     ImportPath, Item, Literal, MatchArm, MatchArmBody, Pattern, Program, RecordPatternField, Span,
-    Spanned, Stmt, Type, UnaryOp,
+    Spanned, Stmt, Type, TypeParam, UnaryOp,
 };
 use cad_diagnostics::{Diagnostic, DiagnosticCode, Position, Severity, SeverityLetter, SourceSpan};
 use cad_lexer::{Keyword, Token, TokenKind};
@@ -1523,10 +1523,10 @@ impl<'a> Parser<'a> {
     /// `project/OWNER_DECISIONS.md#D17`). Returns an empty `Vec` (no
     /// diagnostic) when no `<` follows — an ordinary, non-generic
     /// declaration is not an error. Each type parameter is a bare
-    /// identifier only: no bounds (`T: Interface`), no defaults, no
-    /// variance/lifetime syntax — all explicitly out of D17's Stage-2
-    /// scope.
-    fn parse_type_params(&mut self) -> Vec<Spanned<String>> {
+    /// identifier with an optional interface-bound list (`AICAD-132`,
+    /// `project/OWNER_DECISIONS.md#D27`, [`Parser::parse_type_param_bounds`]);
+    /// no defaults, no variance/lifetime syntax — still out of scope.
+    fn parse_type_params(&mut self) -> Vec<TypeParam> {
         if self.eat(|k| *k == TokenKind::Lt).is_none() {
             return Vec::new();
         }
@@ -1538,7 +1538,12 @@ impl<'a> Parser<'a> {
             let Some(name) = self.expect_ident("a type parameter name") else {
                 break;
             };
-            params.push(name);
+            let bounds = self.parse_type_param_bounds();
+            let span = bounds
+                .last()
+                .map(|b| name.span.join(b.span))
+                .unwrap_or(name.span);
+            params.push(TypeParam { name, bounds, span });
             if self.eat(|k| *k == TokenKind::Comma).is_some() {
                 continue;
             }
@@ -1546,6 +1551,56 @@ impl<'a> Parser<'a> {
         }
         self.expect(&TokenKind::Gt, "'>'");
         params
+    }
+
+    /// `[":" identifier { "+" identifier }]` — a type parameter's optional
+    /// interface-bound list (`T: Interface1 + Interface2`, `AICAD-132`,
+    /// `project/OWNER_DECISIONS.md#D27`). Returns an empty `Vec` (no
+    /// diagnostic) for an ordinary, unbounded type parameter — exactly
+    /// D17's only shape before this task.
+    fn parse_type_param_bounds(&mut self) -> Vec<Spanned<String>> {
+        if self.eat(|k| *k == TokenKind::Colon).is_none() {
+            return Vec::new();
+        }
+        let mut bounds = Vec::new();
+        while let Some(name) = self.expect_ident("an interface bound name") {
+            bounds.push(name);
+            if self.eat(|k| *k == TokenKind::Plus).is_some() {
+                continue;
+            }
+            break;
+        }
+        bounds
+    }
+
+    /// `["implements" identifier { "," identifier } [","]]` — an optional
+    /// interface-conformance clause on a `struct`/`part` declaration
+    /// (`AICAD-132`, `project/OWNER_DECISIONS.md#D27`), positioned right
+    /// after the declared name (and, for `struct`, its own
+    /// [`Parser::parse_type_params`]). Returns an empty `Vec` (no
+    /// diagnostic) when no `implements` keyword follows.
+    fn parse_implements_clause(&mut self) -> Vec<Spanned<String>> {
+        if self
+            .eat(|k| *k == TokenKind::Keyword(Keyword::Implements))
+            .is_none()
+        {
+            return Vec::new();
+        }
+        let mut names = Vec::new();
+        loop {
+            if self.peek_kind() == &TokenKind::LBrace {
+                break;
+            }
+            let Some(name) = self.expect_ident("an interface name") else {
+                break;
+            };
+            names.push(name);
+            if self.eat(|k| *k == TokenKind::Comma).is_some() {
+                continue;
+            }
+            break;
+        }
+        names
     }
 
     /// One `item`, restricted to this task's scope — see `cad_ast::item`'s
@@ -1634,6 +1689,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let name = self.expect_ident("a struct name")?;
                 let type_params = self.parse_type_params();
+                let implements = self.parse_implements_clause();
                 self.expect(&TokenKind::LBrace, "'{'")?;
                 let fields = self.parse_struct_fields();
                 let close = self.expect(&TokenKind::RBrace, "'}'");
@@ -1643,6 +1699,23 @@ impl<'a> Parser<'a> {
                 Some(Item::Struct {
                     name,
                     type_params,
+                    implements,
+                    fields,
+                    span: start.join(end),
+                })
+            }
+            TokenKind::Keyword(Keyword::Interface) => {
+                let start = tok.span;
+                self.advance();
+                let name = self.expect_ident("an interface name")?;
+                self.expect(&TokenKind::LBrace, "'{'")?;
+                let fields = self.parse_struct_fields();
+                let close = self.expect(&TokenKind::RBrace, "'}'");
+                let end = close
+                    .map(|t| t.span)
+                    .unwrap_or_else(|| fields.last().map(|f| f.span).unwrap_or(name.span));
+                Some(Item::Interface {
+                    name,
                     fields,
                     span: start.join(end),
                 })
@@ -1669,6 +1742,7 @@ impl<'a> Parser<'a> {
                 let start = tok.span;
                 self.advance();
                 let name = self.expect_ident("a part name")?;
+                let implements = self.parse_implements_clause();
                 self.expect(&TokenKind::LBrace, "'{'")?;
                 let mut items = Vec::new();
                 while !self.at_end_of_braced_body() {
@@ -1686,6 +1760,7 @@ impl<'a> Parser<'a> {
                     .unwrap_or_else(|| items.last().map(Item::span).unwrap_or(name.span));
                 Some(Item::Part {
                     name,
+                    implements,
                     items,
                     span: start.join(end),
                 })
@@ -1744,7 +1819,7 @@ impl<'a> Parser<'a> {
                     10,
                     "EXPECTED_ITEM",
                     format!(
-                        "Expected a declaration (let/const/param/fn/struct/enum/part/import/query), found {}.",
+                        "Expected a declaration (let/const/param/fn/struct/enum/interface/part/import/query), found {}.",
                         describe_token(&tok.kind)
                     ),
                     tok.span,
@@ -2582,7 +2657,8 @@ mod decl_tests {
             } => {
                 assert_eq!(name.node, "Box");
                 assert_eq!(type_params.len(), 1);
-                assert_eq!(type_params[0].node, "T");
+                assert_eq!(type_params[0].name.node, "T");
+                assert!(type_params[0].bounds.is_empty());
                 assert_eq!(fields[0].name.node, "value");
             }
             other => panic!("expected Struct, got {other:?}"),
@@ -2597,7 +2673,7 @@ mod decl_tests {
                 assert_eq!(
                     type_params
                         .iter()
-                        .map(|p| p.node.as_str())
+                        .map(|p| p.name.node.as_str())
                         .collect::<Vec<_>>(),
                     vec!["T", "U"]
                 );
@@ -2618,7 +2694,7 @@ mod decl_tests {
             } => {
                 assert_eq!(name.node, "Container");
                 assert_eq!(type_params.len(), 1);
-                assert_eq!(type_params[0].node, "T");
+                assert_eq!(type_params[0].name.node, "T");
                 assert_eq!(variants.len(), 1);
             }
             other => panic!("expected Enum, got {other:?}"),
@@ -2842,7 +2918,7 @@ mod decl_tests {
                 ..
             } => {
                 assert_eq!(type_params.len(), 1);
-                assert_eq!(type_params[0].node, "T");
+                assert_eq!(type_params[0].name.node, "T");
                 assert_eq!(params[0].name.node, "value");
             }
             other => panic!("expected Fn, got {other:?}"),
@@ -2871,6 +2947,142 @@ mod decl_tests {
             Item::Struct { type_params, .. } => assert_eq!(type_params.len(), 2),
             other => panic!("expected Struct, got {other:?}"),
         }
+    }
+
+    // --- AICAD-132: interfaces/protocols and bounded generics
+    //     (project/OWNER_DECISIONS.md#D27) --------------------------------
+
+    #[test]
+    fn parses_interface_declaration_with_fields() {
+        let program =
+            program_ok("interface MotorMount { mounting_face: FaceRef, output_axis: AxisRef }");
+        match &program.items[0] {
+            Item::Interface { name, fields, .. } => {
+                assert_eq!(name.node, "MotorMount");
+                assert_eq!(fields.len(), 2);
+                assert_eq!(fields[0].name.node, "mounting_face");
+                assert_eq!(fields[1].name.node, "output_axis");
+            }
+            other => panic!("expected Interface, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_struct_implementing_one_interface() {
+        let program = program_ok("struct NEMA17 implements MotorMount { output_axis: AxisRef }");
+        match &program.items[0] {
+            Item::Struct {
+                name, implements, ..
+            } => {
+                assert_eq!(name.node, "NEMA17");
+                assert_eq!(implements.len(), 1);
+                assert_eq!(implements[0].node, "MotorMount");
+            }
+            other => panic!("expected Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_struct_implementing_multiple_interfaces() {
+        let program = program_ok("struct Hub implements MotorMount, ShaftMount { x: Int }");
+        match &program.items[0] {
+            Item::Struct { implements, .. } => {
+                assert_eq!(
+                    implements
+                        .iter()
+                        .map(|n| n.node.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["MotorMount", "ShaftMount"]
+                );
+            }
+            other => panic!("expected Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_part_implementing_an_interface() {
+        let program = program_ok("part NEMA17 implements MotorMount { param x: Int = 1; }");
+        match &program.items[0] {
+            Item::Part {
+                name, implements, ..
+            } => {
+                assert_eq!(name.node, "NEMA17");
+                assert_eq!(implements.len(), 1);
+                assert_eq!(implements[0].node, "MotorMount");
+            }
+            other => panic!("expected Part, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordinary_struct_and_part_declarations_still_parse_with_no_implements_clause() {
+        let program = program_ok("struct Point2 { x: Length } part Bracket { }");
+        for item in &program.items {
+            match item {
+                Item::Struct { implements, .. } | Item::Part { implements, .. } => {
+                    assert!(implements.is_empty());
+                }
+                other => panic!("unexpected item: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parses_one_bounded_type_parameter() {
+        let program = program_ok("fn attach<T: MotorMount>(motor: T) { }");
+        match &program.items[0] {
+            Item::Fn { type_params, .. } => {
+                assert_eq!(type_params.len(), 1);
+                assert_eq!(type_params[0].name.node, "T");
+                assert_eq!(
+                    type_params[0]
+                        .bounds
+                        .iter()
+                        .map(|b| b.node.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["MotorMount"]
+                );
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_a_type_parameter_bounded_by_multiple_interfaces() {
+        let program = program_ok("fn attach<T: MotorMount + ShaftMount>(motor: T) { }");
+        match &program.items[0] {
+            Item::Fn { type_params, .. } => {
+                assert_eq!(
+                    type_params[0]
+                        .bounds
+                        .iter()
+                        .map(|b| b.node.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["MotorMount", "ShaftMount"]
+                );
+            }
+            other => panic!("expected Fn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bounded_and_unbounded_type_parameters_mix_in_one_list() {
+        let program = program_ok("struct Pair<T: MotorMount, U> { a: T, b: U }");
+        match &program.items[0] {
+            Item::Struct { type_params, .. } => {
+                assert_eq!(type_params[0].name.node, "T");
+                assert_eq!(type_params[0].bounds.len(), 1);
+                assert_eq!(type_params[1].name.node, "U");
+                assert!(type_params[1].bounds.is_empty());
+            }
+            other => panic!("expected Struct, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reports_missing_bound_name_after_colon_in_type_param_list() {
+        let (_, diagnostics) = parse_program("fn f<T: >(x: T) { }", "t.aicad");
+        assert!(!diagnostics.is_empty());
     }
 
     #[test]

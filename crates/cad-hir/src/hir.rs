@@ -573,10 +573,27 @@ pub enum HirVariantPayload {
 /// parameter's own newly minted id (kind `BindingKind::TypeParam`) —
 /// what a `HirTypeRef::Named` referring to it resolves to inside the
 /// declaring item's own field/parameter/return types, via `crate::
-/// typeck::Checker`'s `active_type_params` table.
+/// typeck::Checker`'s `active_type_params` table. `bounds` is this
+/// parameter's own optional declared interface bounds (`T: A + B`,
+/// `AICAD-132`, `project/OWNER_DECISIONS.md#D27`) — empty for an
+/// ordinary, unbounded type parameter, exactly D17's only shape before
+/// that task.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirTypeParam {
     pub binding: BindingId,
+    pub name: String,
+    pub bounds: Vec<HirInterfaceRef>,
+    pub span: Span,
+}
+
+/// A named interface/protocol reference as written in a type parameter's
+/// own bound list (`T: Interface`) or a `struct`/`part`'s own
+/// `implements` clause (`AICAD-132`, `project/OWNER_DECISIONS.md#D27`) —
+/// unresolved, mirroring `HirField::ty`'s own `HirTypeRef` convention;
+/// resolving `name` against a declared `interface` is `crate::typeck::
+/// Checker`'s job.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirInterfaceRef {
     pub name: String,
     pub span: Span,
 }
@@ -693,6 +710,11 @@ pub enum HirItem {
         /// Empty for an ordinary, non-generic struct (`AICAD-057B`,
         /// `project/OWNER_DECISIONS.md#D17`).
         type_params: Vec<HirTypeParam>,
+        /// This struct's own declared interface conformance (`struct Name
+        /// implements A, B { ... }`, `AICAD-132`, `project/
+        /// OWNER_DECISIONS.md#D27`) — empty for a struct that declares no
+        /// conformance.
+        implements: Vec<HirInterfaceRef>,
         fields: Vec<HirField>,
         span: Span,
     },
@@ -705,9 +727,24 @@ pub enum HirItem {
         variants: Vec<HirEnumVariant>,
         span: Span,
     },
+    /// `interface name { field, field, ... }` (`AICAD-132`, `project/
+    /// OWNER_DECISIONS.md#D27`) — see `cad_ast::item::Item::Interface`'s
+    /// own doc comment for the full rationale. Not itself a usable value
+    /// type: `crate::typeck::Checker::resolve_type_ref` never resolves an
+    /// interface name as an ordinary type.
+    Interface {
+        binding: BindingId,
+        name: String,
+        fields: Vec<HirField>,
+        span: Span,
+    },
     Part {
         binding: BindingId,
         name: String,
+        /// This part's own declared interface conformance (`AICAD-132`,
+        /// `project/OWNER_DECISIONS.md#D27`) — empty for a part that
+        /// declares no conformance.
+        implements: Vec<HirInterfaceRef>,
         items: Vec<HirItem>,
         span: Span,
     },
@@ -759,6 +796,7 @@ impl HirItem {
             | HirItem::Fn { span, .. }
             | HirItem::Struct { span, .. }
             | HirItem::Enum { span, .. }
+            | HirItem::Interface { span, .. }
             | HirItem::Part { span, .. }
             | HirItem::Import { span, .. }
             | HirItem::Query { span, .. } => *span,

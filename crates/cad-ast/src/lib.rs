@@ -22,6 +22,7 @@ pub use expr::{
 };
 pub use item::{
     Block, ElseClause, EnumVariant, Field, FnParam, ImportPath, Item, Program, Stmt, Type,
+    TypeParam,
 };
 pub use printer::print_program;
 

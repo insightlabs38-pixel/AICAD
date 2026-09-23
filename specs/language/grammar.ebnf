@@ -33,10 +33,10 @@
 
    Stage-3 cleanup note: the current item set is deliberately limited to
    let/const/param/fn/struct/enum/part/import (plus, as of AICAD-100A,
-   query -- see query_decl below). `interface`, `assembly`, `requirement`,
-   and `test` may remain reserved/planned vocabulary, but they are not
-   current declaration productions. There is likewise no public
-   `sketch { ... }` production.
+   query, and as of AICAD-132, interface -- see query_decl/interface_decl
+   below). `assembly`, `requirement`, and `test` may remain
+   reserved/planned vocabulary, but they are not current declaration
+   productions. There is likewise no public `sketch { ... }` production.
 
    Patched again (`AICAD-100A`) to promote `query_decl`, RFC-0003 §7's own
    reserved persistent-semantic-reference surface, into a real grammar
@@ -46,22 +46,35 @@
    `in scope` clause (not an implicit `body.faces`-shaped target), and its
    clause bodies reuse the ordinary call-argument grammar verbatim -- no
    new expression syntax (comparison operators, a `within` modifier,
-   direction literals) is introduced by this patch. *)
+   direction literals) is introduced by this patch.
+
+   Patched again (`AICAD-132`) to promote `interface_decl` into a real
+   grammar production and add `implements_clause`/`type_param` bounds,
+   per D27/DL-29. An interface is a closed, named field contract (reusing
+   `field`'s own `name: Type` shape); `struct`/`part` may declare explicit
+   conformance; a type parameter may declare an interface bound
+   (`T: A + B`). This does not add method/`impl`-block syntax, class/state
+   inheritance, dynamic dispatch, or trait objects -- see
+   `specs/language/types.md`'s own "Interfaces/protocols and bounded
+   generics" section for the full implemented shape. *)
 
 program        = { item } ;
 item           = let_decl | const_decl | param_decl
-               | fn_decl | struct_decl | enum_decl | part_decl
-               | import_decl | query_decl ;
+               | fn_decl | struct_decl | enum_decl | interface_decl
+               | part_decl | import_decl | query_decl ;
 
 (* Current declaration forms. *)
 let_decl       = "let" , identifier , [ ":" , type ] , "=" , expression , ";" ;
 const_decl     = "const" , identifier , [ ":" , type ] , "=" , expression , ";" ;
 param_decl     = "param" , identifier , ":" , type , [ "=" , expression ] , ";" ;
-struct_decl    = "struct" , identifier , [ type_params ] , "{" ,
+struct_decl    = "struct" , identifier , [ type_params ] , [ implements_clause ] , "{" ,
                  [ field , { "," , field } , [","] ] , "}" ;
 enum_decl      = "enum" , identifier , [ type_params ] , "{" ,
                  [ enum_variant , { "," , enum_variant } , [","] ] , "}" ;
-part_decl      = "part" , identifier , "{" , { item } , "}" ;
+interface_decl = "interface" , identifier , "{" ,
+                 [ field , { "," , field } , [","] ] , "}" ;
+implements_clause = "implements" , identifier , { "," , identifier } , [","] ;
+part_decl      = "part" , identifier , [ implements_clause ] , "{" , { item } , "}" ;
 import_decl    = "import" , import_path ,
                  [ "::" , "{" , identifier , { "," , identifier } , [","] , "}" ] ,
                  ";" ;
@@ -133,9 +146,12 @@ fn_decl        = [ "pure" ] , "fn" , identifier , [ type_params ] ,
 params         = param , { "," , param } ;
 param          = identifier , ":" , type , [ "=" , expression ] ;
 
-type_params    = "<" , identifier , { "," , identifier } , [","] , ">" ;
-                 (* D17/DL-14: bare type parameters only. No interface/
-                    trait bounds, defaults, variance, or lifetime syntax. *)
+type_params    = "<" , type_param , { "," , type_param } , [","] , ">" ;
+type_param     = identifier , [ ":" , identifier , { "+" , identifier } ] ;
+                 (* D17/DL-14 authorized the bare form; D27/DL-29
+                    (`AICAD-132`) adds each parameter's own optional
+                    interface-bound list (`T: A + B`). Still no defaults,
+                    variance, or lifetime syntax. *)
 
 enum_variant   = identifier
                | identifier , "(" , [ type , { "," , type } , [","] ] , ")"

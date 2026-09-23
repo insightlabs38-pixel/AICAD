@@ -96,9 +96,9 @@
 //! `TYPE`-family codes for conditions `cad-units` already names).
 
 use crate::hir::{
-    BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr, HirItem,
-    HirLiteral, HirMatchArm, HirPattern, HirProgram, HirRecordField, HirStmt, HirTypeParam,
-    HirVariantPayload, UnaryOp,
+    BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirExpr,
+    HirInterfaceRef, HirItem, HirLiteral, HirMatchArm, HirPattern, HirProgram, HirRecordField,
+    HirStmt, HirTypeParam, HirVariantPayload, UnaryOp,
 };
 use crate::ids::{Binding, BindingId, BindingKind};
 use crate::types::{HirType, HirTypeRef};
@@ -348,6 +348,31 @@ struct Checker<'a> {
     /// outside that window (in particular, always empty while checking
     /// ordinary non-generic declarations or any expression body).
     active_type_params: HashMap<String, BindingId>,
+    /// `interface` name -> its own declaring item's `BindingId`
+    /// (`AICAD-132`, `project/OWNER_DECISIONS.md#D27`), populated once by
+    /// `register_interfaces` before any bound/`implements` clause is
+    /// resolved — the interface-namespace analogue of `type_names`, kept
+    /// as a separate table (never merged into `type_names`) so an
+    /// interface name is never resolvable as an ordinary value type via
+    /// `resolve_type_ref` (D27 excludes trait objects/dynamic dispatch).
+    interfaces: HashMap<String, BindingId>,
+    /// interface's own `BindingId` -> its resolved required-field list
+    /// (`AICAD-132`) — the field contract a conforming `struct`/`part`
+    /// must satisfy.
+    interface_fields: HashMap<BindingId, Vec<FieldInfo>>,
+    /// `struct`/`part`'s own `BindingId` -> the interface `BindingId`s it
+    /// was *verified* to conform to (`AICAD-132`) — populated by
+    /// `check_implements_clauses` only when conformance checking actually
+    /// passed, so a failed `implements` clause never cascades into a
+    /// second, redundant bound-mismatch diagnostic wherever that type is
+    /// later used against the same bound.
+    implements: HashMap<BindingId, Vec<BindingId>>,
+    /// A type parameter's own `BindingId` -> its resolved declared
+    /// interface bounds (`AICAD-132`) — populated once by
+    /// `resolve_type_param_bounds`, independent of which declaration (`fn`/
+    /// `struct`/`enum`) the parameter belongs to (a `BindingId` is already
+    /// globally unique per parameter, so this needs no further keying).
+    type_param_bounds: HashMap<BindingId, Vec<BindingId>>,
     /// The enclosing function's declared return type, if any — read by
     /// `HirStmt::Return` wherever it is encountered, however deeply
     /// nested inside `if`/`match`/block expressions (see module doc
@@ -380,10 +405,18 @@ pub fn check_program(
         enum_variants: HashMap::new(),
         type_params_of: HashMap::new(),
         active_type_params: HashMap::new(),
+        interfaces: HashMap::new(),
+        interface_fields: HashMap::new(),
+        implements: HashMap::new(),
+        type_param_bounds: HashMap::new(),
         current_fn_return: None,
     };
     checker.register_type_names(&program.items);
+    checker.register_interfaces(&program.items);
     checker.collect_struct_fields(&program.items);
+    checker.collect_interface_fields(&program.items);
+    checker.resolve_type_param_bounds(&program.items);
+    checker.check_implements_clauses(&program.items);
     checker.collect_enum_variant_shapes(&program.items);
     checker.collect_signatures(&program.items);
     checker.check_items(&program.items);
@@ -871,6 +904,31 @@ impl<'a> Checker<'a> {
         for arg in args {
             resolved_args.push(self.resolve_type_ref(arg)?);
         }
+        // AICAD-132, project/OWNER_DECISIONS.md#D27: each type argument
+        // must conform to its own declared type parameter's interface
+        // bounds, if any.
+        for (declared_param, arg_ty) in declared_params.iter().zip(resolved_args.iter()) {
+            let bounds = self
+                .type_param_bounds
+                .get(declared_param)
+                .cloned()
+                .unwrap_or_default();
+            for interface in bounds {
+                if !self.type_conforms_to_interface(arg_ty, interface) {
+                    let interface_name = self.bindings[interface.index()].name.clone();
+                    self.diagnostics.push(self.diag(
+                        465,
+                        "TYPE_ARGUMENT_DOES_NOT_CONFORM",
+                        format!(
+                            "type {} does not conform to interface '{interface_name}' required by \
+                             a type parameter of '{name}' (project/OWNER_DECISIONS.md#D27)",
+                            self.describe(arg_ty.clone())
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
         Some(CheckedType::Instantiated {
             base,
             args: resolved_args,
@@ -946,8 +1004,26 @@ impl<'a> Checker<'a> {
                 | HirItem::Const { .. }
                 | HirItem::Param { .. }
                 | HirItem::Fn { .. }
+                | HirItem::Interface { .. }
                 | HirItem::Import { .. }
                 | HirItem::Query { .. } => {}
+            }
+        }
+    }
+
+    // --- Pass 0.1: interface names (AICAD-132) ---
+
+    /// `interface` name -> `BindingId`, mirroring `register_type_names`
+    /// exactly but kept in `self.interfaces` (a separate table — see that
+    /// field's own doc comment for why).
+    fn register_interfaces(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Interface { binding, name, .. } => {
+                    self.interfaces.insert(name.clone(), *binding);
+                }
+                HirItem::Part { items, .. } => self.register_interfaces(items),
+                _ => {}
             }
         }
     }
@@ -977,6 +1053,231 @@ impl<'a> Checker<'a> {
                 HirItem::Part { items, .. } => self.collect_struct_fields(items),
                 _ => {}
             }
+        }
+    }
+
+    // --- Pass 0.6: interface field contracts (AICAD-132) ---
+
+    /// Resolves every declared interface's own required-field list,
+    /// mirroring `collect_struct_fields` — except an interface is never
+    /// generic (`D27`'s minimal baseline), so no `with_type_params`
+    /// scoping is needed here.
+    fn collect_interface_fields(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Interface {
+                    binding, fields, ..
+                } => {
+                    let mut field_infos = Vec::with_capacity(fields.len());
+                    for f in fields {
+                        field_infos.push(FieldInfo {
+                            name: f.name.clone(),
+                            ty: self.resolve_type_ref(&f.ty),
+                        });
+                    }
+                    self.interface_fields.insert(*binding, field_infos);
+                }
+                HirItem::Part { items, .. } => self.collect_interface_fields(items),
+                _ => {}
+            }
+        }
+    }
+
+    // --- Pass 0.7: type-parameter bound resolution (AICAD-132) ---
+
+    /// Resolves every declared type parameter's own bound names (`T: A +
+    /// B`) against `self.interfaces`, diagnosing a name that matches no
+    /// declared interface (`UNKNOWN_INTERFACE_NAME`) — mirrors
+    /// `resolve_type_ref`'s own "genuine typo" diagnostic shape.
+    fn resolve_type_param_bounds(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Fn { type_params, .. }
+                | HirItem::Struct { type_params, .. }
+                | HirItem::Enum { type_params, .. } => {
+                    for tp in type_params {
+                        let mut resolved = Vec::with_capacity(tp.bounds.len());
+                        for bound in &tp.bounds {
+                            match self.interfaces.get(&bound.name) {
+                                Some(&id) => resolved.push(id),
+                                None => {
+                                    self.diagnostics.push(self.diag(
+                                        462,
+                                        "UNKNOWN_INTERFACE_NAME",
+                                        format!(
+                                            "'{}' does not name a declared interface \
+                                             (project/OWNER_DECISIONS.md#D27)",
+                                            bound.name
+                                        ),
+                                        bound.span,
+                                    ));
+                                }
+                            }
+                        }
+                        self.type_param_bounds.insert(tp.binding, resolved);
+                    }
+                }
+                HirItem::Part { items, .. } => self.resolve_type_param_bounds(items),
+                _ => {}
+            }
+        }
+    }
+
+    // --- Pass 0.8: struct/part interface conformance (AICAD-132) ---
+
+    /// Checks every `struct`/`part`'s own `implements` clause: each named
+    /// interface must exist (`UNKNOWN_INTERFACE_NAME`), and the
+    /// implementer must actually carry every field the interface requires,
+    /// with a compatible type (`INTERFACE_CONFORMANCE_MISSING_FIELD` /
+    /// `INTERFACE_CONFORMANCE_FIELD_TYPE_MISMATCH`) — D27's "explicit
+    /// conformance" is the `implements` clause itself; *whether* that
+    /// claim actually holds is checked structurally against already-
+    /// resolved field types, the same nominal-declaration-plus-structural-
+    /// verification shape `AICAD-057D` already uses for generic
+    /// instantiation arity. A `part`'s own conformance surface is its
+    /// top-level `param` declarations (the only part-body items with a
+    /// mandatory explicit type) — `collect_part_param_fields`.
+    fn check_implements_clauses(&mut self, items: &[HirItem]) {
+        for item in items {
+            match item {
+                HirItem::Struct {
+                    binding,
+                    name,
+                    implements,
+                    ..
+                } => {
+                    let implementer_fields =
+                        self.struct_fields.get(binding).cloned().unwrap_or_default();
+                    for clause in implements {
+                        self.check_one_implements_clause(
+                            *binding,
+                            name,
+                            &implementer_fields,
+                            clause,
+                        );
+                    }
+                }
+                HirItem::Part {
+                    binding,
+                    name,
+                    implements,
+                    items: body,
+                    ..
+                } => {
+                    let implementer_fields = self.collect_part_param_fields(body);
+                    for clause in implements {
+                        self.check_one_implements_clause(
+                            *binding,
+                            name,
+                            &implementer_fields,
+                            clause,
+                        );
+                    }
+                    self.check_implements_clauses(body);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A part's own conformance surface: its top-level `param`
+    /// declarations only (never recursing into a nested `part`'s own
+    /// params, which belong to that nested part, not this one).
+    fn collect_part_param_fields(&mut self, items: &[HirItem]) -> Vec<FieldInfo> {
+        let mut fields = Vec::new();
+        for item in items {
+            if let HirItem::Param { name, ty, .. } = item {
+                fields.push(FieldInfo {
+                    name: name.clone(),
+                    ty: self.resolve_type_ref(ty),
+                });
+            }
+        }
+        fields
+    }
+
+    fn check_one_implements_clause(
+        &mut self,
+        implementer: BindingId,
+        implementer_name: &str,
+        implementer_fields: &[FieldInfo],
+        clause: &HirInterfaceRef,
+    ) {
+        let Some(&interface_binding) = self.interfaces.get(&clause.name) else {
+            self.diagnostics.push(self.diag(
+                462,
+                "UNKNOWN_INTERFACE_NAME",
+                format!(
+                    "'{}' does not name a declared interface (project/OWNER_DECISIONS.md#D27)",
+                    clause.name
+                ),
+                clause.span,
+            ));
+            return;
+        };
+        let required = self
+            .interface_fields
+            .get(&interface_binding)
+            .cloned()
+            .unwrap_or_default();
+        let mut ok = true;
+        for want in &required {
+            match implementer_fields.iter().find(|f| f.name == want.name) {
+                None => {
+                    ok = false;
+                    self.diagnostics.push(self.diag(
+                        463,
+                        "INTERFACE_CONFORMANCE_MISSING_FIELD",
+                        format!(
+                            "'{implementer_name}' declares 'implements {}' but has no field '{}' \
+                             required by that interface",
+                            clause.name, want.name
+                        ),
+                        clause.span,
+                    ));
+                }
+                Some(have) => {
+                    if let (Some(w), Some(h)) = (&want.ty, &have.ty)
+                        && !types_compatible(w.clone(), h.clone())
+                    {
+                        ok = false;
+                        self.diagnostics.push(self.diag(
+                            464,
+                            "INTERFACE_CONFORMANCE_FIELD_TYPE_MISMATCH",
+                            format!(
+                                "'{implementer_name}.{}' has type {}, but interface '{}' requires \
+                                 type {}",
+                                want.name,
+                                self.describe(h.clone()),
+                                clause.name,
+                                self.describe(w.clone())
+                            ),
+                            clause.span,
+                        ));
+                    }
+                }
+            }
+        }
+        if ok {
+            self.implements
+                .entry(implementer)
+                .or_default()
+                .push(interface_binding);
+        }
+    }
+
+    /// Whether `ty` is verified to conform to `interface` — only a
+    /// `CheckedType::Struct` can conform (D27 excludes trait objects, so
+    /// no other `CheckedType` shape is ever eligible), and only via an
+    /// `implements` clause that `check_implements_clauses` already
+    /// verified (`self.implements`) — never structurally/implicitly.
+    fn type_conforms_to_interface(&self, ty: &CheckedType, interface: BindingId) -> bool {
+        match ty {
+            CheckedType::Struct(id) => self
+                .implements
+                .get(id)
+                .is_some_and(|ifs| ifs.contains(&interface)),
+            _ => false,
         }
     }
 
@@ -1078,6 +1379,7 @@ impl<'a> Checker<'a> {
                 | HirItem::Const { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
+                | HirItem::Interface { .. }
                 | HirItem::Import { .. }
                 | HirItem::Query { .. } => {}
             }
@@ -1174,7 +1476,7 @@ impl<'a> Checker<'a> {
             // struct-field passes above — nothing left to check here
             // (struct fields and enum variants carry no value expressions
             // of their own to type-check).
-            HirItem::Struct { .. } | HirItem::Enum { .. } => {}
+            HirItem::Struct { .. } | HirItem::Enum { .. } | HirItem::Interface { .. } => {}
             HirItem::Part { items, .. } => self.check_items(items),
             // A query clause's own arguments are never `HirExpr` (see
             // `HirQueryArg`'s own doc comment) -- there is no expression
@@ -2137,6 +2439,39 @@ impl<'a> Checker<'a> {
             ));
             return None;
         }
+
+        // Pass 3.5: bound satisfaction (`AICAD-132`, `project/
+        // OWNER_DECISIONS.md#D27`) — every inferred type parameter must
+        // conform to its own declared interface bounds, if any. Iterates
+        // `sig.type_params` (declaration order), never `subst` itself (a
+        // `HashMap`), so diagnostic order stays deterministic
+        // (`project/DECISION_LOG.md#DL-12`).
+        for &type_param in &sig.type_params {
+            let Some(concrete) = subst.get(&type_param) else {
+                continue;
+            };
+            let bounds = self
+                .type_param_bounds
+                .get(&type_param)
+                .cloned()
+                .unwrap_or_default();
+            for interface in bounds {
+                if !self.type_conforms_to_interface(concrete, interface) {
+                    let interface_name = self.bindings[interface.index()].name.clone();
+                    self.diagnostics.push(self.diag(
+                        465,
+                        "TYPE_ARGUMENT_DOES_NOT_CONFORM",
+                        format!(
+                            "type {} does not conform to interface '{interface_name}' required by \
+                             this call to '{fn_name}' (project/OWNER_DECISIONS.md#D27)",
+                            self.describe(concrete.clone())
+                        ),
+                        call_span,
+                    ));
+                }
+            }
+        }
+
         for (idx, slot) in slot_expr.iter().enumerate() {
             let Some(expr) = slot else { continue };
             let expected_ty = substitute_opt(sig.params[idx].ty.clone(), &subst);
@@ -5070,5 +5405,114 @@ mod tests {
         let lowered =
             crate::lower::lower_program(&program, "test.aicad", "let s = boxx(1mm, 1mm, 1mm);");
         assert_eq!(codes(&lowered.diagnostics), vec!["TYPE-E410"]);
+    }
+
+    // --- AICAD-132: interfaces/protocols and bounded generics
+    //     (project/OWNER_DECISIONS.md#D27) --------------------------------
+
+    #[test]
+    fn struct_implementing_an_interface_with_a_matching_field_is_accepted() {
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length } \
+             struct NEMA17 implements MotorMount { output_axis: Length }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn part_implementing_an_interface_via_its_own_params_is_accepted() {
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length } \
+             part NEMA17 implements MotorMount { param output_axis: Length = 5mm; }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn struct_implementing_an_interface_missing_a_required_field_is_rejected() {
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length, mounting_face: Length } \
+             struct NEMA17 implements MotorMount { output_axis: Length }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E463"]);
+    }
+
+    #[test]
+    fn struct_implementing_an_interface_with_a_wrong_field_type_is_rejected() {
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length } \
+             struct NEMA17 implements MotorMount { output_axis: Mass }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E464"]);
+    }
+
+    #[test]
+    fn implements_clause_naming_an_undeclared_interface_is_reported() {
+        let (_lowered, checked) = check("struct NEMA17 implements Frobnicator { x: Int }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E462"]);
+    }
+
+    #[test]
+    fn bounded_generic_call_accepts_a_conforming_struct() {
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length } \
+             struct NEMA17 implements MotorMount { output_axis: Length } \
+             fn attach<T: MotorMount>(motor: T) { } \
+             fn use_it() { attach(NEMA17(output_axis = 5mm)); }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
+    }
+
+    #[test]
+    fn bounded_generic_call_rejects_a_non_conforming_struct() {
+        // Adversarial: `Widget` has the *same field shape* as `NEMA17`
+        // above but never declares `implements MotorMount` -- D27's
+        // conformance is explicit/nominal, never inferred from a
+        // structural match alone.
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length } \
+             struct Widget { output_axis: Length } \
+             fn attach<T: MotorMount>(motor: T) { } \
+             fn use_it() { attach(Widget(output_axis = 5mm)); }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E465"]);
+    }
+
+    #[test]
+    fn bounded_generic_call_rejects_a_plain_value_type() {
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length } \
+             fn attach<T: MotorMount>(motor: T) { } \
+             fn use_it() { attach(5mm); }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E465"]);
+    }
+
+    #[test]
+    fn bounded_generic_struct_instantiation_is_checked_the_same_way_as_a_call() {
+        let (_lowered, checked) = check(
+            "interface MotorMount { output_axis: Length } \
+             struct Widget { output_axis: Length } \
+             struct Holder<T: MotorMount> { motor: T } \
+             fn f(h: Holder<Widget>) { }",
+        );
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E465"]);
+    }
+
+    #[test]
+    fn type_parameter_bound_naming_an_undeclared_interface_is_reported() {
+        let (_lowered, checked) = check("fn attach<T: Frobnicator>(motor: T) { }");
+        assert_eq!(codes(&checked.diagnostics), vec!["TYPE-E462"]);
+    }
+
+    #[test]
+    fn unbounded_generic_call_is_unaffected_by_conformance_checking() {
+        // Regression guard: ordinary D17 generics (no bounds at all) must
+        // keep working exactly as before this task.
+        let (_lowered, checked) = check(
+            "fn identity<T>(value: T) -> T { return value; } \
+             fn f() { let x = identity(5mm); }",
+        );
+        assert!(checked.diagnostics.is_empty(), "{:?}", checked.diagnostics);
     }
 }

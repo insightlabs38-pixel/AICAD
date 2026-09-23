@@ -95,6 +95,13 @@ pub enum BindingKind {
     /// A `query name : EntityKind in scope { ... }` declaration
     /// (`AICAD-100A`, `crate::hir::HirItem::Query`).
     Query,
+    /// A nominal interface/protocol declaration (`AICAD-132`, `project/
+    /// OWNER_DECISIONS.md#D27`). Like `Struct`/`Enum`, this is a
+    /// type-namespace name — never resolved as an ordinary value type
+    /// (`crate::typeck::Checker::resolve_type_ref` never returns a
+    /// `CheckedType` for one), matching D27's explicit exclusion of trait
+    /// objects/dynamic dispatch.
+    Interface,
 }
 
 /// One declaration lowering created: its kind, source name, and the span

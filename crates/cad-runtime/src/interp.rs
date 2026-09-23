@@ -723,6 +723,7 @@ impl<'a> Interpreter<'a> {
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
+                | HirItem::Interface { .. }
                 | HirItem::Import { .. }
                 | HirItem::Query { .. } => {}
             }
@@ -882,6 +883,7 @@ impl<'a> Interpreter<'a> {
                 HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
+                | HirItem::Interface { .. }
                 | HirItem::Import { .. }
                 | HirItem::Query { .. } => continue,
             };
@@ -1078,6 +1080,7 @@ impl<'a> Interpreter<'a> {
                 | HirItem::Fn { .. }
                 | HirItem::Struct { .. }
                 | HirItem::Enum { .. }
+                | HirItem::Interface { .. }
                 | HirItem::Import { .. }
                 | HirItem::Query { .. } => continue,
             }

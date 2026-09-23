@@ -89,6 +89,10 @@ pub enum SymbolKind {
     EnumVariant {
         enum_name: String,
     },
+    /// A nominal interface/protocol declaration (`AICAD-132`, `project/
+    /// OWNER_DECISIONS.md#D27`). Field types are a distinct namespace this
+    /// module does not resolve, exactly like `SymbolKind::Struct`.
+    Interface,
     Part,
     /// A name brought into scope by a selective `import ...::{Name}` —
     /// see module doc comment for why this task does not verify it
@@ -118,6 +122,7 @@ impl SymbolKind {
             SymbolKind::Struct => "struct",
             SymbolKind::Enum => "enum",
             SymbolKind::EnumVariant { .. } => "enum variant",
+            SymbolKind::Interface => "interface",
             SymbolKind::Part => "part",
             SymbolKind::Import => "imported name",
             SymbolKind::ForLoopVar => "for-loop variable",
@@ -264,6 +269,7 @@ impl<'a> Binder<'a> {
                     );
                 }
             }
+            Item::Interface { name, .. } => self.declare(name, SymbolKind::Interface),
             Item::Part { name, .. } => self.declare(name, SymbolKind::Part),
             Item::Import { names, .. } => {
                 // Whole-module imports (`names: None`) bind no name — see
@@ -296,6 +302,9 @@ impl<'a> Binder<'a> {
             // Variants were already declared by `declare_item_name`;
             // nothing further to check.
             Item::Enum { .. } => {}
+            // Same as `Item::Struct` — field types are a distinct
+            // namespace this module does not resolve.
+            Item::Interface { .. } => {}
             Item::Part { items, .. } => {
                 self.push_scope();
                 self.bind_items(items);

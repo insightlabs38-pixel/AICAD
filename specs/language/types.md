@@ -16,9 +16,17 @@ Affine dimensions distinguish **absolute** from **delta** quantities (D4/DL-3). 
 
 ## User-defined and generic types
 
-Current source semantics support structs, enums, and ordinary generic type parameters on structs, enums, and functions under D17. Enum variants may be unit variants, positional tuple variants, or named record variants. Generic parameters are compile-time type parameters; current syntax has no interface/trait bounds, defaults, variance, higher-kinded types, specialization, dependent types, or lifetime system.
+Current source semantics support structs, enums, and ordinary generic type parameters on structs, enums, and functions under D17. Enum variants may be unit variants, positional tuple variants, or named record variants. Generic parameters are compile-time type parameters; current syntax has no defaults, variance, higher-kinded types, specialization, dependent types, or lifetime system.
 
-D27/DL-29 approves a future restrained general nominal interface/protocol mechanism supporting explicit conformance, static conformance checking, and interface-constrained generics for Stage 6+. Exact syntax remains subject to the language RFC process, and this approval does not add interface syntax to the current Stage-3 grammar. It does not approve class/state inheritance, runtime monkey-patching, mandatory dynamic dispatch, trait objects, higher-kinded types, specialization, associated-type machinery, complex variance, or negative bounds.
+## Interfaces/protocols and bounded generics — D27/DL-29 (AICAD-132)
+
+D27/DL-29's restrained general nominal interface/protocol mechanism is implemented (`AICAD-132`), on top of D17's generic foundation rather than replacing it:
+
+- `interface Name { field: Type, field: Type }` declares a nominal contract: a named, closed list of required fields (the same `name: Type` shape a `struct`'s own fields use). An interface is never itself a usable value type — it cannot appear as an ordinary parameter/field/return type, only as a generic bound or an `implements` target — so no trait-object/dynamic-dispatch capability exists.
+- `struct Name implements Interface1, Interface2 { ... }` and `part Name implements Interface1, ... { ... }` declare explicit, nominal conformance. Conformance is statically verified: the implementer must carry, for every interface field, a field of the same name and a compatible type — a `struct`'s own declared fields, or a `part`'s own top-level `param` declarations (the only part-body items with a mandatory explicit type). A structurally matching type that never declares `implements` does not conform.
+- `T: Interface1 + Interface2` on a `fn`/`struct`/`enum` type parameter constrains that parameter to types verified to conform to every listed interface. A bound is checked wherever the parameter is instantiated: an ordinary generic-function call site (reusing D17's existing call-site type inference) and a generic-struct/enum `Name<Args>` type-application site alike.
+
+This mechanism does not add class/state inheritance, runtime monkey-patching, mandatory dynamic dispatch, trait objects, higher-kinded types, specialization, associated-type machinery, complex variance, or negative bounds — none of those are part of the implemented baseline.
 
 `Result<T,E>` and `Optional<T>` are ordinary generic prelude enums built from the same language machinery available to user code. They do not receive hidden compiler-only type semantics.
 

@@ -44,7 +44,7 @@
 use crate::{
     Arg, Block, BlockExpr, ElseBranch, ElseClause, EnumVariant, Expr, Field, FnParam, ImportPath,
     Item, Literal, MatchArm, MatchArmBody, Pattern, Program, RecordPatternField, Spanned, Stmt,
-    Type,
+    Type, TypeParam,
 };
 
 const INDENT_UNIT: &str = "    ";
@@ -163,12 +163,14 @@ impl Printer {
             Item::Struct {
                 name,
                 type_params,
+                implements,
                 fields,
                 ..
             } => {
                 self.write("struct ");
                 self.write(&name.node);
                 self.print_type_params(type_params);
+                self.print_implements_clause(implements);
                 self.write(" ");
                 self.print_field_list(fields);
             }
@@ -184,9 +186,21 @@ impl Printer {
                 self.write(" ");
                 self.print_brace_list(variants.len(), |p, i| p.print_enum_variant(&variants[i]));
             }
-            Item::Part { name, items, .. } => {
+            Item::Interface { name, fields, .. } => {
+                self.write("interface ");
+                self.write(&name.node);
+                self.write(" ");
+                self.print_field_list(fields);
+            }
+            Item::Part {
+                name,
+                implements,
+                items,
+                ..
+            } => {
                 self.write("part ");
                 self.write(&name.node);
+                self.print_implements_clause(implements);
                 self.write(" ");
                 self.print_item_block(items);
             }
@@ -273,8 +287,10 @@ impl Printer {
 
     /// Prints a declaration's own `<T, U>` generic type-parameter list
     /// (`AICAD-057B`, `project/OWNER_DECISIONS.md#D17`) — nothing at all
-    /// for an ordinary, non-generic declaration.
-    fn print_type_params(&mut self, type_params: &[Spanned<String>]) {
+    /// for an ordinary, non-generic declaration. Each parameter's own
+    /// optional interface bounds print as `T: A + B` (`AICAD-132`,
+    /// `project/OWNER_DECISIONS.md#D27`).
+    fn print_type_params(&mut self, type_params: &[TypeParam]) {
         if type_params.is_empty() {
             return;
         }
@@ -283,9 +299,29 @@ impl Printer {
             if i > 0 {
                 self.write(", ");
             }
-            self.write(&param.node);
+            self.write(&param.name.node);
+            for (j, bound) in param.bounds.iter().enumerate() {
+                self.write(if j == 0 { ": " } else { " + " });
+                self.write(&bound.node);
+            }
         }
         self.write(">");
+    }
+
+    /// Prints a `struct`/`part` declaration's own optional `implements A,
+    /// B` clause (`AICAD-132`, `project/OWNER_DECISIONS.md#D27`) —
+    /// nothing at all for a declaration with no conformance clause.
+    fn print_implements_clause(&mut self, implements: &[Spanned<String>]) {
+        if implements.is_empty() {
+            return;
+        }
+        self.write(" implements ");
+        for (i, name) in implements.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write(&name.node);
+        }
     }
 
     fn print_fn_params(&mut self, params: &[FnParam]) {

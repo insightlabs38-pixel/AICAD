@@ -15,14 +15,16 @@
 //! implemented and their evidence. Deliberately **still not** in scope
 //! (left for later tasks that own them, per `AGENTS.md` "No speculative
 //! future work"):
-//! - `interface_decl`/`assembly_decl`/`requirement_decl`/`test_decl` —
-//!   not named by any task's title yet, and several use keywords
-//!   `crates/cad-lexer` deliberately has not reserved yet
-//!   (`configuration`, `component`, `assembly`, `instance`, `mate`,
-//!   `joint`, `requirement`, `test`, `constraint`, `expose`, `unsafe` are
-//!   all still unreserved identifiers — see `crates/cad-lexer/src/
-//!   token.rs`'s own doc comment). `query` **is** now reserved and has a
-//!   real production (`Item::Query`, `AICAD-100A`) — see that variant's
+//! - `assembly_decl`/`requirement_decl`/`test_decl` — not named by any
+//!   task's title yet, and several use keywords `crates/cad-lexer`
+//!   deliberately has not reserved yet (`configuration`, `component`,
+//!   `assembly`, `instance`, `mate`, `joint`, `requirement`, `test`,
+//!   `constraint`, `expose`, `unsafe` are all still unreserved identifiers
+//!   — see `crates/cad-lexer/src/token.rs`'s own doc comment). `query`
+//!   **is** now reserved and has a real production (`Item::Query`,
+//!   `AICAD-100A`) — see that variant's own doc comment. `interface_decl`
+//!   **is** now reserved and has a real production too (`Item::Interface`,
+//!   `AICAD-132`, `project/OWNER_DECISIONS.md#D27`) — see that variant's
 //!   own doc comment.
 //! - enum variants carrying data (tuple/record variants) — the only
 //!   evidence for enum syntax anywhere in frozen material
@@ -33,9 +35,11 @@
 //!   (`AICAD-057B`/`AICAD-057C`, `project/OWNER_DECISIONS.md#D17`/
 //!   `project/DECISION_LOG.md#DL-14`):** the owner's D17 ruling now
 //!   authorizes both explicitly — `Item::Fn`/`Item::Struct`/`Item::Enum`
-//!   each carry an ordinary `type_params: Vec<Spanned<String>>` list
+//!   each carry an ordinary `type_params: Vec<TypeParam>` list
 //!   (`struct Pair<T, U> { ... }`, `enum Optional<T> { ... }`, `fn
-//!   identity<T>(...)`, `AICAD-057B`), and [`EnumVariant`] carries the
+//!   identity<T>(...)`, `AICAD-057B`; `AICAD-132` later adds each
+//!   `TypeParam`'s own optional interface bounds, `T: Interface`), and
+//!   [`EnumVariant`] carries the
 //!   `Unit`/`Tuple(T1, T2)`/`Record { x: T1, y: T2 }` shapes D17 specifies
 //!   (`AICAD-057C`) — see that ruling for the exact authorized shapes and
 //!   scope limits (no bounds/higher-kinded types/variance/specialization
@@ -84,6 +88,18 @@ impl Type {
 pub struct Field {
     pub name: Spanned<String>,
     pub ty: Type,
+    pub span: Span,
+}
+
+/// One declared generic type parameter, with its optional interface
+/// bounds (`AICAD-132`, `project/OWNER_DECISIONS.md#D27`): `T`, or `T:
+/// Interface1 + Interface2`. `bounds` is empty for an ordinary, unbounded
+/// type parameter — exactly the only shape `D17` (`AICAD-057B`) allowed
+/// before this task.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: Spanned<String>,
+    pub bounds: Vec<Spanned<String>>,
     pub span: Span,
 }
 
@@ -288,19 +304,23 @@ pub enum Item {
     Fn {
         is_pure: bool,
         name: Spanned<String>,
-        type_params: Vec<Spanned<String>>,
+        type_params: Vec<TypeParam>,
         params: Vec<FnParam>,
         return_ty: Option<Type>,
         body: Block,
         span: Span,
     },
     /// `struct name ["<" type_param { "," type_param } [","] ">"]
+    /// ["implements" identifier { "," identifier } [","]]
     /// { field, field, ... }`. `type_params` is empty for an ordinary,
     /// non-generic struct (`AICAD-057B`, `project/OWNER_DECISIONS.md
-    /// #D17`).
+    /// #D17`); `implements` is empty for a struct that declares no
+    /// interface conformance (`AICAD-132`, `project/OWNER_DECISIONS.md
+    /// #D27`).
     Struct {
         name: Spanned<String>,
-        type_params: Vec<Spanned<String>>,
+        type_params: Vec<TypeParam>,
+        implements: Vec<Spanned<String>>,
         fields: Vec<Field>,
         span: Span,
     },
@@ -311,13 +331,31 @@ pub enum Item {
     /// non-generic enum (`AICAD-057B`).
     Enum {
         name: Spanned<String>,
-        type_params: Vec<Spanned<String>>,
+        type_params: Vec<TypeParam>,
         variants: Vec<EnumVariant>,
         span: Span,
     },
-    /// `part name { item* }`.
+    /// `interface name { field, field, ... }` — a nominal interface/
+    /// protocol declaration (`AICAD-132`, `project/OWNER_DECISIONS.md
+    /// #D27`): a named contract of required fields a `struct`/`part` may
+    /// explicitly declare conformance to (`implements`) and a generic type
+    /// parameter may require (`T: Name`). Reuses the same field-list shape
+    /// as `Item::Struct` — an interface is data-contract-shaped, matching
+    /// this language's existing "no method/`impl`-block syntax" scope
+    /// (`crates/cad-hir/src/typeck.rs`'s own module doc comment), never a
+    /// usable value type on its own.
+    Interface {
+        name: Spanned<String>,
+        fields: Vec<Field>,
+        span: Span,
+    },
+    /// `part name ["implements" identifier { "," identifier } [","]]
+    /// { item* }`. `implements` is empty for a part that declares no
+    /// interface conformance (`AICAD-132`, `project/OWNER_DECISIONS.md
+    /// #D27`).
     Part {
         name: Spanned<String>,
+        implements: Vec<Spanned<String>>,
         items: Vec<Item>,
         span: Span,
     },
@@ -384,6 +422,7 @@ impl Item {
             | Item::Fn { span, .. }
             | Item::Struct { span, .. }
             | Item::Enum { span, .. }
+            | Item::Interface { span, .. }
             | Item::Part { span, .. }
             | Item::Import { span, .. }
             | Item::Query { span, .. } => *span,

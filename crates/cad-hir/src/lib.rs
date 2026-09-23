@@ -69,8 +69,8 @@ pub use builtins::{BuiltinFnId, BuiltinFnSpec, catalogue as builtin_catalogue};
 pub use geometry_types::{GEOMETRY_TYPES_SOURCE, with_geometry_types};
 pub use hir::{
     BinaryOp, FunctionImplementation, HirArg, HirBlock, HirCallee, HirElseStmt, HirEnumVariant,
-    HirExpr, HirField, HirImportPath, HirImportedName, HirItem, HirLiteral, HirMatchArm, HirParam,
-    HirPattern, HirProgram, HirStmt, HirTypeParam, UnaryOp,
+    HirExpr, HirField, HirImportPath, HirImportedName, HirInterfaceRef, HirItem, HirLiteral,
+    HirMatchArm, HirParam, HirPattern, HirProgram, HirStmt, HirTypeParam, UnaryOp,
 };
 pub use ids::{Binding, BindingId, BindingKind};
 pub use lower::{LowerResult, lower_program};

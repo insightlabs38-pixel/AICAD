@@ -79,6 +79,19 @@ fn round_trips_generic_declarations() {
 }
 
 #[test]
+fn round_trips_interfaces_and_bounded_generics() {
+    // AICAD-132, project/OWNER_DECISIONS.md#D27: interface declarations,
+    // struct/part conformance clauses, and interface-bounded generics.
+    assert_round_trips("interface MotorMount { mounting_face: FaceRef, output_axis: AxisRef }");
+    assert_round_trips("struct NEMA17 implements MotorMount { output_axis: AxisRef }");
+    assert_round_trips("struct Hub implements MotorMount, ShaftMount { x: Int }");
+    assert_round_trips("part NEMA17 implements MotorMount { param x: Int = 1; }");
+    assert_round_trips("fn attach<T: MotorMount>(motor: T) { }");
+    assert_round_trips("fn attach<T: MotorMount + ShaftMount>(motor: T) { }");
+    assert_round_trips("struct Pair<T: MotorMount, U> { a: T, b: U }");
+}
+
+#[test]
 fn round_trips_part_with_nested_items() {
     assert_round_trips(
         "part Bracket { param width: Length = 80mm; let wall = width; fn area() -> Length { wall; } }",
