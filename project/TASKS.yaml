@@ -4600,7 +4600,7 @@ tasks:
 
 - id: AICAD-149
   stage: 6
-  status: todo
+  status: done
   batch: S6-07
   title: Implement immutable configuration overlays
   depends_on: [AICAD-133, AICAD-148]
@@ -4615,7 +4615,7 @@ tasks:
 
 - id: AICAD-150
   stage: 6
-  status: todo
+  status: done
   batch: S6-07
   title: Implement configuration validity rules
   depends_on: [AICAD-149]
@@ -4630,7 +4630,7 @@ tasks:
 
 - id: AICAD-151
   stage: 6
-  status: todo
+  status: done
   batch: S6-07
   title: Implement suppression with stable logical identity
   depends_on: [AICAD-149, AICAD-150]
