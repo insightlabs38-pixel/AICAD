@@ -17,17 +17,22 @@ Stage 6 batch `S6-02` (`AICAD-134`, `AICAD-135`, `AICAD-136`) is done — the re
 - `AICAD-135` (`project/reports/AICAD-135.md`) adds `frame.rs`: `LocalPose`/`WorldPose` newtypes wrapping `cad_kernel_api::Transform` (reused unchanged), plus a new `Transform::invert` in `cad-kernel-api`. `ChildInstance` gained a required `local_pose` field. Pose changes cannot affect `LogicalInstanceId`/`OccurrencePath` — neither type has a pose field.
 - `AICAD-136` (`project/reports/AICAD-136.md`) adds `graph.rs`: `expand()` deterministically resolves a registry into nested `Occurrence`s (path + composed `WorldPose`) via pre-order `Vec` traversal, detecting definition-level cycles (`on_stack`-tracked DFS, mirroring `cad_compiler::loader`'s own import-cycle detection) and undefined-definition references, both reported as structured `ASM-E001`/`ASM-E002` diagnostics.
 
+Stage 6 batch `S6-03` (`AICAD-137`, `AICAD-138`) is done:
+
+- `AICAD-137` (`project/reports/AICAD-137.md`) adds `reference.rs`: `resolve(occurrences, reference, parts)` resolves an `OccurrenceTopologyRef` by checking the addressed `OccurrencePath` still exists in the current occurrence tree, then delegating entity resolution to Stage-4's own `cad_query::resolve_reference` (fail-closed `Resolved`/`Ambiguous`/`Broken`, reused unchanged). `cad-assemblies` now depends on `cad-query` (new `ASM-E003` diagnostic for `AssemblyBrokenReason::OccurrenceNotFound`; `AssemblyBrokenReason::Entity` reuses Stage-4's `REF-E101`). Pose changes never affect resolution (neither `OccurrencePath` nor `AnyRef` carries pose); renaming/replacing the addressed slot fails closed rather than rebinding, since every path segment embeds its own `ComponentDefinitionId`.
+- `AICAD-138` (`project/reports/AICAD-138.md`) adds `interface.rs`: `MechanicalInterface`/`MechanicalInterfaceInstance` mirror D27's named-contract shape in plain Rust (no `cad-hir` dependency) over Stage-6's own engineering values (`WorldPose`, `OccurrenceTopologyRef`, `ParameterValue`). `check_conformance` is purely structural (name/field-kind/dimension); `check_compatibility` is a separate, later, value-level check (reference `EntityKind` match, exact parameter match) between two explicitly named field bindings — `ASM-E004`/`ASM-E005` diagnostics.
+
 ## Next executable work
 
-1. Batch `S6-03` (`AICAD-137`, `AICAD-138`) is next: assembly-level semantic-reference addressing over the `AICAD-136` occurrence tree, then reusable mechanical-interface semantics on `AICAD-132`'s D27 interfaces.
-2. Proceed one bounded task at a time through `AICAD-160` and fixed batches `S6-04`..`S6-12`.
+1. Batch `S6-04` (`AICAD-139`, `AICAD-140`, `AICAD-141`) is next: solver-neutral mate relation IR, then joint/coordinate IR, then Checkpoint A (prove the semantic assembly model with no numerical-solver authority).
+2. Proceed one bounded task at a time through `AICAD-160` and fixed batches `S6-05`..`S6-12`.
 3. Stop at the Stage-6 owner hard gate (`AICAD-160`) before any Stage-7 promotion or implementation.
 
 ## Stage-6 queue
 
 - Range: AICAD-131..AICAD-160 (30 tasks)
-- Done: AICAD-131 (batch S6-00), AICAD-132/133 (batch S6-01), AICAD-134/135/136 (batch S6-02)
-- Next: AICAD-137/138 (batch S6-03)
+- Done: AICAD-131 (batch S6-00), AICAD-132/133 (batch S6-01), AICAD-134/135/136 (batch S6-02), AICAD-137/138 (batch S6-03)
+- Next: AICAD-139/140/141 (batch S6-04)
 - Checkpoint A: AICAD-141
 - Checkpoint B: AICAD-148
 - Checkpoint C: AICAD-156
@@ -39,7 +44,8 @@ Stage 6 batch `S6-02` (`AICAD-134`, `AICAD-135`, `AICAD-136`) is done — the re
 
 - Stage-5 advanced curve/surface values and operations, trimmed geometry values, geometric queries, topology construction/healing/inspection, raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration, and maintained examples are established (`AICAD-131`).
 - The language now supports `interface`/`implements`/bounded generics (`AICAD-132`) in addition to D17's bare generics — see `specs/language/types.md`'s "Interfaces/protocols and bounded generics" section for the exact implemented shape and its explicit exclusions.
-- `cad-assemblies` now carries the seven D26 identity-domain primitive types (`AICAD-133`) plus a real assembly IR on top of them (`AICAD-134`/`135`/`136`): `ComponentDefinition`/`ChildInstance`/`ComponentDefinitionRegistry`, `LocalPose`/`WorldPose`, and `graph::expand`. No cross-instance semantic-reference addressing over the resolved occurrence tree exists yet (`AICAD-137`); no mechanical-interface/mate/joint/solver concept exists yet (`AICAD-138`+).
+- `cad-assemblies` now carries the seven D26 identity-domain primitive types (`AICAD-133`), a real assembly IR (`AICAD-134`/`135`/`136`): `ComponentDefinition`/`ChildInstance`/`ComponentDefinitionRegistry`, `LocalPose`/`WorldPose`, `graph::expand`; fail-closed cross-instance semantic-reference resolution over the resolved occurrence tree (`AICAD-137`, `reference::resolve`, now depending on `cad-query`); and reusable mechanical-interface conformance/compatibility (`AICAD-138`, `interface::{check_conformance, check_compatibility}`). No mate/joint/solver concept exists yet (`AICAD-139`+).
+- `cad-assemblies`'s `ASM`-family diagnostics now run `ASM-E001`..`ASM-E005` (`AICAD-136` graph errors, `AICAD-137` occurrence-not-found, `AICAD-138` interface conformance/compatibility) — the next new assembly diagnostic must start at `ASM-E006`.
 - `tree-sitter-aicad`'s own grammar was not updated for `interface`/`implements`/bounds (no shared corpus fixtures were added, so its existing tests are unaffected, but it does not yet parse the new syntax) — a disclosed, narrow follow-up for whichever task next touches IDE tooling, not a Stage-6 blocker.
 - `Ellipse` curves and periodic B-spline curves/surfaces remain unsupported by `make_edge`/`make_face_on_surface` — a disclosed, narrow, unaffected scope limit, not a new gap.
 - Keep Stage-5/6 numerical/resource limitations explicit rather than generalizing tested evidence.

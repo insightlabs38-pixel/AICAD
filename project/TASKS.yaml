@@ -4420,7 +4420,7 @@ tasks:
 
 - id: AICAD-137
   stage: 6
-  status: todo
+  status: done
   batch: S6-03
   title: Implement assembly-level semantic-reference addressing
   depends_on: [AICAD-133, AICAD-136]
@@ -4435,7 +4435,7 @@ tasks:
 
 - id: AICAD-138
   stage: 6
-  status: todo
+  status: done
   batch: S6-03
   title: Implement reusable mechanical-interface semantics
   depends_on: [AICAD-132, AICAD-137]
