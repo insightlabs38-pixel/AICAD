@@ -32,9 +32,11 @@
 //! primitives: [`component`] (component-definition/logical-instance IR),
 //! [`frame`] (`AICAD-135`'s local/world instance poses), [`graph`]
 //! (`AICAD-136`'s deterministic nested-occurrence resolution and
-//! definition-level cycle diagnostics), and [`reference`] (`AICAD-137`'s
+//! definition-level cycle diagnostics), [`reference`] (`AICAD-137`'s
 //! fail-closed cross-instance semantic-reference addressing over the
-//! resolved occurrence tree).
+//! resolved occurrence tree), and [`interface`] (`AICAD-138`'s reusable
+//! mechanical-interface conformance/compatibility semantics built on
+//! D27's general interface shape).
 
 pub mod asset;
 pub mod bom;
@@ -45,6 +47,7 @@ pub mod frame;
 pub mod graph;
 mod hash;
 pub mod instance;
+pub mod interface;
 pub mod occurrence;
 pub mod reference;
 pub mod topology;
@@ -61,6 +64,10 @@ pub use definition::ComponentDefinitionId;
 pub use frame::{LocalPose, WorldPose};
 pub use graph::{AssemblyGraphError, Occurrence, expand};
 pub use instance::LogicalInstanceId;
+pub use interface::{
+    CompatibilityError, ConformanceError, InterfaceField, InterfaceFieldType, InterfaceValue,
+    MechanicalInterface, MechanicalInterfaceInstance, Side, check_compatibility, check_conformance,
+};
 pub use occurrence::OccurrencePath;
 pub use reference::{
     AssemblyBrokenReason, AssemblyPartResolver, AssemblyReferenceResolution,
