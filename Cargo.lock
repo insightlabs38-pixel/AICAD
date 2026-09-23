@@ -16,6 +16,8 @@ version = "0.0.0"
 dependencies = [
  "cad-diagnostics",
  "cad-kernel-api",
+ "cad-occt-bridge",
+ "cad-query",
  "cad-references",
  "cad-types",
  "cad-units",

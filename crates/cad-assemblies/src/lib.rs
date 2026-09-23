@@ -30,9 +30,11 @@
 //!
 //! `AICAD-134` onward builds the real assembly IR on top of these
 //! primitives: [`component`] (component-definition/logical-instance IR),
-//! [`frame`] (`AICAD-135`'s local/world instance poses), and [`graph`]
+//! [`frame`] (`AICAD-135`'s local/world instance poses), [`graph`]
 //! (`AICAD-136`'s deterministic nested-occurrence resolution and
-//! definition-level cycle diagnostics).
+//! definition-level cycle diagnostics), and [`reference`] (`AICAD-137`'s
+//! fail-closed cross-instance semantic-reference addressing over the
+//! resolved occurrence tree).
 
 pub mod asset;
 pub mod bom;
@@ -44,6 +46,7 @@ pub mod graph;
 mod hash;
 pub mod instance;
 pub mod occurrence;
+pub mod reference;
 pub mod topology;
 pub mod value;
 
@@ -59,5 +62,9 @@ pub use frame::{LocalPose, WorldPose};
 pub use graph::{AssemblyGraphError, Occurrence, expand};
 pub use instance::LogicalInstanceId;
 pub use occurrence::OccurrencePath;
+pub use reference::{
+    AssemblyBrokenReason, AssemblyPartResolver, AssemblyReferenceResolution,
+    AssemblyResolutionOutcome, resolve, resolve_with_durability,
+};
 pub use topology::OccurrenceTopologyRef;
 pub use value::ParameterValue;
