@@ -32,7 +32,7 @@
 
 use cad_assemblies::{ComponentDefinitionRegistry, OccurrencePath, ParameterValue};
 use cad_diagnostics::json::Json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::id::ConfigurationId;
 
@@ -40,11 +40,21 @@ use crate::id::ConfigurationId;
 /// borrowed by [`resolve`]; `Configuration` itself is an ordinary owned
 /// value callers build up before resolving (its own mutation is not the
 /// invariant `D29` protects — the authoritative *base* model is).
+///
+/// `suppressed` (`AICAD-151`) is a `BTreeSet<OccurrencePath>`, never a
+/// removal from any base structure: an occurrence's [`OccurrencePath`] (and
+/// therefore its logical identity, `D26`) is completely unaffected by
+/// suppression membership, and removing a path from this set ("reactivating"
+/// it in a later `Configuration` value) restores exactly the same
+/// [`OccurrencePath`] — suppression is overlay *state*, not a structural
+/// edit to the assembly it overlays. See `crate::suppression` for how this
+/// set turns into active/inactive occurrence, mate, and quantity views.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Configuration {
     id: ConfigurationId,
     named_values: BTreeMap<String, ParameterValue>,
     parameter_overrides: BTreeMap<OccurrencePath, BTreeMap<String, ParameterValue>>,
+    suppressed: BTreeSet<OccurrencePath>,
 }
 
 impl Configuration {
@@ -53,11 +63,38 @@ impl Configuration {
             id,
             named_values: BTreeMap::new(),
             parameter_overrides: BTreeMap::new(),
+            suppressed: BTreeSet::new(),
         }
     }
 
     pub fn id(&self) -> &ConfigurationId {
         &self.id
+    }
+
+    /// Marks `occurrence` (and, per `crate::suppression::is_active`,
+    /// everything nested under it) inactive in this configuration.
+    /// `occurrence` itself is never altered or removed from anything —
+    /// this only inserts into `suppressed`.
+    pub fn suppress(&mut self, occurrence: OccurrencePath) {
+        self.suppressed.insert(occurrence);
+    }
+
+    /// Reverses [`Configuration::suppress`] for exactly `occurrence`
+    /// (not for occurrences nested under it that were never themselves
+    /// inserted). Returns whether `occurrence` had been directly
+    /// suppressed. Reactivation restores the identical logical subject:
+    /// nothing about `occurrence`'s own [`OccurrencePath`] is touched by
+    /// either call.
+    pub fn unsuppress(&mut self, occurrence: &OccurrencePath) -> bool {
+        self.suppressed.remove(occurrence)
+    }
+
+    pub fn is_directly_suppressed(&self, occurrence: &OccurrencePath) -> bool {
+        self.suppressed.contains(occurrence)
+    }
+
+    pub fn suppressed_paths(&self) -> impl Iterator<Item = &OccurrencePath> {
+        self.suppressed.iter()
     }
 
     /// Sets a configuration-scoped named option value (`docs/plan/07`
@@ -145,6 +182,15 @@ impl Configuration {
                                 ),
                             ])
                         })
+                        .collect(),
+                ),
+            ),
+            (
+                "suppressed".to_string(),
+                Json::Array(
+                    self.suppressed
+                        .iter()
+                        .map(OccurrencePath::to_json)
                         .collect(),
                 ),
             ),

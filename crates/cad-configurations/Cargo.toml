@@ -12,5 +12,7 @@ cad-diagnostics = { path = "../cad-diagnostics" }
 
 [dev-dependencies]
 cad-kernel-api = { path = "../cad-kernel-api" }
+cad-query = { path = "../cad-query" }
+cad-references = { path = "../cad-references" }
 cad-types = { path = "../cad-types" }
 cad-units = { path = "../cad-units" }
