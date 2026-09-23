@@ -27,20 +27,32 @@
 //! solver variable, a raw kernel/native handle, a filesystem path, or a
 //! BOM row. See each module's own doc comment for why its particular
 //! construction is deterministic and why it cannot alias another domain.
+//!
+//! `AICAD-134` onward builds the real assembly IR on top of these
+//! primitives, starting with [`component`] (component-definition/
+//! logical-instance IR); later Stage-6 tasks add instance poses and
+//! nested-assembly resolution.
 
 pub mod asset;
 pub mod bom;
+pub mod component;
 pub mod configuration;
 pub mod definition;
 mod hash;
 pub mod instance;
 pub mod occurrence;
 pub mod topology;
+pub mod value;
 
 pub use asset::{AssetProvenance, ExternalAssetId};
 pub use bom::BomClassificationId;
+pub use component::{
+    ChildInstance, ComponentDefinition, ComponentDefinitionRegistry, ParameterDeclaration,
+    RegistryError,
+};
 pub use configuration::ConfigurationSlotId;
 pub use definition::ComponentDefinitionId;
 pub use instance::LogicalInstanceId;
 pub use occurrence::OccurrencePath;
 pub use topology::OccurrenceTopologyRef;
+pub use value::ParameterValue;
