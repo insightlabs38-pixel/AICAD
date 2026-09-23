@@ -4570,7 +4570,7 @@ tasks:
 
 - id: AICAD-147
   stage: 6
-  status: todo
+  status: done
   batch: S6-06
   title: Implement baseline kinematic evaluation
   depends_on: [AICAD-140, AICAD-144, AICAD-145]

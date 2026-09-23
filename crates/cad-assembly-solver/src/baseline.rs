@@ -37,7 +37,7 @@
 use crate::adapter::{
     AdapterOutcome, AdapterSolution, AssemblyProblem, AssemblySolverAdapter, CONVERGENCE_TOLERANCE,
 };
-use crate::grounding::{self, GroundingProfile, LoweringError};
+use crate::grounding::{self, GroundingProfile, Lowering, LoweringError};
 use crate::linalg;
 use cad_assemblies::{Joint, Mate, Occurrence, OccurrencePath};
 use cad_kernel_api::{Axis3, Point3, Transform, Vector3};
@@ -298,7 +298,22 @@ pub fn solve_assembly(
 ) -> Result<SolveOutcome, LoweringError> {
     let lowering = grounding::lower(occurrences, mates, joints)?;
     let outcome = adapter.solve(&lowering.problem);
-    Ok(match outcome {
+    Ok(classify(&lowering, occurrences, outcome, profile))
+}
+
+/// [`solve_assembly`]'s own classification step, factored out so
+/// `crate::kinematics` (`AICAD-147`) can classify an adapter's outcome
+/// against a *modified* [`Lowering`] -- one whose `problem` has extra
+/// joint-coordinate-pinning residuals appended to `lowering::lower`'s own
+/// structural ones -- without duplicating this module's conflict/DOF
+/// classification logic.
+pub fn classify(
+    lowering: &Lowering,
+    occurrences: &[Occurrence],
+    outcome: AdapterOutcome,
+    profile: &BaselineSolverProfile,
+) -> SolveOutcome {
+    match outcome {
         AdapterOutcome::InvalidInput { reason } => SolveOutcome::InvalidInput { reason },
         AdapterOutcome::ResourceLimitExceeded {
             solution,
@@ -316,7 +331,7 @@ pub fn solve_assembly(
             {
                 Some(conflicting) => SolveOutcome::Overconstrained {
                     conflicting,
-                    unsupported: lowering.unsupported,
+                    unsupported: lowering.unsupported.clone(),
                 },
                 None => SolveOutcome::ResourceLimitExceeded {
                     iterations,
@@ -334,7 +349,7 @@ pub fn solve_assembly(
             {
                 Some(conflicting) => SolveOutcome::Overconstrained {
                     conflicting,
-                    unsupported: lowering.unsupported,
+                    unsupported: lowering.unsupported.clone(),
                 },
                 None => SolveOutcome::NotConverged {
                     iterations,
@@ -352,17 +367,17 @@ pub fn solve_assembly(
             if dof.remaining_dof == 0 {
                 SolveOutcome::Solved {
                     poses,
-                    unsupported: lowering.unsupported,
+                    unsupported: lowering.unsupported.clone(),
                 }
             } else {
                 SolveOutcome::Underconstrained {
                     poses,
                     remaining_dof: dof.remaining_dof,
-                    unsupported: lowering.unsupported,
+                    unsupported: lowering.unsupported.clone(),
                 }
             }
         }
-    })
+    }
 }
 
 fn max_abs(values: &[f64]) -> f64 {

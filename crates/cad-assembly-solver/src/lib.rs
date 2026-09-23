@@ -26,6 +26,10 @@
 //!   diagnostics over [`grounding::lower`]'s solver-facing lowering,
 //!   distinguishing dependent-but-consistent relations from mutually
 //!   inconsistent ones without requiring an iterative solve.
+//! - [`kinematics`] (`AICAD-147`) -- baseline kinematic evaluation: drives
+//!   an assembly to an explicit typed joint-coordinate assignment by
+//!   appending pinning residuals to [`grounding::lower`]'s own lowering
+//!   and reusing [`baseline::classify`].
 //! - [`linalg`] -- small dense-matrix utilities [`grounding`] and
 //!   [`baseline`] share.
 
@@ -34,16 +38,18 @@ pub mod baseline;
 pub mod conflict;
 pub mod dof;
 pub mod grounding;
+pub mod kinematics;
 mod linalg;
 
 pub use adapter::{
     AdapterOutcome, AdapterSolution, AssemblyProblem, AssemblySolverAdapter, CONVERGENCE_TOLERANCE,
     EchoAdapter, ProblemError, RejectingAdapter, Residual, ZeroStartAdapter,
 };
-pub use baseline::{BaselineSolver, BaselineSolverProfile, SolveOutcome, solve_assembly};
+pub use baseline::{BaselineSolver, BaselineSolverProfile, SolveOutcome, classify, solve_assembly};
 pub use conflict::{AssemblyDiagnosis, ConstraintDiagnosis, diagnose};
 pub use dof::{AssemblyDof, OccurrenceDof, analyze as analyze_dof};
 pub use grounding::{
     GroundingProfile, Lowering, LoweringError, StructuralDof, lower, lower_for_dof_analysis,
     structural_dof,
 };
+pub use kinematics::{KinematicsError, evaluate as evaluate_kinematics};
