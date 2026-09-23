@@ -4540,7 +4540,7 @@ tasks:
 
 - id: AICAD-145
   stage: 6
-  status: todo
+  status: done
   batch: S6-06
   title: Implement degrees-of-freedom analysis
   depends_on: [AICAD-142, AICAD-144]

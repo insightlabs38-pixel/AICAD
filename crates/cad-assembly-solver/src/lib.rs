@@ -19,11 +19,15 @@
 //!   Levenberg-Marquardt backend behind the adapter contract, plus
 //!   [`baseline::solve_assembly`], the AICAD-owned entry point most
 //!   callers use.
+//! - [`dof`] (`AICAD-145`) -- semantic degrees-of-freedom analysis over
+//!   [`grounding::lower_for_dof_analysis`]'s all-non-ground lowering,
+//!   attributed back to the occurrences/relations that produced it.
 //! - [`linalg`] -- small dense-matrix utilities [`grounding`] and
 //!   [`baseline`] share.
 
 pub mod adapter;
 pub mod baseline;
+pub mod dof;
 pub mod grounding;
 mod linalg;
 
@@ -32,6 +36,8 @@ pub use adapter::{
     EchoAdapter, ProblemError, RejectingAdapter, Residual, ZeroStartAdapter,
 };
 pub use baseline::{BaselineSolver, BaselineSolverProfile, SolveOutcome, solve_assembly};
+pub use dof::{AssemblyDof, OccurrenceDof, analyze as analyze_dof};
 pub use grounding::{
-    GroundingProfile, Lowering, LoweringError, StructuralDof, lower, structural_dof,
+    GroundingProfile, Lowering, LoweringError, StructuralDof, lower, lower_for_dof_analysis,
+    structural_dof,
 };

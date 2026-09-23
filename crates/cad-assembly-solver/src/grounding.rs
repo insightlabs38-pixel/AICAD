@@ -247,6 +247,49 @@ pub fn lower(
     mates: &[Mate],
     joints: &[Joint],
 ) -> Result<Lowering, LoweringError> {
+    lower_with_free_variable_selection(
+        occurrences,
+        mates,
+        joints,
+        FreeVariableSelection::RelationTouched,
+    )
+}
+
+/// Lowers using the "every non-ground occurrence is free" policy
+/// `crate::dof`'s semantic DOF analysis (`AICAD-145`) needs, instead of
+/// [`lower`]'s own solver-facing "only relation-touched occurrences become
+/// free" narrowing. An occurrence no relation ever names still has a real,
+/// meaningful 6 DOF as an unconstrained rigid body -- [`lower`]'s
+/// narrowing is a solver variable-count optimization (fewer unknowns to
+/// iterate), not a claim that such an occurrence has zero freedom, and
+/// `crate::dof` must not confuse the two.
+pub fn lower_for_dof_analysis(
+    occurrences: &[Occurrence],
+    mates: &[Mate],
+    joints: &[Joint],
+) -> Result<Lowering, LoweringError> {
+    lower_with_free_variable_selection(
+        occurrences,
+        mates,
+        joints,
+        FreeVariableSelection::AllNonGround,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FreeVariableSelection {
+    /// [`lower`]'s policy: only occurrences a mate/joint actually names.
+    RelationTouched,
+    /// [`lower_for_dof_analysis`]'s policy: every non-ground occurrence.
+    AllNonGround,
+}
+
+fn lower_with_free_variable_selection(
+    occurrences: &[Occurrence],
+    mates: &[Mate],
+    joints: &[Joint],
+    selection: FreeVariableSelection,
+) -> Result<Lowering, LoweringError> {
     let root_path = occurrences
         .iter()
         .find(|o| o.path().depth() == 1)
@@ -258,23 +301,45 @@ pub fn lower(
         .map(|o| (o.path().clone(), o.world_pose().transform()))
         .collect();
 
-    let mut free_paths: BTreeSet<OccurrencePath> = BTreeSet::new();
+    // Every relation subject must be a known occurrence regardless of
+    // which occurrences end up free -- this is a reference-integrity
+    // check, not part of the free-variable policy itself.
     for mate in mates {
         for subject in mate.subjects() {
             check_known(&world_by_path, subject.occurrence())?;
-            if *subject.occurrence() != root_path {
-                free_paths.insert(subject.occurrence().clone());
-            }
         }
     }
     for joint in joints {
         for occurrence in [joint.parent(), joint.child()] {
             check_known(&world_by_path, occurrence.occurrence())?;
-            if *occurrence.occurrence() != root_path {
-                free_paths.insert(occurrence.occurrence().clone());
-            }
         }
     }
+
+    let free_paths: BTreeSet<OccurrencePath> = match selection {
+        FreeVariableSelection::RelationTouched => {
+            let mut free_paths = BTreeSet::new();
+            for mate in mates {
+                for subject in mate.subjects() {
+                    if *subject.occurrence() != root_path {
+                        free_paths.insert(subject.occurrence().clone());
+                    }
+                }
+            }
+            for joint in joints {
+                for occurrence in [joint.parent(), joint.child()] {
+                    if *occurrence.occurrence() != root_path {
+                        free_paths.insert(occurrence.occurrence().clone());
+                    }
+                }
+            }
+            free_paths
+        }
+        FreeVariableSelection::AllNonGround => world_by_path
+            .keys()
+            .filter(|path| **path != root_path)
+            .cloned()
+            .collect(),
+    };
     let free_occurrences: Vec<OccurrencePath> = free_paths.into_iter().collect();
     let offset_by_path: BTreeMap<&OccurrencePath, usize> = free_occurrences
         .iter()
@@ -640,6 +705,17 @@ mod tests {
         let lowering = lower(&[root, bystander], &[], &[]).unwrap();
         assert!(lowering.free_occurrences.is_empty());
         assert_eq!(lowering.problem.variable_count(), 0);
+    }
+
+    #[test]
+    fn dof_analysis_lowering_frees_an_untouched_occurrence_that_lower_does_not() {
+        let root = occurrence("root", V3::ZERO);
+        let bystander = occurrence("bystander", V3::new(5.0, 0.0, 0.0));
+        let for_solving = lower(&[root.clone(), bystander.clone()], &[], &[]).unwrap();
+        let for_dof = lower_for_dof_analysis(&[root, bystander.clone()], &[], &[]).unwrap();
+        assert!(for_solving.free_occurrences.is_empty());
+        assert_eq!(for_dof.free_occurrences, vec![bystander.path().clone()]);
+        assert_eq!(for_dof.problem.variable_count(), 6);
     }
 
     #[test]
