@@ -7,3 +7,5 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+cad-diagnostics = { path = "../cad-diagnostics" }
+cad-references = { path = "../cad-references" }

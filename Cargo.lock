@@ -13,6 +13,10 @@ version = "0.0.0"
 [[package]]
 name = "cad-assemblies"
 version = "0.0.0"
+dependencies = [
+ "cad-diagnostics",
+ "cad-references",
+]
 
 [[package]]
 name = "cad-ast"

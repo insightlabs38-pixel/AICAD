@@ -4345,7 +4345,7 @@ tasks:
 
 - id: AICAD-132
   stage: 6
-  status: todo
+  status: done
   batch: S6-01
   title: Implement general interfaces/protocols and bounded generics
   depends_on: [AICAD-131]
@@ -4360,7 +4360,7 @@ tasks:
 
 - id: AICAD-133
   stage: 6
-  status: todo
+  status: done
   batch: S6-01
   title: Implement assembly semantic identity primitives
   depends_on: [AICAD-131]
