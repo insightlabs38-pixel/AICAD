@@ -36,9 +36,10 @@
 //! fail-closed cross-instance semantic-reference addressing over the
 //! resolved occurrence tree), [`interface`] (`AICAD-138`'s reusable
 //! mechanical-interface conformance/compatibility semantics built on
-//! D27's general interface shape), and [`mate`] (`AICAD-139`'s
-//! solver-neutral mate relation IR, built on `D28`/`DL-30`'s "AICAD-owned
-//! typed semantic relations" authority).
+//! D27's general interface shape), [`mate`] (`AICAD-139`'s solver-neutral
+//! mate relation IR), and [`joint`] (`AICAD-140`'s solver-neutral joint/
+//! coordinate IR) -- both built on `D28`/`DL-30`'s "AICAD-owned typed
+//! semantic relations" authority.
 
 pub mod asset;
 pub mod bom;
@@ -50,6 +51,7 @@ pub mod graph;
 mod hash;
 pub mod instance;
 pub mod interface;
+pub mod joint;
 pub mod mate;
 pub mod occurrence;
 pub mod reference;
@@ -71,6 +73,7 @@ pub use interface::{
     CompatibilityError, ConformanceError, InterfaceField, InterfaceFieldType, InterfaceValue,
     MechanicalInterface, MechanicalInterfaceInstance, Side, check_compatibility, check_conformance,
 };
+pub use joint::{Joint, JointAxis, JointCoordinate, JointError, JointId, JointKind};
 pub use mate::{Mate, MateError, MateId, MateKind};
 pub use occurrence::OccurrencePath;
 pub use reference::{
