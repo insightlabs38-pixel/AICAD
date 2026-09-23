@@ -4525,7 +4525,7 @@ tasks:
 
 - id: AICAD-144
   stage: 6
-  status: todo
+  status: done
   batch: S6-05
   title: Implement baseline assembly numerical solver
   depends_on: [AICAD-142, AICAD-143]

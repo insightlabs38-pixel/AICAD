@@ -1,5 +1,5 @@
 //! `cad-assembly-solver` -- the numerical assembly-solver adapter for
-//! Stage-6 assemblies (`AICAD-142`/`143`, batch `S6-05`,
+//! Stage-6 assemblies (`AICAD-142`/`143`/`144`, batch `S6-05`,
 //! `project/OWNER_DECISIONS.md#D28`, `project/DECISION_LOG.md#DL-30`).
 //!
 //! `cad-assemblies` (Stage-6's own semantic mate/joint IR, `AICAD-139`/
@@ -15,13 +15,15 @@
 //! - [`grounding`] (`AICAD-143`) -- the deterministic grounding/initial-
 //!   pose/representative-pose policy, and the lowering from
 //!   `cad_assemblies::{Mate, Joint}` into [`adapter::AssemblyProblem`].
-//! - [`linalg`] -- small dense-matrix utilities [`grounding`] uses for its
-//!   own structural DOF analysis.
-//!
-//! `AICAD-144` (the baseline backend) is a later commit in this same
-//! batch, adding `baseline` on top of this module.
+//! - [`baseline`] (`AICAD-144`) -- the one bounded deterministic
+//!   Levenberg-Marquardt backend behind the adapter contract, plus
+//!   [`baseline::solve_assembly`], the AICAD-owned entry point most
+//!   callers use.
+//! - [`linalg`] -- small dense-matrix utilities [`grounding`] and
+//!   [`baseline`] share.
 
 pub mod adapter;
+pub mod baseline;
 pub mod grounding;
 mod linalg;
 
@@ -29,6 +31,7 @@ pub use adapter::{
     AdapterOutcome, AdapterSolution, AssemblyProblem, AssemblySolverAdapter, CONVERGENCE_TOLERANCE,
     EchoAdapter, ProblemError, RejectingAdapter, Residual, ZeroStartAdapter,
 };
+pub use baseline::{BaselineSolver, BaselineSolverProfile, SolveOutcome, solve_assembly};
 pub use grounding::{
     GroundingProfile, Lowering, LoweringError, StructuralDof, lower, structural_dof,
 };
