@@ -20,6 +20,7 @@ members = [
     "crates/cad-occt-bridge",
     "crates/cad-validation",
     "crates/cad-assemblies",
+    "crates/cad-assembly-solver",
     "crates/cad-configurations",
     "crates/cad-requirements",
     "crates/cad-artifact",

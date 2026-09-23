@@ -4495,7 +4495,7 @@ tasks:
 
 - id: AICAD-142
   stage: 6
-  status: todo
+  status: done
   batch: S6-05
   title: Define numerical assembly-solver adapter contract
   depends_on: [AICAD-141]

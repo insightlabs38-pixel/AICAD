@@ -1,0 +1,17 @@
+[package]
+name = "cad-assembly-solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cad-assemblies = { path = "../cad-assemblies" }
+cad-diagnostics = { path = "../cad-diagnostics" }
+cad-kernel-api = { path = "../cad-kernel-api" }
+cad-types = { path = "../cad-types" }
+cad-units = { path = "../cad-units" }
+
+[dev-dependencies]
+cad-references = { path = "../cad-references" }

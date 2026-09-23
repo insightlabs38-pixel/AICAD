@@ -24,6 +24,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cad-assembly-solver"
+version = "0.0.0"
+dependencies = [
+ "cad-assemblies",
+ "cad-diagnostics",
+ "cad-kernel-api",
+ "cad-references",
+ "cad-types",
+ "cad-units",
+]
+
+[[package]]
 name = "cad-ast"
 version = "0.0.0"
 dependencies = [
