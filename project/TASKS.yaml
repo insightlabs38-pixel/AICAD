@@ -4375,7 +4375,7 @@ tasks:
 
 - id: AICAD-134
   stage: 6
-  status: todo
+  status: done
   batch: S6-02
   title: Implement component-definition and logical-instance semantic IR
   depends_on: [AICAD-132, AICAD-133]
@@ -4390,7 +4390,7 @@ tasks:
 
 - id: AICAD-135
   stage: 6
-  status: todo
+  status: done
   batch: S6-02
   title: Implement local/world frames and rigid instance poses
   depends_on: [AICAD-134]
@@ -4405,7 +4405,7 @@ tasks:
 
 - id: AICAD-136
   stage: 6
-  status: todo
+  status: done
   batch: S6-02
   title: Implement nested-assembly dependency graph and cycle diagnostics
   depends_on: [AICAD-134, AICAD-135]
