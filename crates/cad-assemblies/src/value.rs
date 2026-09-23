@@ -10,6 +10,7 @@
 //! need — the same "small independent duplication beats a heavy cross-crate
 //! coupling" precedent `hash.rs`'s own `StableHasher` already documents.
 
+use cad_types::Dimension;
 use cad_units::OperandType;
 
 /// A single bound parameter value: a magnitude expressed in whatever
@@ -24,6 +25,17 @@ pub struct ParameterValue {
 impl ParameterValue {
     pub fn new(magnitude: f64, ty: OperandType) -> ParameterValue {
         ParameterValue { magnitude, ty }
+    }
+
+    /// This value's own `Dimension`, or `None` for a non-dimensional
+    /// numeric scalar -- shared by `crate::mate`/`crate::joint` so both
+    /// validate a bound parameter's dimension the same one way rather
+    /// than re-matching `OperandType` independently.
+    pub fn dimension(&self) -> Option<Dimension> {
+        match self.ty {
+            OperandType::Dimensional { dimension, .. } => Some(dimension),
+            OperandType::Scalar(_) => None,
+        }
     }
 }
 
@@ -44,5 +56,14 @@ mod tests {
         let length = ParameterValue::new(12.0, OperandType::dimensional(Dimension::Length, None));
         let angle = ParameterValue::new(12.0, OperandType::dimensional(Dimension::Angle, None));
         assert_ne!(length, angle);
+    }
+
+    #[test]
+    fn dimension_reads_back_a_dimensional_value_and_is_none_for_a_scalar() {
+        let length = ParameterValue::new(12.0, OperandType::dimensional(Dimension::Length, None));
+        assert_eq!(length.dimension(), Some(Dimension::Length));
+
+        let scalar = ParameterValue::new(3.0, OperandType::Scalar(cad_types::PrimitiveType::Int));
+        assert_eq!(scalar.dimension(), None);
     }
 }
