@@ -4450,7 +4450,7 @@ tasks:
 
 - id: AICAD-139
   stage: 6
-  status: todo
+  status: done
   batch: S6-04
   title: Implement solver-neutral mate relation IR
   depends_on: [AICAD-137, AICAD-138]
@@ -4465,7 +4465,7 @@ tasks:
 
 - id: AICAD-140
   stage: 6
-  status: todo
+  status: done
   batch: S6-04
   title: Implement solver-neutral joint and coordinate IR
   depends_on: [AICAD-139]
@@ -4480,7 +4480,7 @@ tasks:
 
 - id: AICAD-141
   stage: 6
-  status: todo
+  status: done
   batch: S6-04
   title: Checkpoint A - semantic assembly graph interfaces references mates and joints
   depends_on: [AICAD-140]
