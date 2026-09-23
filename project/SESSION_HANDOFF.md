@@ -28,17 +28,53 @@ Stage 6 batch `S6-04` (`AICAD-139`, `AICAD-140`, `AICAD-141` — Checkpoint A) i
 - `AICAD-140` (`project/reports/AICAD-140.md`) adds `joint.rs`: `Joint`/`JointKind`/`JointCoordinate` over a bounded, approved joint family — `Fixed`, `Revolute`, `Prismatic`, `Cylindrical`, `Planar` — each exactly expressible with `cad-units`' 21 named dimensions under one unambiguous scalar-per-axis convention. `JointAxis` fixes dimension/limits/home at construction; `Joint::validate_coordinate` checks a coordinate against family and limits with zero pose/`Transform` computation and no solver (`ASM-E007`). Helical/spherical/universal/custom are disclosed, deliberate exclusions (unit-semantics/orientation-convention/general-dynamics reasons — see `joint.rs`'s own doc comment), not silent gaps.
 - `AICAD-141` (`project/reports/AICAD-141.md`) adds `tests/checkpoint_a.rs`: a two-link pivoting-arm fixture proving the full semantic pipeline (repeated-definition instances, nested occurrences, frame composition, a real-shape cross-instance reference resolution, interface conformance/compatibility, mates, a limited revolute joint) resolves with **no solver/adapter crate anywhere in `cad-assemblies`'s dependency tree** — confirmed with `cargo tree`. Deterministic serialized observation and source-only relation identity (no topology-index/solver-id leak) are both asserted directly.
 
+Stage 6 batch `S6-05` (`AICAD-142`, `AICAD-143`, `AICAD-144`) is done — the
+first numerical machinery in Stage 6, in a new crate `cad-assembly-solver`
+that `cad-assemblies` itself does not depend on (`cargo tree -p
+cad-assemblies` confirmed clean, preserving Checkpoint A's own invariant):
+
+- `AICAD-142` (`project/reports/AICAD-142.md`) adds `adapter.rs`:
+  `AssemblyProblem`/`Residual`/`AdapterOutcome`/`AssemblySolverAdapter` — a
+  numeric-only contract stricter than `DL-20`'s sketch-solver precedent (an
+  adapter never sees a `Mate`/`Joint` type at all), plus `EchoAdapter`/
+  `ZeroStartAdapter`/`RejectingAdapter` mock backends proving the contract
+  and adapter substitutability without any real numerical algorithm.
+- `AICAD-143` (`project/reports/AICAD-143.md`) adds `grounding.rs`: the
+  deterministic grounding policy (assembly's own top-level occurrence is
+  always the canonical ground), the free-variable policy (only
+  relation-touched, non-ground occurrences become free 6-scalar rigid-pose
+  unknowns, order-independent), the pivot-based pose-delta parametrization
+  (all-zero reproduces the authored pose exactly), and `lower`/
+  `mate_residuals`/`joint_residuals` (the `Mate`/`Joint` → `AssemblyProblem`
+  lowering, over an occurrence-frame anchor abstraction — no kernel
+  dependency; `MateKind::Tangent` is a disclosed `unsupported` exclusion at
+  this granularity). Also `linalg.rs` (shared Jacobian/rank/linear-solve
+  utilities) and a new `ASM-E008` lowering diagnostic.
+- `AICAD-144` (`project/reports/AICAD-144.md`) adds `baseline.rs`:
+  `BaselineSolver` (damped Gauss-Newton/Levenberg-Marquardt, bounded
+  iterations, stall detection distinguishing `NotConverged` from
+  `ResourceLimitExceeded`) and `solve_assembly` (the AICAD-owned entry
+  point classifying numeric evidence into `SolveOutcome::{Solved,
+  Underconstrained, Overconstrained, NotConverged, InvalidInput,
+  ResourceLimitExceeded}` — only the first two carry a `poses` map, so
+  failure never leaves partial authoritative poses).
+
 ## Next executable work
 
-1. Batch `S6-05` (`AICAD-142`, `AICAD-143`, `AICAD-144`) is next: numerical assembly-solver adapter contract, then deterministic grounding/representative-pose policy, then the baseline bounded solver.
-2. Proceed one bounded task at a time through `AICAD-160` and fixed batches `S6-06`..`S6-12`.
-3. Stop at the Stage-6 owner hard gate (`AICAD-160`) before any Stage-7 promotion or implementation.
+1. Batch `S6-06` (`AICAD-145`, `AICAD-146`, `AICAD-147`, `AICAD-148` —
+   Checkpoint B) is next: semantic DOF analysis, redundancy/conflict
+   diagnostics, kinematic evaluation, then the solver/pose/DOF/conflict/
+   motion checkpoint.
+2. Proceed one bounded task at a time through `AICAD-160` and fixed batches
+   `S6-07`..`S6-12`.
+3. Stop at the Stage-6 owner hard gate (`AICAD-160`) before any Stage-7
+   promotion or implementation.
 
 ## Stage-6 queue
 
 - Range: AICAD-131..AICAD-160 (30 tasks)
-- Done: AICAD-131 (batch S6-00), AICAD-132/133 (batch S6-01), AICAD-134/135/136 (batch S6-02), AICAD-137/138 (batch S6-03), AICAD-139/140/141 (batch S6-04)
-- Next: AICAD-142/143/144 (batch S6-05)
+- Done: AICAD-131 (batch S6-00), AICAD-132/133 (batch S6-01), AICAD-134/135/136 (batch S6-02), AICAD-137/138 (batch S6-03), AICAD-139/140/141 (batch S6-04), AICAD-142/143/144 (batch S6-05)
+- Next: AICAD-145/146/147/148 (batch S6-06, Checkpoint B at AICAD-148)
 - Checkpoint A: AICAD-141 — DONE, see `project/reports/AICAD-141.md`
 - Checkpoint B: AICAD-148
 - Checkpoint C: AICAD-156
@@ -51,7 +87,8 @@ Stage 6 batch `S6-04` (`AICAD-139`, `AICAD-140`, `AICAD-141` — Checkpoint A) i
 - Stage-5 advanced curve/surface values and operations, trimmed geometry values, geometric queries, topology construction/healing/inspection, raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration, and maintained examples are established (`AICAD-131`).
 - The language now supports `interface`/`implements`/bounded generics (`AICAD-132`) in addition to D17's bare generics — see `specs/language/types.md`'s "Interfaces/protocols and bounded generics" section for the exact implemented shape and its explicit exclusions.
 - `cad-assemblies` now carries the seven D26 identity-domain primitive types (`AICAD-133`), a real assembly IR (`AICAD-134`/`135`/`136`): `ComponentDefinition`/`ChildInstance`/`ComponentDefinitionRegistry`, `LocalPose`/`WorldPose`, `graph::expand`; fail-closed cross-instance semantic-reference resolution over the resolved occurrence tree (`AICAD-137`, `reference::resolve`, now depending on `cad-query`); reusable mechanical-interface conformance/compatibility (`AICAD-138`, `interface::{check_conformance, check_compatibility}`); and solver-neutral mate/joint relation IR (`AICAD-139`/`140`, `mate::Mate`, `joint::{Joint, JointKind, JointCoordinate}`). Still no solver/adapter crate anywhere in the dependency tree (`AICAD-142`+ do not exist yet) — confirmed by `cargo tree -p cad-assemblies`.
-- `cad-assemblies`'s `ASM`-family diagnostics now run `ASM-E001`..`ASM-E007` (`AICAD-136` graph errors, `AICAD-137` occurrence-not-found, `AICAD-138` interface conformance/compatibility, `AICAD-139` mate parameter mismatch, `AICAD-140` joint coordinate/limit error) — the next new assembly diagnostic must start at `ASM-E008`.
+- `cad-assemblies`'s `ASM`-family diagnostics now run `ASM-E001`..`ASM-E007` (`AICAD-136` graph errors, `AICAD-137` occurrence-not-found, `AICAD-138` interface conformance/compatibility, `AICAD-139` mate parameter mismatch, `AICAD-140` joint coordinate/limit error), plus `ASM-E008` in the new `cad-assembly-solver` crate (`AICAD-143`'s `LoweringError`, an unknown-occurrence lowering failure) — the next new assembly diagnostic must start at `ASM-E009`.
+- A new crate, `cad-assembly-solver` (`AICAD-142`/`143`/`144`), depends on `cad-assemblies` one direction only — `cad-assemblies` itself still has zero solver/adapter dependency (`cargo tree -p cad-assemblies` reconfirmed clean). It provides the `D28`/`DL-30` numeric adapter contract (`adapter.rs`), the deterministic grounding/lowering policy (`grounding.rs`), and the one baseline Levenberg-Marquardt backend (`baseline.rs`) — see the three task reports for the exact anchor-frame/pose-parametrization/classification design.
 - `AICAD-140`'s approved joint family is deliberately bounded to `Fixed`/`Revolute`/`Prismatic`/`Cylindrical`/`Planar` — `helical`/`spherical`/`universal`/`custom` from `docs/plan/07`'s table are explicitly excluded (a `Length`-per-`Angle` dimension does not exist in `cad-units`' 21 named dimensions; a scalar orientation convention for 2-3 rotational DOF is an unresolved ambiguity; `custom` is out-of-scope general dynamics) — see `joint.rs`'s own doc comment before extending this set.
 - `tree-sitter-aicad`'s own grammar was not updated for `interface`/`implements`/bounds (no shared corpus fixtures were added, so its existing tests are unaffected, but it does not yet parse the new syntax) — a disclosed, narrow follow-up for whichever task next touches IDE tooling, not a Stage-6 blocker.
 - `Ellipse` curves and periodic B-spline curves/surfaces remain unsupported by `make_edge`/`make_face_on_surface` — a disclosed, narrow, unaffected scope limit, not a new gap.
