@@ -100,21 +100,49 @@ assemblies` itself remains solver-free, unaffected by this batch):
   `redundant`, not a defect; the checkpoint asserts `conflicting.is_empty()`
   (the real pass criterion), not zero redundancy.
 
+Stage 6 batch `S6-07` (`AICAD-149`, `AICAD-150`, `AICAD-151`) is done, in a
+new crate `cad-configurations` that depends on `cad-assemblies` one
+direction only (`cad-assemblies` itself has no dependency on it — confirmed
+by `cargo tree -p cad-assemblies`, unaffected by this batch):
+
+- `AICAD-149` (`project/reports/AICAD-149.md`) adds `id.rs`/`overlay.rs`:
+  `ConfigurationId` (D26 identity, distinct from `cad_assemblies::
+  ConfigurationSlotId`) and `Configuration` — a D29 immutable overlay
+  carrying a flat `named_values` environment plus `OccurrencePath`-keyed
+  `parameter_overrides`. `resolve(registry, configuration) ->
+  ResolvedConfiguration` only ever borrows both immutably, so "resolution
+  never destructively mutates the base" is a compile-time fact.
+- `AICAD-150` (`project/reports/AICAD-150.md`) adds `rule.rs`: a typed
+  boolean-combinator `Rule`/`RuleSet` (`Equals`/`NotEquals`/`And`/`Or`/
+  `Not`/`Implies`/`Ref`) evaluated over a `Configuration`'s `named_values` —
+  deliberately plain Rust IR, not a bespoke textual rule language, matching
+  `mate`/`joint`'s own "no source syntax yet" precedent. `evaluate` reuses
+  `graph::expand_into`'s own `on_stack` DFS technique for cyclic `Ref`
+  diagnostics. New diagnostics `ASM-E010`..`E012`.
+- `AICAD-151` (`project/reports/AICAD-151.md`) adds `suppression.rs`:
+  `Configuration` gains a `suppressed: BTreeSet<OccurrencePath>` overlay
+  field (insert/remove only, never a base-structure removal);
+  `is_active`/`active_occurrences`/`classify_mates`/`active_definition_counts`
+  derive active/inactive views. No suppression-aware code was added to
+  `cad_assemblies::reference::resolve` — passing the filtered active
+  occurrence slice into that existing function already reproduces its own
+  `OccurrenceNotFound` fail-closed reason for a suppressed occurrence.
+
 ## Next executable work
 
-1. Batch `S6-07` (`AICAD-149`, `AICAD-150`, `AICAD-151`) is next:
-   immutable configuration overlays, configuration validity rules, and
-   stable suppression preserving identity.
+1. Batch `S6-08` (`AICAD-152`, `AICAD-153`) is next: replacement/variant
+   selection through stable logical slots (`ConfigurationSlotId`,
+   `AICAD-133`), and external-asset identity/provenance (`D30`).
 2. Proceed one bounded task at a time through `AICAD-160` and fixed batches
-   `S6-08`..`S6-12`.
+   `S6-09`..`S6-12`.
 3. Stop at the Stage-6 owner hard gate (`AICAD-160`) before any Stage-7
    promotion or implementation.
 
 ## Stage-6 queue
 
 - Range: AICAD-131..AICAD-160 (30 tasks)
-- Done: AICAD-131 (batch S6-00), AICAD-132/133 (batch S6-01), AICAD-134/135/136 (batch S6-02), AICAD-137/138 (batch S6-03), AICAD-139/140/141 (batch S6-04), AICAD-142/143/144 (batch S6-05), AICAD-145/146/147/148 (batch S6-06)
-- Next: AICAD-149/150/151 (batch S6-07)
+- Done: AICAD-131 (batch S6-00), AICAD-132/133 (batch S6-01), AICAD-134/135/136 (batch S6-02), AICAD-137/138 (batch S6-03), AICAD-139/140/141 (batch S6-04), AICAD-142/143/144 (batch S6-05), AICAD-145/146/147/148 (batch S6-06), AICAD-149/150/151 (batch S6-07)
+- Next: AICAD-152/153 (batch S6-08)
 - Checkpoint A: AICAD-141 — DONE, see `project/reports/AICAD-141.md`
 - Checkpoint B: AICAD-148 — DONE, see `project/reports/AICAD-148.md`
 - Checkpoint C: AICAD-156
@@ -127,8 +155,9 @@ assemblies` itself remains solver-free, unaffected by this batch):
 - Stage-5 advanced curve/surface values and operations, trimmed geometry values, geometric queries, topology construction/healing/inspection, raw geometry, functional editing/adoption, lineage, persistent references, provenance, incremental regeneration, and maintained examples are established (`AICAD-131`).
 - The language now supports `interface`/`implements`/bounded generics (`AICAD-132`) in addition to D17's bare generics — see `specs/language/types.md`'s "Interfaces/protocols and bounded generics" section for the exact implemented shape and its explicit exclusions.
 - `cad-assemblies` now carries the seven D26 identity-domain primitive types (`AICAD-133`), a real assembly IR (`AICAD-134`/`135`/`136`): `ComponentDefinition`/`ChildInstance`/`ComponentDefinitionRegistry`, `LocalPose`/`WorldPose`, `graph::expand`; fail-closed cross-instance semantic-reference resolution over the resolved occurrence tree (`AICAD-137`, `reference::resolve`, now depending on `cad-query`); reusable mechanical-interface conformance/compatibility (`AICAD-138`, `interface::{check_conformance, check_compatibility}`); and solver-neutral mate/joint relation IR (`AICAD-139`/`140`, `mate::Mate`, `joint::{Joint, JointKind, JointCoordinate}`). Still no solver/adapter crate anywhere in the dependency tree (`AICAD-142`+ do not exist yet) — confirmed by `cargo tree -p cad-assemblies`.
-- `cad-assemblies`'s `ASM`-family diagnostics now run `ASM-E001`..`ASM-E007` (`AICAD-136` graph errors, `AICAD-137` occurrence-not-found, `AICAD-138` interface conformance/compatibility, `AICAD-139` mate parameter mismatch, `AICAD-140` joint coordinate/limit error), plus `ASM-E008` (`AICAD-143`'s `LoweringError`) and `ASM-E009` (`AICAD-147`'s `KinematicsError::UnknownJoint`) in the `cad-assembly-solver` crate — the next new assembly diagnostic must start at `ASM-E010`.
+- `cad-assemblies`'s `ASM`-family diagnostics now run `ASM-E001`..`ASM-E007` (`AICAD-136` graph errors, `AICAD-137` occurrence-not-found, `AICAD-138` interface conformance/compatibility, `AICAD-139` mate parameter mismatch, `AICAD-140` joint coordinate/limit error), plus `ASM-E008` (`AICAD-143`'s `LoweringError`) and `ASM-E009` (`AICAD-147`'s `KinematicsError::UnknownJoint`) in the `cad-assembly-solver` crate, and `ASM-E010`..`ASM-E012` (`AICAD-150`'s rule-violation/undefined-ref/cyclic-ref) in the `cad-configurations` crate — the next new assembly diagnostic must start at `ASM-E013`.
 - A new crate, `cad-assembly-solver` (`AICAD-142`/`143`/`144`/`145`/`146`/`147`), depends on `cad-assemblies` one direction only — `cad-assemblies` itself still has zero solver/adapter dependency (`cargo tree -p cad-assemblies` reconfirmed clean). It provides the `D28`/`DL-30` numeric adapter contract (`adapter.rs`), the deterministic grounding/lowering policy (`grounding.rs`, now also `lower_for_dof_analysis` and `linalg::rank_with_pivot_rows`), the one baseline Levenberg-Marquardt backend (`baseline.rs`, now also exposing `classify` separately from `solve_assembly`), semantic DOF analysis (`dof.rs`), redundancy/conflict diagnostics (`conflict.rs`), and baseline kinematic evaluation (`kinematics.rs`) — see the six task reports for the exact anchor-frame/pose-parametrization/classification/pinning-residual design.
+- The previously-empty `cad-configurations` crate now implements D29 (`AICAD-149`/`150`/`151`), depending on `cad-assemblies` one direction only (`cargo tree -p cad-assemblies` reconfirmed clean, unaffected by this batch): `ConfigurationId`/`Configuration`/`resolve` (`overlay.rs`, immutable overlay + borrow-only resolution), `Rule`/`RuleSet`/`evaluate` (`rule.rs`, plain-Rust-IR validity rules, no bespoke textual DSL), and `is_active`/`active_occurrences`/`classify_mates`/`active_definition_counts` (`suppression.rs`, suppression as `BTreeSet<OccurrencePath>` overlay membership — never a base-structure removal). No `.aicad` surface syntax exists for any of this yet (`DL-31` defers it); see the three task reports for how suppression composes with `cad_assemblies::reference::resolve` and `Mate` with zero new suppression-aware resolver code.
 - `AICAD-140`'s approved joint family is deliberately bounded to `Fixed`/`Revolute`/`Prismatic`/`Cylindrical`/`Planar` — `helical`/`spherical`/`universal`/`custom` from `docs/plan/07`'s table are explicitly excluded (a `Length`-per-`Angle` dimension does not exist in `cad-units`' 21 named dimensions; a scalar orientation convention for 2-3 rotational DOF is an unresolved ambiguity; `custom` is out-of-scope general dynamics) — see `joint.rs`'s own doc comment before extending this set.
 - `tree-sitter-aicad`'s own grammar was not updated for `interface`/`implements`/bounds (no shared corpus fixtures were added, so its existing tests are unaffected, but it does not yet parse the new syntax) — a disclosed, narrow follow-up for whichever task next touches IDE tooling, not a Stage-6 blocker.
 - `Ellipse` curves and periodic B-spline curves/surfaces remain unsupported by `make_edge`/`make_face_on_surface` — a disclosed, narrow, unaffected scope limit, not a new gap.
