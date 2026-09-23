@@ -32,20 +32,31 @@ pub fn jacobian(eval: impl Fn(&[f64]) -> Vec<f64>, x: &[f64], step: f64) -> Vec<
 /// magnitude is treated as zero. Deterministic (fixed pivot-selection
 /// tie-break: the first row at/after the current rank achieving the
 /// largest pivot magnitude).
+pub fn rank(matrix: &[Vec<f64>], tolerance: f64) -> usize {
+    rank_with_pivot_rows(matrix, tolerance).0
+}
+
+/// [`rank`], additionally returning the *original* (pre-reduction) row
+/// indices selected as pivots, in the order they were chosen --
+/// `crate::conflict`'s (`AICAD-146`) redundancy/conflict classification
+/// needs to know exactly *which* declared residual rows are linearly
+/// independent so it can label every other row as dependent on them.
 ///
 /// Indexed row/column loops throughout (`#[allow(clippy::
 /// needless_range_loop)]`): every loop here walks a genuine `(row, col)`
 /// coordinate pair into `m`, not a single sequence an iterator adapter
 /// would express more clearly.
 #[allow(clippy::needless_range_loop)]
-pub fn rank(matrix: &[Vec<f64>], tolerance: f64) -> usize {
+pub fn rank_with_pivot_rows(matrix: &[Vec<f64>], tolerance: f64) -> (usize, Vec<usize>) {
     let rows = matrix.len();
     if rows == 0 {
-        return 0;
+        return (0, Vec::new());
     }
     let cols = matrix[0].len();
     let mut m = matrix.to_vec();
+    let mut original_row: Vec<usize> = (0..rows).collect();
     let mut rank = 0;
+    let mut pivot_rows = Vec::new();
     for col in 0..cols {
         if rank == rows {
             break;
@@ -63,6 +74,7 @@ pub fn rank(matrix: &[Vec<f64>], tolerance: f64) -> usize {
             continue;
         };
         m.swap(rank, pivot_row);
+        original_row.swap(rank, pivot_row);
         for r in (rank + 1)..rows {
             let factor = m[r][col] / m[rank][col];
             if factor != 0.0 {
@@ -71,9 +83,10 @@ pub fn rank(matrix: &[Vec<f64>], tolerance: f64) -> usize {
                 }
             }
         }
+        pivot_rows.push(original_row[rank]);
         rank += 1;
     }
-    rank
+    (rank, pivot_rows)
 }
 
 /// Solves the square linear system `a * x = b` via Gaussian elimination
@@ -180,6 +193,18 @@ mod tests {
     fn rank_of_a_rank_deficient_matrix_is_less_than_its_dimension() {
         let m = vec![vec![1.0, 2.0], vec![2.0, 4.0]];
         assert_eq!(rank(&m, 1e-9), 1);
+    }
+
+    #[test]
+    fn rank_with_pivot_rows_selects_one_row_of_a_dependent_pair_as_the_pivot() {
+        let m = vec![vec![1.0, 2.0], vec![2.0, 4.0], vec![0.0, 1.0]];
+        let (rank, pivots) = rank_with_pivot_rows(&m, 1e-9);
+        assert_eq!(rank, 2);
+        // Partial pivoting picks the larger-magnitude row of the
+        // dependent pair (row 1, magnitude 2.0) over row 0 -- either
+        // choice is a mathematically valid pivot, but this fixes which
+        // one so the test is deterministic.
+        assert_eq!(pivots, vec![1, 2]);
     }
 
     #[test]

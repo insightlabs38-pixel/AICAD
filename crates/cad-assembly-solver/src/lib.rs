@@ -22,11 +22,16 @@
 //! - [`dof`] (`AICAD-145`) -- semantic degrees-of-freedom analysis over
 //!   [`grounding::lower_for_dof_analysis`]'s all-non-ground lowering,
 //!   attributed back to the occurrences/relations that produced it.
+//! - [`conflict`] (`AICAD-146`) -- structural redundancy/conflict
+//!   diagnostics over [`grounding::lower`]'s solver-facing lowering,
+//!   distinguishing dependent-but-consistent relations from mutually
+//!   inconsistent ones without requiring an iterative solve.
 //! - [`linalg`] -- small dense-matrix utilities [`grounding`] and
 //!   [`baseline`] share.
 
 pub mod adapter;
 pub mod baseline;
+pub mod conflict;
 pub mod dof;
 pub mod grounding;
 mod linalg;
@@ -36,6 +41,7 @@ pub use adapter::{
     EchoAdapter, ProblemError, RejectingAdapter, Residual, ZeroStartAdapter,
 };
 pub use baseline::{BaselineSolver, BaselineSolverProfile, SolveOutcome, solve_assembly};
+pub use conflict::{AssemblyDiagnosis, ConstraintDiagnosis, diagnose};
 pub use dof::{AssemblyDof, OccurrenceDof, analyze as analyze_dof};
 pub use grounding::{
     GroundingProfile, Lowering, LoweringError, StructuralDof, lower, lower_for_dof_analysis,

@@ -4555,7 +4555,7 @@ tasks:
 
 - id: AICAD-146
   stage: 6
-  status: todo
+  status: done
   batch: S6-06
   title: Implement redundancy and conflict diagnostics
   depends_on: [AICAD-144, AICAD-145]
