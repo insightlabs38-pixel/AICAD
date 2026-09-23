@@ -4585,7 +4585,7 @@ tasks:
 
 - id: AICAD-148
   stage: 6
-  status: todo
+  status: done
   batch: S6-06
   title: Checkpoint B - solver-neutral pose DOF conflict and kinematic realization
   depends_on: [AICAD-146, AICAD-147]
