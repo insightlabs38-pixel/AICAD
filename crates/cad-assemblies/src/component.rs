@@ -24,6 +24,7 @@
 //! [`ComponentDefinitionRegistry`].
 
 use crate::definition::ComponentDefinitionId;
+use crate::frame::LocalPose;
 use crate::instance::LogicalInstanceId;
 use crate::value::ParameterValue;
 use cad_diagnostics::json::Json;
@@ -67,31 +68,48 @@ impl ParameterDeclaration {
 }
 
 /// One child of a [`ComponentDefinition`]: a logical instance naming which
-/// definition it instantiates plus its own bound parameter arguments.
-/// Carries no pose/transform field — `AICAD-135` adds that.
+/// definition it instantiates, its own bound parameter arguments, and its
+/// [`LocalPose`] — the rigid transform placing it in its parent's frame
+/// (`AICAD-135`). `local_pose` is deliberately excluded from `instance`/
+/// `arguments` equality-relevant identity concerns: two `ChildInstance`s
+/// with the same `instance`/`arguments` but a different `local_pose` are
+/// still the same logical instance (`AGENTS.md`: "Pose changes must not
+/// change logical instance identity") — see `instance()`'s own doc
+/// comment for the structural reason this holds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChildInstance {
     instance: LogicalInstanceId,
+    local_pose: LocalPose,
     arguments: Vec<(String, ParameterValue)>,
 }
 
 impl ChildInstance {
     pub fn new(
         instance: LogicalInstanceId,
+        local_pose: LocalPose,
         arguments: Vec<(String, ParameterValue)>,
     ) -> ChildInstance {
         ChildInstance {
             instance,
+            local_pose,
             arguments,
         }
     }
 
+    /// This child's own stable logical identity — a `ChildInstance`'s
+    /// `local_pose` is never a parameter of `LogicalInstanceId`, so
+    /// re-posing a child (see `ComponentDefinition`-level rebuild) can
+    /// never change what this returns.
     pub fn instance(&self) -> &LogicalInstanceId {
         &self.instance
     }
 
     pub fn definition(&self) -> &ComponentDefinitionId {
         self.instance.definition()
+    }
+
+    pub fn local_pose(&self) -> LocalPose {
+        self.local_pose
     }
 
     pub fn arguments(&self) -> &[(String, ParameterValue)] {
@@ -109,6 +127,7 @@ impl ChildInstance {
         Json::object([
             ("kind".to_string(), Json::str("child_instance")),
             ("instance".to_string(), self.instance.to_json()),
+            ("local_pose".to_string(), self.local_pose.to_json()),
             (
                 "arguments".to_string(),
                 Json::Array(
@@ -247,6 +266,7 @@ impl ComponentDefinitionRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cad_kernel_api::{Transform, Vector3};
     use cad_types::Dimension;
 
     fn length(magnitude: f64) -> ParameterValue {
@@ -266,15 +286,21 @@ mod tests {
     }
 
     fn gearbox_def_with_four_wheels() -> ComponentDefinition {
-        let children = ["front_left", "front_right", "rear_left", "rear_right"]
-            .into_iter()
-            .map(|slot| {
-                ChildInstance::new(
-                    LogicalInstanceId::new(ComponentDefinitionId::named("Wheel"), slot),
-                    vec![("radius".to_string(), length(0.2))],
-                )
-            })
-            .collect();
+        let children = [
+            ("front_left", 1.0, 1.0),
+            ("front_right", 1.0, -1.0),
+            ("rear_left", -1.0, 1.0),
+            ("rear_right", -1.0, -1.0),
+        ]
+        .into_iter()
+        .map(|(slot, x, y)| {
+            ChildInstance::new(
+                LogicalInstanceId::new(ComponentDefinitionId::named("Wheel"), slot),
+                LocalPose::new(Transform::translation(Vector3::new(x, y, 0.0))),
+                vec![("radius".to_string(), length(0.2))],
+            )
+        })
+        .collect();
         ComponentDefinition::new(ComponentDefinitionId::named("Gearbox"), vec![], children)
     }
 
@@ -320,6 +346,7 @@ mod tests {
             vec![],
             vec![ChildInstance::new(
                 LogicalInstanceId::new(ComponentDefinitionId::named("Hub"), "hub"),
+                LocalPose::identity(),
                 vec![],
             )],
         );
@@ -347,10 +374,12 @@ mod tests {
     fn different_bound_arguments_make_distinct_child_instances_even_under_the_same_local_name() {
         let a = ChildInstance::new(
             LogicalInstanceId::new(ComponentDefinitionId::named("Wheel"), "front_left"),
+            LocalPose::identity(),
             vec![("radius".to_string(), length(0.2))],
         );
         let b = ChildInstance::new(
             LogicalInstanceId::new(ComponentDefinitionId::named("Wheel"), "front_left"),
+            LocalPose::identity(),
             vec![("radius".to_string(), length(0.25))],
         );
         assert_ne!(a, b);
@@ -359,6 +388,27 @@ mod tests {
             b.instance(),
             "logical identity is unaffected by argument value"
         );
+    }
+
+    #[test]
+    fn changing_only_local_pose_never_changes_logical_instance_identity() {
+        let same_slot = LogicalInstanceId::new(ComponentDefinitionId::named("Wheel"), "front_left");
+        let at_origin = ChildInstance::new(same_slot.clone(), LocalPose::identity(), vec![]);
+        let translated = ChildInstance::new(
+            same_slot.clone(),
+            LocalPose::new(Transform::translation(Vector3::new(5.0, 0.0, 0.0))),
+            vec![],
+        );
+        assert_ne!(
+            at_origin, translated,
+            "different pose makes a structurally different ChildInstance value"
+        );
+        assert_eq!(
+            at_origin.instance(),
+            &same_slot,
+            "but the logical identity each carries is identical"
+        );
+        assert_eq!(at_origin.instance(), translated.instance());
     }
 
     #[test]

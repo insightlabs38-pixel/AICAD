@@ -6,7 +6,7 @@
 
 use cad_assemblies::{
     ChildInstance, ComponentDefinition, ComponentDefinitionId, ComponentDefinitionRegistry,
-    LogicalInstanceId, ParameterDeclaration, ParameterValue,
+    LocalPose, LogicalInstanceId, ParameterDeclaration, ParameterValue,
 };
 use cad_types::Dimension;
 use cad_units::OperandType;
@@ -35,10 +35,12 @@ fn build_registry() -> ComponentDefinitionRegistry {
             vec![
                 ChildInstance::new(
                     LogicalInstanceId::new(ComponentDefinitionId::named("Bolt"), "lug_1"),
+                    LocalPose::identity(),
                     vec![("length".to_string(), length(0.02))],
                 ),
                 ChildInstance::new(
                     LogicalInstanceId::new(ComponentDefinitionId::named("Bolt"), "lug_2"),
+                    LocalPose::identity(),
                     vec![("length".to_string(), length(0.02))],
                 ),
             ],
@@ -53,6 +55,7 @@ fn build_registry() -> ComponentDefinitionRegistry {
                 .map(|slot| {
                     ChildInstance::new(
                         LogicalInstanceId::new(ComponentDefinitionId::named("Wheel"), slot),
+                        LocalPose::identity(),
                         vec![],
                     )
                 })

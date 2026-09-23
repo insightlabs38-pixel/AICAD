@@ -29,15 +29,16 @@
 //! construction is deterministic and why it cannot alias another domain.
 //!
 //! `AICAD-134` onward builds the real assembly IR on top of these
-//! primitives, starting with [`component`] (component-definition/
-//! logical-instance IR); later Stage-6 tasks add instance poses and
-//! nested-assembly resolution.
+//! primitives: [`component`] (component-definition/logical-instance IR)
+//! and [`frame`] (`AICAD-135`'s local/world instance poses); a later
+//! Stage-6 task adds nested-assembly resolution.
 
 pub mod asset;
 pub mod bom;
 pub mod component;
 pub mod configuration;
 pub mod definition;
+pub mod frame;
 mod hash;
 pub mod instance;
 pub mod occurrence;
@@ -52,6 +53,7 @@ pub use component::{
 };
 pub use configuration::ConfigurationSlotId;
 pub use definition::ComponentDefinitionId;
+pub use frame::{LocalPose, WorldPose};
 pub use instance::LogicalInstanceId;
 pub use occurrence::OccurrencePath;
 pub use topology::OccurrenceTopologyRef;

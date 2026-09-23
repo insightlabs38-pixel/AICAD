@@ -15,6 +15,7 @@ name = "cad-assemblies"
 version = "0.0.0"
 dependencies = [
  "cad-diagnostics",
+ "cad-kernel-api",
  "cad-references",
  "cad-types",
  "cad-units",

@@ -513,6 +513,25 @@ impl Transform {
             .expect("a rigid transform's linear part preserves unit length")
     }
 
+    /// The inverse of this rigid transform:
+    /// `self.compose(&self.invert())` and `self.invert().compose(self)`
+    /// both reduce to [`Transform::identity`] (within floating-point
+    /// tolerance) for every `Transform` this module can produce, since
+    /// every one is rigid (orthonormal linear part, per this module's own
+    /// "Rigidity (no reflection)" convention) -- inverting an orthonormal
+    /// rotation matrix is exactly its transpose, and the translation
+    /// inverts by un-rotating its negation (`AICAD-135`'s own instance
+    /// pose composition/inversion requirement).
+    pub fn invert(&self) -> Transform {
+        let linear: [[f64; 3]; 3] =
+            std::array::from_fn(|i| std::array::from_fn(|j| self.linear[j][i]));
+        let translation = apply_linear(&linear, -self.translation);
+        Transform {
+            linear,
+            translation,
+        }
+    }
+
     /// Row-major 3x4 form matching `aicad_occt_transform_shape`'s
     /// documented `matrix` layout exactly.
     pub fn to_row_major_3x4(&self) -> [f64; 12] {
@@ -805,5 +824,45 @@ mod tests {
         let composed = Transform::rotation(axis, 0.3)
             .compose(&Transform::translation(Vector3::new(5.0, 0.0, 0.0)));
         assert_rigid(composed.to_row_major_3x4());
+    }
+
+    fn assert_transform_close(a: Transform, b: Transform, tol: f64) {
+        for (row_a, row_b) in a.linear.iter().zip(b.linear.iter()) {
+            for (x, y) in row_a.iter().zip(row_b.iter()) {
+                assert_close(*x, *y, tol);
+            }
+        }
+        assert_close(a.translation.x, b.translation.x, tol);
+        assert_close(a.translation.y, b.translation.y, tol);
+        assert_close(a.translation.z, b.translation.z, tol);
+    }
+
+    #[test]
+    fn identity_inverts_to_identity() {
+        assert_transform_close(Transform::identity().invert(), Transform::identity(), 1e-12);
+    }
+
+    #[test]
+    fn invert_undoes_a_translation() {
+        let t = Transform::translation(Vector3::new(3.0, -4.0, 5.0));
+        assert_transform_close(t.compose(&t.invert()), Transform::identity(), 1e-9);
+        assert_transform_close(t.invert().compose(&t), Transform::identity(), 1e-9);
+    }
+
+    #[test]
+    fn invert_undoes_a_rotation_about_an_off_origin_axis() {
+        let axis = Axis3::new(Point3::new(1.0, 2.0, -1.0), Direction3::Y);
+        let t = Transform::rotation(axis, 1.1);
+        assert_transform_close(t.compose(&t.invert()), Transform::identity(), 1e-9);
+        assert_transform_close(t.invert().compose(&t), Transform::identity(), 1e-9);
+    }
+
+    #[test]
+    fn invert_undoes_a_composed_frame_to_frame_transform() {
+        let to = Frame3::from_z(Point3::new(2.0, -3.0, 4.0), Direction3::X);
+        let t = Transform::from_frames(Frame3::WORLD, to);
+        let p = Point3::new(-5.0, 6.0, 1.5);
+        assert_point_close(t.invert().apply_point(t.apply_point(p)), p, 1e-9);
+        assert_point_close(t.apply_point(t.invert().apply_point(p)), p, 1e-9);
     }
 }
