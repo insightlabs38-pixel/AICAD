@@ -74,6 +74,13 @@ dependencies = [
 [[package]]
 name = "cad-configurations"
 version = "0.0.0"
+dependencies = [
+ "cad-assemblies",
+ "cad-diagnostics",
+ "cad-kernel-api",
+ "cad-types",
+ "cad-units",
+]
 
 [[package]]
 name = "cad-constraints"
